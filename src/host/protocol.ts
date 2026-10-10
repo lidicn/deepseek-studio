@@ -46,6 +46,8 @@ export type PageToHostMessage =
   /** v0.5 5.4：页端自检发现宿主注入对象被篡改，上报宿主以便降级。 */
   | { type: 'integrity-alert'; reason: string; detail?: string }
   /** v0.6：页端 MAIN-world 拦截器解析出模型发起的工具调用，反向投递给宿主真实执行。 */
-  | { type: 'tool-call'; callId: string; invocationName: string; params: unknown };
+  | { type: 'tool-call'; callId: string; invocationName: string; params: unknown }
+  /** 调试：页端把拦截/诊断日志发到宿主 stdout。 */
+  | { type: 'log'; text: string };
 
 export type { ExecuteResult };

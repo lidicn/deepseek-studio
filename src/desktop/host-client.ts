@@ -53,6 +53,8 @@ export interface HostClient {
   reportIntegrity(alert: { reason: string; detail?: string }): void;
   /** v0.6：把一次工具调用发给宿主并等回结果（按 callId 关联 tool-call-result）。 */
   sendToolCall(req: ToolCallRequest): Promise<ExecuteResult>;
+  /** 调试：发日志到宿主 stdout。 */
+  log(text: string): void;
 }
 
 const OPEN = 1;
@@ -169,6 +171,9 @@ export function createHostClient(options: HostClientOptions): HostClient {
     connect() {
       stopped = false;
       connectWs();
+    },
+    log(text: string) {
+      send({ type: 'log', text });
     },
     disconnect() {
       stopped = true;

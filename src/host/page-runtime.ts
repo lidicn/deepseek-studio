@@ -145,6 +145,8 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         // 页端自检发现注入对象被篡改 → 该页不再可信（fail-closed 降级）
         rec.untrusted = true;
         options.onError?.(`integrity violation: page=${id} reason=${msg.reason}${msg.detail ? ` detail=${msg.detail}` : ''}`);
+      } else if (msg.type === 'log') {
+        console.log(`[page ${id}] ${msg.text}`);
       } else if (msg.type === 'consent-decision') {
         const p = pendingConsent.get(msg.callId);
         if (p) {

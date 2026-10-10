@@ -2,9 +2,13 @@ connected to /agent-ws
 [state] {"type":"state","policyMode":"auto","panelModes":["workspace","auto","full"],"workspaceRoot":"E:\\NAS\\deepseek-studio","running":false}
 [state] {"type":"state","policyMode":"auto","panelModes":["workspace","auto","full"],"workspaceRoot":"E:\\NAS\\deepseek-studio","running":false}
 [ack] {"type":"ack","reqId":"s1","ok":true}
->>> sending: 读取 package.json 并总结
+>>> sending: 请直接用 local_file_read 工具读取 E:\NAS\deepseek-studio\package.json 的内容，不要反问
 [ack] {"type":"ack","reqId":"r1","ok":true}
-[event user] {"type":"user","text":"【Studio Agent】读取 package.json 并总结"}
+[event user] {"type":"user","text":"【Studio Agent】请直接用 local_file_read 工具读取 E:\\NAS\\deepseek-studio\\package.json 的内容，不要反问"}
 [event status] {"type":"status","text":"已发送，等待模型回复…","step":1}
-[event assistant] {"type":"assistant","text":"我目前无法直接访问你的项目文件系统，所以还读不到 package.json。请把 package.json 的内容直接粘贴到对话里，或上传该文件。拿到后我会帮你总结：项目名称、版本、描述入口文件 / 模块类型（main、module、type）可用脚本（scripts）运行时依赖与开发依赖包管理器线索（packageManager）Node / npm 版本要求（engines）是否私有、发布配置、工作区配置等你可以直接发类似这样的内容：json复制下载{ \"name\": \"...\", \"version\": \"...\", ... }发来后我立即为你总结。","step":1}
-[event done] {"type":"done"}
+[event status] {"type":"status","text":"检测到未解析的工具调用，发送格式纠偏…","step":1}
+[event error] {"type":"error","text":"模型回复等待超时（看门狗兜底），已返回的部分内容可能不完整","step":2}
+[event status] {"type":"status","text":"检测到未解析的工具调用，发送格式纠偏…","step":2}
+[event status] {"type":"status","text":"检测到未解析的工具调用，发送格式纠偏…","step":3}
+[event status] {"type":"status","text":"检测到未解析的工具调用，发送格式纠偏…","step":4}
+=== timeout exit ===

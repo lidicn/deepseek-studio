@@ -1240,6 +1240,9 @@
         stopped = false;
         connectWs();
       },
+      log(text) {
+        send({ type: "log", text });
+      },
       disconnect() {
         stopped = true;
         for (const p of pendingToolCalls.values()) {
@@ -1529,7 +1532,8 @@ ${prompt}`;
       window.fetch = origFetch;
     };
   }
-  function installXhrHooks(forward, pending) {
+  function installXhrHooks(forward, pending, diag = () => {
+  }) {
     if (typeof XMLHttpRequest === "undefined") return () => {
     };
     const proto = XMLHttpRequest.prototype;
@@ -1541,17 +1545,16 @@ ${prompt}`;
       return origOpen.apply(this, [method, url, ...rest]);
     };
     proto.send = function(body) {
-      if (pending.length > 0 && isDeepSeekChatEndpoint(String(this.__dsUrl ?? ""), String(this.__dsMethod ?? "GET"))) {
-        if (typeof body === "string") {
-          try {
-            const parsed = JSON.parse(body);
-            if (typeof parsed.prompt === "string") {
-              parsed.prompt = reinjectIntoPrompt(parsed.prompt, pending.slice());
-              pending.length = 0;
-              body = JSON.stringify(parsed);
-            }
-          } catch {
-          }
+      const url = String(this.__dsUrl ?? "");
+      const method = String(this.__dsMethod ?? "GET");
+      const isChat = isDeepSeekChatEndpoint(url, method);
+      diag(`xhr ${method} ${url} isChat=${isChat} bodyType=${typeof body}`);
+      if (isChat && typeof body === "string") {
+        diag(`xhr chat body len=${body.length} head=${body.slice(0, 200)}`);
+        const next = prepareOutgoingBody(body, pending);
+        if (next !== null) {
+          body = next;
+          diag(`xhr chat body injected len=${next.length}`);
         }
       }
       const xhr = this;
@@ -1598,7 +1601,7 @@ ${prompt}`;
     };
     const origFetch = window.fetch ? window.fetch.bind(window) : void 0;
     const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending, d) : void 0;
-    const stopXhr = installXhrHooks(forward, pending);
+    const stopXhr = installXhrHooks(forward, pending, d);
     return {
       stop() {
         try {
@@ -1750,7 +1753,7 @@ ${prompt}`;
       try {
         installMainWorldInterceptor(
           (req) => host.sendToolCall(req),
-          (msg) => options.reportError?.(`[interceptor] ${msg}`)
+          (msg) => host.log(`[interceptor] ${msg}`)
         );
       } catch (err) {
         options.reportError?.("failed to install main-world interceptor", err);

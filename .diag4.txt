@@ -1,0 +1,30 @@
+﻿[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST https://gator.volces.com/list isChat=false bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr GET https://hif-leim.deepseek.com/query isChat=false bodyType=undefined
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr GET https://hif-dliq.deepseek.com/query isChat=false bodyType=undefined
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST /api/v0/users/auth_token/check_device isChat=true bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr chat body len=70 head={"device_id":"8255629b-ce88-498c-9d27-ec755c4a2c93","device_model":""}
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST /api/v0/chat/create_pow_challenge isChat=true bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr chat body len=41 head={"target_path":"/api/v0/chat/completion"}
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST /api/v0/chat_session/create isChat=true bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr chat body len=2 head={}
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST https://gator.volces.com/list isChat=false bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST /api/v0/client/settings/report isChat=true bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr chat body len=466 head={"settings_ids":[1918634372,663786116,1806834993,1336349584,655820012,993773936,559384626,1914233287,1640113473,714289219,58457202,985220088,1806424694,1429241854,912299024,962533274,2001562968,410318
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST https://gator.volces.com/list isChat=false bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST https://gator.volces.com/list isChat=false bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST https://gator.volces.com/list isChat=false bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST https://gator.volces.com/list isChat=false bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST https://gator.volces.com/list isChat=false bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] fetch GET https://fe-static.deepseek.com/chat/static/opus-decoder.mvp.2dc7300ee4.wasm bodyType=undefined
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST https://gator.volces.com/list isChat=false bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST /api/v0/chat/completion isChat=true bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr chat body len=245 head={"chat_session_id":"2873de6b-bbf7-41bb-bf75-a8af7fff41da","parent_message_id":null,"model_type":"default","prompt":"【Studio Agent】读取 package.json 并总结","ref_file_ids":[],"thinking_enabled":true,"search
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr chat body injected len=680
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST /api/v0/chat_session/create isChat=true bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr chat body len=2 head={}
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST https://gator.volces.com/list isChat=false bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST https://gator.volces.com/list isChat=false bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST https://gator.volces.com/list isChat=false bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST https://gator.volces.com/list isChat=false bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST https://gator.volces.com/list isChat=false bodyType=string
+[page eea62a27-7d5b-4cf3-9ea9-0553343b50bc] [interceptor] xhr POST https://gator.volces.com/list isChat=false bodyType=string

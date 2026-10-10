@@ -10,7 +10,19 @@
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 use url::Url;
 
-const INIT_SCRIPT: &str = include_str!("../inject/entry.js");
+/// 运行时读取注入脚本（而非 include_str! 编译时嵌入）。
+/// 这样改 TS → build:inject → 重启 exe 即可，无需重链接 Rust（迭代从 ~8min 降到 ~10s）。
+/// 开发态 cargo run 的 cwd 是 src-tauri/；也兼容从仓库根启动。
+fn load_init_script() -> String {
+    for candidate in ["inject/entry.js", "src-tauri/inject/entry.js"] {
+        if let Ok(s) = std::fs::read_to_string(candidate) {
+            return s;
+        }
+    }
+    eprintln!("[studio] WARN: entry.js not found on disk, running without injection");
+    String::new()
+}
+
 const CHAT_URL: &str = "https://chat.deepseek.com";
 const AGENT_PANEL_URL: &str = "http://127.0.0.1:8756/agent";
 
@@ -37,7 +49,7 @@ fn main() {
             .title(if disable_inject { "DeepSeek++ Studio (NO-INJECT)" } else { "DeepSeek++ Studio" });
 
             if !disable_inject {
-                main_builder = main_builder.initialization_script(INIT_SCRIPT);
+                main_builder = main_builder.initialization_script(&load_init_script());
             }
 
             let _win = main_builder.build().expect("failed to create window");

@@ -237,6 +237,7 @@ function installFetchHook(
 function installXhrHooks(
   forward: (call: ParsedToolCall) => void,
   pending: PendingResult[],
+  diag: InterceptorDiag = () => {},
 ): () => void {
   if (typeof XMLHttpRequest === 'undefined') return () => {};
   const proto = XMLHttpRequest.prototype;
@@ -250,18 +251,17 @@ function installXhrHooks(
   } as typeof proto.open;
 
   proto.send = function (this: XMLHttpRequest & Record<string, unknown>, body?: Document | XMLHttpRequestBodyInit | null) {
-    if (pending.length > 0 && isDeepSeekChatEndpoint(String(this.__dsUrl ?? ''), String(this.__dsMethod ?? 'GET'))) {
-      if (typeof body === 'string') {
-        try {
-          const parsed = JSON.parse(body) as Record<string, unknown>;
-          if (typeof parsed.prompt === 'string') {
-            parsed.prompt = reinjectIntoPrompt(parsed.prompt, pending.slice());
-            pending.length = 0;
-            body = JSON.stringify(parsed);
-          }
-        } catch {
-          /* ignore malformed body */
-        }
+    const url = String(this.__dsUrl ?? '');
+    const method = String(this.__dsMethod ?? 'GET');
+    const isChat = isDeepSeekChatEndpoint(url, method);
+    diag(`xhr ${method} ${url} isChat=${isChat} bodyType=${typeof body}`);
+    // 请求侧：无论 pending 是否为空，命中对话端点就尝试注入工具提示/回填结果。
+    if (isChat && typeof body === 'string') {
+      diag(`xhr chat body len=${body.length} head=${body.slice(0, 200)}`);
+      const next = prepareOutgoingBody(body, pending);
+      if (next !== null) {
+        body = next;
+        diag(`xhr chat body injected len=${next.length}`);
       }
     }
     const xhr = this;
@@ -318,7 +318,7 @@ export function installMainWorldInterceptor(sender: ToolCallSender, diag?: Inter
 
   const origFetch = window.fetch ? window.fetch.bind(window) : undefined;
   const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending, d) : undefined;
-  const stopXhr = installXhrHooks(forward, pending);
+  const stopXhr = installXhrHooks(forward, pending, d);
 
   return {
     stop() {

@@ -1,0 +1,3 @@
+﻿        Info Watching E:\NAS\deepseek-studio\src-tauri for changes...
+[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 2.00s
+[1m[92m     Running[0m `target\debug\deepseek-studio.exe`

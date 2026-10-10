@@ -1,0 +1,5 @@
+﻿
+> deepseek-studio@0.4.0 start
+> tsx src/api/main.ts
+
+        Warn Waiting for your frontend dev server to start on http://localhost:8756/...

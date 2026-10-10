@@ -104,7 +104,7 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
     try {
       installMainWorldInterceptor(
         (req) => host.sendToolCall(req),
-        (msg) => options.reportError?.(`[interceptor] ${msg}`),
+        (msg) => host.log(`[interceptor] ${msg}`),
       );
     } catch (err) {
       options.reportError?.('failed to install main-world interceptor', err);
