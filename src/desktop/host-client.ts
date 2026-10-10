@@ -55,6 +55,10 @@ export interface HostClient {
   sendToolCall(req: ToolCallRequest): Promise<ExecuteResult>;
   /** 调试：发日志到宿主 stdout。 */
   log(text: string): void;
+  /** v0.7：KV 读写（宿主侧落盘 backend）。 */
+  kvGet(key: string): Promise<unknown>;
+  kvSet(key: string, value: unknown): Promise<void>;
+  kvRemove(key: string): Promise<void>;
 }
 
 const OPEN = 1;
@@ -68,6 +72,7 @@ export function createHostClient(options: HostClientOptions): HostClient {
   let stopped = false;
   let backoff = 500;
   const pendingToolCalls = new Map<string, { resolve: (r: ExecuteResult) => void; timer: ReturnType<typeof setTimeout> }>();
+  const pendingKv = new Map<string, { resolve: (v: unknown, error?: string) => void }>();
 
   function send(msg: PageToHostMessage): void {
     if (ws && ws.readyState === OPEN) {
@@ -102,6 +107,13 @@ export function createHostClient(options: HostClientOptions): HostClient {
         clearTimeout(p.timer);
         pendingToolCalls.delete(msg.callId);
         p.resolve({ ok: msg.ok, data: msg.data, error: msg.error });
+      }
+    } else if (msg.type === 'kv-result') {
+      const p = pendingKv.get(msg.requestId);
+      if (p) {
+        pendingKv.delete(msg.requestId);
+        if (msg.ok) p.resolve(msg.value);
+        else p.resolve(undefined, msg.error);
       }
     }
   }
@@ -174,6 +186,30 @@ export function createHostClient(options: HostClientOptions): HostClient {
     },
     log(text: string) {
       send({ type: 'log', text });
+    },
+    kvGet(key) {
+      return new Promise((resolve, reject) => {
+        if (!ws || ws.readyState !== OPEN) { resolve(undefined); return; }
+        const requestId = crypto.randomUUID();
+        pendingKv.set(requestId, { resolve: (v, err) => err ? reject(new Error(err)) : resolve(v) });
+        send({ type: 'kv-get', requestId, key });
+      });
+    },
+    kvSet(key, value) {
+      return new Promise((resolve, reject) => {
+        if (!ws || ws.readyState !== OPEN) { resolve(); return; }
+        const requestId = crypto.randomUUID();
+        pendingKv.set(requestId, { resolve: (_v, err) => err ? reject(new Error(err)) : resolve() });
+        send({ type: 'kv-set', requestId, key, value });
+      });
+    },
+    kvRemove(key) {
+      return new Promise((resolve, reject) => {
+        if (!ws || ws.readyState !== OPEN) { resolve(); return; }
+        const requestId = crypto.randomUUID();
+        pendingKv.set(requestId, { resolve: (_v, err) => err ? reject(new Error(err)) : resolve() });
+        send({ type: 'kv-remove', requestId, key });
+      });
     },
     disconnect() {
       stopped = true;

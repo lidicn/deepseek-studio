@@ -4,7 +4,7 @@ export * from './runtime';
 export * from './storage';
 
 import { createRuntimeBridge, type RuntimeBridge } from './runtime';
-import { createChromeStorageShim, type ChromeStorageShim } from './storage';
+import { createChromeStorageShim, type ChromeStorageShim, type StorageKvBackend } from './storage';
 import { decodeRuntimeMessageEnvelope, type RuntimeMessageEnvelope } from './envelope';
 import type { Transport } from './transport';
 
@@ -18,6 +18,8 @@ function noopTransport(): Transport {
 export interface InstallChromeShimsOptions {
   transport?: Transport;
   extensionId?: string;
+  /** v0.7：local storage 落盘 backend（缺省内存）。 */
+  localBackend?: StorageKvBackend;
 }
 
 /**
@@ -29,7 +31,7 @@ export interface InstallChromeShimsOptions {
 export function installChromeShims(options: InstallChromeShimsOptions = {}): void {
   const transport = options.transport ?? noopTransport();
   const bridge: RuntimeBridge = createRuntimeBridge({ transport });
-  const storage: ChromeStorageShim = createChromeStorageShim();
+  const storage: ChromeStorageShim = createChromeStorageShim({ localBackend: options.localBackend });
   const id = options.extensionId ?? STUDIO_EXTENSION_ID;
 
   const runtime = {

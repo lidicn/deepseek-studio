@@ -33,6 +33,9 @@ import { createAgentLoop, AGENT_SENTINEL, type AgentLoop, type AgentLoopEvent } 
 import { createAgentChannel, type AgentChannel } from './agent-channel';
 import { pickFolderViaDialog } from './folder-picker';
 import { createWebEngine } from './engine/web-engine';
+import { createFileStorageKvBackend } from './file-storage-backend';
+import os from 'node:os';
+import path from 'node:path';
 import type { ModelEngine } from './engine/model-engine';
 import type { ConsentMeta } from './protocol';
 import {
@@ -344,6 +347,29 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     agentPage: options.agentPage,
   });
 
+  // v0.7：全局 KV 存储（页端 chrome.storage shim 经 ws 读写此 backend，落盘）。
+  const storageFilePath = path.join(os.homedir(), '.config', 'deepseek-studio', 'storage.json');
+  const kvBackend = createFileStorageKvBackend({ filePath: storageFilePath });
+  const kvCache: Record<string, unknown> = {};
+  let kvLoaded = false;
+  async function kvGet(key: string): Promise<unknown> {
+    if (!kvLoaded) {
+      Object.assign(kvCache, await kvBackend.readAll());
+      kvLoaded = true;
+    }
+    return kvCache[key];
+  }
+  async function kvSet(key: string, value: unknown): Promise<void> {
+    await kvGet(key); // ensure loaded
+    kvCache[key] = value;
+    await kvBackend.writeBatch({ set: { [key]: value }, remove: [] });
+  }
+  async function kvRemove(key: string): Promise<void> {
+    await kvGet(key);
+    delete kvCache[key];
+    await kvBackend.writeBatch({ set: {}, remove: [key] });
+  }
+
   let epoch = 0;
   let hub: PageRuntimeHub | null = null;
   let agentChannel: AgentChannel | null = null;
@@ -543,6 +569,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         onToolCall: () => {
           agentToolCounter.current += 1;
         },
+        // v0.7：页端 storage shim 的 KV 落盘 backend。
+        kvStore: { get: kvGet, set: kvSet, remove: kvRemove },
       });
     },
     async stop() {

@@ -36,7 +36,9 @@ export type HostToPageMessage =
   | { type: 'dispatch'; callId: string; tool: string; params: unknown }
   | { type: 'consent-required'; callId: string; tool: string; params: unknown; meta?: ConsentMeta }
   /** v0.6：宿主把工具执行结果回传给页端（按 callId 关联页端发来的 tool-call）。 */
-  | { type: 'tool-call-result'; callId: string; ok: boolean; data?: unknown; error?: string };
+  | { type: 'tool-call-result'; callId: string; ok: boolean; data?: unknown; error?: string }
+  /** v0.7：KV 读写结果回传。 */
+  | { type: 'kv-result'; requestId: string; ok: boolean; value?: unknown; error?: string };
 
 /** 注入页 → 宿主 */
 export type PageToHostMessage =
@@ -48,6 +50,10 @@ export type PageToHostMessage =
   /** v0.6：页端 MAIN-world 拦截器解析出模型发起的工具调用，反向投递给宿主真实执行。 */
   | { type: 'tool-call'; callId: string; invocationName: string; params: unknown }
   /** 调试：页端把拦截/诊断日志发到宿主 stdout。 */
-  | { type: 'log'; text: string };
+  | { type: 'log'; text: string }
+  /** v0.7：页端 storage shim 的 KV 读写请求（落盘 backend 在宿主侧）。 */
+  | { type: 'kv-get'; requestId: string; key: string }
+  | { type: 'kv-set'; requestId: string; key: string; value: unknown }
+  | { type: 'kv-remove'; requestId: string; key: string };
 
 export type { ExecuteResult };

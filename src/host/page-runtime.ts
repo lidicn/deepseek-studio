@@ -62,6 +62,12 @@ export interface PageRuntimeHubOptions {
    */
   onToolCall?: (info: { callId: string; invocationName: string; tool: string; params: unknown }) => void;
   onToolResult?: (info: { callId: string; tool: string; ok: boolean; error?: string }) => void;
+  /** v0.7：页端 storage shim 的 KV 后端（宿主侧落盘）。缺省时 kv-* 消息回 no-kv-store。 */
+  kvStore?: {
+    get(key: string): Promise<unknown>;
+    set(key: string, value: unknown): Promise<void>;
+    remove(key: string): Promise<void>;
+  };
 }
 
 export interface PageRuntimeHub {
@@ -124,7 +130,7 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
     const id = crypto.randomUUID();
     const rec: { ws: WebSocket; origin: string | null; untrusted: boolean } = { ws, origin: null, untrusted: false };
     clients.set(id, rec);
-    ws.on('message', (raw) => {
+    ws.on('message', async (raw) => {
       let msg: PageToHostMessage;
       try {
         msg = JSON.parse(raw.toString()) as PageToHostMessage;
@@ -147,6 +153,33 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         options.onError?.(`integrity violation: page=${id} reason=${msg.reason}${msg.detail ? ` detail=${msg.detail}` : ''}`);
       } else if (msg.type === 'log') {
         console.log(`[page ${id}] ${msg.text}`);
+      } else if (msg.type === 'kv-get') {
+        const store = options.kvStore;
+        if (!store) { safeSend(ws, { type: 'kv-result', requestId: msg.requestId, ok: false, error: 'no-kv-store' }); return; }
+        try {
+          const value = await store.get(msg.key);
+          safeSend(ws, { type: 'kv-result', requestId: msg.requestId, ok: true, value });
+        } catch (e) {
+          safeSend(ws, { type: 'kv-result', requestId: msg.requestId, ok: false, error: (e as Error).message });
+        }
+      } else if (msg.type === 'kv-set') {
+        const store = options.kvStore;
+        if (!store) { safeSend(ws, { type: 'kv-result', requestId: msg.requestId, ok: false, error: 'no-kv-store' }); return; }
+        try {
+          await store.set(msg.key, msg.value);
+          safeSend(ws, { type: 'kv-result', requestId: msg.requestId, ok: true });
+        } catch (e) {
+          safeSend(ws, { type: 'kv-result', requestId: msg.requestId, ok: false, error: (e as Error).message });
+        }
+      } else if (msg.type === 'kv-remove') {
+        const store = options.kvStore;
+        if (!store) { safeSend(ws, { type: 'kv-result', requestId: msg.requestId, ok: false, error: 'no-kv-store' }); return; }
+        try {
+          await store.remove(msg.key);
+          safeSend(ws, { type: 'kv-result', requestId: msg.requestId, ok: true });
+        } catch (e) {
+          safeSend(ws, { type: 'kv-result', requestId: msg.requestId, ok: false, error: (e as Error).message });
+        }
       } else if (msg.type === 'consent-decision') {
         const p = pendingConsent.get(msg.callId);
         if (p) {

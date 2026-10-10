@@ -12,7 +12,7 @@
  * （node 测试环境无 document，不连接，避免挂起）。
  */
 
-import { installChromeShims } from '../bridge';
+import { installChromeShims, type StorageKvBackend, type StorageKvWriteBatch } from '../bridge';
 import { installDirectBridge, type InstalledBridge } from '../inject/bridge-install';
 import { bootstrapInjection } from '../inject/loader';
 import type { ContentCapabilityController, ReplaceContentDocumentLifecycle } from '../inject/types';
@@ -76,11 +76,29 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
     (globalThis as { location?: { origin?: string } }).location?.origin ?? 'https://chat.deepseek.com';
   const sessionId = options.sessionId ?? crypto.randomUUID();
 
-  installChromeShims();
+  // v0.7：先建 host client（不 connect），用它建 remote KV backend，再装 chrome shim。
+  // 顺序不能反：installChromeShims 会把 window.chrome.storage 指向这个 backend。
+  const capabilities = dedupeById([...defaultCapabilities(), ...(options.capabilities ?? [])]);
+  const executable = capabilities as unknown as ExecutableCapability[];
+  const host = createHostClient({
+    url: options.hostUrl ?? DEFAULT_HOST_URL,
+    capabilities: executable,
+    reportError: options.reportError,
+  });
+
+  const remoteKv: StorageKvBackend = {
+    async readAll(): Promise<Record<string, unknown>> {
+      // v0.7：页端不预加载全量（宿主 KV 是 append-only 写路径，读回由调用方显式 kvGet）。
+      return {};
+    },
+    async writeBatch(batch: StorageKvWriteBatch): Promise<void> {
+      for (const [k, v] of Object.entries(batch.set)) await host.kvSet(k, v);
+      for (const k of batch.remove) await host.kvRemove(k);
+    },
+  };
+  installChromeShims({ localBackend: remoteKv });
 
   const bridge = installDirectBridge({ origin, sessionId, reportError: options.reportError });
-
-  const capabilities = dedupeById([...defaultCapabilities(), ...(options.capabilities ?? [])]);
 
   bootstrapInjection({
     capabilities,
@@ -89,12 +107,6 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
     strictInstallOrder: false,
   });
 
-  const executable = capabilities as unknown as ExecutableCapability[];
-  const host = createHostClient({
-    url: options.hostUrl ?? DEFAULT_HOST_URL,
-    capabilities: executable,
-    reportError: options.reportError,
-  });
   if (typeof globalThis.document !== 'undefined') host.connect();
 
   // v0.6：挂载薄 MAIN-world 拦截器（解析模型工具调用 → 经宿主真实执行 → 结果回注）。
