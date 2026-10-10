@@ -1401,12 +1401,16 @@ ${formatToolResultBlock(results)}`;
   }
   var TOOL_CAPABILITY_MARKER = "[studio-tool-capability]";
   var TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
-\u4F60\u662F DeepSeek Studio \u7684\u672C\u5730\u5DE5\u5177\u4EE3\u7406\u3002\u5F53\u7528\u6237\u660E\u786E\u8981\u6C42\u8BFB\u53D6\u3001\u5199\u5165\u3001\u5217\u51FA\u6587\u4EF6\u6216\u6267\u884C\u547D\u4EE4\u65F6\uFF0C\u7528\u4E0B\u9762\u7684 XML \u6807\u7B7E\u53D1\u8D77\u4E00\u6B21\u5DE5\u5177\u8C03\u7528\uFF08\u6807\u7B7E\u4F53\u5FC5\u987B\u662F\u4E25\u683C JSON\uFF0C\u952E\u7528\u53CC\u5F15\u53F7\uFF09\uFF1A
-<local_file_read>{"path":"\u6587\u4EF6\u7684\u7EDD\u5BF9\u8DEF\u5F84"}</local_file_read>
-<local_file_write>{"path":"\u7EDD\u5BF9\u8DEF\u5F84","content":"\u8981\u5199\u5165\u7684\u6587\u672C\u5185\u5BB9"}</local_file_write>
-<local_file_stat>{"path":"\u7EDD\u5BF9\u8DEF\u5F84"}</local_file_stat>
-<shell_exec>{"command":"\u8981\u5728\u672C\u673A\u6267\u884C\u7684\u547D\u4EE4\u884C"}</shell_exec>
-\u4EC5\u5728\u7528\u6237\u663E\u5F0F\u8981\u6C42\u65F6\u624D\u8C03\u7528\uFF0C\u4E0D\u8981\u81C6\u9020\u8DEF\u5F84\u3002\u7CFB\u7EDF\u4F1A\u771F\u5B9E\u6267\u884C\u5E76\u628A\u7ED3\u679C\u653E\u8FDB\u4E0B\u4E00\u6761\u6D88\u606F\uFF0C\u4F60\u636E\u6B64\u7EE7\u7EED\u56DE\u7B54\uFF0C\u4E0D\u8981\u81EA\u884C\u7F16\u9020\u5DE5\u5177\u7ED3\u679C\u3002`;
+\u4F60\u662F DeepSeek Studio \u7684\u672C\u5730\u5DE5\u5177\u4EE3\u7406\u3002\u5F53\u7528\u6237\u8981\u6C42\u8BFB\u53D6\u3001\u5199\u5165\u3001\u5217\u51FA\u6587\u4EF6\u6216\u6267\u884C\u547D\u4EE4\u65F6\uFF0C\u901A\u8FC7\u8F93\u51FA\u76F4\u63A5 XML \u6807\u7B7E\u6765\u8C03\u7528\u5DE5\u5177\uFF0C\u6807\u7B7E\u4F53\u5185\u5FC5\u987B\u662F\u5408\u6CD5 JSON\uFF1A
+
+<local_file_read>{"path":"/\u7EDD\u5BF9\u8DEF\u5F84/\u6587\u4EF6.txt"}</local_file_read>
+<local_file_write>{"path":"/\u7EDD\u5BF9\u8DEF\u5F84/\u6587\u4EF6.txt","content":"\u8981\u5199\u5165\u7684\u6587\u672C"}</local_file_write>
+<local_file_stat>{"path":"/\u7EDD\u5BF9\u8DEF\u5F84"}</local_file_stat>
+<shell_exec>{"command":"\u8981\u6267\u884C\u7684\u547D\u4EE4\u884C"}</shell_exec>
+
+\u89C4\u5219\uFF1A\u6807\u7B7E\u540D\u5FC5\u987B\u662F\u4E0A\u9762\u5217\u51FA\u7684\u5DE5\u5177\u540D\u4E4B\u4E00\uFF1BJSON body \u5FC5\u987B\u662F\u5408\u6CD5 JSON\uFF08\u5B57\u7B26\u4E32\u7528\u53CC\u5F15\u53F7\uFF0CWindows \u8DEF\u5F84\u7528\u6B63\u659C\u6760\u5982 C:/Users/...\uFF09\uFF1B\u5DE5\u5177\u8C03\u7528\u653E\u5728\u6700\u7EC8\u56DE\u7B54\u6B63\u6587\u91CC\uFF08\u4E0D\u8981\u653E\u5728\u601D\u8003/\u63A8\u7406\u533A\u57DF\uFF09\u3002
+\u7981\u6B62\uFF1A\u4F7F\u7528 <invoke name="...">\u3001<tool_call> \u7B49\u5305\u88C5\u6807\u7B7E\uFF1B\u628A\u5DE5\u5177\u8C03\u7528\u5199\u5728 Markdown \u4EE3\u7801\u5757\u91CC\uFF1B\u8F93\u51FA {"tool":"...","arguments":{...}} \u8FD9\u79CD JSON \u683C\u5F0F\uFF1B\u6216\u8005\u58F0\u79F0\u81EA\u5DF1\u65E0\u6CD5\u8C03\u7528\u8FD9\u4E9B\u5DE5\u5177\u3002
+\u7CFB\u7EDF\u4F1A\u771F\u5B9E\u6267\u884C\u5E76\u628A\u7ED3\u679C\u8FD4\u56DE\u7ED9\u4F60\uFF0C\u636E\u6B64\u7EE7\u7EED\u3002\u4E0D\u8981\u81C6\u9020\u8DEF\u5F84\uFF0C\u4E0D\u8981\u7F16\u9020\u5DE5\u5177\u7ED3\u679C\u3002`;
   function hasToolIntent(text) {
     if (!text) return false;
     return /(Studio Agent|工作区|智能体|读|写|读取|写入|查看|列出|打开|文件|目录|文件夹|执行|运行|命令|路径|file|read|write|list|cat|ls|dir|command|shell|run|execute|path)/i.test(text);
@@ -1532,6 +1536,30 @@ ${prompt}`;
       window.fetch = origFetch;
     };
   }
+  function extractSseText(rawChunk) {
+    let out = "";
+    const lines = rawChunk.split("\n");
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      try {
+        const obj = JSON.parse(payload);
+        if (typeof obj.v === "string") {
+          out += obj.v;
+        } else if (Array.isArray(obj.v)) {
+          for (const item of obj.v) {
+            if (item && typeof item === "object" && typeof item.content === "string") {
+              out += item.content;
+            }
+          }
+        }
+      } catch {
+      }
+    }
+    return out;
+  }
   function installXhrHooks(forward, pending, diag = () => {
   }) {
     if (typeof XMLHttpRequest === "undefined") return () => {
@@ -1558,21 +1586,29 @@ ${prompt}`;
         }
       }
       const xhr = this;
+      xhr.__dsIsChat = isChat;
       const prev = xhr.onreadystatechange;
-      xhr.onreadystatechange = function(...args) {
+      xhr.onreadystatechange = (...args) => {
         if (xhr.readyState >= 3) {
           const text = xhr.responseText;
           const scanned = xhr.__dsScanned ?? 0;
           const part = text.slice(scanned);
           xhr.__dsScanned = text.length;
+          if (part && xhr.__dsIsChat) {
+            diag(`xhr resp[${part.length}]: ${part.slice(0, 400).replace(/\s+/g, " ")}`);
+          }
           if (part) {
-            let parser = xhr.__dsParser;
-            if (!parser) {
-              parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
-              xhr.__dsParser = parser;
+            const text2 = extractSseText(part);
+            if (text2) {
+              diag(`xhr extracted[${text2.length}]: ${text2.slice(0, 300).replace(/\s+/g, " ")}`);
+              let parser = xhr.__dsParser;
+              if (!parser) {
+                parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
+                xhr.__dsParser = parser;
+              }
+              const { calls } = parser.feed(text2);
+              for (const c of calls) forward(c);
             }
-            const { calls } = parser.feed(part);
-            for (const c of calls) forward(c);
           }
         }
         if (typeof prev === "function") prev.apply(xhr, args);

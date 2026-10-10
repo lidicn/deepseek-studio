@@ -83,12 +83,16 @@ function methodOf(input: RequestInfo | URL, init?: RequestInit | undefined): str
  */
 const TOOL_CAPABILITY_MARKER = '[studio-tool-capability]';
 const TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
-你是 DeepSeek Studio 的本地工具代理。当用户明确要求读取、写入、列出文件或执行命令时，用下面的 XML 标签发起一次工具调用（标签体必须是严格 JSON，键用双引号）：
-<local_file_read>{"path":"文件的绝对路径"}</local_file_read>
-<local_file_write>{"path":"绝对路径","content":"要写入的文本内容"}</local_file_write>
-<local_file_stat>{"path":"绝对路径"}</local_file_stat>
-<shell_exec>{"command":"要在本机执行的命令行"}</shell_exec>
-仅在用户显式要求时才调用，不要臆造路径。系统会真实执行并把结果放进下一条消息，你据此继续回答，不要自行编造工具结果。`;
+你是 DeepSeek Studio 的本地工具代理。当用户要求读取、写入、列出文件或执行命令时，通过输出直接 XML 标签来调用工具，标签体内必须是合法 JSON：
+
+<local_file_read>{"path":"/绝对路径/文件.txt"}</local_file_read>
+<local_file_write>{"path":"/绝对路径/文件.txt","content":"要写入的文本"}</local_file_write>
+<local_file_stat>{"path":"/绝对路径"}</local_file_stat>
+<shell_exec>{"command":"要执行的命令行"}</shell_exec>
+
+规则：标签名必须是上面列出的工具名之一；JSON body 必须是合法 JSON（字符串用双引号，Windows 路径用正斜杠如 C:/Users/...）；工具调用放在最终回答正文里（不要放在思考/推理区域）。
+禁止：使用 <invoke name="...">、<tool_call> 等包装标签；把工具调用写在 Markdown 代码块里；输出 {"tool":"...","arguments":{...}} 这种 JSON 格式；或者声称自己无法调用这些工具。
+系统会真实执行并把结果返回给你，据此继续。不要臆造路径，不要编造工具结果。`;
 
 function hasToolIntent(text: string): boolean {
   if (!text) return false;
@@ -234,6 +238,38 @@ function installFetchHook(
   };
 }
 
+/**
+ * 从 DeepSeek SSE 流的增量 chunk 里提取可见文本。
+ * 响应格式是逐 token 的 data: {"v":"<char>"} delta；直接喂 parser 找不到标签，
+ * 必须先把 v 字段拼成纯文本流。
+ */
+function extractSseText(rawChunk: string): string {
+  let out = '';
+  const lines = rawChunk.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('data:')) continue;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === '[DONE]') continue;
+    try {
+      const obj = JSON.parse(payload) as { v?: unknown };
+      if (typeof obj.v === 'string') {
+        out += obj.v;
+      } else if (Array.isArray(obj.v)) {
+        // BATCH/APPEND 操作：v 是 fragment 对象数组，content 字段是文本
+        for (const item of obj.v) {
+          if (item && typeof item === 'object' && typeof (item as { content?: unknown }).content === 'string') {
+            out += (item as { content: string }).content;
+          }
+        }
+      }
+    } catch {
+      /* non-delta json, skip */
+    }
+  }
+  return out;
+}
+
 function installXhrHooks(
   forward: (call: ParsedToolCall) => void,
   pending: PendingResult[],
@@ -265,21 +301,29 @@ function installXhrHooks(
       }
     }
     const xhr = this;
+    (xhr as Record<string, unknown>).__dsIsChat = isChat;
     const prev = xhr.onreadystatechange;
-    xhr.onreadystatechange = function (...args: unknown[]) {
+    xhr.onreadystatechange = (...args: unknown[]) => {
       if (xhr.readyState >= 3) {
         const text = xhr.responseText;
         const scanned = (xhr.__dsScanned ?? 0) as number;
         const part = text.slice(scanned);
         xhr.__dsScanned = text.length;
+        if (part && (xhr as Record<string, unknown>).__dsIsChat) {
+          diag(`xhr resp[${part.length}]: ${part.slice(0, 400).replace(/\s+/g, ' ')}`);
+        }
         if (part) {
-          let parser = xhr.__dsParser as StreamingToolCallParser | undefined;
-          if (!parser) {
-            parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
-            xhr.__dsParser = parser;
+          const text = extractSseText(part);
+          if (text) {
+            diag(`xhr extracted[${text.length}]: ${text.slice(0, 300).replace(/\s+/g, ' ')}`);
+            let parser = xhr.__dsParser as StreamingToolCallParser | undefined;
+            if (!parser) {
+              parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
+              xhr.__dsParser = parser;
+            }
+            const { calls } = parser.feed(text);
+            for (const c of calls) forward(c);
           }
-          const { calls } = parser.feed(part);
-          for (const c of calls) forward(c);
         }
       }
       if (typeof prev === 'function') (prev as (...a: unknown[]) => unknown).apply(xhr, args);
