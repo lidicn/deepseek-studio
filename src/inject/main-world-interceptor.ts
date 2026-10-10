@@ -59,7 +59,9 @@ function isDeepSeekChatEndpoint(url: string, method: string): boolean {
   try {
     const base = globalThis.location?.href;
     const u = base ? new URL(url, base) : new URL(url);
-    return u.hostname.endsWith('chat.deepseek.com') && method.toUpperCase() === 'POST';
+    return u.hostname.endsWith('deepseek.com')
+      && method.toUpperCase() === 'POST'
+      && u.pathname === '/api/v0/chat/completion';
   } catch {
     return false;
   }
@@ -388,7 +390,7 @@ export function installMainWorldInterceptor(sender: ToolCallSender, diag?: Inter
     autoContinueTimer = setTimeout(() => {
       autoContinueTimer = null;
       autoContinue();
-    }, 500);
+    }, 3000);
   }
 
   async function autoContinue(): Promise<void> {
@@ -396,15 +398,27 @@ export function installMainWorldInterceptor(sender: ToolCallSender, diag?: Inter
     loopDepth += 1;
     loopState.streamActive = true;
     try {
-      // fetch hook 会自动注入 pending 里的工具结果（prepareOutgoingBody）。
-      // fetch 自动带同源 cookie，不会被风控拒。
-      const resp = await fetch('/api/v0/chat/completion', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: loopState.lastChatBody ?? '',
-        credentials: 'include',
+      // 用 XHR（和页面正常请求一样），不用 fetch——WAF 可能区分。
+      // XHR hook 会自动调用 prepareOutgoingBody 注入工具结果。
+      await new Promise<void>((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/v0/chat/completion', true);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.onreadystatechange = () => {
+          if (xhr.readyState === 4) {
+            d(`auto-continue loop=${loopDepth} status=${xhr.status}`);
+            // 429 限流：等 8 秒重试一次
+            if (xhr.status === 429 && loopDepth < MAX_LOOP) {
+              d('auto-continue 429, retrying in 8s');
+              loopState.streamActive = false;
+              if (autoContinueTimer) clearTimeout(autoContinueTimer);
+              autoContinueTimer = setTimeout(() => { autoContinueTimer = null; autoContinue(); }, 8000);
+            }
+            resolve();
+          }
+        };
+        xhr.send(loopState.lastChatBody ?? '');
       });
-      d(`auto-continue loop=${loopDepth} status=${resp.status}`);
     } catch (e) {
       d(`auto-continue failed: ${(e as Error).message}`);
     }

@@ -1442,7 +1442,7 @@ ${formatToolResultBlock(results)}`;
     try {
       const base = globalThis.location?.href;
       const u = base ? new URL(url, base) : new URL(url);
-      return u.hostname.endsWith("chat.deepseek.com") && method.toUpperCase() === "POST";
+      return u.hostname.endsWith("deepseek.com") && method.toUpperCase() === "POST" && u.pathname === "/api/v0/chat/completion";
     } catch {
       return false;
     }
@@ -1724,20 +1724,34 @@ ${prompt}`;
       autoContinueTimer = setTimeout(() => {
         autoContinueTimer = null;
         autoContinue();
-      }, 500);
+      }, 3e3);
     }
     async function autoContinue() {
       if (!loopState.lastChatBody || pending.length === 0 || loopDepth >= MAX_LOOP) return;
       loopDepth += 1;
       loopState.streamActive = true;
       try {
-        const resp = await fetch("/api/v0/chat/completion", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: loopState.lastChatBody ?? "",
-          credentials: "include"
+        await new Promise((resolve) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", "/api/v0/chat/completion", true);
+          xhr.setRequestHeader("Content-Type", "application/json");
+          xhr.onreadystatechange = () => {
+            if (xhr.readyState === 4) {
+              d(`auto-continue loop=${loopDepth} status=${xhr.status}`);
+              if (xhr.status === 429 && loopDepth < MAX_LOOP) {
+                d("auto-continue 429, retrying in 8s");
+                loopState.streamActive = false;
+                if (autoContinueTimer) clearTimeout(autoContinueTimer);
+                autoContinueTimer = setTimeout(() => {
+                  autoContinueTimer = null;
+                  autoContinue();
+                }, 8e3);
+              }
+              resolve();
+            }
+          };
+          xhr.send(loopState.lastChatBody ?? "");
         });
-        d(`auto-continue loop=${loopDepth} status=${resp.status}`);
       } catch (e) {
         d(`auto-continue failed: ${e.message}`);
       }
