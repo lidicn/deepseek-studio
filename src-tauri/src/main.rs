@@ -24,15 +24,23 @@ fn main() {
                 });
             }
 
-            let _win = WebviewWindowBuilder::new(
+            // 临时开关：STUDIO_DISABLE_INJECT=1 时主窗口不挂注入脚本，用于在风控/登录
+            // 异常时以"干净 WebView2"完成登录（cookie 持久化在 WebView2 profile），
+            // 登完去掉该变量重启即恢复注入。
+            let disable_inject = std::env::var("STUDIO_DISABLE_INJECT").is_ok();
+
+            let mut main_builder = WebviewWindowBuilder::new(
                 app,
                 "main",
                 WebviewUrl::External(Url::parse(CHAT_URL).expect("invalid chat url")),
             )
-            .title("DeepSeek++ Studio")
-            .initialization_script(INIT_SCRIPT)
-            .build()
-            .expect("failed to create window");
+            .title(if disable_inject { "DeepSeek++ Studio (NO-INJECT)" } else { "DeepSeek++ Studio" });
+
+            if !disable_inject {
+                main_builder = main_builder.initialization_script(INIT_SCRIPT);
+            }
+
+            let _win = main_builder.build().expect("failed to create window");
 
             // M1 智能体面板：加载宿主内置 /agent 页面（面板不注入 entry.js，
             // 它是宿主的 UI 而非聊天页运行时；宿主未就绪时页面会自动重连 WS）。

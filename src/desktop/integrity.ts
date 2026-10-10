@@ -95,6 +95,19 @@ export function startIntegrityProbe(options: IntegrityProbeOptions): IntegrityPr
     }
   }
 
+  // 记录启动时属性是否本就被钉死。descriptor 探测只在「初始就冻结」时才有意义：
+  // 默认不冻结（entry.ts freezeStudio=false），此时普通 writable/configurable 描述符是
+  // 合法初始态，不能判成被篡改——否则每次页面加载后第一个探测周期必然误报
+  // descriptor-downgraded → 宿主把页面永久降级 → chat-read/insert/send 全部派不出去。
+  let initialFrozen = false;
+  try {
+    const w0 = (globalThis as { window?: unknown }).window ?? globalThis;
+    const d0 = Object.getOwnPropertyDescriptor(w0 as object, STUDIO_KEY);
+    initialFrozen = !!d0 && d0.configurable === false && d0.writable === false;
+  } catch {
+    /* 读不到不视为违规 */
+  }
+
   let fired = false;
   let stopped = false;
 
@@ -109,15 +122,18 @@ export function startIntegrityProbe(options: IntegrityProbeOptions): IntegrityPr
       if (bag[m] !== snapshot.get(m)) return { reason: 'member-replaced', detail: m };
     }
 
-    // 描述符被放宽 = 有人为后续覆写做准备，属于明确的攻击前奏
-    try {
-      const w = (globalThis as { window?: unknown }).window ?? globalThis;
-      const desc = Object.getOwnPropertyDescriptor(w as object, STUDIO_KEY);
-      if (desc && desc.configurable !== false && desc.writable !== false) {
-        return { reason: 'descriptor-downgraded' };
+    // 描述符被放宽 = 有人为后续覆写做准备，属于明确的攻击前奏。
+    // 仅在启动时属性本就被钉死的前提下才检查（见 initialFrozen 说明）。
+    if (initialFrozen) {
+      try {
+        const w = (globalThis as { window?: unknown }).window ?? globalThis;
+        const desc = Object.getOwnPropertyDescriptor(w as object, STUDIO_KEY);
+        if (desc && (desc.configurable !== false || desc.writable !== false)) {
+          return { reason: 'descriptor-downgraded' };
+        }
+      } catch {
+        /* 读不到描述符不视为违规 */
       }
-    } catch {
-      /* 读不到描述符不视为违规 */
     }
     return null;
   }

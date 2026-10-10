@@ -1,0 +1,8 @@
+﻿
+ProcessName        Id      CPU
+-----------        --      ---
+cargo           14944  2.78125
+cargo           29480 0.109375
+deepseek-studio 10112 1.109375
+
+

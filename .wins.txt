@@ -1,0 +1,258 @@
+﻿15364	StatusBarWnd
+18068	GDI+ Window (TabTip.exe)
+18068	Shell Handwriting Canvas
+15364	语音输入
+15720	wetype_candidate
+5252	元宝
+26180	Today AI
+14828	VoiceBarWnd
+5252	Tauri App
+14828	VoiceBubbleWnd
+13776	电池指示器
+13776	系统托盘溢出窗口。
+12216	GameViewer
+5252	元宝
+10556	SmartHome
+33948	接手项目准备工作 - 豆包工作
+9568	安装配置Claude Desktop中文化 — DeepSeek Harness
+6024	Qoder CN
+1840	Qoder CN
+15896	DeskPilot审计 - DeepSeek - 豆包浏览器
+4920	Xiaomi MiMo
+30628	主机弹出窗口
+30628	主机弹出窗口
+30628	主机弹出窗口
+30628	交接单 - 文件资源管理器
+30628	主机弹出窗口
+30628	主机弹出窗口
+30628	主机弹出窗口
+30628	ADM-auditkit - 文件资源管理器
+25536	Qoder
+28276	Qoder CN
+28276	WER Fault
+3052	about:blank
+3052	GDI+ Window (HrASMain.exe)
+26748	Windows 输入体验
+21396	AppStoreTrayWnd
+13776	DesktopWindowXamlSource
+34104	C:\WINDOWS\system32\cmd.exe
+25860	GDI+ Window (aha_doctor.exe)
+26972	.NET-BroadcastEventWindow.bf7771.0
+13776	DesktopWindowXamlSource
+26180	DDE Server Window
+24864	Task Host Window
+4920	DDE Server Window
+30060	DesktopWindowXamlSource
+29296	GDI+ Window (aha_doctor.exe)
+30628	DesktopWindowXamlSource
+6024	DDE Server Window
+34872	DDE Server Window
+34872	OfficePowerManagerWindow
+12216	网易UU远程
+25536	DDE Server Window
+23716	GDI+ Window (YuanbaoCrashHandler.exe)
+5252	31D65C71-0A55-4B18-A1C6-ED57EF78FCB7
+5252	com.tencent.yuanbao-siw
+31928	about:blank - 用户配置 1 - Microsoft​ Edge
+24908	C:\Users\lidicn\AppData\Local\Programs\Python\Python313\python.exe
+24504	C:\Users\lidicn\AppData\Local\Programs\Python\Python313\Scripts\codex-bridge-python.exe
+25408	Tailscale 1.102.2
+25408	GDI+ Window (tailscale-ipn.exe)
+6088	NvSvc
+6088	UxdService
+12216	CA4BDE8A-7139-44FE-96B2-9CF79E381B20
+22744	RealtekAudioBackgroundProcessClass
+20992	GDI+ Window (HipsTray.exe)
+14828	GDI+ Window (voiceinput.exe)
+14828	FyRECORDER_NOTIFY_WND
+20664	GDI+ Window (crashpad_handler.exe)
+3572	NVIDIA NodeJS Share Window
+3572	{5AEA657D-F3F5-4BD8-BFE9-A4B537FA24C3}
+15760	.NET-BroadcastEventWindow.3d893c.0
+18404	NVIDIA GeForce Overlay DT
+18404	NVIDIA GeForce Overlay
+18068	DesktopWindowXamlSource
+18248	{1274D398-C3C8-422E-87DD-2FAFFD5A7F2F}
+13776	MS_WebcheckMonitor
+13776	MiracastConnectionWindow
+13904	{2A335767-FC94-417F-ABC4-B4122ADBEE60}
+13904	NVEncCapContext
+15364	设置
+15364	微信输入法-关于
+15364	wetype.update.util.window
+13776	EXPLORER
+5044	CrossDeviceResumeWindow
+14276	BroadcastListenerWindow
+14276	BroadcastListenerWindow
+14276	BroadcastListenerWindow
+14276	NvContainerWindowClass000037C4
+13904	NvContainerWindowClass00003650
+11672	Windows Push Notifications Platform
+11292	Task Host Window
+10724	RxDiag Message Pump 2.1 Apr 30 2022 07:34:42
+1840	DWM Notification Window
+6088	NvContainerWindowClass000017C8
+33536	PipVirtualCursor
+15896	项目接手与理解 - 豆包
+26180	Today
+13776	Program Manager
+18068	Default IME
+15720	MSCTFIME UI
+15720	Default IME
+13776	Default IME
+13776	HintWnd
+13776	Chatterfly_TSF_UI
+13776	MSCTFIME UI
+13776	Default IME
+14828	Default IME
+13776	Default IME
+2208	MSCTFIME UI
+2208	HintWnd
+2208	Chatterfly_TSF_UI
+2208	Default IME
+5252	MSCTFIME UI
+5252	Default IME
+10556	MSCTFIME UI
+10556	HintWnd
+10556	Chatterfly_TSF_UI
+10556	Default IME
+33948	MSCTFIME UI
+33948	HintWnd
+33948	Chatterfly_TSF_UI
+33948	Default IME
+9568	MSCTFIME UI
+9568	HintWnd
+9568	Chatterfly_TSF_UI
+9568	Default IME
+6024	MSCTFIME UI
+6024	HintWnd
+6024	Chatterfly_TSF_UI
+6024	Default IME
+33536	Default IME
+33536	Default IME
+33536	Default IME
+33536	Default IME
+4920	MSCTFIME UI
+4920	HintWnd
+4920	Chatterfly_TSF_UI
+4920	Default IME
+30628	MSCTFIME UI
+30628	HintWnd
+30628	Chatterfly_TSF_UI
+30628	Default IME
+30628	HintWnd
+30628	Chatterfly_TSF_UI
+30628	MSCTFIME UI
+30628	Default IME
+25536	MSCTFIME UI
+25536	HintWnd
+25536	Chatterfly_TSF_UI
+25536	Default IME
+13776	MSCTFIME UI
+13776	HintWnd
+13776	Chatterfly_TSF_UI
+13776	Default IME
+31096	Default IME
+3052	Default IME
+3052	MSCTFIME UI
+3052	HintWnd
+3052	Chatterfly_TSF_UI
+3052	Default IME
+26748	Default IME
+9396	Default IME
+30628	Default IME
+22872	Default IME
+33948	Default IME
+348	Default IME
+5404	Default IME
+26972	Default IME
+32692	Default IME
+34704	Default IME
+9240	Default IME
+13776	Default IME
+23464	Default IME
+3360	Default IME
+15896	Default IME
+30628	Default IME
+31984	Default IME
+32752	Default IME
+34872	Default IME
+12216	HintWnd
+12216	Chatterfly_TSF_UI
+12216	MSCTFIME UI
+12216	Default IME
+13776	Default IME
+27172	Default IME
+5048	Default IME
+12556	Default IME
+23716	Default IME
+23716	Default IME
+31928	HintWnd
+31928	Chatterfly_TSF_UI
+32168	Default IME
+31928	Default IME
+30680	Default IME
+11560	Default IME
+13440	Default IME
+6472	Default IME
+25408	Default IME
+21920	Default IME
+20660	HintWnd
+20660	Chatterfly_TSF_UI
+20660	Default IME
+23348	Default IME
+2992	Default IME
+22744	Default IME
+13792	Default IME
+14372	Default IME
+20992	Default IME
+20992	Default IME
+20992	Default IME
+14828	Default IME
+14828	Default IME
+20664	Default IME
+20664	Default IME
+3572	Default IME
+3572	Default IME
+15760	Default IME
+18404	MSCTFIME UI
+18404	Default IME
+18068	Default IME
+18248	Default IME
+5404	Default IME
+13776	Default IME
+13776	Default IME
+13904	Default IME
+13904	Default IME
+15364	MSCTFIME UI
+15364	Default IME
+13776	Default IME
+13776	Default IME
+5044	Default IME
+14276	Default IME
+14276	Default IME
+14276	Default IME
+14276	Default IME
+13904	Default IME
+11672	Default IME
+10776	Default IME
+10724	Default IME
+23876	Default IME
+13776	HintWnd
+13776	Chatterfly_TSF_UI
+13776	MSCTFIME UI
+13776	Default IME
+24508	Default IME
+33536	MSCTFIME UI
+33536	Default IME
+33536	MSCTFIME UI
+33536	Default IME
+33536	Default IME
+15896	MSCTFIME UI
+15896	HintWnd
+15896	Chatterfly_TSF_UI
+15896	Default IME
+26180	MSCTFIME UI
+26180	HintWnd
+26180	Chatterfly_TSF_UI
+26180	Default IME

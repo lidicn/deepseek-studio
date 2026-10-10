@@ -1479,16 +1479,19 @@ ${prompt}`;
     if (newBody === null) return init;
     return { ...init, body: newBody };
   }
-  function installFetchHook(origFetch, forward, pending) {
+  function installFetchHook(origFetch, forward, pending, diag = () => {
+  }) {
     window.fetch = async (input, init) => {
       const url = resolveUrl(input);
       const method = methodOf(input, init);
+      diag(`fetch ${method} ${url} bodyType=${typeof init?.body}`);
       if (pending.length > 0 && isDeepSeekChatEndpoint(url, method)) {
         init = augmentInit(init, pending);
       }
       if (!isDeepSeekChatEndpoint(url, method)) {
         return origFetch(input, init);
       }
+      diag(`chat-endpoint matched, bodyLen=${typeof init?.body === "string" ? init.body.length : "n/a"}`);
       const response = await origFetch(input, init);
       if (!response.body) return response;
       const parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
@@ -1578,8 +1581,10 @@ ${prompt}`;
       proto.send = origSend;
     };
   }
-  function installMainWorldInterceptor(sender) {
+  function installMainWorldInterceptor(sender, diag) {
     const pending = [];
+    const d = diag ?? (() => {
+    });
     const forward = (call) => {
       if (!isSupportedUpstreamTool(call.invocationName)) {
         return;
@@ -1592,7 +1597,7 @@ ${prompt}`;
       });
     };
     const origFetch = window.fetch ? window.fetch.bind(window) : void 0;
-    const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending) : void 0;
+    const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending, d) : void 0;
     const stopXhr = installXhrHooks(forward, pending);
     return {
       stop() {
@@ -1648,6 +1653,13 @@ ${prompt}`;
         snapshot.set(m, initial[m]);
       }
     }
+    let initialFrozen = false;
+    try {
+      const w0 = globalThis.window ?? globalThis;
+      const d0 = Object.getOwnPropertyDescriptor(w0, STUDIO_KEY);
+      initialFrozen = !!d0 && d0.configurable === false && d0.writable === false;
+    } catch {
+    }
     let fired = false;
     let stopped = false;
     function detect() {
@@ -1659,13 +1671,15 @@ ${prompt}`;
         if (!(m in bag)) return { reason: "member-missing", detail: m };
         if (bag[m] !== snapshot.get(m)) return { reason: "member-replaced", detail: m };
       }
-      try {
-        const w = globalThis.window ?? globalThis;
-        const desc = Object.getOwnPropertyDescriptor(w, STUDIO_KEY);
-        if (desc && desc.configurable !== false && desc.writable !== false) {
-          return { reason: "descriptor-downgraded" };
+      if (initialFrozen) {
+        try {
+          const w = globalThis.window ?? globalThis;
+          const desc = Object.getOwnPropertyDescriptor(w, STUDIO_KEY);
+          if (desc && (desc.configurable !== false || desc.writable !== false)) {
+            return { reason: "descriptor-downgraded" };
+          }
+        } catch {
         }
-      } catch {
       }
       return null;
     }
@@ -1734,7 +1748,10 @@ ${prompt}`;
     if (typeof globalThis.document !== "undefined") host.connect();
     if (typeof globalThis.document !== "undefined") {
       try {
-        installMainWorldInterceptor((req) => host.sendToolCall(req));
+        installMainWorldInterceptor(
+          (req) => host.sendToolCall(req),
+          (msg) => options.reportError?.(`[interceptor] ${msg}`)
+        );
       } catch (err) {
         options.reportError?.("failed to install main-world interceptor", err);
       }

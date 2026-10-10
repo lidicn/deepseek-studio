@@ -102,7 +102,10 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
   // 避免「没连上宿主就不拦截」导致页面直接把原始 XML 工具标签暴露给用户。
   if (typeof globalThis.document !== 'undefined') {
     try {
-      installMainWorldInterceptor((req) => host.sendToolCall(req));
+      installMainWorldInterceptor(
+        (req) => host.sendToolCall(req),
+        (msg) => options.reportError?.(`[interceptor] ${msg}`),
+      );
     } catch (err) {
       options.reportError?.('failed to install main-world interceptor', err);
     }

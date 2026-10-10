@@ -1,0 +1,25 @@
+﻿        Warn Waiting for your frontend dev server to start on http://localhost:8756/...
+
+> deepseek-studio@0.4.0 start
+> tsx src/api/main.ts
+
+[deepseek-studio] 本地 HTTP API on http://127.0.0.1:8756
+[deepseek-studio] token 取自 DEEPSEEK_STUDIO_TOKEN 或 ~/.config/deepseek-studio/config.json
+[deepseek-studio] 工作区: E:\NAS\deepseek-studio（区内自动放行，区外按策略）
+[deepseek-studio] 命令审批档位: 风险审批 (auto)
+     Running DevCommand (`cargo  run --no-default-features --color always --`)
+        Info Watching E:\NAS\deepseek-studio\src-tauri for changes...
+[1m[92m   Compiling[0m deepseek-studio v0.4.0 (E:\NAS\deepseek-studio\src-tauri)
+[1m[96m    Building[0m [=======================> ] 339/340: deepsee…
+                                                            
+[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 6m 25s
+[1m[92m     Running[0m `target\debug\deepseek-studio.exe`
+[page-runtime] integrity violation: page=c361305b-f677-4360-89f1-3f8eb8cb57a1 reason=descriptor-downgraded undefined
+[page-runtime] integrity violation: page=b5227f1f-d6b4-4140-961d-8f040a3efb75 reason=descriptor-downgraded undefined
+        Info File src-tauri\inject\entry.js changed. Rebuilding application...
+     Running DevCommand (`cargo  run --no-default-features --color always --`)
+[1m[92m   Compiling[0m deepseek-studio v0.4.0 (E:\NAS\deepseek-studio\src-tauri)
+[1m[96m    Building[0m [=======================> ] 339/340: deepsee…
+                                                            
+[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 1m 34s
+[1m[92m     Running[0m `target\debug\deepseek-studio.exe`

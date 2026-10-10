@@ -36,6 +36,9 @@ interface PendingResult {
   error?: string;
 }
 
+/** 诊断回调（临时）：把 hook 拦到的对话请求信息上报宿主日志。 */
+export type InterceptorDiag = (message: string) => void;
+
 function formatToolResultBlock(results: readonly PendingResult[]): string {
   const lines = results.map((p) => {
     const head = `[tool-result:${p.invocationName}]`;
@@ -174,10 +177,12 @@ function installFetchHook(
   origFetch: typeof window.fetch,
   forward: (call: ParsedToolCall) => void,
   pending: PendingResult[],
+  diag: InterceptorDiag = () => {},
 ): () => void {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = resolveUrl(input);
     const method = methodOf(input, init);
+    diag(`fetch ${method} ${url} bodyType=${typeof init?.body}`);
 
     // 请求侧回填：把累积的工具结果写进下一次对话请求的 prompt
     if (pending.length > 0 && isDeepSeekChatEndpoint(url, method)) {
@@ -189,6 +194,7 @@ function installFetchHook(
       return origFetch(input, init);
     }
 
+    diag(`chat-endpoint matched, bodyLen=${typeof init?.body === 'string' ? init.body.length : 'n/a'}`);
     const response = await origFetch(input, init);
     if (!response.body) return response;
 
@@ -291,8 +297,9 @@ function installXhrHooks(
  * 挂载薄 MAIN-world 拦截器。
  * @param sender 把工具调用投递给宿主并取回结果的回调（由 entry.ts 接到 host-client）。
  */
-export function installMainWorldInterceptor(sender: ToolCallSender): MainWorldInterceptorHandle {
+export function installMainWorldInterceptor(sender: ToolCallSender, diag?: InterceptorDiag): MainWorldInterceptorHandle {
   const pending: PendingResult[] = [];
+  const d: InterceptorDiag = diag ?? (() => {});
 
   const forward = (call: ParsedToolCall): void => {
     if (!isSupportedUpstreamTool(call.invocationName)) {
@@ -310,7 +317,7 @@ export function installMainWorldInterceptor(sender: ToolCallSender): MainWorldIn
   };
 
   const origFetch = window.fetch ? window.fetch.bind(window) : undefined;
-  const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending) : undefined;
+  const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending, d) : undefined;
   const stopXhr = installXhrHooks(forward, pending);
 
   return {

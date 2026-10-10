@@ -1,0 +1,9 @@
+origin=https://chat.deepseek.com url=ws://127.0.0.1:8756/studio
+UPGRADE status=101
+  hdr upgrade: websocket
+  hdr connection: Upgrade
+  hdr sec-websocket-accept: PrbeGoCdHPnqJv0RfKzL04Lmogg=
+  hdr access-control-allow-origin: https://chat.deepseek.com
+  hdr access-control-allow-private-network: true
+  hdr vary: Origin
+PNA_PRESENT_AND_TRUE=true

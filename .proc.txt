@@ -1,0 +1,11 @@
+﻿
+ProcessName         Id        CPU WorkingSet64
+-----------         --        --- ------------
+DeepSeek Harness 17744 134.015625    107098112
+DeepSeek Harness 27936    1.15625    131919872
+DeepSeek Harness 29864  148.59375    126087168
+DeepSeek Harness 31876   479.9375    288821248
+DeepSeek Harness 33096 193.984375    152932352
+DeepSeek Harness 33160    8.59375     39350272
+
+
