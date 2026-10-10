@@ -274,6 +274,7 @@ function installXhrHooks(
   forward: (call: ParsedToolCall) => void,
   pending: PendingResult[],
   diag: InterceptorDiag = () => {},
+  loopState?: { lastChatBody: string | null; streamActive: boolean },
 ): () => void {
   if (typeof XMLHttpRequest === 'undefined') return () => {};
   const proto = XMLHttpRequest.prototype;
@@ -299,11 +300,16 @@ function installXhrHooks(
         body = next;
         diag(`xhr chat body injected len=${next.length}`);
       }
+      // v0.8：记住最近一次 chat 请求 body 作为自动续跑模板。
+      if (loopState) { loopState.lastChatBody = body; loopState.streamActive = true; }
     }
     const xhr = this;
     (xhr as Record<string, unknown>).__dsIsChat = isChat;
     const prev = xhr.onreadystatechange;
     xhr.onreadystatechange = (...args: unknown[]) => {
+      if (xhr.readyState === 4 && loopState) {
+        loopState.streamActive = false;
+      }
       if (xhr.readyState >= 3) {
         const text = xhr.responseText;
         const scanned = (xhr.__dsScanned ?? 0) as number;
@@ -344,25 +350,76 @@ function installXhrHooks(
 export function installMainWorldInterceptor(sender: ToolCallSender, diag?: InterceptorDiag): MainWorldInterceptorHandle {
   const pending: PendingResult[] = [];
   const d: InterceptorDiag = diag ?? (() => {});
+  // v0.8：自动工具循环——记住最近一次 chat 请求的 body 模板 + 当前流是否结束。
+  const loopState = { lastChatBody: null as string | null, streamActive: false };
+  let autoContinueTimer: ReturnType<typeof setTimeout> | null = null;
+  let loopDepth = 0;
+  const MAX_LOOP = 8;
 
   const forward = (call: ParsedToolCall): void => {
     if (!isSupportedUpstreamTool(call.invocationName)) {
-      // 未登记的工具：放行原始 XML 文本（不拦截），由页面正常展示。
       return;
     }
     const callId = call.id || crypto.randomUUID();
     void sender({ callId, invocationName: call.invocationName, params: call.params })
       .then((r: ExecuteResult) => {
         pending.push({ invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error });
+        // v0.8：流结束后自动续跑——把工具结果作为下一轮输入发给模型。
+        if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
+          scheduleAutoContinue();
+        }
       })
       .catch((e: unknown) => {
         pending.push({ invocationName: call.invocationName, ok: false, error: e instanceof Error ? e.message : String(e) });
+        if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
+          scheduleAutoContinue();
+        }
       });
   };
 
+  function scheduleAutoContinue(): void {
+    if (autoContinueTimer) clearTimeout(autoContinueTimer);
+    autoContinueTimer = setTimeout(() => {
+      autoContinueTimer = null;
+      autoContinue();
+    }, 500);
+  }
+
+  function autoContinue(): void {
+    if (!loopState.lastChatBody || pending.length === 0 || loopDepth >= MAX_LOOP) return;
+    loopDepth += 1;
+    loopState.streamActive = true;
+    const block = formatToolResultBlock(pending.slice());
+    pending.length = 0;
+    try {
+      const parsed = JSON.parse(loopState.lastChatBody) as Record<string, unknown>;
+      // 把工具结果拼到 prompt 尾部，parent_message_id 由页面自己管理（我们不改）。
+      if (typeof parsed.prompt === 'string') {
+        parsed.prompt = `${parsed.prompt}\n\n${block}`;
+      } else if (Array.isArray(parsed.messages)) {
+        parsed.messages = appendResultsToMessages(parsed.messages as unknown[], block);
+      }
+      const newBody = JSON.stringify(parsed);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/v0/chat/completion', true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState === 4) {
+          loopState.streamActive = false;
+          // 续跑响应结束——如果又有新工具调用被 forward 捕获，会再次触发续跑。
+        }
+      };
+      xhr.send(newBody);
+      d(`auto-continue loop=${loopDepth} body=${newBody.length}`);
+    } catch (e) {
+      loopState.streamActive = false;
+      d(`auto-continue failed: ${(e as Error).message}`);
+    }
+  }
+
   const origFetch = window.fetch ? window.fetch.bind(window) : undefined;
   const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending, d) : undefined;
-  const stopXhr = installXhrHooks(forward, pending, d);
+  const stopXhr = installXhrHooks(forward, pending, d, loopState);
 
   return {
     stop() {
