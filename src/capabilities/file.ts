@@ -103,24 +103,29 @@ export function createFileCapability(id: FileToolId, options: FileCapabilityOpti
           return { ok: true, data: { path: resolved, bytes: Buffer.byteLength(content, 'utf8'), append } };
         }
 
-        // file.read
+        // file.read（v0.9：支持 offset/limit 续读，对齐上游 local_file_read 语义）
+        const offset = typeof params.offset === 'number' && params.offset >= 0 ? params.offset : 0;
+        const limit = typeof params.limit === 'number' && params.limit > 0 ? Math.min(params.limit, maxReadBytes) : maxReadBytes;
         const handle = await fsp.open(resolved, 'r');
         try {
-          const buf = Buffer.alloc(Math.min(maxReadBytes, 4096));
+          const stat = await handle.stat();
+          const buf = Buffer.alloc(Math.min(limit, 4096));
           const chunks: Buffer[] = [];
           let read = 0;
+          let curPos = offset;
           for (;;) {
-            const { bytesRead } = await handle.read(buf, 0, buf.length, null);
+            const { bytesRead } = await handle.read(buf, 0, buf.length, curPos);
             if (bytesRead === 0) break;
             chunks.push(Buffer.from(buf.subarray(0, bytesRead)));
             read += bytesRead;
-            if (read >= maxReadBytes) break;
+            curPos += bytesRead;
+            if (read >= limit) break;
           }
           const text = Buffer.concat(chunks).toString('utf8');
-          const stat = await handle.stat();
+          const moreAvailable = offset + read < stat.size;
           return {
             ok: true,
-            data: { path: resolved, text, bytes: read, truncated: stat.size > read },
+            data: { path: resolved, text, bytes: read, offset, nextOffset: moreAvailable ? offset + read : null, totalBytes: stat.size, truncated: moreAvailable },
           };
         } finally {
           await handle.close();

@@ -343,6 +343,14 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     toolExecutor: (tool, params) => invokeTool(tool, params),
     // 审计经 HTTP 可读（v0.3 遗留 3.2.4 的验收条件：审计可读）
     auditReader: (limit) => audit.list(limit),
+    // v0.9：工具目录 API。
+    toolCatalog: () => registry.list().map((d) => ({
+      id: d.id,
+      title: d.title,
+      description: d.description,
+      risk: d.risk,
+      side: executionSide(d),
+    })),
     rateLimit: options.rateLimit,
     agentPage: options.agentPage,
   });

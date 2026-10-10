@@ -59,6 +59,8 @@ export interface ApiServerOptions {
   toolExecutor?: ToolExecutor;
   /** 审计读取（可选）；提供后开放 GET /v1/tools/audit。 */
   auditReader?: AuditReader;
+  /** v0.9：工具目录读取；提供后开放 GET /v1/tools/catalog。 */
+  toolCatalog?: () => unknown[];
   /** 限流与并发（默认串行 + 60/分钟）。 */
   rateLimit?: RateLimitOptions;
   /**
@@ -280,6 +282,16 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         const parsed = raw === null ? 50 : Number(raw);
         const limit = Number.isFinite(parsed) ? Math.max(1, Math.min(500, Math.floor(parsed))) : 50;
         sendJson(200, { object: 'list', data: options.auditReader(limit) });
+        return;
+      }
+
+      // v0.9：工具目录（页端/面板展示可用工具）。
+      if (pathname === '/v1/tools/catalog' && req.method === 'GET') {
+        if (!options.toolCatalog) {
+          sendJson(501, { error: { code: 'not_implemented', message: 'tool catalog not configured' } });
+          return;
+        }
+        sendJson(200, { object: 'list', data: options.toolCatalog() });
         return;
       }
 
