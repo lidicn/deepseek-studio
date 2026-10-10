@@ -12,6 +12,7 @@
  */
 
 import { StreamingToolCallParser, type ParsedToolCall } from './streaming-tool-parser';
+import { SseTextStreamExtractor } from './sse-text-extractor';
 import { isSupportedUpstreamTool, SUPPORTED_INVOCATION_NAMES } from '../shared/tool-contract';
 import type { ExecuteResult } from '../capabilities/types';
 
@@ -38,6 +39,16 @@ interface PendingResult {
 
 /** 诊断回调（临时）：把 hook 拦到的对话请求信息上报宿主日志。 */
 export type InterceptorDiag = (message: string) => void;
+
+/** 自动工具循环的跨 hook 共享状态（fetch / XHR 两条路径共用同一实例）。 */
+interface LoopState {
+  /** 最近一次 chat 请求 body，作为自动续跑模板。 */
+  lastChatBody: string | null;
+  /** 当前响应流是否仍在进行（用于判断工具结果回填时机）。 */
+  streamActive: boolean;
+  /** 最近一次响应的 response_message_id。 */
+  lastResponseMsgId: number | null;
+}
 
 function formatToolResultBlock(results: readonly PendingResult[]): string {
   const lines = results.map((p) => {
@@ -184,7 +195,7 @@ function installFetchHook(
   forward: (call: ParsedToolCall) => void,
   pending: PendingResult[],
   diag: InterceptorDiag = () => {},
-  loopState?: { lastChatBody: string | null; streamActive: boolean },
+  loopState?: LoopState,
 ): () => void {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = resolveUrl(input);
@@ -207,6 +218,7 @@ function installFetchHook(
     if (!response.body) return response;
 
     const parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
+    const sse = new SseTextStreamExtractor();
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
@@ -216,10 +228,19 @@ function installFetchHook(
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            const text = decoder.decode(value, { stream: true });
+            // v0.7：先把原始 SSE 提取成可见纯文本（跨 chunk 不丢事件），再解析工具标签
+            const rawSse = decoder.decode(value, { stream: true });
+            const text = sse.feed(rawSse);
             const { calls, clean } = parser.feed(text);
             for (const c of calls) forward(c);
             if (clean) controller.enqueue(encoder.encode(clean));
+          }
+          // 流结束：先刷出 SSE 缓冲区最后一个事件，再刷工具解析器尾部
+          const sseTail = sse.flush();
+          if (sseTail) {
+            const tailParsed = parser.feed(sseTail);
+            for (const c of tailParsed.calls) forward(c);
+            if (tailParsed.clean) controller.enqueue(encoder.encode(tailParsed.clean));
           }
           const fin = parser.flush();
           for (const c of fin.calls) forward(c);
@@ -247,39 +268,17 @@ function installFetchHook(
  * 从 DeepSeek SSE 流的增量 chunk 里提取可见文本。
  * 响应格式是逐 token 的 data: {"v":"<char>"} delta；直接喂 parser 找不到标签，
  * 必须先把 v 字段拼成纯文本流。
+ *
+ * v0.7：提取逻辑迁移到 sse-text-extractor.ts 的有状态 SseTextStreamExtractor，
+ * 修复 fragment APPEND 事件（携带工具标签首字符 `<`）跨网络分片被整段丢弃的 bug。
+ * fetch/XHR 两条路径都必须持有各自的 SseTextStreamExtractor 实例逐 chunk 喂入。
  */
-function extractSseText(rawChunk: string): string {
-  let out = '';
-  const lines = rawChunk.split('\n');
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('data:')) continue;
-    const payload = trimmed.slice(5).trim();
-    if (!payload || payload === '[DONE]') continue;
-    try {
-      const obj = JSON.parse(payload) as { v?: unknown };
-      if (typeof obj.v === 'string') {
-        out += obj.v;
-      } else if (Array.isArray(obj.v)) {
-        // BATCH/APPEND 操作：v 是 fragment 对象数组，content 字段是文本
-        for (const item of obj.v) {
-          if (item && typeof item === 'object' && typeof (item as { content?: unknown }).content === 'string') {
-            out += (item as { content: string }).content;
-          }
-        }
-      }
-    } catch {
-      /* non-delta json, skip */
-    }
-  }
-  return out;
-}
 
 function installXhrHooks(
   forward: (call: ParsedToolCall) => void,
   pending: PendingResult[],
   diag: InterceptorDiag = () => {},
-  loopState?: { lastChatBody: string | null; streamActive: boolean },
+  loopState?: LoopState,
 ): () => void {
   if (typeof XMLHttpRequest === 'undefined') return () => {};
   const proto = XMLHttpRequest.prototype;
@@ -322,17 +321,27 @@ function installXhrHooks(
         xhr.__dsScanned = text.length;
         if (part && (xhr as Record<string, unknown>).__dsIsChat) {
           diag(`xhr resp[${part.length}]: ${part.slice(0, 400).replace(/\s+/g, ' ')}`);
+          // 提取 response_message_id（event: ready data: {"request_message_id":1,"response_message_id":2}）
+          const m = part.match(/"response_message_id"\s*:\s*(\d+)/);
+          if (m && loopState) loopState.lastResponseMsgId = parseInt(m[1], 10);
         }
         if (part) {
-          const text = extractSseText(part);
-          if (text) {
-            diag(`xhr extracted[${text.length}]: ${text.slice(0, 300).replace(/\s+/g, ' ')}`);
-            let parser = xhr.__dsParser as StreamingToolCallParser | undefined;
-            if (!parser) {
-              parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
-              xhr.__dsParser = parser;
-            }
-            const { calls } = parser.feed(text);
+          // v0.7：每个 XHR 持有有状态 SSE 提取器，跨 readystatechange 保留不完整行，
+          // 避免携带工具标签首字符 `<` 的 fragment APPEND 事件被字节边界切开后整段丢失。
+          let sse = xhr.__dsSse as SseTextStreamExtractor | undefined;
+          let parser = xhr.__dsParser as StreamingToolCallParser | undefined;
+          if (!sse || !parser) {
+            sse = new SseTextStreamExtractor();
+            parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
+            xhr.__dsSse = sse;
+            xhr.__dsParser = parser;
+          }
+          let visible = sse.feed(part);
+          // readyState===4：流结束，刷出 SSE 缓冲区里最后一个不带换行的残留事件
+          if (xhr.readyState === 4) visible += sse.flush();
+          if (visible) {
+            diag(`xhr extracted[${visible.length}]: ${visible.slice(0, 300).replace(/\s+/g, ' ')}`);
+            const { calls } = parser.feed(visible);
             for (const c of calls) forward(c);
           }
         }
@@ -356,7 +365,7 @@ export function installMainWorldInterceptor(sender: ToolCallSender, diag?: Inter
   const pending: PendingResult[] = [];
   const d: InterceptorDiag = diag ?? (() => {});
   // v0.8：自动工具循环——记住最近一次 chat 请求的 body 模板 + 当前流是否结束。
-  const loopState = { lastChatBody: null as string | null, streamActive: false };
+  const loopState = { lastChatBody: null as string | null, streamActive: false, lastResponseMsgId: null as number | null };
   let autoContinueTimer: ReturnType<typeof setTimeout> | null = null;
   let loopDepth = 0;
   const MAX_LOOP = 8;
@@ -389,39 +398,60 @@ export function installMainWorldInterceptor(sender: ToolCallSender, diag?: Inter
     if (autoContinueTimer) clearTimeout(autoContinueTimer);
     autoContinueTimer = setTimeout(() => {
       autoContinueTimer = null;
-      autoContinue();
-    }, 3000);
+      fillInputWithToolResults();
+    }, 1000);
   }
 
-  async function autoContinue(): Promise<void> {
-    if (!loopState.lastChatBody || pending.length === 0 || loopDepth >= MAX_LOOP) return;
-    loopDepth += 1;
-    loopState.streamActive = true;
-    try {
-      // 用 XHR（和页面正常请求一样），不用 fetch——WAF 可能区分。
-      // XHR hook 会自动调用 prepareOutgoingBody 注入工具结果。
-      await new Promise<void>((resolve) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', '/api/v0/chat/completion', true);
-        xhr.setRequestHeader('Content-Type', 'application/json');
-        xhr.onreadystatechange = () => {
-          if (xhr.readyState === 4) {
-            d(`auto-continue loop=${loopDepth} status=${xhr.status}`);
-            // 429 限流：等 8 秒重试一次
-            if (xhr.status === 429 && loopDepth < MAX_LOOP) {
-              d('auto-continue 429, retrying in 8s');
-              loopState.streamActive = false;
-              if (autoContinueTimer) clearTimeout(autoContinueTimer);
-              autoContinueTimer = setTimeout(() => { autoContinueTimer = null; autoContinue(); }, 8000);
-            }
-            resolve();
-          }
-        };
-        xhr.send(loopState.lastChatBody ?? '');
-      });
-    } catch (e) {
-      d(`auto-continue failed: ${(e as Error).message}`);
+  function fillInputWithToolResults(): void {
+    if (pending.length === 0) return;
+    const toolResults = pending.map((p) => {
+      const result = p.ok ? JSON.stringify(p.result, null, 2) : `ERROR: ${p.error}`;
+      return `## ${p.invocationName}\n${result}`;
+    }).join('\n\n');
+    const text = `[TOOL_RESULTS]\n${toolResults}\n[/TOOL_RESULTS]\n\n请根据上述工具执行结果继续回答。`;
+
+    // 找 DeepSeek 输入框（contenteditable div 或 textarea）
+    const input = document.querySelector('div[role="textbox"]') as HTMLElement | null
+      ?? document.querySelector('textarea') as HTMLElement | null
+      ?? document.querySelector('div[contenteditable="true"]') as HTMLElement | null;
+    if (!input) {
+      d('fillInput: no textbox found');
+      return;
     }
+
+    // 用 execCommand 插入文本，让 React 感知
+    input.focus();
+    // 清空现有内容
+    const range = document.createRange();
+    range.selectNodeContents(input);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    document.execCommand('delete');
+    // 插入新文本
+    document.execCommand('insertText', false, text);
+
+    d(`fillInput: inserted ${text.length} chars`);
+
+    // 自动点发送按钮
+    setTimeout(() => {
+      const sendBtn =
+        document.querySelector('button[aria-label="发送"]')
+        ?? document.querySelector('button[type="submit"]')
+        ?? document.querySelector('div[role="textbox"]')?.closest('form')?.querySelector('button')
+        ?? document.querySelector('textarea')?.closest('form')?.querySelector('button')
+        ?? Array.from(document.querySelectorAll('button')).find(b => {
+          const label = b.getAttribute('aria-label') || b.textContent || '';
+          return label.includes('发送') || label.includes('send') || label.includes('Send');
+        });
+      if (sendBtn) {
+        (sendBtn as HTMLButtonElement).click();
+        d('fillInput: clicked send');
+      } else {
+        input?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+        d('fillInput: pressed Enter');
+      }
+    }, 500);
   }
 
   const origFetch = window.fetch ? window.fetch.bind(window) : undefined;

@@ -1360,9 +1360,13 @@
           i = closeIdx + closeTag.length;
         } else {
           const close = after.match(/^<\/([a-zA-Z_][\w-]*)>/);
-          if (close) {
+          if (close && this.names.includes(close[1])) {
             i = lt + close[0].length;
+          } else if (/^<\/?[a-zA-Z_][\w-]*$/.test(after) || /^<\/?$/.test(after)) {
+            this.tail = input.slice(lt);
+            break;
           } else {
+            clean += "<";
             i = lt + 1;
           }
         }
@@ -1385,6 +1389,61 @@
       }
       const id = typeof globalThis.crypto !== "undefined" && typeof globalThis.crypto.randomUUID === "function" ? globalThis.crypto.randomUUID() : `call-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       return { id, invocationName: name, params, raw };
+    }
+  };
+
+  // src/inject/sse-text-extractor.ts
+  function extractTextFromSseLine(line) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) return "";
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === "[DONE]") return "";
+    let obj;
+    try {
+      obj = JSON.parse(payload);
+    } catch {
+      return "";
+    }
+    if (typeof obj.v === "string") {
+      return obj.v;
+    }
+    if (Array.isArray(obj.v)) {
+      let out = "";
+      for (const item of obj.v) {
+        if (item && typeof item === "object" && typeof item.content === "string") {
+          out += item.content;
+        }
+      }
+      return out;
+    }
+    return "";
+  }
+  var SseTextStreamExtractor = class {
+    constructor() {
+      /** 尚未遇到换行的不完整行（跨 chunk 保留）。 */
+      __publicField(this, "lineBuffer", "");
+    }
+    /**
+     * 喂入一段原始 SSE 文本（可能在任意字节边界截断），返回本次可确认的完整行所携带的文本。
+     * 被切开的末行不解析，留待下次 feed 与新内容拼接后再处理。
+     */
+    feed(rawChunk) {
+      const combined = this.lineBuffer + rawChunk;
+      const lines = combined.split("\n");
+      this.lineBuffer = lines.pop() ?? "";
+      let out = "";
+      for (const line of lines) {
+        out += extractTextFromSseLine(line);
+      }
+      return out;
+    }
+    /**
+     * 流结束时调用：尝试解析缓冲区里最后的残留行（不带换行的最后一个事件）。
+     */
+    flush() {
+      const tail = this.lineBuffer;
+      this.lineBuffer = "";
+      return extractTextFromSseLine(tail);
     }
   };
 
@@ -1564,6 +1623,7 @@ ${prompt}`;
       const response = await origFetch(input, init);
       if (!response.body) return response;
       const parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
+      const sse = new SseTextStreamExtractor();
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       const encoder = new TextEncoder();
@@ -1573,10 +1633,17 @@ ${prompt}`;
             while (true) {
               const { done, value } = await reader.read();
               if (done) break;
-              const text = decoder.decode(value, { stream: true });
+              const rawSse = decoder.decode(value, { stream: true });
+              const text = sse.feed(rawSse);
               const { calls, clean } = parser.feed(text);
               for (const c of calls) forward(c);
               if (clean) controller.enqueue(encoder.encode(clean));
+            }
+            const sseTail = sse.flush();
+            if (sseTail) {
+              const tailParsed = parser.feed(sseTail);
+              for (const c of tailParsed.calls) forward(c);
+              if (tailParsed.clean) controller.enqueue(encoder.encode(tailParsed.clean));
             }
             const fin = parser.flush();
             for (const c of fin.calls) forward(c);
@@ -1598,30 +1665,6 @@ ${prompt}`;
     return () => {
       window.fetch = origFetch;
     };
-  }
-  function extractSseText(rawChunk) {
-    let out = "";
-    const lines = rawChunk.split("\n");
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data:")) continue;
-      const payload = trimmed.slice(5).trim();
-      if (!payload || payload === "[DONE]") continue;
-      try {
-        const obj = JSON.parse(payload);
-        if (typeof obj.v === "string") {
-          out += obj.v;
-        } else if (Array.isArray(obj.v)) {
-          for (const item of obj.v) {
-            if (item && typeof item === "object" && typeof item.content === "string") {
-              out += item.content;
-            }
-          }
-        }
-      } catch {
-      }
-    }
-    return out;
   }
   function installXhrHooks(forward, pending, diag = () => {
   }, loopState) {
@@ -1666,17 +1709,23 @@ ${prompt}`;
           xhr.__dsScanned = text.length;
           if (part && xhr.__dsIsChat) {
             diag(`xhr resp[${part.length}]: ${part.slice(0, 400).replace(/\s+/g, " ")}`);
+            const m = part.match(/"response_message_id"\s*:\s*(\d+)/);
+            if (m && loopState) loopState.lastResponseMsgId = parseInt(m[1], 10);
           }
           if (part) {
-            const text2 = extractSseText(part);
-            if (text2) {
-              diag(`xhr extracted[${text2.length}]: ${text2.slice(0, 300).replace(/\s+/g, " ")}`);
-              let parser = xhr.__dsParser;
-              if (!parser) {
-                parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
-                xhr.__dsParser = parser;
-              }
-              const { calls } = parser.feed(text2);
+            let sse = xhr.__dsSse;
+            let parser = xhr.__dsParser;
+            if (!sse || !parser) {
+              sse = new SseTextStreamExtractor();
+              parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
+              xhr.__dsSse = sse;
+              xhr.__dsParser = parser;
+            }
+            let visible = sse.feed(part);
+            if (xhr.readyState === 4) visible += sse.flush();
+            if (visible) {
+              diag(`xhr extracted[${visible.length}]: ${visible.slice(0, 300).replace(/\s+/g, " ")}`);
+              const { calls } = parser.feed(visible);
               for (const c of calls) forward(c);
             }
           }
@@ -1694,7 +1743,7 @@ ${prompt}`;
     const pending = [];
     const d = diag ?? (() => {
     });
-    const loopState = { lastChatBody: null, streamActive: false };
+    const loopState = { lastChatBody: null, streamActive: false, lastResponseMsgId: null };
     let autoContinueTimer = null;
     let loopDepth = 0;
     const MAX_LOOP = 8;
@@ -1723,38 +1772,48 @@ ${prompt}`;
       if (autoContinueTimer) clearTimeout(autoContinueTimer);
       autoContinueTimer = setTimeout(() => {
         autoContinueTimer = null;
-        autoContinue();
-      }, 3e3);
+        fillInputWithToolResults();
+      }, 1e3);
     }
-    async function autoContinue() {
-      if (!loopState.lastChatBody || pending.length === 0 || loopDepth >= MAX_LOOP) return;
-      loopDepth += 1;
-      loopState.streamActive = true;
-      try {
-        await new Promise((resolve) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open("POST", "/api/v0/chat/completion", true);
-          xhr.setRequestHeader("Content-Type", "application/json");
-          xhr.onreadystatechange = () => {
-            if (xhr.readyState === 4) {
-              d(`auto-continue loop=${loopDepth} status=${xhr.status}`);
-              if (xhr.status === 429 && loopDepth < MAX_LOOP) {
-                d("auto-continue 429, retrying in 8s");
-                loopState.streamActive = false;
-                if (autoContinueTimer) clearTimeout(autoContinueTimer);
-                autoContinueTimer = setTimeout(() => {
-                  autoContinueTimer = null;
-                  autoContinue();
-                }, 8e3);
-              }
-              resolve();
-            }
-          };
-          xhr.send(loopState.lastChatBody ?? "");
-        });
-      } catch (e) {
-        d(`auto-continue failed: ${e.message}`);
+    function fillInputWithToolResults() {
+      if (pending.length === 0) return;
+      const toolResults = pending.map((p) => {
+        const result = p.ok ? JSON.stringify(p.result, null, 2) : `ERROR: ${p.error}`;
+        return `## ${p.invocationName}
+${result}`;
+      }).join("\n\n");
+      const text = `[TOOL_RESULTS]
+${toolResults}
+[/TOOL_RESULTS]
+
+\u8BF7\u6839\u636E\u4E0A\u8FF0\u5DE5\u5177\u6267\u884C\u7ED3\u679C\u7EE7\u7EED\u56DE\u7B54\u3002`;
+      const input = document.querySelector('div[role="textbox"]') ?? document.querySelector("textarea") ?? document.querySelector('div[contenteditable="true"]');
+      if (!input) {
+        d("fillInput: no textbox found");
+        return;
       }
+      input.focus();
+      const range = document.createRange();
+      range.selectNodeContents(input);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+      document.execCommand("delete");
+      document.execCommand("insertText", false, text);
+      d(`fillInput: inserted ${text.length} chars`);
+      setTimeout(() => {
+        const sendBtn = document.querySelector('button[aria-label="\u53D1\u9001"]') ?? document.querySelector('button[type="submit"]') ?? document.querySelector('div[role="textbox"]')?.closest("form")?.querySelector("button") ?? document.querySelector("textarea")?.closest("form")?.querySelector("button") ?? Array.from(document.querySelectorAll("button")).find((b) => {
+          const label = b.getAttribute("aria-label") || b.textContent || "";
+          return label.includes("\u53D1\u9001") || label.includes("send") || label.includes("Send");
+        });
+        if (sendBtn) {
+          sendBtn.click();
+          d("fillInput: clicked send");
+        } else {
+          input?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+          d("fillInput: pressed Enter");
+        }
+      }, 500);
     }
     const origFetch = window.fetch ? window.fetch.bind(window) : void 0;
     const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending, d, loopState) : void 0;

@@ -1,0 +1,94 @@
+/**
+ * SSE → 可见纯文本 流式提取器（v0.7，自包容，无上游依赖）
+ *
+ * DeepSeek 对话响应是 SSE 流，文本通过两类 delta 到达：
+ *   1. 单字符增量：data: {"v":"<char>"}
+ *   2. fragment 批量追加：data: {"p":"response/fragments","o":"APPEND",
+ *        "v":[{"id":3,"type":"RESPONSE","content":"<字符或整段>"}]}
+ *
+ * 工具调用标签的首字符 `<` 实测由第 2 类「fragment APPEND 数组事件」携带，而该事件体
+ * 明显大于单字符 delta。XHR 的 onreadystatechange 按累计 responseText 的字节偏移切增量，
+ * 一个完整的 `data: {...}\n` 事件可能正好被切在两次回调之间：上半段不是完整 data 行、
+ * 下半段也不是，旧的无状态 extractSseText 对两段分别 JSON.parse 全部失败，整个事件
+ * （连同标签首字符 `<`）被静默丢弃，导致 `<shell_exec>` 退化成 `shell_exec>`，工具标签
+ * 永远无法被识别。
+ *
+ * 本提取器是有状态的：维护跨 chunk 的「不完整行缓冲」，只有遇到换行才判定一行结束并
+ * 解析；被切开的事件先留在缓冲区，等下一个 chunk 补齐闭合后再解析，从而保证事件不丢。
+ */
+
+/**
+ * 解析一行 SSE，返回其中携带的可见文本。非 data 行 / 心跳 / 无法解析的残行返回空串。
+ */
+export function extractTextFromSseLine(line: string): string {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('data:')) return '';
+  const payload = trimmed.slice(5).trim();
+  if (!payload || payload === '[DONE]') return '';
+  let obj: { v?: unknown };
+  try {
+    obj = JSON.parse(payload) as { v?: unknown };
+  } catch {
+    // 残行 / 非 JSON 控制事件：忽略
+    return '';
+  }
+  if (typeof obj.v === 'string') {
+    return obj.v;
+  }
+  if (Array.isArray(obj.v)) {
+    // BATCH/APPEND：v 是 fragment 对象数组，content 字段是文本
+    let out = '';
+    for (const item of obj.v) {
+      if (item && typeof item === 'object' && typeof (item as { content?: unknown }).content === 'string') {
+        out += (item as { content: string }).content;
+      }
+    }
+    return out;
+  }
+  return '';
+}
+
+/**
+ * 有状态的 SSE 文本提取器。每个 HTTP 响应流（fetch）或每个 XHR 对象持有一个实例，
+ * 逐 chunk 喂入原始 SSE 文本，吐出累积的可见纯文本。
+ */
+export class SseTextStreamExtractor {
+  /** 尚未遇到换行的不完整行（跨 chunk 保留）。 */
+  private lineBuffer = '';
+
+  /**
+   * 喂入一段原始 SSE 文本（可能在任意字节边界截断），返回本次可确认的完整行所携带的文本。
+   * 被切开的末行不解析，留待下次 feed 与新内容拼接后再处理。
+   */
+  feed(rawChunk: string): string {
+    const combined = this.lineBuffer + rawChunk;
+    const lines = combined.split('\n');
+    // split 后最后一个元素：combined 以 \n 结尾时为 ''（无残留），否则是不完整末行。
+    this.lineBuffer = lines.pop() ?? '';
+    let out = '';
+    for (const line of lines) {
+      out += extractTextFromSseLine(line);
+    }
+    return out;
+  }
+
+  /**
+   * 流结束时调用：尝试解析缓冲区里最后的残留行（不带换行的最后一个事件）。
+   */
+  flush(): string {
+    const tail = this.lineBuffer;
+    this.lineBuffer = '';
+    return extractTextFromSseLine(tail);
+  }
+}
+
+/**
+ * 无状态一次性提取（仅用于对「已完整的 SSE 文本」做离线解析 / 单测）。
+ * 增量场景请使用 SseTextStreamExtractor，切勿对每个网络分片单独调用本函数。
+ */
+export function extractSseText(rawChunk: string): string {
+  const extractor = new SseTextStreamExtractor();
+  let out = extractor.feed(rawChunk);
+  out += extractor.flush();
+  return out;
+}

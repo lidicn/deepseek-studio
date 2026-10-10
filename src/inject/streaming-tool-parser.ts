@@ -59,10 +59,22 @@ export class StreamingToolCallParser {
         i = closeIdx + closeTag.length;
       } else {
         const close = after.match(/^<\/([a-zA-Z_][\w-]*)>/);
-        if (close) {
-          // 悬空闭合标签：丢弃
+        if (close && this.names.includes(close[1])) {
+          // 受支持工具的悬空闭合标签：丢弃
           i = lt + close[0].length;
+        } else if (/^<\/?[a-zA-Z_][\w-]*$/.test(after) || /^<\/?$/.test(after)) {
+          // 跨 chunk 的未完成标签前缀：DeepSeek 逐字符 delta 下发时，开标签首字符 `<`
+          // （甚至 `<name` 的若干前缀字符）会先于闭合的 `>` 单独到达，此时既匹配不到完整
+          // 开标签也匹配不到闭合标签。必须把从 `<` 到末尾的整段留到下次 feed 拼接后再判定，
+          // 否则这个 `<` 会被当作普通文本永久消费，工具标签再也拼不起来。
+          // 仅当 `<` 之后到结尾全是合法标签名字符（或恰为 `<` / `</`）时才乐观保留；
+          // 一旦出现空格、第二个 `<`、`>` 等否定字符，即按普通文本处理（如 a < b、</3）。
+          this.tail = input.slice(lt);
+          break;
         } else {
+          // 普通文本中的孤立 `<`（比较符 a < b、表情 </3、非工具名标签 <foo> 等）：
+          // 必须原样放回干净文本，不得静默吞掉字符。
+          clean += '<';
           i = lt + 1;
         }
       }
