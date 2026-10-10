@@ -180,6 +180,34 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         } catch (e) {
           safeSend(ws, { type: 'kv-result', requestId: msg.requestId, ok: false, error: (e as Error).message });
         }
+      } else if (msg.type === 'runtime-envelope') {
+        const { command, requestId, payload } = msg.envelope;
+        // v0.7：第一批纯 KV 型 runtime 命令。ping/pong 健康检查；kv_* 走宿主落盘 backend。
+        if (command === 'ping') {
+          safeSend(ws, { type: 'runtime-envelope-result', requestId, response: { ok: true, pong: true } });
+        } else if (command === 'kv_get') {
+          const store = options.kvStore;
+          if (!store) { safeSend(ws, { type: 'runtime-envelope-result', requestId, response: { ok: false, error: 'no-kv-store' } }); return; }
+          const key = (payload as { key?: string })?.key ?? '';
+          try {
+            const value = await store.get(key);
+            safeSend(ws, { type: 'runtime-envelope-result', requestId, response: { ok: true, value } });
+          } catch (e) {
+            safeSend(ws, { type: 'runtime-envelope-result', requestId, response: { ok: false, error: (e as Error).message } });
+          }
+        } else if (command === 'kv_set') {
+          const store = options.kvStore;
+          if (!store) { safeSend(ws, { type: 'runtime-envelope-result', requestId, response: { ok: false, error: 'no-kv-store' } }); return; }
+          const { key, value } = (payload ?? {}) as { key?: string; value?: unknown };
+          try {
+            await store.set(key ?? '', value);
+            safeSend(ws, { type: 'runtime-envelope-result', requestId, response: { ok: true } });
+          } catch (e) {
+            safeSend(ws, { type: 'runtime-envelope-result', requestId, response: { ok: false, error: (e as Error).message } });
+          }
+        } else {
+          safeSend(ws, { type: 'runtime-envelope-result', requestId, response: { ok: false, error: `unknown-command: ${command}` } });
+        }
       } else if (msg.type === 'consent-decision') {
         const p = pendingConsent.get(msg.callId);
         if (p) {

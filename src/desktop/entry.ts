@@ -12,7 +12,7 @@
  * （node 测试环境无 document，不连接，避免挂起）。
  */
 
-import { installChromeShims, type StorageKvBackend, type StorageKvWriteBatch } from '../bridge';
+import { installChromeShims, type StorageKvBackend, type StorageKvWriteBatch, type Transport } from '../bridge';
 import { installDirectBridge, type InstalledBridge } from '../inject/bridge-install';
 import { bootstrapInjection } from '../inject/loader';
 import type { ContentCapabilityController, ReplaceContentDocumentLifecycle } from '../inject/types';
@@ -96,7 +96,11 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
       for (const k of batch.remove) await host.kvRemove(k);
     },
   };
-  installChromeShims({ localBackend: remoteKv });
+  // v0.7：chrome.runtime.sendMessage 经 host-client → 宿主 runtime-envelope 路由。
+  const runtimeTransport: Transport = {
+    post: (envelope) => host.sendEnvelope(envelope),
+  };
+  installChromeShims({ localBackend: remoteKv, transport: runtimeTransport });
 
   const bridge = installDirectBridge({ origin, sessionId, reportError: options.reportError });
 

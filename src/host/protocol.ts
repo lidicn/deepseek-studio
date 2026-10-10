@@ -38,7 +38,9 @@ export type HostToPageMessage =
   /** v0.6：宿主把工具执行结果回传给页端（按 callId 关联页端发来的 tool-call）。 */
   | { type: 'tool-call-result'; callId: string; ok: boolean; data?: unknown; error?: string }
   /** v0.7：KV 读写结果回传。 */
-  | { type: 'kv-result'; requestId: string; ok: boolean; value?: unknown; error?: string };
+  | { type: 'kv-result'; requestId: string; ok: boolean; value?: unknown; error?: string }
+  /** v0.7：runtime envelope 响应。 */
+  | { type: 'runtime-envelope-result'; requestId: string; response: unknown };
 
 /** 注入页 → 宿主 */
 export type PageToHostMessage =
@@ -54,6 +56,8 @@ export type PageToHostMessage =
   /** v0.7：页端 storage shim 的 KV 读写请求（落盘 backend 在宿主侧）。 */
   | { type: 'kv-get'; requestId: string; key: string }
   | { type: 'kv-set'; requestId: string; key: string; value: unknown }
-  | { type: 'kv-remove'; requestId: string; key: string };
+  | { type: 'kv-remove'; requestId: string; key: string }
+  /** v0.7：页端 chrome.runtime.sendMessage 的 envelope（RuntimeBridge post 到宿主）。 */
+  | { type: 'runtime-envelope'; envelope: { command: string; requestId: string; payload: unknown } };
 
 export type { ExecuteResult };

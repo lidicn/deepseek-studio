@@ -59,6 +59,8 @@ export interface HostClient {
   kvGet(key: string): Promise<unknown>;
   kvSet(key: string, value: unknown): Promise<void>;
   kvRemove(key: string): Promise<void>;
+  /** v0.7：发 runtime envelope（chrome.runtime.sendMessage 桥接）。 */
+  sendEnvelope(envelope: { command: string; requestId: string; payload: unknown }): Promise<unknown>;
 }
 
 const OPEN = 1;
@@ -73,6 +75,7 @@ export function createHostClient(options: HostClientOptions): HostClient {
   let backoff = 500;
   const pendingToolCalls = new Map<string, { resolve: (r: ExecuteResult) => void; timer: ReturnType<typeof setTimeout> }>();
   const pendingKv = new Map<string, { resolve: (v: unknown, error?: string) => void }>();
+  const pendingEnvelope = new Map<string, { resolve: (v: unknown) => void }>();
 
   function send(msg: PageToHostMessage): void {
     if (ws && ws.readyState === OPEN) {
@@ -114,6 +117,12 @@ export function createHostClient(options: HostClientOptions): HostClient {
         pendingKv.delete(msg.requestId);
         if (msg.ok) p.resolve(msg.value);
         else p.resolve(undefined, msg.error);
+      }
+    } else if (msg.type === 'runtime-envelope-result') {
+      const p = pendingEnvelope.get(msg.requestId);
+      if (p) {
+        pendingEnvelope.delete(msg.requestId);
+        p.resolve(msg.response);
       }
     }
   }
@@ -209,6 +218,13 @@ export function createHostClient(options: HostClientOptions): HostClient {
         const requestId = crypto.randomUUID();
         pendingKv.set(requestId, { resolve: (_v, err) => err ? reject(new Error(err)) : resolve() });
         send({ type: 'kv-remove', requestId, key });
+      });
+    },
+    sendEnvelope(envelope) {
+      return new Promise((resolve) => {
+        if (!ws || ws.readyState !== OPEN) { resolve({ ok: false, error: 'no-host' }); return; }
+        pendingEnvelope.set(envelope.requestId, { resolve });
+        send({ type: 'runtime-envelope', envelope });
       });
     },
     disconnect() {
