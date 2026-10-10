@@ -67,7 +67,7 @@ import {
   type AuditLog,
   type AuditOutcome,
 } from './audit';
-import type { ExecutableCapability } from '../capabilities/types';
+import type { ExecutableCapability, ExecuteResult } from '../capabilities/types';
 import type { ApiConfig } from '../api/types';
 import type {
   ContentCapabilityController,
@@ -254,6 +254,20 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       options.hostTools ?? {
         'shell.exec': createShellCapability({ workspace: mutableWorkspace }),
         ...createFileTools({ workspace: mutableWorkspace }),
+        'skill.list': {
+          id: 'skill.list',
+          async execute(): Promise<ExecuteResult> {
+            return {
+              ok: true,
+              data: {
+                skills: [
+                  { id: 'file-ops', name: '文件操作', description: '读取/写入/列出工作区内文件', tools: ['file.read', 'file.write', 'file.list', 'file.stat'] },
+                  { id: 'shell-ops', name: '命令执行', description: '在宿主进程内以 argv 方式执行命令', tools: ['shell.exec'] },
+                ],
+              },
+            };
+          },
+        },
       },
     ),
   );
@@ -441,11 +455,14 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
 
     if (isFileTool(name) || isProcessTool(name)) {
       // 传给策略层的永远是当前真实工作区（可变代理解引用），保持 policy 纯函数语义。
+      // v0.9：额外可信目录（STUDIO_TRUSTED_DIRS 环境变量，分号分隔）。
+      const trustedDirs = (process.env.STUDIO_TRUSTED_DIRS ?? '').split(';').filter(Boolean);
       const verdict = evaluatePolicy({
         tool: name,
         params: paramsBag,
         mode: policyMode,
         workspace: mutableWorkspace.current,
+        trustedDirs,
       });
       ctx = { ...ctx, mode: policyMode };
       requiresHumanConsent = verdict.decision === 'require-consent';

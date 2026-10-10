@@ -424,7 +424,7 @@
   function installChromeShims(options = {}) {
     const transport = options.transport ?? noopTransport();
     const bridge = createRuntimeBridge({ transport });
-    const storage = createChromeStorageShim();
+    const storage = createChromeStorageShim({ localBackend: options.localBackend });
     const id = options.extensionId ?? STUDIO_EXTENSION_ID;
     const runtime = {
       id,
@@ -1148,6 +1148,8 @@
     let stopped = false;
     let backoff = 500;
     const pendingToolCalls = /* @__PURE__ */ new Map();
+    const pendingKv = /* @__PURE__ */ new Map();
+    const pendingEnvelope = /* @__PURE__ */ new Map();
     function send(msg) {
       if (ws && ws.readyState === OPEN) {
         try {
@@ -1177,6 +1179,19 @@
           clearTimeout(p.timer);
           pendingToolCalls.delete(msg.callId);
           p.resolve({ ok: msg.ok, data: msg.data, error: msg.error });
+        }
+      } else if (msg.type === "kv-result") {
+        const p = pendingKv.get(msg.requestId);
+        if (p) {
+          pendingKv.delete(msg.requestId);
+          if (msg.ok) p.resolve(msg.value);
+          else p.resolve(void 0, msg.error);
+        }
+      } else if (msg.type === "runtime-envelope-result") {
+        const p = pendingEnvelope.get(msg.requestId);
+        if (p) {
+          pendingEnvelope.delete(msg.requestId);
+          p.resolve(msg.response);
         }
       }
     }
@@ -1242,6 +1257,49 @@
       },
       log(text) {
         send({ type: "log", text });
+      },
+      kvGet(key) {
+        return new Promise((resolve, reject) => {
+          if (!ws || ws.readyState !== OPEN) {
+            resolve(void 0);
+            return;
+          }
+          const requestId = crypto.randomUUID();
+          pendingKv.set(requestId, { resolve: (v, err) => err ? reject(new Error(err)) : resolve(v) });
+          send({ type: "kv-get", requestId, key });
+        });
+      },
+      kvSet(key, value) {
+        return new Promise((resolve, reject) => {
+          if (!ws || ws.readyState !== OPEN) {
+            resolve();
+            return;
+          }
+          const requestId = crypto.randomUUID();
+          pendingKv.set(requestId, { resolve: (_v, err) => err ? reject(new Error(err)) : resolve() });
+          send({ type: "kv-set", requestId, key, value });
+        });
+      },
+      kvRemove(key) {
+        return new Promise((resolve, reject) => {
+          if (!ws || ws.readyState !== OPEN) {
+            resolve();
+            return;
+          }
+          const requestId = crypto.randomUUID();
+          pendingKv.set(requestId, { resolve: (_v, err) => err ? reject(new Error(err)) : resolve() });
+          send({ type: "kv-remove", requestId, key });
+        });
+      },
+      sendEnvelope(envelope) {
+        return new Promise((resolve) => {
+          if (!ws || ws.readyState !== OPEN) {
+            resolve({ ok: false, error: "no-host" });
+            return;
+          }
+          pendingEnvelope.set(envelope.requestId, { resolve });
+          send({ type: "runtime-envelope", envelope });
+        });
       },
       disconnect() {
         stopped = true;
@@ -1561,7 +1619,7 @@ ${prompt}`;
     return out;
   }
   function installXhrHooks(forward, pending, diag = () => {
-  }) {
+  }, loopState) {
     if (typeof XMLHttpRequest === "undefined") return () => {
     };
     const proto = XMLHttpRequest.prototype;
@@ -1584,11 +1642,18 @@ ${prompt}`;
           body = next;
           diag(`xhr chat body injected len=${next.length}`);
         }
+        if (loopState) {
+          loopState.lastChatBody = body;
+          loopState.streamActive = true;
+        }
       }
       const xhr = this;
       xhr.__dsIsChat = isChat;
       const prev = xhr.onreadystatechange;
       xhr.onreadystatechange = (...args) => {
+        if (xhr.readyState === 4 && loopState) {
+          loopState.streamActive = false;
+        }
         if (xhr.readyState >= 3) {
           const text = xhr.responseText;
           const scanned = xhr.__dsScanned ?? 0;
@@ -1624,6 +1689,10 @@ ${prompt}`;
     const pending = [];
     const d = diag ?? (() => {
     });
+    const loopState = { lastChatBody: null, streamActive: false };
+    let autoContinueTimer = null;
+    let loopDepth = 0;
+    const MAX_LOOP = 8;
     const forward = (call) => {
       if (!isSupportedUpstreamTool(call.invocationName)) {
         return;
@@ -1631,13 +1700,57 @@ ${prompt}`;
       const callId = call.id || crypto.randomUUID();
       void sender({ callId, invocationName: call.invocationName, params: call.params }).then((r) => {
         pending.push({ invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error });
+        if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
+          scheduleAutoContinue();
+        }
       }).catch((e) => {
         pending.push({ invocationName: call.invocationName, ok: false, error: e instanceof Error ? e.message : String(e) });
+        if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
+          scheduleAutoContinue();
+        }
       });
     };
+    function scheduleAutoContinue() {
+      if (autoContinueTimer) clearTimeout(autoContinueTimer);
+      autoContinueTimer = setTimeout(() => {
+        autoContinueTimer = null;
+        autoContinue();
+      }, 500);
+    }
+    function autoContinue() {
+      if (!loopState.lastChatBody || pending.length === 0 || loopDepth >= MAX_LOOP) return;
+      loopDepth += 1;
+      loopState.streamActive = true;
+      const block = formatToolResultBlock(pending.slice());
+      pending.length = 0;
+      try {
+        const parsed = JSON.parse(loopState.lastChatBody);
+        if (typeof parsed.prompt === "string") {
+          parsed.prompt = `${parsed.prompt}
+
+${block}`;
+        } else if (Array.isArray(parsed.messages)) {
+          parsed.messages = appendResultsToMessages(parsed.messages, block);
+        }
+        const newBody = JSON.stringify(parsed);
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", "/api/v0/chat/completion", true);
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.onreadystatechange = () => {
+          if (xhr.readyState === 4) {
+            loopState.streamActive = false;
+          }
+        };
+        xhr.send(newBody);
+        d(`auto-continue loop=${loopDepth} body=${newBody.length}`);
+      } catch (e) {
+        loopState.streamActive = false;
+        d(`auto-continue failed: ${e.message}`);
+      }
+    }
     const origFetch = window.fetch ? window.fetch.bind(window) : void 0;
     const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending, d) : void 0;
-    const stopXhr = installXhrHooks(forward, pending, d);
+    const stopXhr = installXhrHooks(forward, pending, d, loopState);
     return {
       stop() {
         try {
@@ -1769,20 +1882,32 @@ ${prompt}`;
   function installStudio(options = {}) {
     const origin = globalThis.location?.origin ?? "https://chat.deepseek.com";
     const sessionId = options.sessionId ?? crypto.randomUUID();
-    installChromeShims();
-    const bridge = installDirectBridge({ origin, sessionId, reportError: options.reportError });
     const capabilities = dedupeById([...defaultCapabilities(), ...options.capabilities ?? []]);
-    bootstrapInjection({
-      capabilities,
-      originWhitelist: options.originWhitelist,
-      lifecycleFactory: options.lifecycleFactory,
-      strictInstallOrder: false
-    });
     const executable = capabilities;
     const host = createHostClient({
       url: options.hostUrl ?? DEFAULT_HOST_URL,
       capabilities: executable,
       reportError: options.reportError
+    });
+    const remoteKv = {
+      async readAll() {
+        return {};
+      },
+      async writeBatch(batch) {
+        for (const [k, v] of Object.entries(batch.set)) await host.kvSet(k, v);
+        for (const k of batch.remove) await host.kvRemove(k);
+      }
+    };
+    const runtimeTransport = {
+      post: (envelope) => host.sendEnvelope(envelope)
+    };
+    installChromeShims({ localBackend: remoteKv, transport: runtimeTransport });
+    const bridge = installDirectBridge({ origin, sessionId, reportError: options.reportError });
+    bootstrapInjection({
+      capabilities,
+      originWhitelist: options.originWhitelist,
+      lifecycleFactory: options.lifecycleFactory,
+      strictInstallOrder: false
     });
     if (typeof globalThis.document !== "undefined") host.connect();
     if (typeof globalThis.document !== "undefined") {

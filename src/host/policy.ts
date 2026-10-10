@@ -23,7 +23,11 @@
  *      宁可让能力完全不可用，也不能隐式把某个目录当成可信工作区。
  */
 
+import path from 'node:path';
 import type { WorkspaceContext } from './workspace';
+
+const pathResolve = (p: string) => path.resolve(p);
+const pathSep = path.sep;
 
 export type PolicyMode = 'workspace' | 'ask' | 'auto' | 'full';
 
@@ -57,6 +61,7 @@ export type PolicyDecision =
 export type PolicyReason =
   | 'inside-workspace'
   | 'outside-workspace'
+  | 'trusted-dir'
   | 'risk-detected'
   /** ask 档下 shell 未命中风险也仍需审批（用户口径「其余审批」）。 */
   | 'requires-approval'
@@ -81,6 +86,8 @@ export interface PolicyInput {
   readonly mode: PolicyMode;
   /** 工作区上下文；null 表示未配置（文件类工具将被 deny）。 */
   readonly workspace: WorkspaceContext | null;
+  /** v0.9：额外可信目录列表（除 workspace 外自动放行的目录）。 */
+  readonly trustedDirs?: readonly string[];
 }
 
 /** 文件类工具（受工作区边界约束）。 */
@@ -173,6 +180,15 @@ export function evaluatePolicy(input: PolicyInput): PolicyVerdict {
 
     const inside = workspace.contains(target);
     if (inside) return { decision: 'allow', reason: 'inside-workspace' };
+    // v0.9：额外可信目录内也自动放行（与 workspace 同等信任）。
+    if (input.trustedDirs?.length) {
+      const resolved = pathResolve(target);
+      for (const dir of input.trustedDirs) {
+        if (resolved.startsWith(pathResolve(dir) + pathSep) || resolved === pathResolve(dir)) {
+          return { decision: 'allow', reason: 'trusted-dir', detail: dir };
+        }
+      }
+    }
     // 工作区外：workspace 档硬拒绝（档位语义就是「不越界」）；ask / auto 审批；full 放行。
     if (mode === 'workspace') return { decision: 'deny', reason: 'mode-restricted', detail: target };
     if (mode === 'full') return { decision: 'allow', reason: 'outside-workspace' };

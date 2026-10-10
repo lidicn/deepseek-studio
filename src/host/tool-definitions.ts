@@ -84,4 +84,13 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },
+  // v0.9：本地技能目录。
+  {
+    id: 'skill.list',
+    title: '列出技能',
+    description: '列出当前可用的本地技能及其描述（只读，自动放行）。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
 ];
