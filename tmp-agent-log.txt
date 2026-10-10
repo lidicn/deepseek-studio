@@ -10,3 +10,4 @@ connected to /agent-ws
 [event status] {"type":"status","text":"工具结果已回填，请求模型继续…","step":2}
 [event assistant] {"type":"assistant","text":"E:/NAS/deepseek-studio/package.json 中的 scripts 共有 9 个命令：命令作用typechecktsc --noEmit，只做类型检查、不产出文件testvitest run，单次跑完测试test:watchvitest，监听模式跑测试starttsx src/api/main.ts，启动本地 HTTP API 服务build:injectnode esbuild.inject.mjs，用 esbuild 打包注入脚本buildnpm run build:inject，即默认构建就是构建注入层tauritauri，Tauri CLI 透传入口tauri:devtauri dev，桌面端开发模式tauri:buildtauri build，打包桌面应用几点补充：项目名 deepseek-studio，版本 0.4.0，\"type\": \"module\"（纯 ESM），描述显示 v0.4 起是「加载真实聊天页 + 注入常驻宿主 + 同意闸门」的可用 MVP。build 只依赖 build
 [event done] {"type":"done"}
+=== timeout exit ===
