@@ -1,0 +1,41 @@
+
+[1m[7m[36m RUN [39m[27m[22m [36mv2.1.9 [39m[90me:/NAS/deepseek-studio[39m
+
+[90mstderr[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m5.4 完整性探测与宿主降级[2m > [22m[2m页端上报篡改后，宿主不再把工具派发给该页
+[22m[39m[page-runtime] integrity violation: page=7853eec7-7121-47ba-8b75-d22be9fcfe78 reason=member-replaced detail=host [90mundefined[39m
+
+ [32m✓[39m tests/desktop/security-v05.test.ts [2m([22m[2m15 tests[22m[2m)[22m[33m 850[2mms[22m[39m
+   [33m[2m✓[22m[39m 5.4 完整性探测与宿主降级[2m > [22m页端上报篡改后，宿主不再把工具派发给该页 [33m425[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-bridge.test.ts [2m([22m[2m12 tests[22m[2m)[22m[90m 145[2mms[22m[39m
+ [32m✓[39m tests/desktop/policy.test.ts [2m([22m[2m22 tests[22m[2m)[22m[90m 29[2mms[22m[39m
+ [32m✓[39m tests/desktop/host-side-tools.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 2505[2mms[22m[39m
+   [33m[2m✓[22m[39m 宿主侧能力绝不经过页面（核心不变量）[2m > [22m有页端连接时，shell.exec 仍只在宿主内执行，页面收不到 dispatch [33m537[2mms[22m[39m
+   [33m[2m✓[22m[39m 三档策略在宿主链路上的行为[2m > [22mfull 档 + 无页端：直接执行，不阻塞在同意闸门上 [33m409[2mms[22m[39m
+   [33m[2m✓[22m[39m 三档策略在宿主链路上的行为[2m > [22mauto 档：常规命令无需审批即执行 [33m319[2mms[22m[39m
+   [33m[2m✓[22m[39m 文件能力受工作区约束[2m > [22m工作区内读写放行，区外按档位处理 [33m834[2mms[22m[39m
+ [32m✓[39m tests/desktop/capabilities-shell.test.ts [2m([22m[2m17 tests[22m[2m)[22m[33m 1665[2mms[22m[39m
+   [33m[2m✓[22m[39m shell.exec —— argv 执行与安全红线[2m > [22m超时上限生效：子进程被杀而不再挂住宿主 [33m413[2mms[22m[39m
+ [32m✓[39m tests/desktop/agent-loop.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 25[2mms[22m[39m
+ [32m✓[39m tests/desktop/inject-loader.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 65[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-registry.test.ts [2m([22m[2m13 tests[22m[2m)[22m[33m 412[2mms[22m[39m
+ [32m✓[39m tests/desktop/http-api.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 163[2mms[22m[39m
+ [32m✓[39m tests/desktop/audit.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 16[2mms[22m[39m
+ [32m✓[39m tests/desktop/bridge-runtime.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 47[2mms[22m[39m
+ [32m✓[39m tests/desktop/page-runtime.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 171[2mms[22m[39m
+ [32m✓[39m tests/e2e/smoke.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 149[2mms[22m[39m
+ [32m✓[39m tests/desktop/mutable-workspace.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 30[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-authority.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 31[2mms[22m[39m
+ [32m✓[39m tests/desktop/desktop-entry.test.ts [2m([22m[2m2 tests[22m[2m)[22m[90m 20[2mms[22m[39m
+ [32m✓[39m tests/desktop/bridge-storage.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 17[2mms[22m[39m
+ [32m✓[39m tests/desktop/direct-bridge.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 6[2mms[22m[39m
+ [32m✓[39m tests/desktop/host-client.test.ts [2m([22m[2m1 test[22m[2m)[22m[90m 74[2mms[22m[39m
+ [32m✓[39m tests/desktop/transport-webview.test.ts [2m([22m[2m1 test[22m[2m)[22m[90m 227[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-definitions-v04.test.ts [2m([22m[2m2 tests[22m[2m)[22m[90m 19[2mms[22m[39m
+ [32m✓[39m tests/desktop/chat-capabilities.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 100[2mms[22m[39m
+ [32m✓[39m tests/desktop/consent.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 338[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m23 passed[39m[22m[90m (23)[39m
+[2m      Tests [22m [1m[32m188 passed[39m[22m[90m (188)[39m
+[2m   Start at [22m 14:25:21
+[2m   Duration [22m 90.08s[2m (transform 4.26s, setup 0ms, collect 7.17s, tests 7.10s, environment 50.96s, prepare 8.27s)[22m
+

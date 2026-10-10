@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DeepSeek++ Studio",
+  "version": "0.4.0",
+  "identifier": "com.deepseek.studio",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:8756",
+    "beforeDevCommand": "npm run build:inject && npm run start",
+    "beforeBuildCommand": "npm run build:inject"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png"
+    ]
+  }
+}

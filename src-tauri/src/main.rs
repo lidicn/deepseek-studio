@@ -1,0 +1,54 @@
+// 入口：v0.4 应用外壳。
+//   - 主窗口加载真实 chat.deepseek.com（External URL），由 WebView 渲染真实站点。
+//   - initialization_script 注入编译后的 src/desktop/entry.js（挂 window.__deepseekStudio、同域桥、宿主客户端）。
+//   - M1：第二个窗口「agent」加载本地宿主的 /agent 智能体面板（宿主进程内置服务，端口 8756）。
+//   - 可选：生产态由 STUDIO_SPAWN_HOST 环境变量触发，主进程拉起 Node 常驻宿主（端口 8756）。
+//     开发态由 tauri.conf 的 beforeDevCommand（npm run start）负责启动宿主，避免重复拉起。
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use tauri::{WebviewUrl, WebviewWindowBuilder};
+use url::Url;
+
+const INIT_SCRIPT: &str = include_str!("../inject/entry.js");
+const CHAT_URL: &str = "https://chat.deepseek.com";
+const AGENT_PANEL_URL: &str = "http://127.0.0.1:8756/agent";
+
+fn main() {
+    tauri::Builder::default()
+        .setup(|app| {
+            // 生产态可选：拉起 Node 常驻宿主（默认关闭，开发态由 beforeDevCommand 启动）。
+            if std::env::var("STUDIO_SPAWN_HOST").is_ok() {
+                tauri::async_runtime::spawn(async {
+                    let _ = std::process::Command::new("npm").args(["run", "start"]).spawn();
+                });
+            }
+
+            let _win = WebviewWindowBuilder::new(
+                app,
+                "main",
+                WebviewUrl::External(Url::parse(CHAT_URL).expect("invalid chat url")),
+            )
+            .title("DeepSeek++ Studio")
+            .initialization_script(INIT_SCRIPT)
+            .build()
+            .expect("failed to create window");
+
+            // M1 智能体面板：加载宿主内置 /agent 页面（面板不注入 entry.js，
+            // 它是宿主的 UI 而非聊天页运行时；宿主未就绪时页面会自动重连 WS）。
+            let _agent = WebviewWindowBuilder::new(
+                app,
+                "agent",
+                WebviewUrl::External(Url::parse(AGENT_PANEL_URL).expect("invalid agent panel url")),
+            )
+            .title("DeepSeek Studio · 智能体")
+            .inner_size(920.0, 680.0)
+            .min_inner_size(720.0, 520.0)
+            .build()
+            .expect("failed to create agent panel window");
+
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running deepseek-studio");
+}

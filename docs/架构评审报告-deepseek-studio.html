@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>架构评审报告 · deepseek-studio</title>
+<meta name="description" content="对 deepseek-studio 桌面智能体项目的一次只读架构评审：梳理 Tauri 外壳、注入页脚本、Node 常驻宿主与能力层的真实关系，逐项评估分层、配置、错误处理、并发、持久化、接口契约、鉴权边界、可观测性、测试、交付与扩展点十二个维度，并按 P0–P3 分级罗列 14 项设计缺陷（含位置、机理、触发条件、影响面与改法），最后给出分三档的落地建议。" />
+<style>
+  :root{
+    --ink:#161a22; --ink-2:#3d4655; --ink-3:#6b7686;
+    --line:#e3e7ef; --line-2:#eef1f6;
+    --bg:#f6f7fb; --card:#ffffff;
+    --blue:#2f5bff; --blue-soft:#eef2ff;
+    --p0:#c02626; --p0-soft:#fdecec;
+    --p1:#b8560a; --p1-soft:#fdf3e7;
+    --p2:#1f6b8f; --p2-soft:#eaf4f9;
+    --p3:#4c5566; --p3-soft:#f0f2f6;
+    --ok:#1f7a4d; --ok-soft:#eaf7f0;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    font-size:15px; line-height:1.72; letter-spacing:.01em;
+  }
+  .wrap{max-width:1080px;margin:0 auto;padding:0 20px 72px}
+  header.top{
+    background:linear-gradient(135deg,#1b2440 0%,#243a6e 55%,#2f5bff 100%);
+    color:#fff;padding:44px 20px 38px;margin-bottom:28px;
+  }
+  header.top .inner{max-width:1080px;margin:0 auto}
+  header.top h1{margin:0 0 10px;font-size:29px;line-height:1.3;font-weight:700;letter-spacing:.01em}
+  header.top p.sub{margin:0 0 18px;font-size:15px;color:#d5deff;max-width:820px}
+  .metaline{display:flex;flex-wrap:wrap;gap:8px}
+  .metaline span{
+    font-size:12.5px;padding:4px 10px;border-radius:999px;
+    background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.22);
+  }
+  h2{
+    font-size:20px;margin:44px 0 14px;padding-bottom:9px;
+    border-bottom:2px solid var(--line);font-weight:700;letter-spacing:.01em;
+  }
+  h2 .num{color:var(--blue);margin-right:8px;font-variant-numeric:tabular-nums}
+  h3{font-size:16px;margin:26px 0 8px;font-weight:650}
+  h4{font-size:14.5px;margin:18px 0 6px;font-weight:650;color:var(--ink-2)}
+  p{margin:9px 0}
+  ul,ol{margin:9px 0;padding-left:22px}
+  li{margin:5px 0}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:12.7px}
+  code{background:#eef1f7;padding:1.5px 5px;border-radius:4px;color:#243a6e;word-break:break-all}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
+  .note{background:var(--blue-soft);border:1px solid #d6dffe;border-left:4px solid var(--blue);border-radius:8px;padding:12px 16px;margin:14px 0;font-size:14px}
+  .warn{background:var(--p1-soft);border:1px solid #f3ddc2;border-left:4px solid var(--p1);border-radius:8px;padding:12px 16px;margin:14px 0;font-size:14px}
+  .ok{background:var(--ok-soft);border:1px solid #cbeadb;border-left:4px solid var(--ok);border-radius:8px;padding:12px 16px;margin:14px 0;font-size:14px}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.6px;background:var(--card)}
+  th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top}
+  th{background:#f0f3f9;font-weight:650;color:var(--ink-2);white-space:nowrap}
+  tbody tr:nth-child(even){background:#fafbfe}
+  td.c,th.c{text-align:center;white-space:nowrap}
+  .chip{display:inline-block;font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:6px;letter-spacing:.03em;white-space:nowrap}
+  .c-p0{background:var(--p0-soft);color:var(--p0);border:1px solid #f5c9c9}
+  .c-p1{background:var(--p1-soft);color:var(--p1);border:1px solid #f0d6b4}
+  .c-p2{background:var(--p2-soft);color:var(--p2);border:1px solid #c5e0ee}
+  .c-p3{background:var(--p3-soft);color:var(--p3);border:1px solid #dde1e9}
+  .c-ok{background:var(--ok-soft);color:var(--ok);border:1px solid #c9e7d8}
+  .c-tag{background:#f1f3f8;color:var(--ink-3);border:1px solid var(--line)}
+  .defect{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:0;margin:16px 0;overflow:hidden}
+  .defect .dh{display:flex;gap:10px;align-items:baseline;padding:13px 18px;background:#f8f9fc;border-bottom:1px solid var(--line-2)}
+  .defect .dh .t{font-weight:700;font-size:15.5px}
+  .defect .db{padding:14px 18px}
+  .defect dl{margin:0;display:grid;grid-template-columns:88px 1fr;gap:6px 12px;font-size:14px}
+  .defect dt{color:var(--ink-3);font-weight:650;font-size:13px;padding-top:2px}
+  .defect dd{margin:0}
+  .verdict{font-size:12.5px;color:var(--ink-3);margin-top:10px;padding-top:9px;border-top:1px dashed var(--line)}
+  figure{margin:18px 0;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}
+  figcaption{font-size:13px;color:var(--ink-3);margin-top:8px;text-align:center}
+  svg{display:block;width:100%;height:auto}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media (max-width:760px){.grid2{grid-template-columns:1fr}.defect dl{grid-template-columns:1fr}header.top h1{font-size:23px}}
+  footer{margin-top:52px;padding-top:18px;border-top:1px solid var(--line);font-size:13px;color:var(--ink-3)}
+  .kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:16px 0}
+  .kpi div{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .kpi b{display:block;font-size:20px;color:var(--blue);font-variant-numeric:tabular-nums;line-height:1.3}
+  .kpi span{font-size:12.5px;color:var(--ink-3)}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="inner">
+    <h1>架构评审报告 · deepseek-studio</h1>
+    <p class="sub">把 DeepSeek 网页聊天页当作模型引擎、在本地常驻宿主里执行 shell / 文件操作的桌面智能体项目 —— 一次只读的架构与设计评审。</p>
+    <div class="metaline">
+      <span>评审对象：E:\NAS\deepseek-studio</span>
+      <span>评审方式：只读（读文件 / 不运行、不修改）</span>
+      <span>被评审版本：package.json 0.4.0（自述已交付 v0.6 能力）</span>
+      <span>报告日期：2026-10-10</span>
+    </div>
+  </div>
+</header>
+<div class="wrap">
+<h2><span class="num">一</span>项目速览</h2>
+
+<p><strong>这是什么。</strong>它是一个<strong>桌面化的 DeepSeek 智能体客户端</strong>：用 Tauri（Rust）开一个 WebView 窗口直接加载真实的 <code>https://chat.deepseek.com</code> 页面，在 <code>document_start</code> 注入一段打包好的脚本，从而把「网页版 DeepSeek」当成一个零成本的模型后端；另外再开一个「智能体面板」窗口，由本机一个常驻 Node 进程驱动一个「模型 ↔ 工具」多步循环，让模型能读写本机文件、执行本机命令。</p>
+
+<p><strong>解决什么问题。</strong>作者的动机写在 <code>deepseek-pp/UPSTREAM.md</code> 与 <code>docs/architecture.md</code>：原本的能力以 MV3 浏览器扩展（<code>deepseek-pp</code>，WXT + React + TS，Apache-2.0）形态存在，受 Service Worker 回收、沙箱、存储配额限制；桌面化之后可以后台常驻、可以触碰本机进程与文件系统、可以对外暴露本地 HTTP 接口给别的 agent 调用。仓库里有一份自写的方向修正记录（<code>docs/版本路线图.md</code>）明确说：外部 agent HTTP 接口属于「跑偏」，主线已改为「复刻 background 能力」。</p>
+
+<div class="kpi">
+  <div><b>6,940</b><span>src/ 自有 TS 行数（57 个 .ts；另有 agent.html 64 行 + CSS 280 行）</span></div>
+  <div><b>54</b><span>src-tauri（Rust）行数：仅 main.rs 一个文件，只负责建窗与注入</span></div>
+  <div><b>1,133</b><span>deepseek-pp/src 上游快照文件数（12.96 MB，约定 core/** 零修改）</span></div>
+  <div><b>23 / 185</b><span>tests/ 下测试文件数 / 用例数（2,554 行），最近一次 vitest 全绿</span></div>
+</div>
+
+<h3>事实清单</h3>
+<table>
+  <thead><tr><th style="width:150px">项目</th><th>结论</th><th style="width:270px">依据</th></tr></thead>
+  <tbody>
+    <tr><td>项目性质</td><td>私有项目（<code>"private": true</code>），无 git 仓库、无 README、无 LICENSE、无 CI；根目录只有打包/调试文本产物</td><td><code>package.json</code>；根目录列表；<code>Test-Path .git</code> → false；<code>Test-Path .github</code> → false</td></tr>
+    <tr><td>语言 / 框架</td><td>TypeScript（ESNext + strict）为主，Rust 仅做 Tauri 外壳；UI 用原生 DOM + IIFE 打包，未引入前端框架</td><td><code>tsconfig.json</code>（strict / noUnusedLocals / noEmit）；<code>src-tauri/Cargo.toml</code>；<code>esbuild.inject.mjs</code></td></tr>
+    <tr><td>技术栈</td><td>Tauri 2 + WebView；Node 侧用原生 <code>node:http</code> + <code>ws</code>；测试 vitest；注入产物 esbuild</td><td><code>src-tauri/tauri.conf.json</code>、<code>package.json</code>、<code>src/api/server.ts</code></td></tr>
+    <tr><td>运行时依赖</td><td>宿主侧生产依赖极少（<code>ws</code>、<code>tsx</code>、<code>typescript</code> 等全部躺在 devDependencies；无 <code>dependencies</code> 段）</td><td><code>package.json</code>（无 dependencies 字段）</td></tr>
+    <tr><td>入口</td><td>三个入口：Rust <code>src-tauri/src/main.rs</code>（建两个窗口）、Node 宿主 <code>src/api/main.ts</code>（<code>npm start</code>）、注入脚本 <code>src/desktop/entry.ts</code>（打包为 <code>src-tauri/inject/entry.js</code>，被 <code>include_str!</code> 编进二进制）</td><td><code>main.rs:20-50</code>；<code>package.json scripts.start</code>；<code>esbuild.inject.mjs</code></td></tr>
+    <tr><td>怎么启动</td><td>开发：<code>npm run tauri:dev</code>（<code>beforeDevCommand</code> 先 <code>build:inject</code> 再 <code>npm start</code>，随后 Tauri 等 <code>http://localhost:8756</code> 就绪）。生产：尚无可用路径（见 P1-6）</td><td><code>tauri.conf.json build.beforeDevCommand / devUrl</code>；<code>tauri.log</code></td></tr>
+    <tr><td>默认端口</td><td><code>127.0.0.1:8756</code>（刻意避开本机 DeskPilot 的 8765），在 Rust、注入脚本、配置里各写死一份</td><td><code>main.rs:15</code>、<code>src/desktop/entry.ts:28</code>、<code>src/api/main.ts:50</code>、<code>tauri.conf.json devUrl</code></td></tr>
+    <tr><td>文档</td><td>有 4 份设计/计划文档（<code>docs/architecture.md</code> v0.1、<code>docs/architecture-review.md</code>、<code>docs/版本路线图.md</code>、<code>docs/开发计划.md</code>）+ 5 份 AI 助手的计划文件（<code>.codebuddy/plans/</code>）+ 上游自带的 <code>AGENTS.md</code>（17KB 架构不变量）</td><td><code>docs/</code>、<code>.codebuddy/plans/</code>、<code>deepseek-pp/src/AGENTS.md</code></td></tr>
+    <tr><td>上游关系</td><td><code>deepseek-pp/src</code> 是 <code>E:\NAS\deepseek-pp\src</code> 的 robocopy 单向只读快照（commit <code>187f6227</code>、1,133 文件 / 12.96 MB），约定 <code>core/**</code> 零修改</td><td><code>deepseek-pp/UPSTREAM.md</code></td></tr>
+    <tr><td>提交历史</td><td><strong>无法评估</strong>：项目目录不是 git 仓库，没有 commit 历史、没有 remote、没有分支。仅有文档里的日期痕迹（architecture.md 2026-10-07；上游快照 2026-10-08；计划文件 v0.2→v0.6；最近一次记录为 2026-10-10 的面板设计稿）</td><td><code>git remote -v</code> / <code>rev-list --count HEAD</code> 在根目录不可用；日志文件时间戳</td></tr>
+    <tr><td>活跃度</td><td>从痕迹看是<strong>单人高强度迭代</strong>：<code>.codebuddy/plans/</code> 里连续 5 份计划（v0.2 minimal loop → v0.4 MVP → v0.5 安全石化 → v0.6 MAIN-world 拦截 → M1 智能体面板），每份都带 todo 状态（多为 completed）</td><td><code>.codebuddy/plans/*.md</code></td></tr>
+    <tr><td>版本一致性</td><td><strong>不一致</strong>：<code>package.json</code> / <code>Cargo.toml</code> / <code>tauri.conf.json</code> 三处都写 <code>0.4.0</code>，但代码与文档已实现到 v0.5 / v0.6，路线图也自述 v0.5、v0.6 已交付</td><td>三份清单文件 version 字段 vs <code>docs/版本路线图.md</code>、<code>.codebuddy/plans/v0_5_*.md</code></td></tr>
+  </tbody>
+</table>
+
+<div class="note">
+<strong>一句总评（对任何身份都成立）：</strong>这是一个「有清晰安全意图、但还没等到安全落地」的 v0.x 内部原型 —— 授权、审计、三档权限、fail-closed 这些<em>名词</em>在代码里都有对应模块，设计文档也写得比多数业余项目认真；但其中至少三处的实现把「安全边界」退化成了「同义反复」，而真正决定它能不能交付的打包链路、持久化和文档一致性还停在设计稿阶段。如果评审人是作者本人：这是一份可以直接排期的技术债清单。如果是评估别人的项目：现在还不是把它接到任何有价值资产上的时候。
+</div>
+<h2><span class="num">二</span>架构总览</h2>
+
+<p>项目实际上是<strong>四层、两个进程、三条 WebSocket/HTTP 通道</strong>的结构。把设计文档（<code>docs/architecture.md</code>）和真实代码放在一起看，最大的落差是：<strong>文档描述的是「Rust 主进程托管一切」（KV 存储、HTTP API、导航白名单、MCP 宿主都计划写在 Rust 侧），而实现把整个大脑搬到了一个独立的 Node 进程里，Rust 只剩 54 行建窗代码。</strong>这不是错误 —— 作者在 <code>docs/版本路线图.md</code> 里把 Rust 宿主化排到了 v0.7 —— 但两份文档同时留在仓库里且没有互相标注，是后面所有「找错文件」的来源。</p>
+
+<h3>2.1 进程与通道</h3>
+<ul>
+  <li><strong>Tauri 主进程（Rust）</strong>：<code>src-tauri/src/main.rs</code>。建两个窗口 —— <code>main</code> 加载远端 <code>https://chat.deepseek.com</code>（<code>WebviewUrl::External</code>）并挂 <code>initialization_script(include_str!("../inject/entry.js"))</code>；<code>agent</code> 加载 <code>http://127.0.0.1:8756/agent</code>。可选地用 <code>STUDIO_SPAWN_HOST</code> 环境变量触发 <code>npm run start</code> 拉起宿主。</li>
+  <li><strong>Node 常驻宿主</strong>：<code>src/api/main.ts</code> → <code>src/host/desktop-host.ts</code>。一个 <code>node:http</code> 服务器监听 <code>127.0.0.1:8756</code>，同时承载 HTTP API、两个 WebSocket 端点（<code>/studio</code> 给注入页、<code>/agent-ws</code> 给面板）、以及给面板用的静态页面 <code>/agent</code>。</li>
+  <li><strong>通道一（页 ↔ 宿主）</strong><code>ws://127.0.0.1:8756/studio</code>：双向工具派发（<code>dispatch</code> / <code>result</code>）、同意闸门（<code>consent-required</code> / <code>consent-decision</code>）、以及 v0.6 的反向投递（<code>tool-call</code> → <code>tool-call-result</code>）。</li>
+  <li><strong>通道二（面板 ↔ 宿主）</strong><code>/agent-ws?token=…</code>：面板驱动 <code>send / stop / set-policy / set-workspace / pick-folder</code>，宿主回推 agent 事件流。</li>
+  <li><strong>通道三（外部 ↔ 宿主）</strong><code>http://127.0.0.1:8756/v1/…</code>：OpenAI 兼容的 <code>/v1/chat/completions</code>（含 SSE）、<code>/v1/models</code>、<code>/v1/tools/execute</code>、<code>/v1/tools/audit</code>、<code>/v1/queue/status</code>，Bearer token 鉴权 + 令牌桶限流 + 串行并发上限。</li>
+</ul>
+
+<h3>2.2 数据流：一次「自然语言 → 改本机文件」的完整路径</h3>
+<ol>
+  <li>用户在面板输入 → <code>/agent-ws</code> → <code>agentChannel.handle('send')</code> → <code>agentLoop.send(text)</code>（<code>src/host/agent-channel.ts:127-139</code>）。</li>
+  <li>AgentLoop 把文本交给 <code>ModelEngine</code>；MVP 实现是 <code>web-engine.ts</code>：调 <code>chat-insert</code> 写进聊天页输入框 → <code>chat-send</code> 触发发送 → 之后每 1.5 秒调一次 <code>chat-read</code>，用「连续两次快照一致」判定回复结束，单步 120 秒看门狗兜底（<code>src/host/engine/web-engine.ts:31-93</code>）。</li>
+  <li>聊天页里的 MAIN-world 拦截器 hook 了 fetch/XHR，边流式边解析模型吐出的 <code>&lt;local_file_write&gt;{…}&lt;/local_file_write&gt;</code> 标签，把标签从可见流里剥掉，并把调用经 <code>/studio</code> 以 <code>tool-call</code> 投给宿主。</li>
+  <li>宿主侧 <code>tool-contract.ts</code> 把上游 <code>invocationName</code>（<code>local_file_write</code>）映射成 Studio 工具 id（<code>file.write</code>）并适配参数。</li>
+  <li>执行入口统一收敛到 <code>desktop-host.ts:493-502 invokeTool()</code>：<strong>它自己签发一张一次性 grant，再立刻消费它</strong>，随后进入 <code>executeTool</code> → registry 白名单闸门 → policy 三档判定 → （必要时）向页端弹同意模态 → 派发到宿主侧 capability（shell/file）或页端 capability（chat-*）。</li>
+  <li>结果走 <code>audit</code> 留痕、经 <code>tool-call-result</code> 回到页端拦截器的 pending 队列，在下一次出站请求里回填给模型，形成「模型发起 → 宿主执行 → 结果回注」闭环。</li>
+</ol>
+
+<h3>2.3 模块关系示意</h3>
+<figure>
+<svg viewBox="0 0 920 700" role="img" aria-label="deepseek-studio 模块关系示意图">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b6b8c"/>
+    </marker>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#c02626"/>
+    </marker>
+  </defs>
+  <style>
+    .bx{fill:#ffffff;stroke:#cdd6ea;stroke-width:1.2;rx:8}
+    .band{fill:#eef2ff;stroke:#c4d1ff;stroke-width:1.2;rx:10}
+    .hb{fill:#f8f9fc;stroke:#cdd6ea;stroke-width:1.2;rx:10}
+    .sub{fill:#fbfcff;stroke:#dde4f2;stroke-width:1;rx:6}
+    .t{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-size:12px;fill:#161a22}
+    .tt{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-size:12.5px;font-weight:700;fill:#1b2440}
+    .ts{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-size:11px;fill:#4c5566}
+    .tm{font-family:ui-monospace,Consolas,monospace;font-size:10.8px;fill:#243a6e}
+    .lb{font-family:-apple-system,"PingFang SC",sans-serif;font-size:10.8px;fill:#5b6b8c}
+    .lbr{font-family:-apple-system,"PingFang SC",sans-serif;font-size:10.8px;fill:#c02626;font-weight:700}
+    .ln{stroke:#5b6b8c;stroke-width:1.3;fill:none}
+    .lnr{stroke:#c02626;stroke-width:1.6;fill:none;stroke-dasharray:5 3}
+  </style>
+
+  <rect class="band" x="10" y="10" width="900" height="50"/>
+  <text class="tt" x="24" y="31">Tauri 桌面壳（Rust，54 行）· src-tauri/src/main.rs</text>
+  <text class="ts" x="24" y="49">建 main / agent 两个窗口 · initialization_script 注入 entry.js · 只有设了 STUDIO_SPAWN_HOST 才去拉起 Node 宿主</text>
+
+  <rect class="bx" x="10" y="76" width="560" height="168"/>
+  <text class="tt" x="24" y="96">主窗口 WebView · 加载真实 https://chat.deepseek.com</text>
+  <text class="ts" x="24" y="116">注入 entry.js（59 KB IIFE，document_start，与页面脚本同 world）</text>
+  <rect class="sub" x="22" y="124" width="536" height="74"/>
+  <text class="tm" x="32" y="141">chrome.* shim（runtime/storage 桥）· 同域直连桥 direct-target / direct-port</text>
+  <text class="tm" x="32" y="157">注入加载器 loader + 本地 lifecycle（origin 白名单 fail-closed）</text>
+  <text class="tm" x="32" y="173">chat-read / chat-insert / chat-send（操作真实 DOM）· 完整性自检探针</text>
+  <text class="tm" x="32" y="189">MAIN-world 拦截器：hook fetch/XHR，流式解析 &lt;shell_exec&gt; / &lt;local_file_*&gt; 标签</text>
+  <text class="ts" x="24" y="216">host-client → ws://127.0.0.1:8756/studio（hello 只自报 origin，不带任何凭据）</text>
+  <text class="ts" x="24" y="234">内置能力：echo、chat-*（其余特权工具都绕开这一层）</text>
+
+  <rect class="bx" x="590" y="76" width="320" height="168"/>
+  <text class="tt" x="604" y="96">智能体面板窗口</text>
+  <text class="ts" x="604" y="116">加载 http://127.0.0.1:8756/agent</text>
+  <rect class="sub" x="602" y="124" width="296" height="74"/>
+  <text class="tm" x="612" y="141">agent.html + agent-panel.js</text>
+  <text class="tm" x="612" y="157">HTML 里内嵌 __STUDIO_TOKEN__</text>
+  <text class="tm" x="612" y="173">（/agent 免鉴权，任何本机进程可 GET）</text>
+  <text class="tm" x="612" y="189">ws /agent-ws?token=…</text>
+  <text class="ts" x="604" y="216">面板动作：send / stop / set-policy /</text>
+  <text class="ts" x="604" y="234">set-workspace / pick-folder / get-state</text>
+
+  <path class="ln" d="M290,244 L290,300" marker-end="url(#ar)"/>
+  <text class="lb" x="298" y="276">／studio：tool-call、consent、dispatch</text>
+  <path class="lnr" d="M120,258 C120,290 150,296 150,300" marker-end="url(#arr)"/>
+  <text class="lbr" x="18" y="292">⚠ 该通道无 token、不校验 Origin 头</text>
+  <path class="ln" d="M750,244 L750,300" marker-end="url(#ar)"/>
+  <text class="lb" x="758" y="276">／agent-ws：query token</text>
+
+  <rect class="hb" x="10" y="300" width="900" height="230"/>
+  <text class="tt" x="24" y="322">Node 常驻宿主 · src/api + src/host · 127.0.0.1:8756（tsx 直接跑 TS，无编译产物）</text>
+
+  <rect class="bx" x="24" y="334" width="268" height="88"/>
+  <text class="ts" x="36" y="352" style="font-weight:700">api/server.ts（HTTP 面）</text>
+  <text class="tm" x="36" y="370">/v1/chat/completions → 假后端</text>
+  <text class="tm" x="36" y="386">/v1/tools/execute · /v1/tools/audit</text>
+  <text class="tm" x="36" y="402">/agent · /agent.js · /agent.css（免鉴权）</text>
+  <text class="tm" x="36" y="416">Bearer token + 限流 + maxConcurrent=1</text>
+
+  <rect class="bx" x="304" y="334" width="268" height="88"/>
+  <text class="ts" x="316" y="352" style="font-weight:700">desktop-host.ts（装配 + 治理）</text>
+  <text class="tm" x="316" y="370">tool-registry：风险等级 + origin 白名单</text>
+  <text class="tm" x="316" y="386">authority + grant-store（HMAC 一次性 grant）</text>
+  <text class="tm" x="316" y="402">policy.ts 三档 · workspace.ts 围栏</text>
+  <text class="tm" x="316" y="416">audit 环（内存，默认 200 条）</text>
+
+  <rect class="bx" x="584" y="334" width="312" height="88"/>
+  <text class="ts" x="596" y="352" style="font-weight:700">编排层</text>
+  <text class="tm" x="596" y="370">page-runtime hub（／studio）</text>
+  <text class="tm" x="596" y="386">agent-channel（／agent-ws，多面板广播）</text>
+  <text class="tm" x="596" y="402">agent-loop ← web-engine（轮询 chat-read）</text>
+  <text class="tm" x="596" y="416">invokeTool()：自签 grant 后自消费 ★</text>
+
+  <rect class="bx" x="24" y="432" width="434" height="86"/>
+  <text class="ts" x="36" y="450" style="font-weight:700">宿主侧能力（execution: 'host'，不经页面）</text>
+  <text class="tm" x="36" y="468">shell.exec：argv spawn、shell:false、超时上限 120s</text>
+  <text class="tm" x="36" y="484">file.read / write / list / stat：realpath + 工作区围栏</text>
+  <text class="tm" x="36" y="500">folder-picker：PowerShell FolderBrowserDialog（仅 Windows）</text>
+  <text class="tm" x="36" y="514">配置：~/.config/deepseek-studio/config.json</text>
+
+  <rect class="bx" x="470" y="432" width="426" height="86"/>
+  <text class="ts" x="482" y="450" style="font-weight:700">本机资源（真正的攻击面）</text>
+  <text class="tm" x="482" y="468">文件系统（工作区内自动；区外按档位审批）</text>
+  <text class="tm" x="482" y="484">任意子进程（argv，因此不限于 cmd 语法）</text>
+  <text class="tm" x="482" y="500">WebView2 profile 目录（cookie / 登录态，未纳入备份恢复）</text>
+  <text class="tm" x="482" y="514">config.json 里的 token 与 HMAC secret（Windows 下 0600 无效）</text>
+
+  <path class="lnr" d="M700,516 C700,536 640,540 600,540" marker-end="url(#arr)"/>
+  <text class="lbr" x="612" y="556">⚠ auto 档下：命中 10 条正则之外的一切命令都免审批执行</text>
+
+  <rect class="bx" x="10" y="572" width="444" height="112" style="fill:#fffaf5;stroke:#f0d6b4"/>
+  <text class="ts" x="24" y="592" style="font-weight:700">上游快照 deepseek-pp/src（Apache-2.0，1,133 文件）</text>
+  <text class="tm" x="24" y="610">ROADMAP 声称「core/** 零修改复用」</text>
+  <text class="tm" x="24" y="626">实际运行时只被一处动态 import 引用，且说明符</text>
+  <text class="tm" x="24" y="642">写成 deepseek-pp/src/core/…（paths 会映射成</text>
+  <text class="tm" x="24" y="658">deepseek-pp/src/src/…），永远拿不到</text>
+  <text class="tm" x="24" y="674">桥 / 生命周期 / 拦截器都在 src/inject 下重写了一份</text>
+
+  <rect class="bx" x="466" y="572" width="430" height="112"/>
+  <text class="ts" x="480" y="592" style="font-weight:700">工程侧现实</text>
+  <text class="tm" x="480" y="610">无 .git（无历史 / 无 diff 能力）· 无 CI · 无 LICENSE</text>
+  <text class="tm" x="480" y="626">根目录残留 build-out.txt / host-out.txt / tsc-out.txt</text>
+  <text class="tm" x="480" y="642">等日志产物 + 一个名为 '.codebuddy' 之外的 0 字节文件</text>
+  <text class="tm" x="480" y="658">宿主没有打包步骤：生产要靠 npm start（tsx）</text>
+  <text class="tm" x="480" y="674">版本号 0.4.0 与自述的 v0.6 能力错位</text>
+</svg>
+<figcaption>▲ 实线＝已实现的数据通道；红色虚线＝本次评审认为「设计上没有成立」的边界。★ 标注的 <code>invokeTool</code> 是全文最关键的一处（见 P0-2）。</figcaption>
+</figure>
+<h3>2.4 模块清单与依赖方向</h3>
+<table>
+  <thead><tr><th style="width:150px">目录</th><th class="c" style="width:70px">行数</th><th>职责</th><th style="width:190px">依赖方向</th></tr></thead>
+  <tbody>
+    <tr><td><code>src/api/</code></td><td class="c">8 文件</td><td>HTTP 面：鉴权、限流、OpenAI 兼容形状、SSE、队列可观测、agent 页面静态服务</td><td>被 <code>host/</code> 装配；自身只依赖 <code>node:http</code> 与 <code>api/types</code></td></tr>
+    <tr><td><code>src/host/</code></td><td class="c">最大</td><td>治理与编排：tool-registry、authority、grant-store、policy、workspace、audit、page-runtime、agent-channel、agent-loop、desktop-host（装配根）</td><td>依赖 <code>capabilities/</code>、<code>api/</code>、<code>shared/</code>；<code>desktop-host.ts</code> 是唯一的装配点</td></tr>
+    <tr><td><code>src/capabilities/</code></td><td class="c">8 文件</td><td>能力实现：shell.exec、file.*、chat-read/insert/send、echo、dom 选择器</td><td>只依赖 <code>node:child_process</code>/<code>node:fs</code> 与 <code>host/workspace</code>（其余靠注入 ctx）</td></tr>
+    <tr><td><code>src/inject/</code></td><td class="c">7 文件</td><td>注入页骨架：加载器、本地 lifecycle、同域直连桥（target/port/bridge）、MAIN-world 拦截器、流式工具解析、导航观察</td><td>运行在被注入页面内，依赖 <code>capabilities/types</code>、<code>host/protocol</code>（仅类型）、<code>shared/tool-contract</code></td></tr>
+    <tr><td><code>src/bridge/</code></td><td class="c">6 文件</td><td>MV3 语义模拟：<code>chrome.runtime.sendMessage</code> 的信封/超时/lastError、<code>chrome.storage</code>（含配额与 DATA_CLONE 语义）</td><td>纯内存实现；被 <code>desktop/entry</code> 装配</td></tr>
+    <tr><td><code>src/desktop/</code></td><td class="c">3 文件</td><td>注入入口装配、页端宿主客户端（ws 重连与 tool-call 关联）、完整性自检探针</td><td>依赖 <code>inject/</code>、<code>bridge/</code>、<code>capabilities/</code>、<code>ui/consent</code></td></tr>
+    <tr><td><code>src/ui/</code></td><td class="c">5 文件</td><td>两套 UI：注入页内的同意模态（<code>consent.ts</code> + CSS）、面板前端（<code>agent-panel.ts</code> + <code>agent.html</code> + CSS）</td><td>同意模态跑在聊天页 DOM 内；面板前端跑在宿主的 HTTP 页面里</td></tr>
+    <tr><td><code>src/shared/</code></td><td class="c">1 文件</td><td><code>tool-contract.ts</code>：上游 <code>invocationName</code> ↔ Studio 工具 id 的唯一映射表（页端与宿主共享）</td><td>零依赖纯函数，设计上是个好例子</td></tr>
+    <tr><td><code>src/types/</code></td><td class="c">0 文件</td><td><strong>空目录</strong>（类型定义实际散落在各模块自己的 <code>types.ts</code>）</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<p><strong>依赖方向是健康的</strong>：没有发现循环依赖，<code>shared/tool-contract</code> 被两端共用、<code>desktop-host.ts</code> 单点装配、能力层只依赖「围栏」而不依赖「策略」，这些都是加分项。<strong>问题不在方向和分层，而在两条链路的边界没有真正生效</strong>：一是 <code>invokeTool</code> 把「谁在请求」变成了一个常量（P0-2），二是 <code>/studio</code> 没有身份（P0-1）。这两条一破，上层再漂亮的分层都只是「好排版的免责声明」。</p>
+
+<h3>2.5 外部依赖与边界</h3>
+<ul>
+  <li><strong>上游服务</strong>：<code>chat.deepseek.com</code>（唯一被硬编码的可信源，<code>tool-definitions.ts:15</code> 的 <code>DEEPSEEK_ORIGIN</code> 被同时用作「允许发起 grant 的源」和「调用方身份」）。</li>
+  <li><strong>WebView</strong>：唯一注入世界是页面主世界（Tauri 无 isolated world），因此所有「隔离」都只能靠 JS 约定 + 探测，这是整份设计里最根本的约束（作者在 <code>src/desktop/integrity.ts</code> 的注释里也承认了这点）。</li>
+  <li><strong>操作系统</strong>：PowerShell（目录选择器）、Windows 文件系统路径语义（大小写不敏感，已在 <code>workspace.ts</code> 处理）、<code>node:child_process</code>。</li>
+  <li><strong>第三方库</strong>：运行时实际只用 <code>ws</code>；上游快照需要 React 19 / WXT / pyodide / <code>@earendil-works/pi-agent-core</code>，但这些<strong>当前代码路径都没有加载</strong>。</li>
+</ul>
+<h2><span class="num">三</span>架构完整性逐项评估</h2>
+
+<p>下表按题目要求的十二个维度给出结论；「评级」是这次评审的判断：<span class="chip c-ok">扎实</span> 已能支撑继续开发、<span class="chip c-p2">可用但薄</span> 能跑但缺关键一半、<span class="chip c-p1">缺口</span> 会阻塞交付或已构成风险、<span class="chip c-p0">危险缺口</span> 与安全边界直接冲突。逐项证据见 3.1–3.12。</p>
+
+<table>
+  <thead><tr><th style="width:120px">维度</th><th>现状（证据）</th><th>缺什么</th><th style="width:210px">缺了会怎样</th><th class="c" style="width:74px">评级</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>分层与模块边界</td>
+      <td>八层目录职责清晰，无循环依赖，<code>shared/tool-contract.ts</code> + <code>desktop-host.ts</code> 单点装配</td>
+      <td><code>src/types/</code> 空目录；<code>lifecycle.ts</code> 的 resource scope 全是 noop（资源所有权不变量形同注释）；一个文件里同时出现「装配 + 治理 + 编排 + 路由」（<code>desktop-host.ts</code> ≈640 行）</td>
+      <td>上帝模块会继续膨胀，改路由要动装配；noop scope 让「资源归零」无从验证</td>
+      <td class="c"><span class="chip c-p2">可用但薄</span></td>
+    </tr>
+    <tr>
+      <td>配置管理</td>
+      <td>三级优先级（env <code>STUDIO_WORKSPACE_ROOT</code> &gt; <code>~/.config/deepseek-studio/config.json</code> &gt; fail-closed 不可用）；<code>policyMode</code> 做枚举校验后持久化；刻意不回落到 cwd</td>
+      <td>没有 schema/版本号；写入是整包覆盖（<code>persistConfigPatch</code>）；不校验路径存在性（<code>resolveWorkspaceRoot</code> 只做 <code>path.resolve</code>）；端口写死在四处；无「配置来源」在 UI 或日志里的可见性</td>
+      <td>配置文件被手工改坏会静默降级为「文件能力全不可用」；跨机复制配置会带着别人的工作区路径</td>
+      <td class="c"><span class="chip c-p2">可用但薄</span></td>
+    </tr>
+    <tr>
+      <td>错误处理与故障恢复</td>
+      <td>失败一律转 <code>{ok:false,error:code}</code>，不抛到 ws 层；页端断线指数退避重连（上界 10 s）；dispatch/consent 有 30 s / 60 s 超时且默认 deny；shell 有超时与输出截断；<code>release()</code> 修过并发计数扣成负数的 bug</td>
+      <td>看门狗只在 web-engine 里有（120 s/步），宿主侧 <code>/v1/*</code> 无请求超时；错误类型不统一（有的是 code，有的是 <code>err.message</code> 原样回传）；审计只记终态，不记重试；无「降级后可恢复」路径（P1-1）</td>
+      <td>模型卡住时面板只能等 120 s；上游报错会以内部字符串形式流到客户端</td>
+      <td class="c"><span class="chip c-p2">可用但薄</span></td>
+    </tr>
+    <tr>
+      <td>并发与状态管理</td>
+      <td>HTTP 层默认串行（<code>maxConcurrent=1</code>）吻合「防上游风控」的动机；令牌桶按调用方隔离；agent 事件用监听器集合广播且吞掉观察者异常</td>
+      <td>agent 循环靠一个<strong>全局计数器</strong>判断「本步是否发生了工具调用」（<code>desktop-host.ts:536-538</code> → <code>web-engine.ts:91</code>），既不知道成败也不知道结果；<code>stop()</code> 只置标志位，等待中的 <code>send</code> 不会被打断；工作区与档位是进程级单例，多窗口/多会话共享；hub 派发只挑「第一个可信页」</td>
+      <td>用户在聊天页手动提问触发的工具调用会被算进面板那一步（串扰）；多开面板时状态互相覆盖</td>
+      <td class="c"><span class="chip c-p1">缺口</span></td>
+    </tr>
+    <tr>
+      <td>数据持久化</td>
+      <td>配置（workspaceRoot / policyMode）落盘；WebView profile 天然保存登录态</td>
+      <td><code>chrome.storage</code> 桥默认后端是<strong>内存实现</strong>（<code>src/bridge/storage.ts:395</code> → <code>createMemoryStorageKvBackend</code>）；grant 全在内存；审计环也是内存（默认 200 条，进程重启即清空）；没有 chat 会话/任务历史的持久化；没有备份恢复路径</td>
+      <td>与设计文档 §2.2 承诺的「Rust KV 原子写盘」不符：重启即失忆，出事后无法回溯，会话无法恢复</td>
+      <td class="c"><span class="chip c-p1">缺口</span></td>
+    </tr>
+    <tr>
+      <td>接口契约</td>
+      <td>HTTP 面做成 OpenAI 兼容形状（含 <code>reasoning_content</code> 分离与 <code>[DONE]</code>），宿主↔页协议显式枚举全部消息类型（<code>src/host/protocol.ts</code>），上游工具名映射单独抽成共享模块</td>
+      <td>没有版本策略（<code>/v1</code> 只是路径前缀，无弃用/兼容声明）；<code>/v1/chat/completions</code> 背后是假后端（P1-4），契约「看起来成立但语义是假的」；ws 协议没有 schema 校验，靠 TypeScript 类型约束</td>
+      <td>外部客户端接入后会先被假数据误导；删改消息类型时没有兼容层</td>
+      <td class="c"><span class="chip c-p2">可用但薄</span></td>
+    </tr>
+    <tr>
+      <td>鉴权与信任边界</td>
+      <td>HTTP 面有常量时间比较的 Bearer 鉴权、令牌环轮换（宽限期同时接受新旧）、grant 一次性消费、registry origin 白名单、能力层对工作区的二次校验（realpath 防软链）</td>
+      <td><strong><code>/studio</code> 无鉴权、不校验 Origin 头</strong>（P0-1）；<strong>grant 由执行方自己签发再消费、origin 写成常量</strong>（P0-2）；<code>/agent*</code> 免鉴权且内嵌令牌；Windows 下 <code>0o600</code> 不生效；注入脚本与不可信页面同 world（同意模态可被页面遮盖/伪造）</td>
+      <td>任意本机进程或浏览器页面可在默认档位下触发本机命令执行与文件写入</td>
+      <td class="c"><span class="chip c-p0">危险缺口</span></td>
+    </tr>
+    <tr>
+      <td>可观测性</td>
+      <td>有分级前缀的日志（<code>[deepseek-studio]</code> / <code>[page-runtime]</code> / <code>[desktop-host]</code>）；有结构化审计环（工具、参数摘要、决策、风险标记、耗时、终态）与 <code>/v1/queue/status</code>（含 <code>avgWaitMs</code> 与最近执行）</td>
+      <td>日志非结构化（无 level/字段），写 stdout 不做轮转；无指标导出、无 traceId（审计有 callId 但没串到日志）；审计只暴露「最近 N 条」，不落盘、不可查询历史；无「当前档位/工作区」的启动期日志断言</td>
+      <td>线上出问题时无法按一次任务回放全过程</td>
+      <td class="c"><span class="chip c-p2">可用但薄</span></td>
+    </tr>
+    <tr>
+      <td>测试</td>
+      <td>23 个测试文件 / 185 个用例 / 2,554 行，跑一次约 82 s（最近一次全绿）；测试覆盖了策略判定、白名单拒绝、grant 一次性、限流、注入加载器幂等与重装载等真正容易出错的地方；<code>vitest.config.ts</code> 里显式解释为何要 <code>fileParallelism: false</code>（消除模块级单例竞态）</td>
+      <td>没有针对「页 ↔ 宿」真实 ws 的端到端冒烟（e2e 是 jsdom 级装配替代）；没有并发/压力用例；没有对 <code>/agent</code> 免鉴权与 <code>/studio</code> 无鉴权的安全回归用例；无覆盖率门禁</td>
+      <td>当前测试无法捕捉 P0-1/P0-2 这类「边界失效」——它们全绿并不矛盾</td>
+      <td class="c"><span class="chip c-ok">扎实</span></td>
+    </tr>
+    <tr>
+      <td>交付与升级</td>
+      <td>有 <code>build:inject</code>（esbuild 双产物）、<code>tauri:build</code>、注入产物用 <code>include_str!</code> 编进二进制</td>
+      <td><strong>没有宿主构建步骤</strong>（生产靠 <code>tsx src/api/main.ts</code>，而 <code>tsx</code> 是 devDependency）；无单文件产物/安装包验证、无签名、无自动更新、无回滚、无 CI（无 <code>.github</code>）；<code>tauri.conf.json</code> 的 <code>frontendDist: "../dist"</code> 指向一个只含 <code>index.html</code> 的目录，而两个窗口实际都走 External URL，该配置形同虚设</td>
+      <td>项目现在无法交付给任何不想装 Node + devDependencies 的用户</td>
+      <td class="c"><span class="chip c-p1">缺口</span></td>
+    </tr>
+    <tr>
+      <td>扩展点</td>
+      <td>两处扩展设计得很干净：ModelEngine 接口（web / api 双实现位，api 桩显式返回「未实现」而不是静默失败）+ <code>tool-contract.ts</code> 单表映射；capability 以 <code>Map&lt;id, ExecutableCapability&gt;</code> 注入，加工具只改两处</td>
+      <td>站点白名单是硬编码单源（<code>DEEPSEEK_ORIGIN</code> 同时是身份与白名单，见 P0-2）；端口/路径常量散落；执行侧（page/host）靠 <code>execution</code> 字段声明，缺省是危险的 <code>'page'</code>（已在 registry 里归一化，但默认值方向仍值得反过来）；没有插件/适配器的加载与隔离机制</td>
+      <td>换模型要动 <code>desktop-host.ts</code> 装配；换站点要改常量并重打包</td>
+      <td class="c"><span class="chip c-p2">可用但薄</span></td>
+    </tr>
+    <tr>
+      <td>文档与实现一致性</td>
+      <td><code>AGENTS.md</code>（上游）与 <code>docs/architecture-review.md</code> 的架构不变量写得相当锋利，甚至预判了多处后来的风险</td>
+      <td><code>docs/architecture.md</code> v0.1 描述的是 Rust 侧架构（<code>kv_store.rs</code>/<code>http_api.rs</code>/独立模式/8765 端口），与实现的 Node 架构、8756 端口、目录结构（文档里还有 <code>src/content.js</code>、<code>vite.config.ts</code>、<code>README.md</code> 这些不存在的文件）不符；三处版本号 0.4.0 与实际 v0.5/v0.6 能力错位</td>
+      <td>按文档找文件会找不到；交接给他人（或三个月后的自己）需要先做一次考古</td>
+      <td class="c"><span class="chip c-p1">缺口</span></td>
+    </tr>
+  </tbody>
+</table>
+<h3>3.1 分层与模块边界</h3>
+<p><strong>现状。</strong>八层目录（api / host / capabilities / inject / bridge / desktop / ui / shared）职责清楚，依赖单向：<code>desktop/entry.ts</code> 装配 → <code>inject/</code> 骨架 → <code>capabilities/</code> 执行；宿主侧 <code>desktop-host.ts</code> 是唯一的组合根，把 registry、authority、policy、workspace、audit、hub、agent-loop 串起来；<code>shared/tool-contract.ts</code> 是纯函数共享模块，页端与宿主各取一份同一张表 —— 这是很难得的克制。</p>
+<p><strong>缺什么。</strong>① <code>src/types/</code> 是空目录（类型散落在各模块的 <code>types.ts</code>），说明「类型集中层」这个抽象被放弃了但目录还留着；② <code>src/inject/lifecycle.ts</code> 提供的是<strong>全 noop 的 resource scope</strong>（<code>addCleanup/listen/observe/ownPort</code> 全是空实现，<code>snapshot()</code> 恒返回 0），于是「stop 后资源归零」这条不变量在桌面壳里根本没有被验证的载体；③ <code>desktop-host.ts</code> 单文件同时承担装配、治理判定、路由（<code>routeExecution</code>）、agent 编排、API 装配，已经 640 行量级，是全项目最可能先腐化的文件。</p>
+<p><strong>后果。</strong>资源不变量失守不会立刻报错，但一旦页面 SPA 路由切换或重复注入，泄漏的监听器/定时器将只体现为「越用越慢」；<code>desktop-host.ts</code> 继续长下去，任何人要加一个工具都得在一个文件里同时理解四层概念。</p>
+
+<h3>3.2 配置管理</h3>
+<p><strong>现状。</strong><code>resolveWorkspaceRoot()</code> 有明确的优先级与来源标注（<code>env | config | none</code>），并且<strong>刻意拒绝回落到进程 cwd</strong>（注释里写明「否则『工作区内自动放行』会变成『宿主所在目录全部自动放行』」）；<code>setPolicyMode</code> 先校验枚举再持久化；配置写入失败只告警不崩。</p>
+<p><strong>缺什么。</strong>没有配置 schema 与版本号；<code>persistConfigPatch</code> 是「读整包 → 改字段 → 整包覆盖」，没有临时文件 + rename 的原子性保护；<code>resolveWorkspaceRoot</code> 只做 <code>path.resolve</code> 而不校验目录是否存在（非法路径会把文件能力推进 deny 态而不是给出可读错误）；<code>8756</code> 这个端口在 Rust、注入脚本、tauri.conf、api/main.ts 里各写一份；配置项的生效时机（哪些热生效、哪些要重启）没有文档。</p>
+<p><strong>后果。</strong>手工编辑配置出错时会静默退化为「文件工具全不可用」，用户拿到的是 <code>workspace-unconfigured</code> 而不是「你的 workspaceRoot 指向了一个不存在的目录」；端口冲突时四处都要改。</p>
+
+<h3>3.3 错误处理与故障恢复</h3>
+<p><strong>现状。</strong>失败一律表达为 <code>{ ok:false, error: '&lt;code&gt;' }</code>，不靠异常穿过 ws 层；页端断线有指数退避重连（500 ms → 10 s 上界）；<code>dispatch</code> / <code>requestConsent</code> 分别有 30 s / 60 s 超时且失败方向是 <code>no-page-runtime</code> / <code>deny</code>（fail-closed）；shell 有能力超时（默认 30 s、上限 120 s）与 64 KB 输出截断；HTTP 层的并发计数曾经会在异常路径下扣成负数，代码里能看到为修这个问题而收敛出的单一 <code>release()</code> 出口。</p>
+<p><strong>缺什么。</strong>看门狗只在模型侧（<code>web-engine.ts</code> 的 120 s 单步超时）；<code>/v1/*</code> 没有请求级超时；错误类型不统一（HTTP 500 会把内部 <code>err.message</code> 原样回传）；重试决策散落在各处（页端重连有退避、工具执行没有、模型调用没有）；<strong>降级不可恢复</strong>：完整性告警一旦命中该页永久不可信（P1-1）。</p>
+<p><strong>后果。</strong>上游变慢时面板表现为「长时间无输出」，用户无法区分「模型在想」与「链路已断」；一次误告警会让 chat-* 能力在整个页面生命周期内静默失效。</p>
+
+<h3>3.4 并发与状态管理</h3>
+<p><strong>现状。</strong>HTTP 层默认 <code>maxConcurrent=1</code> 串行（与「避免高频触发上游风控」的动机一致），超限返回 429 + <code>Retry-After</code>；令牌桶按 <code>Authorization</code> 值分桶；agent 事件通过监听器集合广播，且每个观察者的异常被单独吞掉以免打断循环。</p>
+<p><strong>缺什么。</strong>① <strong>agent 循环的控制流建立在一个全局计数器上</strong>：<code>desktop-host.ts:536-538</code> 的 <code>onToolCall</code> 每次页端投来工具调用就 <code>agentToolCounter.current += 1</code>，<code>web-engine.ts:91</code> 用「本轮计数差 &gt; 0」决定「要不要继续推模型」。它既不知道工具成功还是失败，也不知道结果内容，更无法区分「这是面板这一步触发的」还是「用户手打对话触发的」——因为 <code>/studio</code> 是所有页共用的一条通道。② <code>stop()</code> 只置 <code>stopped</code> 标志，等待中的 <code>send()</code> 不会被打断（web-engine 在轮询循环里检查标志，但 <code>chat-read</code> 派发本身不可中止）。③ 工作区与权限档位是进程级单例，两个面板窗口共享同一份状态（<code>agent-channel</code> 用广播把所有事件发给所有连接）。④ 多页时 <code>pickClient()</code> 只取「第一个未标记不可信的连接」，没有按 origin/会话选择。</p>
+<p><strong>后果。</strong>面板与人工对话同时使用时会出现「凭空多出一步」的续跑；「停止」按钮的响应取决于当前卡在哪一步；将来开多会话/多窗口时状态会互相覆盖。</p>
+
+<h3>3.5 数据持久化</h3>
+<p><strong>现状。</strong>只有三样东西真正落盘：<code>~/.config/deepseek-studio/config.json</code>（token / secret / workspaceRoot / policyMode）、WebView2 的 profile 目录（登录态 cookie）、以及 <code>src-tauri/inject/entry.js</code> 这类编译产物。</p>
+<p><strong>缺什么。</strong><code>chrome.storage</code> 的桥（<code>src/bridge/storage.ts</code>）默认后端是内存实现（第 395 行 <code>createMemoryStorageKvBackend()</code>），接口 <code>StorageKvBackend</code> 已经为「Rust KV 原子写」预留好了形状但没人实现；grant 存储是内存 Map；审计环是内存环形缓冲（默认 200 条）；对话/任务/工具结果历史完全不落地；没有 schema 与迁移概念；没有备份/恢复/损坏处理路径（配置 JSON 被写坏就只能靠人手工修）。</p>
+<p><strong>后果。</strong>重启即失忆：审计无法用于事后追责（而这恰恰是引入 shell/file 能力时作者自己写下的理由）；模型多步任务中断后无法续跑；上游快照之外的「状态」全部是易失的。</p>
+
+<h3>3.6 接口契约</h3>
+<p><strong>现状。</strong>HTTP 面刻意做成 OpenAI 兼容形状（<code>chat.completion.chunk</code> / <code>reasoning_content</code> 单独通道 / 以空 delta + <code>finish_reason=stop</code> 收尾 / <code>data: [DONE]</code>），<code>/v1/queue/status</code> 还额外给了 <code>avgWaitMs</code> 与最近执行记录 —— 这些细节说明作者真的在想「别人怎么消费我」。宿主↔页协议用 TS 联合类型把全部消息枚举清楚（<code>protocol.ts</code>），错误走 <code>result.ok=false + error</code> 而不走 ws 异常。</p>
+<p><strong>缺什么。</strong>没有版本策略：<code>/v1</code> 只是路径，没有弃用标注、没有兼容承诺、没有「未实现」与「不支持」的区分（<code>/v1/embeddings</code> 与 <code>/v1/audio</code> 返回 501 是靠 <code>isUnimplementedPath()</code> 白名单硬编码的）；ws 消息没有独立 schema 校验（页端是「不可信输入的一侧」，却只有 TS 类型）；<code>/v1/tools/execute</code> 的入参只校验 <code>tool</code> 是不是非空字符串，<code>params</code> 直接透传给能力层。最关键的是：契约的<strong>语义是假的</strong> —— <code>/v1/chat/completions</code> 背后是 <code>createFakeOfficialBackend()</code>（P1-4）。</p>
+<p><strong>后果。</strong>任何按文档接入的外部 agent 会先拿到固定假回复；页端（真正不可信的那一侧）发来的消息结构没有任何运行时校验，全靠类型注释。</p>
+<h3>3.7 鉴权与信任边界</h3>
+<p><strong>现状（这一维度做得最多的部分）。</strong>HTTP 面有常量时间比较的 Bearer 鉴权（<code>src/api/auth.ts:26-31</code>，避免时序侧信道）；令牌环支持轮换且宽限期内同时接受新旧令牌（<code>host-token.ts:67-97</code>，并解释了为什么——否则轮换瞬间正在跑的 agent 链路会静默断掉）；grant 是一次性消费并可绑定 document/session/requestId；registry 有 origin 白名单与 fail-closed 语义；能力层对工作区做二次校验并且用 realpath 拦软链逃逸；CORS 只放行 <code>localhost</code> / <code>127.0.0.1</code>。</p>
+<p><strong>问题是这些边界里有三条没有真正合上：</strong></p>
+<ul>
+  <li><code>/studio</code> 是<strong>无身份通道</strong>，而它恰恰是特权工具的执行入口（P0-1）；</li>
+  <li>grant 由执行方自己签发、<code>origin</code> 写成常量，使「白名单」成为同义反复（P0-2）；</li>
+  <li><code>/agent</code> 免鉴权却把 API 令牌内嵌进了 HTML，而 Windows 上配置文件权限位本来是无效的（P1-2）。</li>
+</ul>
+<p><strong>后果。</strong>把三件事串起来看：一个恶意网页 → 连上 <code>/studio</code> → 发一条 <code>tool-call</code> → 宿主自签 grant（origin 常量天然通过白名单）→ 默认 <code>auto</code> 档下写工作区文件或执行不含风险关键字的命令 → 全程无同意弹窗、无人工可见的提示。这就是 P0 组合风险的完整链路，也是本报告建议优先处理的原因。</p>
+
+<h3>3.8 可观测性</h3>
+<p><strong>现状。</strong>有审计环（工具、参数摘要、决策与原因、风险标记、耗时、终态）并通过 <code>/v1/tools/audit</code> 暴露最近 N 条（上限 500）；<code>/v1/queue/status</code> 给了并发/排队/平均等待与近期执行；日志有模块前缀；面板有连接状态灯与档位显示。</p>
+<p><strong>缺什么。</strong>日志是纯文本、无 level 字段、无结构化输出、无轮转（写 stdout）；没有指标导出与 trace 贯通（审计里有 <code>callId</code>，但日志里没有它，无法把「一次工具执行」与「一条 ws 消息」串起来）；审计不落盘、不可查历史、容量固定 200 条且被覆盖式淘汰；关键状态变化（档位切换、工作区切换、令牌轮换）没有日志断言只有代码；没有「为什么这次被拒绝」的用户可见回执（拒绝原因进了审计与模型上下文，未必进了 UI）。</p>
+<p><strong>后果。</strong>出问题时的排查路径是「翻 stdout 回忆 + 复现」，而不是「按 callId 查一次执行」。对一个会执行本机命令的系统来说，这个能力等级偏低。</p>
+
+<h3>3.9 测试</h3>
+<p><strong>现状。</strong>23 个文件 / 185 个用例 / 2,554 行，最近一次 <code>vitest run</code> 全绿（约 82 s）。测试挑的地方很准：策略判定矩阵、白名单 fail-closed、grant 一次性、限流与并发上限、注入加载器幂等与重装载、模块级单例竞态（为此显式关掉文件级并行）。<code>vitest.config.ts</code> 里那段「并行执行会争用 <code>bootstrapInjection</code> 的模块级 <code>installState</code>」的注释，说明作者知道自己在绕什么坑，也知道那个坑是设计带来的。</p>
+<p><strong>缺什么。</strong>没有真实 ws 的端到端冒烟（Windows WebView2 的手工验证被 jsdom 级装配测试替代，作者在 <code>docs/开发计划.md</code> 里如实标注了）；没有并发/压力用例；没有针对「<code>/studio</code> 无凭据连接」「<code>/agent</code> 泄令牌」这类边界失效的回归用例；没有覆盖率门禁，因此「边界被绕过」这种缺陷不会让测试变红。</p>
+<p><strong>后果。</strong>当前测试全绿与 P0 缺陷并存并不矛盾 —— 它们测的是模块内部行为，而 P0 问题出在模块之间的接线处。这个盲区应当被显式补上（把 P0-1 的复现写成测试，它就会立刻变红）。</p>
+
+<h3>3.10 交付与升级</h3>
+<p><strong>现状。</strong><code>build:inject</code> 用 esbuild 产出两个 IIFE（<code>src-tauri/inject/entry.js</code> 59 KB、<code>dist/agent-panel.js</code> 5.3 KB）；注入产物通过 <code>include_str!</code> 编进 Rust 二进制，因此「注入脚本」这一半是自带分发的；<code>tauri:build</code> 走 Tauri 标准打包。</p>
+<p><strong>缺什么。</strong>宿主<strong>没有构建步骤</strong>：<code>npm start</code> = <code>tsx src/api/main.ts</code>，直接执行 TypeScript 源码，而 <code>tsx</code> 与 <code>typescript</code> 都躺在 devDependencies 里；<code>package.json</code> 没有 <code>dependencies</code> 段（运行时依赖没有与开发依赖分离）；没有安装包/单文件产物的验证步骤、没有签名、没有自动更新与回滚、没有 CI 配置目录；<code>tauri.conf.json</code> 的 <code>frontendDist: "../dist"</code> 指向的目录里只有一个 <code>index.html</code>，而两个窗口都用 External URL 加载，这份配置实际上不生效；生产态拉起宿主靠 <code>STUDIO_SPAWN_HOST</code> 环境变量（默认关闭），也就是说双击安装后的应用默认没有宿主。</p>
+<p><strong>后果。</strong>「能不能交付」的答案是<strong>不能</strong>（对不想装 Node 的用户而言）。这属于产品定位层面的决策缺口，而不是代码问题 —— 但必须在写更多功能之前决定：是把宿主编译成单文件走到 sidecar/bundled 形态，还是坦然承认这是「开发者自用工具」。</p>
+
+<h3>3.11 扩展点</h3>
+<p><strong>现状。</strong>两处设计值得表扬：① <code>ModelEngine</code> 接口只暴露 <code>name / health() / send()</code>，web 与 api 双实现位，api 侧给了显式抛「未实现」的桩，避免「静默失败假装能用」；② 工具映射集中在 <code>shared/tool-contract.ts</code> 一张表里（新增上游工具只改一处），配合 <code>execution: 'page' | 'host'</code> 声明让「在哪儿执行」成为数据而非分支。</p>
+<p><strong>缺什么。</strong>站点白名单是硬清单源（<code>DEEPSEEK_ORIGIN</code>），换站点要改常量并重新打包注入产物；端口与路径常量散落四处；<code>execution</code> 的缺省值是 <code>'page'</code>（虽然 registry 的 <code>put()</code> 会把缺省归一化，但默认方向仍是「更危险的一侧」，建议反过来）；没有插件/适配器加载与隔离机制（一个第三方 MCP 或 skill 目前无处安放）。</p>
+<p><strong>后果。</strong>「加一个新 provider」目前要动 <code>desktop-host.ts</code> 的装配 + 常量 + 可能重打注入产物，属于「一处逻辑、四处修改」。</p>
+
+<h3>3.12 文档与实现一致性</h3>
+<p><strong>现状。</strong><code>docs/architecture-review.md</code> 是项目自己在 2026-10-09 做的一轮设计缺口评审，质量相当高（双 world 内容脚本模型缺失、grant 签发者未定、<code>chrome.storage.session</code> 语义无对应 —— 这几条后来都被现实印证了）；<code>docs/版本路线图.md</code> 有明确的「方向修正记录」（外部 agent HTTP 接口降级为可选外围）；上游 <code>AGENTS.md</code> 列出了 prompt bytes、storage key、runtime message 名等不变量。</p>
+<p><strong>缺什么。</strong><code>docs/architecture.md</code>（v0.1，2026-10-07）与实现已经系统性分离：它描述 Rust 主进程托管 KV（<code>kv_store.rs</code>）、HTTP API（<code>http_api.rs</code>）、导航白名单（<code>nav.rs</code>）、独立模式（PoW 求解 + 私有 API 客户端）、端口 8765、目录含 <code>src/content.js</code> / <code>vite.config.ts</code> / <code>README.md</code> —— 这些在当前仓库里<strong>都不存在或未实现</strong>。三份清单文件（package.json / Cargo.toml / tauri.conf.json）的 version 都是 <code>0.4.0</code>，而代码与计划文件已经在 v0.5 / v0.6。根目录没有 README，没有 LICENSE，也没有说明「这份 architecture.md 是目标态还是现状」的一句话。</p>
+<p><strong>后果。</strong>文档目前的作用是「反向误导」：新人（或三个月后的作者）按 architecture.md 找 <code>src-tauri/src/kv_store.rs</code> 会一无所获，且会误以为端口是 8765、会误以为存在独立模式。这一条比它看起来重要 —— 它决定了这次评审的结论能否被下一次评审复用。</p>
+
+<div class="ok">
+<strong>一句话总结第三节：</strong>这套架构在「模块怎么切」上做得比大多数 v0.x 项目都干净（分层、单点装配、共享契约、可插拔引擎、测试挑了硬骨头），但三条边界（页↔宿通道身份、grant 的来源、档位与正则的因果关系）没有合上，加两条工程链路（宿主打包、持久化）没有修，以及一份会误导人的主设计文档。缺口数量可控，且都是能在有限时间内收敛的形态。
+</div>
+<h2><span class="num">四</span>设计缺陷清单</h2>
+
+<p>按严重程度排序。每条给出<strong>位置</strong>（文件与行号）、<strong>机理</strong>（为什么会成为问题）、<strong>触发条件</strong>（什么条件下爆发）、<strong>影响面</strong>、<strong>改法</strong>。末尾的「判定」区分<strong>确定有问题</strong>（事实层，代码就是这样）与<strong>有风险</strong>（设计取向，取决于后面的规模与场景）。同一根因合并为一条。</p>
+
+<div class="defect">
+  <div class="dh"><span class="chip c-p0">P0-1</span><span class="t">页↔宿工具通道 <code>/studio</code> 没有任何身份：无令牌、不校验 Origin，且采信客户端自报的 origin</span></div>
+  <div class="db">
+    <dl>
+      <dt>位置</dt>
+      <dd><code>src/host/page-runtime.ts:60-99</code>（<code>new WebSocketServer({ server, path: '/studio' })</code>，<code>wss.on('connection')</code> 里唯一的鉴权动作是把 <code>hello</code> 消息里<em>客户端自报</em>的 <code>origin</code> 记下来）；<code>src/desktop/host-client.ts:117-126</code>（页端连接时不带任何凭据）；<code>src/desktop/entry.ts:28</code>（地址常量 <code>ws://127.0.0.1:8756/studio</code>）；<code>src/host/desktop-host.ts:530-539</code>（该 hub 挂着 <code>executor: invokeTool</code>，即特权工具的直达入口）</dd>
+      <dt>机理</dt>
+      <dd>WebSocket 握手<strong>不受同源策略/CORS 约束</strong>：任何本机进程、以及用户浏览器里任何网页（原本的 <code>Origin</code> 头就在握手请求里）都能建立连接。而服务端既没有校验这个现成的 <code>Origin</code> 头，也没有要求任何共享秘密，还把「我是谁」完全交给对端自己声明。对比之下，同一进程里的 <code>/agent-ws</code> 是查了 query token 的（<code>agent-channel.ts:87-97</code>）——也就是说，保护「面板」的强度高于保护「能执行命令的通道」，方向正好反了。</dd>
+      <dt>触发条件</dt>
+      <dd>连上 <code>ws://127.0.0.1:8756/studio</code> → 发 <code>{"type":"hello","origin":"https://chat.deepseek.com"}</code> → 之后按 <code>protocol.ts</code> 的消息格式直接发 <code>tool-call</code>（例如 <code>invocationName: "local_file_write"</code>）。不需要令牌、不需要页面、不需要用户点击。</dd>
+      <dt>影响面</dt>
+      <dd>在默认档位（见 P0-3）下即等价于「本机用户级任意文件写入 + 不含风险关键字的任意命令执行」。这是本报告里唯一一条<strong>无需任何前置条件即可被外部输入触发</strong>的路径。</dd>
+      <dt>改法</dt>
+      <dd>① 握手时校验 <code>req.headers.origin</code>，不在白名单直接关闭（拿不到 Origin 头的一律拒绝）；② 要求凭据，且不要把凭据放在 URL query（会进日志）——用子协议头或握手后第一帧的 challenge-response；③ 给每个连接分配 pageId，后续所有 <code>tool-call</code>／结果严格绑定该 pageId，不要用「第一个可信页」这种全局挑选；④ <strong>立刻补一条回归测试</strong>：不带凭据连 <code>/studio</code> 必须被立即关闭。现在测试全绿（185 个用例）却拦不住这条缺陷，正是因为没有任何用例从「外部连接」的视角看这个服务。</dd>
+    </dl>
+    <div class="verdict">判定：<strong>确定有问题</strong>（并且与项目自己声明的 「fail-closed / 授权先于执行」不变量直接冲突）。</div>
+  </div>
+</div>
+
+<div class="defect">
+  <div class="dh"><span class="chip c-p0">P0-2</span><span class="t">授权链自签自销：执行方自己签发 grant，并把请求来源写死成常量</span></div>
+  <div class="db">
+    <dl>
+      <dt>位置</dt>
+      <dd><code>src/host/desktop-host.ts:493-502</code>（<code>invokeTool()</code>：<code>documentId:'host-agent'</code>、<code>sessionId:'host-agent'</code>、<code>scope: tool</code>、<code>origin: DEEPSEEK_ORIGIN</code> → 立刻 <code>executeTool(tool, params, grant)</code>）；同一函数被 <code>:333</code>（HTTP <code>/v1/tools/execute</code>）与 <code>:534</code>（页端 <code>tool-call</code>）两条完全不同的入口共用；<code>src/host/authority.ts</code> 的 <code>verifyGrant()</code>（仅比对 <code>scope</code>，不比对 documentId/sessionId/origin）；<code>src/host/tool-definitions.ts:47-86</code>（全部特权工具 <code>allowedOrigins: [DEEPSEEK_ORIGIN]</code>）</dd>
+      <dt>机理</dt>
+      <dd>「授权先于执行」要成立，前提是<strong>签发权与执行权分离</strong>：签发方校验「这次调用确实来自它声称的上下文」，执行方只认票据。这里却把两者合并在同一个函数里，还用一个常量填写「来源」。结果：<code>registry.isOriginAllowed()</code> 永远为真、白名单闸门不可能拒绝、grant 的 origin 字段恒等于被信任的那个源，验收测试里「非白名单 origin 被拒绝」的用例只能靠手工构造 grant 才跑得通 —— 真实调用路径上这个分支是死代码。</dd>
+      <dt>触发条件</dt>
+      <dd>无需任何特殊条件：只要能让宿主调用 <code>invokeTool</code>（即 P0-1 的任意连接，或持有 API token 的任意客户端），就会自动获得一张合法 grant。</dd>
+      <dt>影响面</dt>
+      <dd>① 白名单/授权/审计三处机制对真实调用者<strong>零区分度</strong>；② 审计里的 <code>origin</code>、<code>documentId</code>、<code>sessionId</code> 是虚构值，事后追责会把责任指到「某个 DeepSeek 页面」，而真正来源（某个本机进程 / 某个网页）不会被记录。这比第一条更隐蔽：它让「我们有授权链和审计」这件事失去证据价值。</dd>
+      <dt>改法</dt>
+      <dd>① 收敛签发入口：只允许在「已完成身份验证的会话」上签发，<code>origin/documentId/sessionId</code> 从该会话对象取，禁止调用方传入；② 宿主自发的调用（HTTP API、agent loop）走一条显式的「宿主内调用」路径，不伪造页面身份，而是在审计里如实标注 <code>caller = api:&lt;tokenId&gt; | agent:&lt;loopId&gt; | page:&lt;pageId&gt;</code>；③ <code>verifyGrant</code> 补齐与存储记录的交叉比对（documentId/sessionId/origin 全部要比）；④ 把 <code>DEEPSEEK_ORIGIN</code> 拆成两个不同概念：<em>注入白名单</em> 与 <em>调用方身份</em>，用一个常量同时充当两者是这条缺陷的根。</dd>
+    </dl>
+    <div class="verdict">判定：<strong>确定有问题</strong>（属于「安全机制存在但语义不成立」，比缺失更难被发现）。</div>
+  </div>
+</div>
+
+<div class="defect">
+  <div class="dh"><span class="chip c-p0">P0-3</span><span class="t">默认档位 <code>auto</code> + 10 条风险正则，等价于「几乎完全放开」，与面板呈现的三档叙事不符</span></div>
+  <div class="db">
+    <dl>
+      <dt>位置</dt>
+      <dd><code>src/host/policy.ts:35</code>（<code>DEFAULT_POLICY_MODE = 'auto'</code>，即面板上那个黄色的「风险审批」）；<code>:109-122</code>（<code>RISK_PATTERNS</code> 共 10 条）；<code>:216-219</code>（auto 档：<code>risks.length &gt; 0</code> 才要求同意；否则 <code>cwd</code> 在工作区内就直接 <code>allow</code>）；<code>:231</code>（不归本引擎管辖的工具一律 <code>allow</code>）；<code>src/capabilities/shell.ts</code>（argv 直 spawn、<code>shell:false</code>、cwd 默认取工作区根）</dd>
+      <dt>机理</dt>
+      <dd>auto 档的判定是<strong>黑名单的否定</strong>：只有命令文本命中那 10 条正则才弹审批，其余全部静默执行。而黑名单天生列不完「有破坏力但写法平淡」的命令；更关键的是，正则匹配的是<em>命令文本</em>，而风险实际发生在<em>副作用</em>上。同时 <code>cwd 在工作区内</code> 并不等于「只在工作区内产生副作用」——<code>npm install -g</code>、写 <code>%APPDATA%</code>、<code>git push</code>、启动一个后台常驻进程，全都在「cwd 合法」名下通过。</dd>
+      <dt>触发条件</dt>
+      <dd>默认配置即成立。举例（均为示意，且<strong>不会命中任何一条正则</strong>）：<code>node -e "..."</code>、<code>python -c "..."</code>、<code>powershell -Command</code> 中不带 <code>-Force/-Recurse</code> 的删除、<code>npm run &lt;script&gt;</code>（脚本内容对策略不可见）。反向的误伤也存在：命令行里恰好出现 <code>.npmrc</code>／<code>.ssh</code> 这类字符串，即被记为「敏感凭据路径」而弹审批。</dd>
+      <dt>影响面</dt>
+      <dd>它不是「命令注入漏洞」（作者已经用 <code>shell:false</code> + argv 把注入面关掉了，这一点做得对），而是<strong>默认安全姿态与产品承诺之间的落差</strong>：面板上显示「🟡 风险审批」，用户会理解成「有风险的事会问我」，实际语义是「我只拦我看得出来的十种写法」。叠加 P0-1/P0-2 后，这条决定了那条外部路径的最终后果等级。</dd>
+      <dt>改法</dt>
+      <dd>① 把默认档改成 <code>workspace</code>（仅工作区、shell 直接拒绝），让「放开」成为用户显式动作；② 或者把 auto 的判据从黑名单换成<strong>白名单</strong>：以 <code>argv[0]</code> 为主键维护「可自动执行」的命令表（<code>npm</code>/<code>node</code>/<code>git status</code>…），表外一律审批；③ 把已经在数据里的判定依据（<code>reason</code> + <code>riskFlags</code>）如实展示在面板与审计上，让「为什么放过」可解释；④ 给「工作区内」补上语义：至少要拦住绝对路径写外部位置与全局安装类操作。</dd>
+    </dl>
+    <div class="verdict">判定：<strong>确定有问题</strong>（默认姿态）。其中「正则被当作安全边界」这一取向另标为<strong>有风险</strong>：在单人自用场景下可以接受，一旦面向他人分发就必须换掉。</div>
+  </div>
+</div>
+<div class="defect">
+  <div class="dh"><span class="chip c-p1">P1-1</span><span class="t">完整性自检「一次命中即永久降级」，而且真机日志里已经触发过一次</span></div>
+  <div class="db">
+    <dl>
+      <dt>位置</dt>
+      <dd><code>src/host/page-runtime.ts:107-110</code>（收到 <code>integrity-alert</code> 即 <code>rec.untrusted = true</code>，此后<strong>没有任何复位路径</strong>）；<code>:77-84</code>（<code>pickClient()</code> 跳过所有 untrusted 连接）；<code>src/desktop/integrity.ts:63-77</code>（<code>freezeStudioObject</code> 把 <code>window.__deepseekStudio</code> 钉成不可写、不可配置，探测周期 5 s）；证据：<code>tauri.log</code> 末行 <code>[page-runtime] integrity violation: page=07946e4d… reason=descriptor-downgraded undefined</code></dd>
+      <dt>机理</dt>
+      <dd>探针每 5 秒比对一次 <code>window.__deepseekStudio</code> 的引用/成员/属性描述符；一旦发现「描述符被改成可写可配置」即上报，宿主把整页标记为不可信。问题是：<strong>降级是单向且静默的</strong>。同域页面（以及任何扩展、注入器、调试工具、甚至 Tauri 自己在窗口重建时）都有可能触碰这个描述符；而误命中之后的后果是 <code>chat-read</code>/<code>chat-insert</code>/<code>chat-send</code> 全部派发不到页面 —— 面板会表现为「模型引擎不可用」，但用户看不到任何原因。</dd>
+      <dt>触发条件</dt>
+      <dd>任何一次描述符状态变化（真机日志已经出现过一次，且日志里 <code>detail</code> 是空的 <code>undefined</code>，说明连违规细节都没能给出）。</dd>
+      <dt>影响面</dt>
+      <dd>核心闭环（面板 → 聊天页 → 模型）会在一次误报后<strong>永久失效直到重建连接/重启</strong>；因为 <code>pickClient()</code> 只挑可信页，单页场景下等价于「整个工具派发链路关闭」。而且它同时关掉了合法降级路径的可见性。</dd>
+      <dt>改法</dt>
+      <dd>① 降级要可恢复：连续 N 次（例如 3 次）复查无异常即可重新信任，或在页面重新注入（<code>generation</code> 递增）时重置；② 把违规细节真正填进 <code>detail</code>（当前是 <code>undefined</code>），并在面板上以「引擎不可用 + 原因」显式提示，而不是让 upper layer 只看到 <code>chat-read-failed</code>；③ 区分「描述符被动过」与「对象被替换/删除」的严重度 —— 前者更可能是环境副作用，不必直接降等级；④ 这条链路需要一条真实 ws 的回归测试，把它从「只在上线后才发现的降级」变成「CI 可复现的状态机」。</dd>
+    </dl>
+    <div class="verdict">判定：<strong>确定有问题</strong>（已有真机证据）。</div>
+  </div>
+</div>
+
+<div class="defect">
+  <div class="dh"><span class="chip c-p1">P1-2</span><span class="t">本地凭据的保护只依赖文件权限，而这两条都不成立：面板页免鉴权下发令牌 + Windows 上 <code>0600</code> 无效</span></div>
+  <div class="db">
+    <dl>
+      <dt>位置</dt>
+      <dd><code>src/api/server.ts</code>（<code>/agent</code> 路由，约 190-215 行）（<code>/agent</code> 路由<strong>在 Bearer 校验之前</strong>返回 HTML，并把令牌替换进页面：<code>.replace(/__STUDIO_API_TOKEN__/, JSON.stringify(token))</code>；<code>/agent.css</code>、<code>/agent.js</code> 同样免鉴权）；<code>src/ui/agent.html</code>（<code>window.__STUDIO_TOKEN__ = "__STUDIO_API_TOKEN__"</code>）；<code>src/api/main.ts</code>（配置写盘用 <code>mode: 0o600</code>）；<code>src/host/workspace.ts</code>（配置路径 <code>~/.config/deepseek-studio/config.json</code>，同一文件里还存着 HMAC <code>secret</code>）</dd>
+      <dt>机理</dt>
+      <dd>设计文档里的威胁模型是「本地进程本就能读 config.json，所以把令牌发给面板页不算额外泄漏」。这在<strong>单用户</strong>机器上基本成立，但有两个缺口：① 免鉴权的 <code>/agent</code> 把令牌变成了「一次 GET 就能拿到的东西」，任何以更低权限运行的本机进程（浏览器插件、别的用户、沙箱化应用）都能取到，而不再需要文件读取权限；② Node 的 <code>mode</code> 参数在 Windows 上<strong>不生效</strong>（Node 文档明确：Windows 不支持 POSIX 权限位），所以那行 <code>0o600</code> 给人以虚假的安全感，实际保护来自 <code>%USERPROFILE%</code> 的默认 ACL，而 <code>~/.config</code> 这个目录在 Windows 上并非受保护路径。</dd>
+      <dt>触发条件</dt>
+      <dd><code>curl http://127.0.0.1:8756/agent | findstr STUDIO_TOKEN</code> 即可从本机任意进程取到令牌；拿到令牌后 <code>/v1/tools/execute</code> 直接可用（见 P0-2），<code>/agent-ws</code> 也可连。</dd>
+      <dt>影响面</dt>
+      <dd>「本机其他程序」这一威胁面在产品叙事里被当作不可信源，但实际只需一次 HTTP GET。同一台机器上多用户共用时，config.json 里的 HMAC secret 泄漏意味着 grant 可被离线伪造。</dd>
+      <dt>改法</dt>
+      <dd>① 面板页不要内嵌长期令牌：改为宿主在窗口创建时通过 Tauri IPC / 一次性 nonce 交换短暂凭据；至少让 <code>/agent*</code> 也走鉴权（面板窗口可以用一次性的、与窗口生命周期绑定的短期 token）；② Windows 上用 DPAPI（或 Credential Manager）保存 secret，而不是靠文件模式位；③ 令牌与 secret 分开存放，secret 永不通过任何网络端点暴露；④ 令牌轮换已经在实现里（<code>rotateApiToken</code>），把它接到「每次启动/每次面板重连」这种自然端口上。</dd>
+    </dl>
+    <div class="verdict">判定：<strong>确定有问题</strong>（弱化面），其中「本机同用户进程不可信」是否纳入威胁模型属<strong>有风险</strong>的设计取向。</div>
+  </div>
+</div>
+
+<div class="defect">
+  <div class="dh"><span class="chip c-p1">P1-3</span><span class="t">持久化基本缺席：存储桥是内存实现、grant 在内存、审计环在内存，且没有会话/任务历史落盘</span></div>
+  <div class="db">
+    <dl>
+      <dt>位置</dt>
+      <dd><code>src/bridge/storage.ts:395</code>（<code>backend: options.localBackend ?? createMemoryStorageKvBackend()</code>，即 MV3 <code>chrome.storage</code> 语义的默认后端是内存 Map）；<code>:32-35</code>（<code>StorageKvBackend</code> 接口已经为「原子写」预留形状，注释写明「后续由 Rust KV 实现」）；<code>src/host/grant-store.ts</code>（<code>createInMemoryGrantStore</code>）；<code>src/host/audit.ts</code>（环形缓冲，默认容量 200）；<code>docs/architecture.md §2.2</code>（承诺的是 Rust 侧 <code>kv_store.rs</code> 原子写 JSON）</dd>
+      <dt>机理</dt>
+      <dd>当前所有「状态」都活在进程内存里，只有三个值（token/secret/workspaceRoot/policyMode）落在 config.json。对于「v0.x 原型」这本身不算错，问题在于它和已经交付的两个卖点互相矛盾：<strong>审计</strong>被定义为「宿主本机一旦被命令执行就必须能回溯」的地基（<code>audit.ts</code> 抬头原文），却只留最近 200 条且重启即失；<strong>常驻宿主</strong>被定义为「7×24 后台任务」的前提，却没有任务与结果的持久化。</dd>
+      <dt>触发条件</dt>
+      <dd>宿主进程重启（开发期每次 <code>tauri:dev</code> 都会重启）、异常退出、机器重启。</dd>
+      <dt>影响面</dt>
+      <dd>① 事故后无法复盘（最需要审计的场景恰好没有审计）；② 模型多步任务中断即彻底丢失上下文，无法续跑；③ <code>chrome.storage</code> 桥在页面刷新/重注入后丢状态，而上游 <code>AGENTS.md</code> 里那些「storage key 不变量」在桌面上无载体。</dd>
+      <dt>改法</dt>
+      <dd>① 先把审计改成 append-only 的 NDJSON（<code>%LOCALAPPDATA%\deepseek-studio\audit.log</code> + 简单轮转），成本极低、收益最大；② 实现一个 <code>FileStorageKvBackend</code>（临时文件 + rename 原子替换）接到已经存在的 <code>StorageKvBackend</code> 接口上，先不用等 Rust；③ 给会话/任务定义最小可持久化的 schema（taskId、步数、每步工具与结果摘要），这样「中断可续」才有基础；④ 配置写盘补原子性（当前是整包覆盖）。</dd>
+    </dl>
+    <div class="verdict">判定：<strong>确定有问题</strong>（与自述能力不符）。</div>
+  </div>
+</div>
+
+<div class="defect">
+  <div class="dh"><span class="chip c-p1">P1-4</span><span class="t">对外承诺的模型接口后面是假后端；且唯一一处引用上游的 import 说明符写错，永远拿不到真实实现</span></div>
+  <div class="db">
+    <dl>
+      <dt>位置</dt>
+      <dd><code>src/host/desktop-host.ts:328</code>（<code>const backend = createFakeOfficialBackend();</code> → 传给 <code>createApiServer</code>）；<code>src/api/official-backend.ts:15-30</code>（<code>createFakeOfficialBackend</code> 返回固定的 chunk 序列）与 <code>:40-50</code>（<code>createUpstreamOfficialBackend()</code> 内 <code>await import('deepseek-pp/src/core/deepseek/official-api')</code>）；<code>tsconfig.json</code> 的 <code>paths</code> 把 <code>deepseek-pp/*</code> 映射到 <code>./deepseek-pp/src/*</code>，因此该说明符会解析成 <code>./deepseek-pp/src/src/core/deepseek/official-api</code>（多了一层 <code>src</code>，不存在）；同时 <code>tsconfig</code> 的 <code>exclude</code> 已把 <code>deepseek-pp</code> 排除，故类型检查也不会报</dd>
+      <dt>机理</dt>
+      <dd>HTTP 面按 OpenAI 形状认真实现（SSE、<code>reasoning_content</code> 分离、<code>[DONE]</code> 收尾、限流、队列可观测），但驱动器是假的 —— 于是「接口契约完整」是<strong>表面完整</strong>。而唯一可能提供真实实现的路径在<em>解析层</em>就是坏的，属于「写了但没接线」，并且因为用了变量形式的动态 import，静态检查完全看不见。</dd>
+      <dt>触发条件</dt>
+      <dd>任何调用 <code>POST /v1/chat/completions</code> 的客户端（文档与路线图都把它描述为「外部 agent 可用」）。</dd>
+      <dt>影响面</dt>
+      <dd>外部接入方会先拿到固定假内容且不易察觉（形状完全合法）；文档/路线图中「外部 agent HTTP 接口基础设施已备好」的说法在当前版本不成立。这也是最容易在演示中造成误解的一条。</dd>
+      <dt>改法</dt>
+      <dd>① 短期：给假后端一个显式标记（响应头或 <code>model</code> 前置 <code>fake:</code>），或在未接真实后端时让 <code>/v1/chat/completions</code> 返回 501 而不是编造内容；② 修正说明符为 <code>deepseek-pp/core/deepseek/official-api</code>（或按 <code>paths</code> 的真实语义写），并补一条「模块可加载」的测试；③ 把 WebEngine 接到 HTTP 面（同一个 <code>ModelEngine</code> 抽象已经在 <code>engine/model-engine.ts</code> 里定义好了），让「网页模型」成为 <code>/v1/chat/completions</code> 的真实后端 —— 这一步的架构成本很低，收益是把两条产品线（面板/外部 API）合并到一条引擎上。</dd>
+    </dl>
+    <div class="verdict">判定：<strong>确定有问题</strong>（功能未接线 + 说明符错误）。</div>
+  </div>
+</div>
+
+<div class="defect">
+  <div class="dh"><span class="chip c-p1">P1-5</span><span class="t">交付链路缺一半：宿主没有构建步骤（靠 <code>tsx</code> 跑源码），无 CI、无签名、无更新与回滚</span></div>
+  <div class="db">
+    <dl>
+      <dt>位置</dt>
+      <dd><code>package.json</code>（<code>"start": "tsx src/api/main.ts"</code>；<code>build</code> 只有 <code>build:inject</code>；<code>tsx</code>/<code>typescript</code>/<code>vitest</code>/<code>esbuild</code>/<code>@types/*</code> 全在 <code>devDependencies</code>，且<strong>没有 <code>dependencies</code> 段</strong>）；<code>src-tauri/tauri.conf.json</code>（<code>frontendDist: "../dist"</code>，而 <code>dist/</code> 里只有一个 <code>index.html</code> + <code>agent-panel.js</code>，两个窗口实际都用 External URL 加载，该字段不生效）；根目录 <code>Test-Path .github</code> → false</dd>
+      <dt>机理</dt>
+      <dd>注入侧有完整构建（esbuild → IIFE → <code>include_str!</code>），宿主侧没有：生产运行需要目标机器上有 Node 运行时 + 安装 devDependencies 才能执行 TypeScript 源码。生产态拉起宿主的开关 <code>STUDIO_SPAWN_HOST</code> 默认<strong>关闭</strong>，也就是说「双击安装后打开应用」目前没有宿主。</dd>
+      <dt>触发条件</dt>
+      <dd>任何「把应用给别人用」的尝试。</dd>
+      <dt>影响面</dt>
+      <dd>决定了这个项目当前<strong>能否交付</strong>：对作者本人可用（本机有完整环境），对任何他人不可用。同时没有 CI 意味着 185 个测试、typecheck、注入构建全靠本地手动跑，回归风险无兜底。</dd>
+      <dt>改法</dt>
+      <dd>① 把宿主编译成单文件 JS（esbuild <code>--bundle --platform=node</code>，把 <code>ws</code> 打进产物）→ 作为 Tauri sidecar/bundled resource 分发，彻底去掉对 <code>tsx</code> 与 devDependencies 的生产依赖；② <code>package.json</code> 补 <code>dependencies</code> 段（<code>ws</code> 至少是运行时依赖）；③ 加最小 CI（<code>typecheck</code> + <code>test</code> + <code>build:inject</code> + 宿主编译产物存在性检查），这一步不需要服务器，GitHub Actions 免费额度足够；④ 把 <code>frontendDist</code> 与两个 External 窗口的矛盾理清（要么做真正的本地首页，要么删掉该配置）；⑤ 版本号与发布说明打通（见 P1-6）。</dd>
+    </dl>
+    <div class="verdict">判定：<strong>确定有问题</strong>（属产品定位决策缺口，需作者拍板「自用工具」还是「可分发应用」）。</div>
+  </div>
+</div>
+<div class="defect">
+  <div class="dh"><span class="chip c-p1">P1-6</span><span class="t">主设计文档描述的是另一套架构，版本号三处错位：文档目前在「反向误导」</span></div>
+  <div class="db">
+    <dl>
+      <dt>位置</dt>
+      <dd><code>docs/architecture.md</code>（v0.1，2026-10-07）正文描述的进程模型含 <code>kv_store.rs</code>、<code>http_api.rs</code>、<code>nav.rs</code>、<code>tool_host.rs</code>、独立模式（PoW + 私有 API）、监听 <code>localhost:8765</code>、目录含 <code>src/content.js</code> / <code>vite.config.ts</code> / <code>README.md</code>；<code>docs/版本路线图.md</code> 与 <code>.codebuddy/plans/v0_5_*.md</code>、<code>v0_6_*.md</code> 则显示 v0.5/v0.6 已交付；而 <code>package.json</code> / <code>src-tauri/Cargo.toml</code> / <code>src-tauri/tauri.conf.json</code> 三处 <code>version</code> 仍是 <code>0.4.0</code>；根目录无 <code>README.md</code>、无 <code>LICENSE</code></dd>
+      <dt>机理</dt>
+      <dd>这是一个典型的「文档先行、实现改道、没有回头改文档」的漂移。区别在于它发生在<strong>主架构文档</strong>上，而且那份文档里许多数字具体到文件名级别 —— 具体到让人相信它，于是任何按文档行动的人都会踩空。（项目自己其实已经发现了这个问题：<code>docs/architecture-review.md</code> 就是针对这份文档做的缺口评审，但评审没有把文档本身改掉。）</dd>
+      <dt>触发条件</dt>
+      <dd>任何人（含三个月后的作者、以及任何一次 AI 辅助开发）以 <code>docs/architecture.md</code> 为起点理解项目。</dd>
+      <dt>影响面</dt>
+      <dd>① 交接与评审成本被推高，且会产生错误结论（例如「这是 Rust 宿主项目」）；② 版本号错位使「当前是什么状态」无法用一行确定，路线图与实际交付无法对齐；③ 缺失根 README 意味着连「怎么跑起来」都要靠猜（实际入口是 <code>npm run tauri:dev</code> 与 <code>npm start</code>）。</dd>
+      <dt>改法</dt>
+      <dd>① 给 <code>docs/architecture.md</code> 顶部加一行状态标注（<em>目标态 v0.7 / 与当前实现不符，现状见 docs/版本路线图.md</em>），或者干脆把它改名为 <code>architecture-target.md</code>；② 补一份一页的根 README：这是什么、怎么跑（三条命令）、目录职责、当前版本与已知缺口；③ 统一版本号：把三处 <code>0.4.0</code> 提到与代码事实一致的版本（哪怕是 <code>0.6.0-alpha</code>），并在路线图里维护「已交付/未交付」。④ 顺手写清 LICENSE 状况：<code>deepseek-pp/src</code> 是 Apache-2.0 快照，若将来要分发，署名与 NOTICE 义务需要在根目录体现。</dd>
+    </dl>
+    <div class="verdict">判定：<strong>确定有问题</strong>（文档一致性，影响所有后续工作）。</div>
+  </div>
+</div>
+
+<div class="defect">
+  <div class="dh"><span class="chip c-p1">P1-7</span><span class="t">智能体循环的「这一步发生了什么」建立在一个全局计数器上：不知道成败、不知道内容、还会串扰</span></div>
+  <div class="db">
+    <dl>
+      <dt>位置</dt>
+      <dd><code>src/host/desktop-host.ts:536-538</code>（<code>hub.onToolCall</code> → <code>agentToolCounter.current += 1</code>，一个<strong>进程级</strong>共享对象）；<code>src/host/engine/web-engine.ts:55</code> + <code>:91</code>（本轮起点记 <code>counterStart</code>，结束后用 <code>current - counterStart</code> 得出「本步工具调用数」）；<code>src/host/agent-loop.ts:19-33</code>（循环只依赖 <code>toolCalls</code> 与 <code>RAW_TOOL_TAG_RE</code> 决定是否续跑与是否纠偏）；<code>src/host/page-runtime.ts:118-145</code>（<code>tool-call</code> 分支在<strong>执行前</strong>就调 <code>onToolCall</code>）</dd>
+      <dt>机理</dt>
+      <dd>作者在 <code>agent-loop.ts</code> 抬头写下的设计取舍是对的：「本模块不解析工具标签，避免双重解析/双重执行」。但落地时把「有没有工具调用」这个<em>结果</em>降级成了「计数器有没有变」这个<em>旁证</em>：① 计数在<strong>执行前</strong>自增，所以失败/被拒绝的调用同样计入「已执行完毕」，循环随后会向模型发「工具已执行完毕，结果已回填」的 nudge（<code>agent-loop.ts:21-23</code>），而实际上可能什么都没做成；② 计数器属于进程而非某次会话，用户在同一个聊天页里手工提问触发的工具调用（v0.6 桥对页面**所有**工具调用都会投递）会被算进面板那一步的差额里；③ 结果内容不进入控制流，因此「纠偏」「重试」「失败上报」都缺少依据。</dd>
+      <dt>触发条件</dt>
+      <dd>① 工具执行失败或被策略拒绝时（面板仍会被告知「已执行完毕」）；② 面板对话与人工对话同时使用同一浏览器页时（串扰）。</dd>
+      <dt>影响面</dt>
+      <dd>恰恰是产品核心（多步自主执行）的可靠性边界：模型可能基于「其实失败了」的假设继续推理，用户看到的工具卡片与真实结果不一致；将来加多会话会让这个计数器彻底不成立。</dd>
+      <dt>改法</dt>
+      <dd>① 把「工具调用」从计数器改成<strong>事件对象</strong>：<code>{callId, tool, ok, error, durationMs, stepId}</code>，由 <code>onToolResult</code>（已经存在）驱动循环，而不是由 <code>onToolCall</code> 驱动；② 给 agent 每一步分配 <code>stepId</code> 并让页端投递带上它（<code>callId</code> 已经具备这个条件），从而把「面板触发的调用」与「人工触发的调用」分开；③ 把拒绝/失败原因结构化回填给模型（拒绝原因回填在 <code>docs/设计稿_智能体面板.md</code> 里已经写在设计里，实现没跟上）；④ 单步超时对 <code>chat-insert/send/read</code> 分别设阈值，而不是只有整体 120 s。</dd>
+    </dl>
+    <div class="verdict">判定：<strong>确定有问题</strong>（控制流依据错位）。串扰部分另标为<strong>有风险</strong>：单人单页使用时不明显，一旦多页即必然发生。</div>
+  </div>
+</div>
+
+<h3>较轻微但值得一起清掉的设计问题（P2）</h3>
+
+<div class="defect">
+  <div class="dh"><span class="chip c-p2">P2-1</span><span class="t">单实例假设写进了机制里：多页、多面板、多窗口都没有定义</span></div>
+  <div class="db">
+    <dl>
+      <dt>位置</dt>
+      <dd><code>src/host/page-runtime.ts:77-84</code>（<code>pickClient()</code> 返回「第一个未标记不可信的连接」，注释自承「当前单页场景」）；<code>src/host/agent-channel.ts:81-83</code>（所有 agent 事件广播给<strong>每个</strong>已连接面板）；同文件 <code>:127-139</code>（<code>agent-busy</code> 只是拒绝第二次 <code>send</code>，不区分来源）；<code>src/host/desktop-host.ts</code>（<code>policyMode</code>/<code>mutableWorkspace</code> 是闭包内单例）</dd>
+      <dt>机理</dt>
+      <dd>「唯一页面 + 唯一面板」被隐式当成不变量，但没有一处断言它。谁改了档位，所有面板都变；某个面板发起的任务，事件会流向所有面板；两个页面同时存在时，工具派发会随机落到其中一个。</dd>
+      <dt>触发条件</dt>
+      <dd>开第二个面板窗口（<code>main.rs</code> 已经会建一个 <code>agent</code> 窗口，将来加多窗口或多标签页很自然）、或在同一应用里再加载一个受信页。</dd>
+      <dt>影响面</dt>
+      <dd>状态互相覆盖、事件错投、权限显示与实际不符 —— 属于「现在能跑，长到一定规模就会痛」的典型。</dd>
+      <dt>改法</dt>
+      <dd>① 显式化会话模型：<code>sessionId</code>（面板）↔ <code>pageId</code>（页面）一对多绑定，事件按 session 定向投递；② 档位与工作区要么进程级但显式标注为「全局设置」，要么下沉到 session；③ 单实例若确实是当前设计，就在连接处<strong>拒绝</strong>第二个（fail-closed），而不是让它悄悄参与竞争。</dd>
+    </dl>
+    <div class="verdict">判定：<strong>确定有问题</strong>（并发模型缺失），在单窗口自用阶段表现为<strong>有风险</strong>。</div>
+  </div>
+</div>
+
+<div class="defect">
+  <div class="dh"><span class="chip c-p2">P2-2</span><span class="t">HTTP 面若干健壮性缺口：无请求体上限、解析失败按 500 报、无请求超时</span></div>
+  <div class="db">
+    <dl>
+      <dt>位置</dt>
+      <dd><code>src/api/server.ts:394-401</code>（<code>readBody()</code> 无长度上限地收集全部 chunk）；<code>:303</code>（<code>JSON.parse(raw)</code> 未包 try/catch，畸形 JSON 会走外层 catch 变成 <strong>500 internal</strong> 而不是 400）；<code>:361-364</code>（外层 catch 把 <code>err.message</code> 原文回传客户端）；<code>:294-300</code>（并发超限直接 429，而 <code>queued</code>/<code>depth</code> 指标仍以「排队」语义对外暴露，两者口径不一致）；<code>src/api/compat.ts:isUnimplementedPath</code>（未实现路由靠硬编码名单）</dd>
+      <dt>机理</dt>
+      <dd>都是「本地服务所以先这样」的合理简化，但它们叠加起来使 8756 变成一个对本机任何进程开放的、可被轻易打满内存/日志的端点；同时「500 + 内部错误原文」会把文件路径等实现细节泄漏给客户端。</dd>
+      <dt>触发条件</dt>
+      <dd>任何本机进程或脚本（包括 P0-1 提到的那条路径）向 8756 发大体积请求或畸形请求。</dd>
+      <dt>影响面</dt>
+      <dd>宿主进程可被撑爆内存或刷满日志；错误响应泄漏宿主目录结构；外部客户端拿到 500 会误判为服务端 bug 而非自己请求格式错。</dd>
+      <dt>改法</dt>
+      <dd>① <code>readBody</code> 加 <code>maxBytes</code>（例如 1 MB）并在超限时 413；② 端点内独立 try/catch → 400 <code>invalid_json</code>；③ 错误响应只回稳定 code，细节进日志/审计；④ 并发语义统一：要么真的排队（那 <code>queued</code> 才成立），要么改名并让文档一致；⑤ 未实现路由改为「显式声明式表」而不是字符串比较。</dd>
+    </dl>
+    <div class="verdict">判定：<strong>确定有问题</strong>（健壮性细节，修起来很快）。</div>
+  </div>
+</div>
+
+<div class="defect">
+  <div class="dh"><span class="chip c-p2">P2-3</span><span class="t">同意弹窗与同域直连桥都活在「不可信页面同一个 JS 世界」里</span></div>
+  <div class="db">
+    <dl>
+      <dt>位置</dt>
+      <dd><code>src/ui/consent.ts:104-160</code>（用 <code>document.createElement</code> 把遮罩与卡片<strong>注入聊天页 DOM</strong>，z-index 2147483646，超时/Esc/点遮罩一律 deny）；<code>src/inject/direct-target.ts:18-27</code>（直连桥的底层是一个<strong>模块级</strong> <code>EventTarget</code> 总线，按 origin 分桶）；<code>src/inject/direct-port.ts:27-41</code>（用 <code>__session</code> 字段做消息过滤）</dd>
+      <dt>机理</dt>
+      <dd><code>direct-target/direct-port</code> 用「页面脚本读不到的模块作用域 + 私有 sessionId」替代了 <code>window.postMessage</code>，这一步比上游的 postMessage 桥确实更安全，注释里的判断成立。<strong>但同一个 JS 世界意味着页面脚本可以 hook 全局原型</strong>：<code>EventTarget.prototype.addEventListener/dispatchEvent</code>、<code>document.createElement</code>、<code>setTimeout</code> 都还在页面脚本手里，因此页面对这条桥具备「<em>观测与丢弃</em>」能力（拿不到伪造能力）；同意弹窗既然是页内 DOM，也就可能被页面伪装或遮盖（用户点到的「允许」不一定是我们那张卡片）。作者在 <code>integrity.ts</code> 抬头已经写明「这是检测而非阻止」，态度是清醒的。</dd>
+      <dt>触发条件</dt>
+      <dd>页面脚本（含第三方注入、浏览器扩展、页面自身被篡改的资源）主动干扰；或页面自身 UI 与弹窗层叠冲突。</dd>
+      <dt>影响面</dt>
+      <dd>同意闸门是这套系统唯一的人工确认环节，它的可信度不该依赖页面的善意。当前实现的强度相当于「在没有隔离的世界里放一个自绘弹窗」。</dd>
+      <dt>改法</dt>
+      <dd>① 把同意 UI 移出被注入页面：放在宿主侧的 <code>/agent</code> 页面（面板）或一个独立的 Tauri 小窗口，由 WS 推给它 —— 这是本项目架构上最容易做对的一步（面板已经与宿主有鉴权通道）；② 若必须在页内弹，则至少用独立 iframe + 顶层 window 引用校验，并把「同意来自页面」标记为低可信来源；③ 把直连桥的传输也搬到ws（页端已经有 host-client），让「页内桥」只承担 DOM 能力，不承担决策流转。（<code>docs/architecture-review.md</code> 的 P0-#1 方案 b 已经提出了同一方向：只把传输换成同域直连，其余保持隔离级 —— 建议再进一步。）</dd>
+    </dl>
+    <div class="verdict">判定：<strong>有风险</strong>（设计取向；当前强度在单用户自用下可接受，作为安全卖点则不足）。</div>
+  </div>
+</div>
+
+<div class="defect">
+  <div class="dh"><span class="chip c-p2">P2-4</span><span class="t">「回复结束」靠轮询 DOM + 两次快照一致来猜</span></div>
+  <div class="db">
+    <dl>
+      <dt>位置</dt>
+      <dd><code>src/host/engine/web-engine.ts:71-92</code>（每 1500 ms 调一次 <code>chat-read</code>；条件为「文本非空、与基线不同、且与前一次快照完全一致」，连续 2 次满足即判定结束；其余靠 120 s 看门狗 <code>timedOut</code>）；<code>src/capabilities/chat-read.ts</code>（DOM 文本提取）</dd>
+      <dt>机理</dt>
+      <dd>用启发式替代协议信号：没有利用页面自身的事件/结束标志（上游有流式解析能力，v0.6 已经接入了 MAIN-world 拦截器，本可直接观察响应流结束）。于是「慢但还在生成」与「已经结束」在快照层面可能长得一样；反过来，流式渲染分块节流时又可能把「仍在输出」误判为稳定。</dd>
+      <dt>触发条件</dt>
+      <dd>长回复、含代码块/表格的回复（DOM 文本反复重排）、页面改版导致选择器漂移、网络抖动导致 <code>chat-read</code> 单次失败（代码里是 <code>continue</code>，即静默跳过）。</dd>
+      <dt>影响面</dt>
+      <dd>截断（把半截回复当完整结果交给模型/用户）或空转（每次都要等满 120 s）。两种都是「看起来能跑但偶发错误」的形态，且难以复现。</dd>
+      <dt>改法</dt>
+      <dd>① 优先用拦截器已有的流式观察能力判断响应结束（<code>done</code> 信号或明确的事件），DOM 轮询降级为兜底；② 稳定性判据加入「生成中标志」（页面通常有停止按钮/生成态类名）；③ 连续读取失败应当计数并在阈值后报错，而不是无限 <code>continue</code>；④ 把选择器集中到 <code>src/capabilities/dom.ts</code> 一处并加「页面结构变化」自检（现在选择器已有集中，但缺漂移告警）。</dd>
+    </dl>
+    <div class="verdict">判定：<strong>有风险</strong>（这类架构天然脆弱，属于「知道有风险但不得不接受」的设计；关键是别让它成为唯一判据）。</div>
+  </div>
+</div>
+
+<div class="defect">
+  <div class="dh"><span class="chip c-p2">P2-5</span><span class="t">工程基建与仓库卫生：没有 git、没有 README/LICENSE、根目录堆着调试残留</span></div>
+  <div class="db">
+    <dl>
+      <dt>位置</dt>
+      <dd>根目录实测：<strong>无 <code>.git</code></strong>、无 <code>.github</code>、无 <code>README.md</code>、无 <code>LICENSE</code>；存在 <code>build-out.txt</code>、<code>host-out.txt</code>、<code>tsc-out.txt</code>（0 字节）、<code>tauri.log</code>、<code>tauri.err</code>、<code>tauri_dev.log</code>、<code>vitest-out.txt</code>、<code>vitest.config.ts.timestamp-1791593713869-*.mjs</code>、以及一个文件名为 <code>'</code> 的 0 字节文件；<code>src/types/</code> 空目录；<code>tmp-linkcheck.ps1</code></dd>
+      <dt>机理</dt>
+      <dd>这是「AI 辅助 + 单人快速迭代」的典型沉积物：每次构建/测试的重定向输出、配置工具的临时文件、一次手滑创建的怪名字文件都留在了根目录，而项目本身没有版本控制来区分「该留下」与「该忽略」。</dd>
+      <dt>触发条件</dt>
+      <dd>立即：任何一次想回退、想 diff、想交给他人的动作。</dd>
+      <dt>影响面</dt>
+      <dd><strong>没有 git 是本条里最贵的一项</strong>：210 个文件、约 7,000 行自有代码 + 1,133 个上游快照文件，却没有任何历史可回溯，等于把 P0/P1 的修复过程也暴露在「改错无法回退」的风险下。残留产物与空目录则持续污染目录列表，让人分不清哪些是源码。</dd>
+      <dt>改法</dt>
+      <dd>① <code>git init</code> + 一份把 <code>node_modules/</code>、<code>dist/</code>、<code>src-tauri/target/</code>、<code>*-out.txt</code>、<code>tauri*.log</code>、<code>vitest.config.ts.timestamp-*</code> 排除掉的 <code>.gitignore</code>，然后立刻打一个 baseline commit（这是所有后续改动的前提）；② 把调试产物挪到 <code>tmp/</code> 或删掉，删掉那个名为 <code>'</code> 的文件与空目录 <code>src/types/</code>；③ 补最小 README 与 LICENSE 声明（含上游 Apache-2.0 的署名义务）；④ 把 <code>docs/architecture.md</code> 与实现对齐（见 P1-6）。</dd>
+    </dl>
+    <div class="verdict">判定：<strong>确定有问题</strong>（工程基线缺失，成本低、收益高）。</div>
+  </div>
+</div>
+
+<h3>顺带记录的实现级问题（不属于设计缺陷，但顺手可改）</h3>
+<table>
+  <thead><tr><th style="width:230px">位置</th><th>问题</th><th style="width:170px">建议</th></tr></thead>
+  <tbody>
+    <tr><td><code>src/capabilities/shell.ts</code>（<code>DEFAULT_MAX_OUTPUT_BYTES</code> / <code>appendCapped</code>）</td><td>输出上限常量名为 <code>DEFAULT_MAX_OUTPUT_BYTES</code>（64 KB），但 <code>appendCapped</code> 按 <code>String.length</code>（UTF-16 字符数）截断 —— 中文输出实际最多可到 4 倍预算；且 stdout/stderr 各算一份，未合并计量</td><td>改用 <code>Buffer.byteLength</code> 计量，或把常量改名并在文档中说明是字符数</td></tr>
+    <tr><td><code>src/api/server.ts:303</code></td><td><code>JSON.parse</code> 未就地捕获，畸形请求体被外层 catch 变成 500 <code>internal</code>（应为 400）</td><td>端点内 try/catch → 400</td></tr>
+    <tr><td><code>src/api/official-backend.ts</code>（<code>createUpstreamOfficialBackend</code> 内）</td><td>动态 import 说明符 <code>deepseek-pp/src/core/deepseek/official-api</code> 与 <code>tsconfig paths</code> 的映射规则不一致（会解析成 <code>deepseek-pp/src/src/…</code>），且因是变量形式的动态 import 而躲过静态检查</td><td>修正说明符；加一条「模块可加载」单测</td></tr>
+    <tr><td><code>src/host/host-token.ts</code> 的 <code>verify()</code></td><td><code>verify()</code> 只在 <code>exp</code> 是数字时检查过期；缺 <code>exp</code> 的令牌会被接受（同文件 <code>authority.ts:66</code> 亦为 <code>typeof === 'number' &amp;&amp; …</code>）</td><td>把 <code>exp</code> 改为必填并校验类型</td></tr>
+    <tr><td><code>src/host/authority.ts</code> 的 <code>verifyGrant()</code></td><td>grant 校验只比对 <code>scope</code>，<code>documentId</code>/<code>sessionId</code>/<code>origin</code> 未与存储记录交叉比对（P0-2 的一部分）</td><td>逐字段比对</td></tr>
+    <tr><td><code>src/host/page-runtime.ts</code> 的超时分支（约 164-192 行）</td><td>超时后只从 pending 表删除，未取消页端尚在执行的操作（页端仍会跑完并回一条无人接收的 <code>result</code>）</td><td>超时消息里带上 <code>abort</code> 语义，页端据此停止</td></tr>
+    <tr><td><code>src/host/agent-channel.ts</code>（token 比较处，约 87-97 行）</td><td>WS 令牌比较用 <code>!==</code>（非常量时间），且令牌放在 query string 里（会进代理/日志）</td><td>与 <code>api/auth.ts</code> 一样用常量时间比较；令牌改走首帧或子协议</td></tr>
+    <tr><td><code>src/inject/lifecycle.ts</code> 全文</td><td>resource scope 的所有采集方法都是 noop、<code>snapshot()</code> 恒为 0，「stop 后资源归零」这条不变量没有验证载体</td><td>用真实的 addEventListener/setInterval 计数实现 scope，或删掉这条无效不变量</td></tr>
+  </tbody>
+</table>
+<h2><span class="num">五</span>给开发者的建议</h2>
+
+<p>按「投入产出比 × 是否可以立刻做」分三档。第一档的共同特征是：<strong>纯加法或小改，不引入新架构概念，但能立刻提高系统的下限</strong>。</p>
+
+<div class="card">
+<h3>A. 建议立刻做（本周内，每项 ≤ 半天）</h3>
+<ol>
+  <li><strong><code>git init</code> + <code>.gitignore</code> + 一个 baseline commit。</strong>这是最便宜也最贵的一项：没有它，下面每一项修复都失去「改错了能退回去」的保障。<code>.gitignore</code> 至少覆盖 <code>node_modules/</code>、<code>dist/</code>、<code>src-tauri/target/</code>、<code>*.log</code>、<code>*-out.txt</code>、<code>vitest.config.ts.timestamp-*</code>、<code>src-tauri/inject/entry.js</code>（构建产物）。</li>
+  <li><strong>给 <code>/studio</code> 加身份（P0-1）。</strong>先做最低成本版本：握手时校验 <code>Origin</code> 头 + 要求首帧携带共享秘密（可直接复用已经实现的 <code>createBearerAuthenticator</code> 与令牌环），然后<strong>补一条测试</strong>：无凭据连接必须被立即关闭。这一条做完，本报告里 90% 的「外部可达」风险消失。</li>
+  <li><strong>让 <code>invokeTool</code> 不再自带宽恕（P0-2）。</strong>把 <code>origin/documentId/sessionId</code> 从常量改为「由调用路径传入的真实身份」，并给三条入口（页面 ws、HTTP API、agent loop）各打上真实标记；<code>verifyGrant</code> 逐字段比对。改动量小，但会把白名单与审计从「装饰」变成「证据」。</li>
+  <li><strong>审计落盘（P1-3 的第一步）。</strong>把审计环同时写一份 append-only NDJSON（<code>%LOCALAPPDATA%\deepseek-studio\audit.ndjson</code>，带简单轮转）。这是「引入 shell 能力」时作者自己给出的理由，成本一个下午。</li>
+  <li><strong>默认档位改成 <code>workspace</code>，或至少让「为什么放过」可见（P0-3）。</strong>数据（<code>reason</code> + <code>riskFlags</code>）已经在手里，缺的只是展示与默认值。</li>
+  <li><strong>清掉根目录残留（P2-5）并补一页 README（P1-6）。</strong>顺手删掉名为 <code>'</code> 的文件与空目录 <code>src/types/</code>，README 里写清「怎么跑、当前版本、已知缺口、文档哪份是最新的」。</li>
+</ol>
+</div>
+
+<div class="card">
+<h3>B. 建议放进下一个版本（v0.7 / M2 之前必须完成）</h3>
+<ol>
+  <li><strong>把会话模型定下来（P2-1）。</strong>session(page) 绑定、事件定向投递、单实例要么支持要么显式拒绝。现在面板与档位是进程级单例，越晚改越贵。</li>
+  <li><strong>把「这一步发生了什么」从计数器换成事件（P1-7）。</strong>由 <code>onToolResult</code>（已存在）驱动循环，携带 <code>{callId, stepId, ok, error, durationMs}</code>，并让页端投递带上发起者标识以隔离人工对话的串扰。</li>
+  <li><strong>同意 UI 搬到宿主侧（P2-3）。</strong>面板已经与宿主有鉴权通道、工作区选择也已经走「宿主侧对话框优先」，同意模态是同一类决策的最后一块遗留。搬走之后，人机确认环节就不再依赖被注入页面的善意。</li>
+  <li><strong>宿主打包 + 最小 CI（P1-5）。</strong>esbuild 把宿主编成单文件 JS 作为 bundled resource，<code>node_modules</code> 只留运行时依赖；CI 跑 <code>typecheck + test + build:inject + 宿主编译</code>。做完这一步，项目才具备「能被别人跑起来」的最低门槛。</li>
+  <li><strong>把 WebEngine 接到 <code>/v1/chat/completions</code>（P1-4）。</strong>把假后端退回测试替身。这样「面板」与「外部 API」两条产品线合并到同一个引擎上，也顺手修掉了那个错误的 import 说明符。</li>
+  <li><strong>完整性降级可恢复 + 状态可见（P1-1）。</strong>连续 N 次复查正常即复位，并把「页面被标记不可信」显示在面板上（现在用户只看到「引擎不可用」）。</li>
+  <li><strong>配置与密钥（3.2 / P1-2）。</strong>配置写入改原子（临时文件 + rename）、加 schema 与版本号、Windows 上用 DPAPI 保存 secret；令牌不再内嵌进免鉴权页面。</li>
+</ol>
+</div>
+
+<div class="card">
+<h3>C. 值得先想清楚，再决定要不要写（现在只需留出接口）</h3>
+<ol>
+  <li><strong>产品定位：自用工具还是可分发应用？</strong>这一条决定后面所有取舍：签名/自动更新/权限模型/崩溃恢复/隐私声明要不要做。当前代码气质更像「作者本人的强力工具」，但三条最重的安全机制（授权链、审计、同意闸门）又明显在向"可交付"的形态对齐 —— 两者需要一个明确的结论，否则会持续同时做两件事。</li>
+  <li><strong>上游复用的策略需要收敛。</strong>现在 <code>deepseek-pp/src</code> 是 1,133 个文件的只读快照，运行时实际只被一处动态 import 引用（且说明符是错的），而桥、生命周期、拦截器都在 <code>src/inject</code> 下重写了一份。要么真正接入 <code>core/**</code>（并接受随之而来的耦合与升级成本），要么把它明确降级为"参考源码"并从运行时依赖中彻底摘出去、在文档里写清。中间的模糊态最贵：它让人以为复用了，实际上维护了两份。</li>
+  <li><strong>站点适配抽象。</strong>把「某个站点 = {origin 白名单, DOM 选择器包, 可用工具清单, 触发方式}」抽成一个可注册单元。现在换站点要改常量 + 加分支 + 重打注入产物。这件事在只有 DeepSeek 一个站点时成本低、收益不明显，但在第二个站点出现前做完，成本会低一个数量级。</li>
+  <li><strong>权限模型应当自 UI 反推而不是自正则正推。</strong>用户看到的是「仅工作区 / 风险审批 / 完全放开」这三句话，实现却是 10 条正则。更稳的路径是：先写下每一档对用户的承诺（例如「仅工作区 = 绝不触碰工作区外路径、不执行命令」），再要求实现满足它，最后才谈怎么用启发式做得更好。</li>
+</ol>
+</div>
+
+<h2><span class="num">六</span>本轮未覆盖与说明</h2>
+<ul>
+  <li><strong>只读评审，未运行项目</strong>：本次没有执行 <code>npm test</code> / <code>typecheck</code> / 启动应用。文中「23 个文件 / 185 个用例全绿、约 82 s」「宿主在 8756 上正常启动、聊天页注入成功、同意模态渲染正常」这些运行事实，取自仓库内的 <code>vitest-out.txt</code>、<code>tsc-out.txt</code>、<code>host-out.txt</code>、<code>tauri.log</code> 等构建日志，<strong>不是本次实测结果</strong>。这些日志也证明了一个重要事实：当前唯一一次端到端验证确实跑通过（页面注入、工具派发、同意态都链接通了）。</li>
+  <li><strong>P0-1 的攻击链未做动态验证</strong>：它是从代码读出的必然结论（服务端没有校验 Origin/凭据，客户端不带凭据），但本次没有实际发起 ws 连接去触发，也没有生成 PoC。这是只读评审的边界，也是建议里第一条先补回归测试的原因。</li>
+  <li><strong>未做 Windows WebView2 手工验证</strong>：作者自己在 <code>docs/开发计划.md</code> 里已标注该验证被 jsdom 级装配测试替代，本次沿用其结论、未补做。</li>
+  <li><strong>未评估</strong>：运行时性能与内存占用（未运行）、依赖供应链安全（未跑 <code>npm audit</code>）、可访问性与国际化、上游 <code>deepseek-pp</code> 1,133 个文件的内部质量（仅在需要处读了 <code>UPSTREAM.md</code>、<code>AGENTS.md</code> 与目录结构）、<code>src-tauri/target</code> 构建产物（约 2.2 GB，未清理也未细看）。</li>
+  <li><strong>行号基准</strong>：文中行号来自本次读取的代码快照（2026-10-10）。若代码已改动，请以函数名/标识符为准；对无法逐行确认的位置，报告里统一写成了「约 N-M 行」或仅给函数名。</li>
+  <li><strong>评审视角</strong>：本报告面向「作者本人 / 接手者」，因此刻意区分了「确定有问题」（事实）与「有风险」（取向），并在每处给了改法而不是只给结论。若需要面向外部投资/合作方的版本，应删去其中大量实现细节并补上产品与市场维度。</li>
+</ul>
+
+<footer>
+  <p><strong>架构评审报告 · deepseek-studio</strong> —— 评审方式：只读（读取文件与仓库日志，未运行、未修改任何代码）。评审范围：<code>src/</code>（57 个 TS 文件 / 6,940 行）、<code>src-tauri/</code>（54 行 Rust）、<code>tests/</code>（23 文件 / 2,554 行）、<code>docs/</code> 全部文档、<code>.codebuddy/plans/</code> 五份计划、以及 <code>deepseek-pp/src</code> 快照的结构与设定文件。</p>
+  <p>报告日期：2026-10-10 · 全文所有引用均为代码内实际标识符与文件路径，可逐条核对。</p>
+</footer>
+</div>
+</body>
+</html>

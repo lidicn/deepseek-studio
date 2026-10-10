@@ -1,0 +1,20 @@
+[package]
+name = "deepseek-studio"
+version = "0.4.0"
+description = "DeepSeek++ Studio 桌面宿主（Tauri 外壳，v0.4 加载真实聊天页 + 注入常驻宿主）"
+authors = ["lidicn"]
+edition = "2021"
+
+# v0.2 验证构建链路（窗口 + initialization_script 占位）；v0.4 加载 chat.deepseek.com + 注入 entry.js + 拉起 Node 宿主。
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+
+[features]
+# 生产分发时由 tauri 注入自定义协议；开发期不开启。
+custom-protocol = ["tauri/custom-protocol"]

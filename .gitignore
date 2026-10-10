@@ -1,0 +1,16 @@
+# deps
+node_modules/
+
+# build artifacts
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# local run logs / scratch
+*-out.txt
+tsc-out.txt
+tauri*.log
+vitest.config.ts.timestamp-*.mjs
+
+# os / editor
+.Thumbs.db

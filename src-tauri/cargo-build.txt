@@ -1,0 +1,2 @@
+   Compiling deepseek-studio v0.4.0 (E:\NAS\deepseek-studio\src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3m 07s

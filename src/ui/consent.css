@@ -1,0 +1,32 @@
+/* 同意模态样式（与 src/ui/consent.ts 内联注入的 CSS 同源，供独立打包/审阅参考） */
+.ds-consent-overlay {
+  position: fixed; inset: 0; z-index: 2147483646;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(2px);
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  animation: ds-consent-fade 120ms ease-out;
+}
+.ds-consent-card {
+  min-width: 300px; max-width: 420px; padding: 20px 22px;
+  border-radius: 16px; background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 12px 40px rgba(20, 30, 60, 0.25);
+  border: 1px solid rgba(77, 107, 254, 0.18);
+  color: #1F2329; animation: ds-consent-pop 120ms ease-out;
+}
+@media (prefers-color-scheme: dark) {
+  .ds-consent-card { background: rgba(30, 31, 35, 0.94); color: #E8EAED; border-color: rgba(77, 107, 254, 0.35); }
+}
+.ds-consent-title { font-size: 13px; font-weight: 500; opacity: 0.7; }
+.ds-consent-tool { margin-top: 8px; font-size: 15px; font-weight: 600; color: #4D6BFE; }
+@media (prefers-color-scheme: dark) { .ds-consent-tool { color: #6E8BFF; } }
+.ds-consent-summary { margin-top: 10px; font-size: 13px; line-height: 1.5; opacity: 0.85; max-height: 140px; overflow: auto; word-break: break-all; }
+.ds-consent-actions { margin-top: 18px; display: flex; gap: 10px; justify-content: flex-end; }
+.ds-consent-actions button { border: none; border-radius: 10px; padding: 8px 14px; font-size: 13px; font-weight: 500; cursor: pointer; transition: transform 80ms ease, filter 80ms ease; }
+.ds-consent-actions button:hover { filter: brightness(1.05); }
+.ds-consent-actions button:active { transform: scale(0.97); }
+.ds-consent-deny { background: rgba(212, 56, 13, 0.12); color: #D4380D; }
+.ds-consent-allow-once { background: #4D6BFE; color: #fff; }
+.ds-consent-allow-session { background: rgba(43, 164, 113, 0.14); color: #2BA471; }
+@keyframes ds-consent-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes ds-consent-pop { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }

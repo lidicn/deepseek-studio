@@ -1,0 +1,29 @@
+{
+  "name": "deepseek-studio",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "deepseek-studio 的桌面化（WebView 容器）改造：MV3 桥接层 / 同域桥 / 注入加载器 / 工具执行授权 / 本地 HTTP API。v0.4 起为可用 MVP（加载真实聊天页 + 注入常驻宿主 + 同意闸门）。",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "tsx src/api/main.ts",
+    "build:inject": "node esbuild.inject.mjs",
+    "build": "npm run build:inject",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/node": "^20.0.0",
+    "@types/ws": "^8.5.0",
+    "esbuild": "^0.24.0",
+    "jsdom": "^29.1.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "ws": "^8.18.0"
+  }
+}
