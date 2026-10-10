@@ -135,6 +135,14 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
         return { ok: false, error: 'cwd-outside-workspace', data: { cwd } };
       }
 
+      // v0.9：Windows cmd 内建命令（dir/copy/del/type 等）不是独立可执行文件，
+      // shell:false spawn 找不到。自动加 cmd /c 前缀。
+      // F4 修复：排除 set/path/whoami/systeminfo 等会泄漏环境/系统信息的命令
+      const CMD_BUILTINS = new Set(['dir', 'copy', 'del', 'erase', 'type', 'findstr', 'find', 'ren', 'rename', 'move', 'md', 'mkdir', 'rd', 'rmdir', 'cls', 'echo', 'ver', 'vol', 'date', 'time', 'cd', 'chdir', 'sort', 'more', 'tree', 'xcopy', 'robocopy', 'where', 'tasklist', 'ipconfig', 'ping', 'netstat', 'nslookup']);
+      if (process.platform === 'win32' && CMD_BUILTINS.has(argv[0].toLowerCase())) {
+        argv = ['cmd', '/c', ...argv];
+      }
+
       // v0.9：Windows 中文路径编码修复——powershell -Command 的参数经 argv 传递时
       // 中文会变 ????（PowerShell 用系统 ANSI 代码页解析命令行）。改用 -EncodedCommand（Base64 UTF-16LE）。
       if (process.platform === 'win32' && /^powershell(\.exe)?$/i.test(argv[0]) || /^pwsh(\.exe)?$/i.test(argv[0] || '')) {

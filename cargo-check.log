@@ -1,0 +1,7 @@
+﻿cargo :     Checking deepseek-studio v0.4.0 (E:\NAS\deepseek-studio\src-tauri)
+At line:1 char:48
++ ... t-Location E:\NAS\deepseek-studio\src-tauri; cargo check 2>&1 | Out-F ...
++                                                  ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (    Checking de...udio\src-tauri):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

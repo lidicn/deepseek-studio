@@ -15,6 +15,7 @@ import { StreamingToolCallParser, type ParsedToolCall } from './streaming-tool-p
 import { SseTextStreamExtractor } from './sse-text-extractor';
 import { isSupportedUpstreamTool, SUPPORTED_INVOCATION_NAMES } from '../shared/tool-contract';
 import type { ExecuteResult } from '../capabilities/types';
+import { createPowHeaders } from './pow';
 
 /** 页端 → 宿主 的工具调用投递请求（与 host-client.sendToolCall 入参同构）。 */
 export interface ToolCallRequest {
@@ -103,7 +104,7 @@ const TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
 <local_file_stat>{"path":"/绝对路径"}</local_file_stat>
 <shell_exec>{"command":"要执行的命令行"}</shell_exec>
 
-规则：标签名必须是上面列出的工具名之一；JSON body 必须是合法 JSON（字符串用双引号，Windows 路径用正斜杠如 C:/Users/...）；工具调用放在最终回答正文里（不要放在思考/推理区域）。
+规则：标签名必须是上面列出的工具名之一；JSON body 必须是合法 JSON（字符串用双引号，Windows 路径用反斜杠如 C:\\Users\\...，dir/type/copy 等 cmd 内建命令必须用反斜杠）；工具调用放在最终回答正文里（不要放在思考/推理区域）。
 禁止：使用 <invoke name="...">、<tool_call> 等包装标签；把工具调用写在 Markdown 代码块里；输出 {"tool":"...","arguments":{...}} 这种 JSON 格式；或者声称自己无法调用这些工具。
 系统会真实执行并把结果返回给你，据此继续。不要臆造路径，不要编造工具结果。`;
 
@@ -279,11 +280,21 @@ function installXhrHooks(
   pending: PendingResult[],
   diag: InterceptorDiag = () => {},
   loopState?: LoopState,
+  capturedHeaders?: Record<string, string>,
 ): () => void {
   if (typeof XMLHttpRequest === 'undefined') return () => {};
   const proto = XMLHttpRequest.prototype;
   const origOpen = proto.open;
   const origSend = proto.send;
+  const origSetRequestHeader = proto.setRequestHeader;
+
+  proto.setRequestHeader = function (this: XMLHttpRequest & Record<string, unknown>, name: string, value: string) {
+    const url = String(this.__dsUrl ?? '');
+    if (url.includes('/api/v0/chat/') && capturedHeaders) {
+      capturedHeaders[name] = value;
+    }
+    return (origSetRequestHeader as (...a: unknown[]) => unknown).apply(this, [name, value]);
+  } as typeof proto.setRequestHeader;
 
   proto.open = function (this: XMLHttpRequest & Record<string, unknown>, method: string, url: string | URL, ...rest: unknown[]) {
     this.__dsMethod = method;
@@ -369,6 +380,8 @@ export function installMainWorldInterceptor(sender: ToolCallSender, diag?: Inter
   let autoContinueTimer: ReturnType<typeof setTimeout> | null = null;
   let loopDepth = 0;
   const MAX_LOOP = 8;
+  // v0.9 POW：捕获页面正常请求的 headers（Authorization / X-App-Version 等）
+  const capturedHeaders: Record<string, string> = {};
 
   const forward = (call: ParsedToolCall): void => {
     d(`forward: ${call.invocationName} params=${JSON.stringify(call.params).slice(0, 200)}`);
@@ -377,6 +390,19 @@ export function installMainWorldInterceptor(sender: ToolCallSender, diag?: Inter
       return;
     }
     const callId = call.id || crypto.randomUUID();
+    // F3 修复：JSON 解析失败的工具调用，直接回填错误，不投递宿主
+    if (call.params && call.params.__invalid_json) {
+      d(`forward: invalid JSON for ${call.invocationName}, err=${call.params.__error}`);
+      pending.push({
+        invocationName: call.invocationName,
+        ok: false,
+        error: `invalid-tool-json: ${call.params.__error}. Raw body: ${String(call.params.__raw ?? '').slice(0, 300)}`,
+      });
+      if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
+        scheduleAutoContinue();
+      }
+      return;
+    }
     void sender({ callId, invocationName: call.invocationName, params: call.params })
       .then((r: ExecuteResult) => {
         d(`forward: done ok=${r.ok} err=${r.error ?? ''}`);
@@ -398,65 +424,75 @@ export function installMainWorldInterceptor(sender: ToolCallSender, diag?: Inter
     if (autoContinueTimer) clearTimeout(autoContinueTimer);
     autoContinueTimer = setTimeout(() => {
       autoContinueTimer = null;
-      fillInputWithToolResults();
+      autoContinueWithPow();
     }, 1000);
   }
 
-  function fillInputWithToolResults(): void {
-    if (pending.length === 0) return;
-    const toolResults = pending.map((p) => {
-      const result = p.ok ? JSON.stringify(p.result, null, 2) : `ERROR: ${p.error}`;
-      return `## ${p.invocationName}\n${result}`;
-    }).join('\n\n');
-    const text = `[TOOL_RESULTS]\n${toolResults}\n[/TOOL_RESULTS]\n\n请根据上述工具执行结果继续回答。`;
+  async function autoContinueWithPow(): Promise<void> {
+    if (!loopState.lastChatBody || pending.length === 0 || loopDepth >= MAX_LOOP) return;
+    loopDepth += 1;
+    loopState.streamActive = true;
+    try {
+      // 构造续跑 body：parent_message_id = 上一条 assistant ID，prompt = 工具结果
+      const toolResults = pending.map((p) => {
+        const result = p.ok ? JSON.stringify(p.result, null, 2) : `ERROR: ${p.error}`;
+        return `## ${p.invocationName}\n${result}`;
+      }).join('\n\n');
+      const continuationPrompt = `[TOOL_RESULTS]\n${toolResults}\n[/TOOL_RESULTS]\n\n请根据上述工具执行结果继续回答。`;
 
-    // 找 DeepSeek 输入框（contenteditable div 或 textarea）
-    const input = document.querySelector('div[role="textbox"]') as HTMLElement | null
-      ?? document.querySelector('textarea') as HTMLElement | null
-      ?? document.querySelector('div[contenteditable="true"]') as HTMLElement | null;
-    if (!input) {
-      d('fillInput: no textbox found');
-      return;
+      // F8 修复：清空 pending，避免 XHR hook 的 prepareOutgoingBody 再追加一份 [TOOL_RESULTS]
+      pending.length = 0;
+
+      let bodyStr = loopState.lastChatBody;
+      try {
+        const parsed = JSON.parse(bodyStr) as Record<string, unknown>;
+        parsed.prompt = continuationPrompt;
+        if (loopState.lastResponseMsgId != null) {
+          parsed.parent_message_id = loopState.lastResponseMsgId;
+        }
+        bodyStr = JSON.stringify(parsed);
+      } catch { /* keep original */ }
+
+      d(`auto-continue loop=${loopDepth} computing PoW...`);
+
+      // 算 POW headers
+      const powHeaders = await createPowHeaders({ ...capturedHeaders });
+      d(`auto-continue loop=${loopDepth} PoW done, sending...`);
+
+      // 用 XHR 发（和页面正常请求一样），带 captured headers + POW
+      await new Promise<void>((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/v0/chat/completion', true);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        for (const [k, v] of Object.entries(capturedHeaders)) {
+          try { xhr.setRequestHeader(k, v); } catch { /* ignore */ }
+        }
+        for (const [k, v] of Object.entries(powHeaders)) {
+          try { xhr.setRequestHeader(k, v); } catch { /* ignore */ }
+        }
+        xhr.onreadystatechange = () => {
+          if (xhr.readyState === 4) {
+            d(`auto-continue loop=${loopDepth} status=${xhr.status}`);
+            if (xhr.status === 429 && loopDepth < MAX_LOOP) {
+              d('auto-continue 429, retrying in 8s');
+              loopState.streamActive = false;
+              if (autoContinueTimer) clearTimeout(autoContinueTimer);
+              autoContinueTimer = setTimeout(() => { autoContinueTimer = null; autoContinueWithPow(); }, 8000);
+            }
+            resolve();
+          }
+        };
+        xhr.send(bodyStr);
+      });
+    } catch (e) {
+      d(`auto-continue failed: ${(e as Error).message}`);
+      loopState.streamActive = false;
     }
-
-    // 用 execCommand 插入文本，让 React 感知
-    input.focus();
-    // 清空现有内容
-    const range = document.createRange();
-    range.selectNodeContents(input);
-    const sel = window.getSelection();
-    sel?.removeAllRanges();
-    sel?.addRange(range);
-    document.execCommand('delete');
-    // 插入新文本
-    document.execCommand('insertText', false, text);
-
-    d(`fillInput: inserted ${text.length} chars`);
-
-    // 自动点发送按钮
-    setTimeout(() => {
-      const sendBtn =
-        document.querySelector('button[aria-label="发送"]')
-        ?? document.querySelector('button[type="submit"]')
-        ?? document.querySelector('div[role="textbox"]')?.closest('form')?.querySelector('button')
-        ?? document.querySelector('textarea')?.closest('form')?.querySelector('button')
-        ?? Array.from(document.querySelectorAll('button')).find(b => {
-          const label = b.getAttribute('aria-label') || b.textContent || '';
-          return label.includes('发送') || label.includes('send') || label.includes('Send');
-        });
-      if (sendBtn) {
-        (sendBtn as HTMLButtonElement).click();
-        d('fillInput: clicked send');
-      } else {
-        input?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-        d('fillInput: pressed Enter');
-      }
-    }, 500);
   }
 
   const origFetch = window.fetch ? window.fetch.bind(window) : undefined;
   const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending, d, loopState) : undefined;
-  const stopXhr = installXhrHooks(forward, pending, d, loopState);
+  const stopXhr = installXhrHooks(forward, pending, d, loopState, capturedHeaders);
 
   return {
     stop() {

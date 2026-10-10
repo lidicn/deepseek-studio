@@ -94,8 +94,9 @@ export class StreamingToolCallParser {
     try {
       const parsed = JSON.parse(body);
       if (parsed && typeof parsed === 'object') params = parsed as Record<string, unknown>;
-    } catch {
-      params = {};
+    } catch (e) {
+      // F3 修复：JSON 解析失败时标记错误，让模型看到确切原因，而不是静默交空对象
+      params = { __invalid_json: true, __error: e instanceof Error ? e.message : String(e), __raw: body };
     }
     const id =
       typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.randomUUID === 'function'

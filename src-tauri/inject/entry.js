@@ -1384,8 +1384,8 @@
       try {
         const parsed = JSON.parse(body);
         if (parsed && typeof parsed === "object") params = parsed;
-      } catch {
-        params = {};
+      } catch (e) {
+        params = { __invalid_json: true, __error: e instanceof Error ? e.message : String(e), __raw: body };
       }
       const id = typeof globalThis.crypto !== "undefined" && typeof globalThis.crypto.randomUUID === "function" ? globalThis.crypto.randomUUID() : `call-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       return { id, invocationName: name, params, raw };
@@ -1478,6 +1478,84 @@
     return Object.prototype.hasOwnProperty.call(UPSTREAM_TO_STUDIO, invocationName);
   }
 
+  // src/inject/pow.ts
+  var WASM_PATH = "/deepseek/sha3_wasm_bg.wasm";
+  var SUPPORTED_ALGORITHM = "DeepSeekHashV1";
+  var wasmInstance = null;
+  var textEncoder = new TextEncoder();
+  async function loadWasm() {
+    if (wasmInstance) return wasmInstance;
+    const resp = await fetch(WASM_PATH);
+    if (!resp.ok) throw new Error(`Failed to load PoW WASM: ${resp.status}`);
+    const { instance } = await WebAssembly.instantiate(await resp.arrayBuffer(), {});
+    wasmInstance = instance.exports;
+    return wasmInstance;
+  }
+  function writeWasmString(wasm, value) {
+    const bytes = textEncoder.encode(value);
+    const ptr = wasm.__wbindgen_export_0(bytes.length, 1);
+    new Uint8Array(wasm.memory.buffer).set(bytes, ptr);
+    return { ptr, len: bytes.length };
+  }
+  function solvePowWithWasm(wasm, target, prefix, difficulty) {
+    const retPtr = wasm.__wbindgen_add_to_stack_pointer(-16);
+    const challengeAlloc = writeWasmString(wasm, target);
+    const prefixAlloc = writeWasmString(wasm, prefix);
+    try {
+      wasm.wasm_solve(retPtr, challengeAlloc.ptr, challengeAlloc.len, prefixAlloc.ptr, prefixAlloc.len, difficulty);
+      const view = new DataView(wasm.memory.buffer);
+      const status = view.getInt32(retPtr, true);
+      const answer = view.getFloat64(retPtr + 8, true);
+      if (status !== 1 || !Number.isSafeInteger(answer) || answer < 0) {
+        throw new Error(`No PoW solution found before difficulty ${difficulty}`);
+      }
+      return answer;
+    } finally {
+      wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+  }
+  async function createPowChallenge(headers, targetPath) {
+    console.log("[pow] challenge headers:", Object.keys(headers), "target:", targetPath);
+    const resp = await fetch("/api/v0/chat/create_pow_challenge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify({ target_path: targetPath }),
+      credentials: "include"
+    });
+    const respText = await resp.text();
+    console.log("[pow] challenge status:", resp.status, "body:", respText.slice(0, 500));
+    if (!resp.ok) throw new Error(`PoW challenge failed: ${resp.status} ${respText.slice(0, 200)}`);
+    const data = JSON.parse(respText);
+    const challenge = data?.data?.biz_data ?? data?.data ?? data;
+    if (!challenge?.challenge) throw new Error("Invalid PoW challenge response");
+    return challenge;
+  }
+  function base64EncodeUtf8(str) {
+    const bytes = new TextEncoder().encode(str);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  }
+  async function createPowHeaders(headers, targetPath = "/api/v0/chat/completion") {
+    const challenge = await createPowChallenge(headers, targetPath);
+    if (challenge.algorithm !== SUPPORTED_ALGORITHM) {
+      throw new Error(`Unsupported PoW algorithm: ${challenge.algorithm}`);
+    }
+    const wasm = await loadWasm();
+    const prefix = `${challenge.salt}_${challenge.expire_at}_`;
+    const answer = solvePowWithWasm(wasm, challenge.challenge.toLowerCase(), prefix, challenge.difficulty);
+    const powAnswer = {
+      algorithm: challenge.algorithm,
+      challenge: challenge.challenge,
+      salt: challenge.salt,
+      answer,
+      signature: challenge.signature
+    };
+    return {
+      "X-DS-PoW-Response": base64EncodeUtf8(JSON.stringify({ ...powAnswer, target_path: targetPath }))
+    };
+  }
+
   // src/inject/main-world-interceptor.ts
   function formatToolResultBlock(results) {
     const lines = results.map((p) => {
@@ -1525,7 +1603,7 @@ ${formatToolResultBlock(results)}`;
 <local_file_stat>{"path":"/\u7EDD\u5BF9\u8DEF\u5F84"}</local_file_stat>
 <shell_exec>{"command":"\u8981\u6267\u884C\u7684\u547D\u4EE4\u884C"}</shell_exec>
 
-\u89C4\u5219\uFF1A\u6807\u7B7E\u540D\u5FC5\u987B\u662F\u4E0A\u9762\u5217\u51FA\u7684\u5DE5\u5177\u540D\u4E4B\u4E00\uFF1BJSON body \u5FC5\u987B\u662F\u5408\u6CD5 JSON\uFF08\u5B57\u7B26\u4E32\u7528\u53CC\u5F15\u53F7\uFF0CWindows \u8DEF\u5F84\u7528\u6B63\u659C\u6760\u5982 C:/Users/...\uFF09\uFF1B\u5DE5\u5177\u8C03\u7528\u653E\u5728\u6700\u7EC8\u56DE\u7B54\u6B63\u6587\u91CC\uFF08\u4E0D\u8981\u653E\u5728\u601D\u8003/\u63A8\u7406\u533A\u57DF\uFF09\u3002
+\u89C4\u5219\uFF1A\u6807\u7B7E\u540D\u5FC5\u987B\u662F\u4E0A\u9762\u5217\u51FA\u7684\u5DE5\u5177\u540D\u4E4B\u4E00\uFF1BJSON body \u5FC5\u987B\u662F\u5408\u6CD5 JSON\uFF08\u5B57\u7B26\u4E32\u7528\u53CC\u5F15\u53F7\uFF0CWindows \u8DEF\u5F84\u7528\u53CD\u659C\u6760\u5982 C:\\Users\\...\uFF0Cdir/type/copy \u7B49 cmd \u5185\u5EFA\u547D\u4EE4\u5FC5\u987B\u7528\u53CD\u659C\u6760\uFF09\uFF1B\u5DE5\u5177\u8C03\u7528\u653E\u5728\u6700\u7EC8\u56DE\u7B54\u6B63\u6587\u91CC\uFF08\u4E0D\u8981\u653E\u5728\u601D\u8003/\u63A8\u7406\u533A\u57DF\uFF09\u3002
 \u7981\u6B62\uFF1A\u4F7F\u7528 <invoke name="...">\u3001<tool_call> \u7B49\u5305\u88C5\u6807\u7B7E\uFF1B\u628A\u5DE5\u5177\u8C03\u7528\u5199\u5728 Markdown \u4EE3\u7801\u5757\u91CC\uFF1B\u8F93\u51FA {"tool":"...","arguments":{...}} \u8FD9\u79CD JSON \u683C\u5F0F\uFF1B\u6216\u8005\u58F0\u79F0\u81EA\u5DF1\u65E0\u6CD5\u8C03\u7528\u8FD9\u4E9B\u5DE5\u5177\u3002
 \u7CFB\u7EDF\u4F1A\u771F\u5B9E\u6267\u884C\u5E76\u628A\u7ED3\u679C\u8FD4\u56DE\u7ED9\u4F60\uFF0C\u636E\u6B64\u7EE7\u7EED\u3002\u4E0D\u8981\u81C6\u9020\u8DEF\u5F84\uFF0C\u4E0D\u8981\u7F16\u9020\u5DE5\u5177\u7ED3\u679C\u3002`;
   function hasToolIntent(text) {
@@ -1667,12 +1745,20 @@ ${prompt}`;
     };
   }
   function installXhrHooks(forward, pending, diag = () => {
-  }, loopState) {
+  }, loopState, capturedHeaders) {
     if (typeof XMLHttpRequest === "undefined") return () => {
     };
     const proto = XMLHttpRequest.prototype;
     const origOpen = proto.open;
     const origSend = proto.send;
+    const origSetRequestHeader = proto.setRequestHeader;
+    proto.setRequestHeader = function(name, value) {
+      const url = String(this.__dsUrl ?? "");
+      if (url.includes("/api/v0/chat/") && capturedHeaders) {
+        capturedHeaders[name] = value;
+      }
+      return origSetRequestHeader.apply(this, [name, value]);
+    };
     proto.open = function(method, url, ...rest) {
       this.__dsMethod = method;
       this.__dsUrl = String(url);
@@ -1747,6 +1833,7 @@ ${prompt}`;
     let autoContinueTimer = null;
     let loopDepth = 0;
     const MAX_LOOP = 8;
+    const capturedHeaders = {};
     const forward = (call) => {
       d(`forward: ${call.invocationName} params=${JSON.stringify(call.params).slice(0, 200)}`);
       if (!isSupportedUpstreamTool(call.invocationName)) {
@@ -1754,6 +1841,18 @@ ${prompt}`;
         return;
       }
       const callId = call.id || crypto.randomUUID();
+      if (call.params && call.params.__invalid_json) {
+        d(`forward: invalid JSON for ${call.invocationName}, err=${call.params.__error}`);
+        pending.push({
+          invocationName: call.invocationName,
+          ok: false,
+          error: `invalid-tool-json: ${call.params.__error}. Raw body: ${String(call.params.__raw ?? "").slice(0, 300)}`
+        });
+        if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
+          scheduleAutoContinue();
+        }
+        return;
+      }
       void sender({ callId, invocationName: call.invocationName, params: call.params }).then((r) => {
         d(`forward: done ok=${r.ok} err=${r.error ?? ""}`);
         pending.push({ invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error });
@@ -1772,52 +1871,79 @@ ${prompt}`;
       if (autoContinueTimer) clearTimeout(autoContinueTimer);
       autoContinueTimer = setTimeout(() => {
         autoContinueTimer = null;
-        fillInputWithToolResults();
+        autoContinueWithPow();
       }, 1e3);
     }
-    function fillInputWithToolResults() {
-      if (pending.length === 0) return;
-      const toolResults = pending.map((p) => {
-        const result = p.ok ? JSON.stringify(p.result, null, 2) : `ERROR: ${p.error}`;
-        return `## ${p.invocationName}
+    async function autoContinueWithPow() {
+      if (!loopState.lastChatBody || pending.length === 0 || loopDepth >= MAX_LOOP) return;
+      loopDepth += 1;
+      loopState.streamActive = true;
+      try {
+        const toolResults = pending.map((p) => {
+          const result = p.ok ? JSON.stringify(p.result, null, 2) : `ERROR: ${p.error}`;
+          return `## ${p.invocationName}
 ${result}`;
-      }).join("\n\n");
-      const text = `[TOOL_RESULTS]
+        }).join("\n\n");
+        const continuationPrompt = `[TOOL_RESULTS]
 ${toolResults}
 [/TOOL_RESULTS]
 
 \u8BF7\u6839\u636E\u4E0A\u8FF0\u5DE5\u5177\u6267\u884C\u7ED3\u679C\u7EE7\u7EED\u56DE\u7B54\u3002`;
-      const input = document.querySelector('div[role="textbox"]') ?? document.querySelector("textarea") ?? document.querySelector('div[contenteditable="true"]');
-      if (!input) {
-        d("fillInput: no textbox found");
-        return;
-      }
-      input.focus();
-      const range = document.createRange();
-      range.selectNodeContents(input);
-      const sel = window.getSelection();
-      sel?.removeAllRanges();
-      sel?.addRange(range);
-      document.execCommand("delete");
-      document.execCommand("insertText", false, text);
-      d(`fillInput: inserted ${text.length} chars`);
-      setTimeout(() => {
-        const sendBtn = document.querySelector('button[aria-label="\u53D1\u9001"]') ?? document.querySelector('button[type="submit"]') ?? document.querySelector('div[role="textbox"]')?.closest("form")?.querySelector("button") ?? document.querySelector("textarea")?.closest("form")?.querySelector("button") ?? Array.from(document.querySelectorAll("button")).find((b) => {
-          const label = b.getAttribute("aria-label") || b.textContent || "";
-          return label.includes("\u53D1\u9001") || label.includes("send") || label.includes("Send");
-        });
-        if (sendBtn) {
-          sendBtn.click();
-          d("fillInput: clicked send");
-        } else {
-          input?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
-          d("fillInput: pressed Enter");
+        pending.length = 0;
+        let bodyStr = loopState.lastChatBody;
+        try {
+          const parsed = JSON.parse(bodyStr);
+          parsed.prompt = continuationPrompt;
+          if (loopState.lastResponseMsgId != null) {
+            parsed.parent_message_id = loopState.lastResponseMsgId;
+          }
+          bodyStr = JSON.stringify(parsed);
+        } catch {
         }
-      }, 500);
+        d(`auto-continue loop=${loopDepth} computing PoW...`);
+        const powHeaders = await createPowHeaders({ ...capturedHeaders });
+        d(`auto-continue loop=${loopDepth} PoW done, sending...`);
+        await new Promise((resolve) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", "/api/v0/chat/completion", true);
+          xhr.setRequestHeader("Content-Type", "application/json");
+          for (const [k, v] of Object.entries(capturedHeaders)) {
+            try {
+              xhr.setRequestHeader(k, v);
+            } catch {
+            }
+          }
+          for (const [k, v] of Object.entries(powHeaders)) {
+            try {
+              xhr.setRequestHeader(k, v);
+            } catch {
+            }
+          }
+          xhr.onreadystatechange = () => {
+            if (xhr.readyState === 4) {
+              d(`auto-continue loop=${loopDepth} status=${xhr.status}`);
+              if (xhr.status === 429 && loopDepth < MAX_LOOP) {
+                d("auto-continue 429, retrying in 8s");
+                loopState.streamActive = false;
+                if (autoContinueTimer) clearTimeout(autoContinueTimer);
+                autoContinueTimer = setTimeout(() => {
+                  autoContinueTimer = null;
+                  autoContinueWithPow();
+                }, 8e3);
+              }
+              resolve();
+            }
+          };
+          xhr.send(bodyStr);
+        });
+      } catch (e) {
+        d(`auto-continue failed: ${e.message}`);
+        loopState.streamActive = false;
+      }
     }
     const origFetch = window.fetch ? window.fetch.bind(window) : void 0;
     const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending, d, loopState) : void 0;
-    const stopXhr = installXhrHooks(forward, pending, d, loopState);
+    const stopXhr = installXhrHooks(forward, pending, d, loopState, capturedHeaders);
     return {
       stop() {
         try {
