@@ -27,6 +27,9 @@ const CHAT_URL: &str = "https://chat.deepseek.com";
 const AGENT_PANEL_URL: &str = "http://127.0.0.1:8756/agent";
 
 fn main() {
+    // v0.9：开 CDP 远程调试（自主测试用），WebView2 通过此环境变量接受额外启动参数。
+    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--remote-debugging-port=9223");
+
     tauri::Builder::default()
         .setup(|app| {
             // 生产态可选：拉起 Node 常驻宿主（默认关闭，开发态由 beforeDevCommand 启动）。

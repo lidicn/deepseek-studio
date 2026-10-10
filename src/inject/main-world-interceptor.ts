@@ -182,6 +182,7 @@ function installFetchHook(
   forward: (call: ParsedToolCall) => void,
   pending: PendingResult[],
   diag: InterceptorDiag = () => {},
+  loopState?: { lastChatBody: string | null; streamActive: boolean },
 ): () => void {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = resolveUrl(input);
@@ -199,6 +200,7 @@ function installFetchHook(
     }
 
     diag(`chat-endpoint matched, bodyLen=${typeof init?.body === 'string' ? init.body.length : 'n/a'}`);
+    if (loopState) { loopState.streamActive = true; if (typeof init?.body === 'string') loopState.lastChatBody = init.body; }
     const response = await origFetch(input, init);
     if (!response.body) return response;
 
@@ -225,6 +227,7 @@ function installFetchHook(
           return;
         }
         controller.close();
+        if (loopState) loopState.streamActive = false;
       },
     });
     return new Response(stream, {
@@ -357,19 +360,22 @@ export function installMainWorldInterceptor(sender: ToolCallSender, diag?: Inter
   const MAX_LOOP = 8;
 
   const forward = (call: ParsedToolCall): void => {
+    d(`forward: ${call.invocationName} params=${JSON.stringify(call.params).slice(0, 200)}`);
     if (!isSupportedUpstreamTool(call.invocationName)) {
+      d(`forward: unsupported, skipping`);
       return;
     }
     const callId = call.id || crypto.randomUUID();
     void sender({ callId, invocationName: call.invocationName, params: call.params })
       .then((r: ExecuteResult) => {
+        d(`forward: done ok=${r.ok} err=${r.error ?? ''}`);
         pending.push({ invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error });
-        // v0.8：流结束后自动续跑——把工具结果作为下一轮输入发给模型。
         if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
           scheduleAutoContinue();
         }
       })
       .catch((e: unknown) => {
+        d(`forward: failed ${e instanceof Error ? e.message : String(e)}`);
         pending.push({ invocationName: call.invocationName, ok: false, error: e instanceof Error ? e.message : String(e) });
         if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
           scheduleAutoContinue();
@@ -385,40 +391,27 @@ export function installMainWorldInterceptor(sender: ToolCallSender, diag?: Inter
     }, 500);
   }
 
-  function autoContinue(): void {
+  async function autoContinue(): Promise<void> {
     if (!loopState.lastChatBody || pending.length === 0 || loopDepth >= MAX_LOOP) return;
     loopDepth += 1;
     loopState.streamActive = true;
-    const block = formatToolResultBlock(pending.slice());
-    pending.length = 0;
     try {
-      const parsed = JSON.parse(loopState.lastChatBody) as Record<string, unknown>;
-      // 把工具结果拼到 prompt 尾部，parent_message_id 由页面自己管理（我们不改）。
-      if (typeof parsed.prompt === 'string') {
-        parsed.prompt = `${parsed.prompt}\n\n${block}`;
-      } else if (Array.isArray(parsed.messages)) {
-        parsed.messages = appendResultsToMessages(parsed.messages as unknown[], block);
-      }
-      const newBody = JSON.stringify(parsed);
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/api/v0/chat/completion', true);
-      xhr.setRequestHeader('Content-Type', 'application/json');
-      xhr.onreadystatechange = () => {
-        if (xhr.readyState === 4) {
-          loopState.streamActive = false;
-          // 续跑响应结束——如果又有新工具调用被 forward 捕获，会再次触发续跑。
-        }
-      };
-      xhr.send(newBody);
-      d(`auto-continue loop=${loopDepth} body=${newBody.length}`);
+      // fetch hook 会自动注入 pending 里的工具结果（prepareOutgoingBody）。
+      // fetch 自动带同源 cookie，不会被风控拒。
+      const resp = await fetch('/api/v0/chat/completion', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: loopState.lastChatBody ?? '',
+        credentials: 'include',
+      });
+      d(`auto-continue loop=${loopDepth} status=${resp.status}`);
     } catch (e) {
-      loopState.streamActive = false;
       d(`auto-continue failed: ${(e as Error).message}`);
     }
   }
 
   const origFetch = window.fetch ? window.fetch.bind(window) : undefined;
-  const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending, d) : undefined;
+  const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending, d, loopState) : undefined;
   const stopXhr = installXhrHooks(forward, pending, d, loopState);
 
   return {

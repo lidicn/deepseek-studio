@@ -1545,7 +1545,7 @@ ${prompt}`;
     return { ...init, body: newBody };
   }
   function installFetchHook(origFetch, forward, pending, diag = () => {
-  }) {
+  }, loopState) {
     window.fetch = async (input, init) => {
       const url = resolveUrl(input);
       const method = methodOf(input, init);
@@ -1557,6 +1557,10 @@ ${prompt}`;
         return origFetch(input, init);
       }
       diag(`chat-endpoint matched, bodyLen=${typeof init?.body === "string" ? init.body.length : "n/a"}`);
+      if (loopState) {
+        loopState.streamActive = true;
+        if (typeof init?.body === "string") loopState.lastChatBody = init.body;
+      }
       const response = await origFetch(input, init);
       if (!response.body) return response;
       const parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
@@ -1582,6 +1586,7 @@ ${prompt}`;
             return;
           }
           controller.close();
+          if (loopState) loopState.streamActive = false;
         }
       });
       return new Response(stream, {
@@ -1694,16 +1699,20 @@ ${prompt}`;
     let loopDepth = 0;
     const MAX_LOOP = 8;
     const forward = (call) => {
+      d(`forward: ${call.invocationName} params=${JSON.stringify(call.params).slice(0, 200)}`);
       if (!isSupportedUpstreamTool(call.invocationName)) {
+        d(`forward: unsupported, skipping`);
         return;
       }
       const callId = call.id || crypto.randomUUID();
       void sender({ callId, invocationName: call.invocationName, params: call.params }).then((r) => {
+        d(`forward: done ok=${r.ok} err=${r.error ?? ""}`);
         pending.push({ invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error });
         if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
           scheduleAutoContinue();
         }
       }).catch((e) => {
+        d(`forward: failed ${e instanceof Error ? e.message : String(e)}`);
         pending.push({ invocationName: call.invocationName, ok: false, error: e instanceof Error ? e.message : String(e) });
         if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
           scheduleAutoContinue();
@@ -1717,39 +1726,24 @@ ${prompt}`;
         autoContinue();
       }, 500);
     }
-    function autoContinue() {
+    async function autoContinue() {
       if (!loopState.lastChatBody || pending.length === 0 || loopDepth >= MAX_LOOP) return;
       loopDepth += 1;
       loopState.streamActive = true;
-      const block = formatToolResultBlock(pending.slice());
-      pending.length = 0;
       try {
-        const parsed = JSON.parse(loopState.lastChatBody);
-        if (typeof parsed.prompt === "string") {
-          parsed.prompt = `${parsed.prompt}
-
-${block}`;
-        } else if (Array.isArray(parsed.messages)) {
-          parsed.messages = appendResultsToMessages(parsed.messages, block);
-        }
-        const newBody = JSON.stringify(parsed);
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", "/api/v0/chat/completion", true);
-        xhr.setRequestHeader("Content-Type", "application/json");
-        xhr.onreadystatechange = () => {
-          if (xhr.readyState === 4) {
-            loopState.streamActive = false;
-          }
-        };
-        xhr.send(newBody);
-        d(`auto-continue loop=${loopDepth} body=${newBody.length}`);
+        const resp = await fetch("/api/v0/chat/completion", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: loopState.lastChatBody ?? "",
+          credentials: "include"
+        });
+        d(`auto-continue loop=${loopDepth} status=${resp.status}`);
       } catch (e) {
-        loopState.streamActive = false;
         d(`auto-continue failed: ${e.message}`);
       }
     }
     const origFetch = window.fetch ? window.fetch.bind(window) : void 0;
-    const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending, d) : void 0;
+    const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending, d, loopState) : void 0;
     const stopXhr = installXhrHooks(forward, pending, d, loopState);
     return {
       stop() {

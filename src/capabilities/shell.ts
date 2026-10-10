@@ -135,6 +135,17 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
         return { ok: false, error: 'cwd-outside-workspace', data: { cwd } };
       }
 
+      // v0.9：Windows 中文路径编码修复——powershell -Command 的参数经 argv 传递时
+      // 中文会变 ????（PowerShell 用系统 ANSI 代码页解析命令行）。改用 -EncodedCommand（Base64 UTF-16LE）。
+      if (process.platform === 'win32' && /^powershell(\.exe)?$/i.test(argv[0]) || /^pwsh(\.exe)?$/i.test(argv[0] || '')) {
+        const cmdIdx = argv.findIndex((a) => a === '-Command' || a === '-c');
+        if (cmdIdx >= 0 && argv[cmdIdx + 1]) {
+          const script = argv[cmdIdx + 1];
+          const encoded = Buffer.from(script, 'utf16le').toString('base64');
+          argv = [...argv.slice(0, cmdIdx), '-EncodedCommand', encoded];
+        }
+      }
+
       const timeoutMs = clampTimeout(params.timeoutMs, baseTimeout);
       const startedAt = Date.now();
 
