@@ -2,7 +2,7 @@
  * 常驻桌面宿主（v0.2 Node 原型）
  *
  * 组合两件事：
- *   1. 本地 HTTP API（createApiServer，8756，fake backend）
+ *   1. 本地 HTTP API（createApiServer，8760，fake backend）
  *   2. 工具执行授权方（createPlatformDesktop，签发一次性 grant）
  *
  * 暴露 executeTool：先 consume grant（校验 + 一次性消费）→ 再 rehydrate/执行能力。
@@ -56,9 +56,14 @@ import {
   type MutableWorkspaceContext,
   type WorkspaceContext,
 } from './workspace';
-import { statSync } from 'node:fs';
+import { statSync, existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { createShellCapability } from '../capabilities/shell';
 import { createFileTools } from '../capabilities/file';
+import { getMemoryStore } from './memory-store';
+import { scanSkills, ensureSkillsDir } from './skill-store';
+import { getMcpController, ensureMcpConfig } from './mcp-controller';
+import { createAutomationManager, type AutomationManager } from './automation';
+import { execPythonInSandbox } from './sandbox-executor';
 import {
   createAuditLog,
   DEFAULT_AUDIT_CAPACITY,
@@ -117,6 +122,16 @@ export interface ToolExecutionResult {
   data?: unknown;
   /** stop 前的资源快照（证明能力确实被装载过）。 */
   snapshot?: { total: number; byKind: Record<string, number> };
+  // ---- v1.2 新增：Pi Agent 风格统一结果格式（全可选，缺省即回退旧格式）----
+  // 语义真相源见 src/shared/tool-result-format.ts 的 ToolResultExtras。
+  /** 给模型看的纯文本内容。 */
+  content?: Array<{ type: 'text'; text: string }>;
+  /** 给 UI 看的元数据（exitCode / durationMs / path 等）。 */
+  details?: Record<string, unknown>;
+  /** 显式错误标记（等价于 !ok，但语义更清晰）。 */
+  isError?: boolean;
+  /** 提示跳过自动续跑（批次内全部为 true 时才生效）。 */
+  terminate?: boolean;
 }
 
 export interface DesktopHost {
@@ -257,15 +272,241 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         'skill.list': {
           id: 'skill.list',
           async execute(): Promise<ExecuteResult> {
+            const skills = scanSkills();
             return {
               ok: true,
               data: {
-                skills: [
-                  { id: 'file-ops', name: '文件操作', description: '读取/写入/列出工作区内文件', tools: ['file.read', 'file.write', 'file.list', 'file.stat'] },
-                  { id: 'shell-ops', name: '命令执行', description: '在宿主进程内以 argv 方式执行命令', tools: ['shell.exec'] },
-                ],
+                skills: skills.map((s) => ({
+                  id: s.id,
+                  name: s.name,
+                  description: s.description,
+                  skillMdPath: s.skillMdPath,
+                })),
               },
             };
+          },
+        },
+        // v1.0：长期记忆保存（移植自 deepseek++ memory_save）。
+        'memory.save': {
+          id: 'memory.save',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const store = getMemoryStore();
+            const result = store.save({
+              type: String(params.type ?? 'user'),
+              name: String(params.name ?? ''),
+              content: String(params.content ?? ''),
+              tags: Array.isArray(params.tags) ? params.tags.map(String) : [],
+              pinned: Boolean(params.pinned),
+            });
+            if (!result.ok) {
+              return { ok: false, error: result.error };
+            }
+            // 保存成功后推送记忆列表更新到页端。
+            const memories = store.list().map((m) => ({
+              id: m.id, type: m.type, name: m.name, content: m.content, tags: m.tags,
+            }));
+            hub?.broadcastMemories(memories);
+            return { ok: true, data: { id: result.id, saved: true } };
+          },
+        },
+        // v0.10：Python 代码执行（沙箱隔离执行器）。
+        'python.exec': {
+          id: 'python.exec',
+          async execute(params: Record<string, unknown>, ctx?: { allowOutsideWorkspace?: boolean }): Promise<ExecuteResult> {
+            const code = String(params.code ?? '');
+            if (!code.trim()) return { ok: false, error: 'code is required' };
+            const timeoutMs = typeof params.timeoutMs === 'number' ? params.timeoutMs : 30000;
+            const cwd = ctx?.allowOutsideWorkspace
+              ? process.cwd()
+              : mutableWorkspace.current?.root;
+            const result = await execPythonInSandbox({ code, timeoutMs, cwd });
+            if (result.ok) {
+              return { ok: true, data: { stdout: result.stdout, stderr: result.stderr, exitCode: 0 } };
+            }
+            return {
+              ok: false,
+              error: result.error ?? (result.stderr || 'python execution failed'),
+              data: { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode, timedOut: result.timedOut },
+            };
+          },
+        },
+        // v1.0：列出已配置的 MCP 服务器及其工具。
+        'mcp.list': {
+          id: 'mcp.list',
+          async execute(): Promise<ExecuteResult> {
+            const controller = getMcpController();
+            const serverIds = controller.listServerIds();
+            const tools = await controller.getAllTools();
+            return {
+              ok: true,
+              data: {
+                servers: serverIds,
+                tools: tools.map((t) => ({ serverId: t.serverId, name: t.name, description: t.description })),
+              },
+            };
+          },
+        },
+        // v1.0：调用 MCP 工具。
+        'mcp.call': {
+          id: 'mcp.call',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const serverId = String(params.serverId ?? '');
+            const toolName = String(params.tool ?? params.name ?? '');
+            const args = (params.args ?? params.arguments ?? {}) as Record<string, unknown>;
+            if (!serverId || !toolName) {
+              return { ok: false, error: 'serverId and tool are required' };
+            }
+            const controller = getMcpController();
+            const result = await controller.callTool(serverId, toolName, args);
+            return { ok: result.ok, data: result.data, error: result.error };
+          },
+        },
+        // v1.1：测试 MCP 连接
+        'mcp.test': {
+          id: 'mcp.test',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const config = (params.config ?? {}) as Record<string, unknown>;
+            const controller = getMcpController();
+            const result = await controller.testConnection({
+              command: String(config.command ?? ''),
+              args: Array.isArray(config.args) ? config.args.map(String) : [],
+              env: config.env && typeof config.env === 'object' ? (config.env as Record<string, string>) : {},
+              transport: String(config.transport ?? 'stdio') as 'stdio' | 'http' | 'sse',
+              url: typeof config.url === 'string' ? config.url : undefined,
+              cwd: typeof config.cwd === 'string' ? config.cwd : undefined,
+            });
+            return { ok: result.ok, data: { tools: result.tools ?? [] }, error: result.error };
+          },
+        },
+        // v1.1：保存 MCP 配置
+        'mcp.save': {
+          id: 'mcp.save',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const serverId = String(params.serverId ?? params.id ?? '');
+            const config = (params.config ?? {}) as Record<string, unknown>;
+            if (!serverId) return { ok: false, error: 'serverId is required' };
+            const controller = getMcpController();
+            const result = controller.saveServer(serverId, {
+              command: String(config.command ?? ''),
+              args: Array.isArray(config.args) ? config.args.map(String) : [],
+              env: config.env && typeof config.env === 'object' ? (config.env as Record<string, string>) : {},
+              transport: String(config.transport ?? 'stdio') as 'stdio' | 'http' | 'sse',
+              url: typeof config.url === 'string' ? config.url : undefined,
+              cwd: typeof config.cwd === 'string' ? config.cwd : undefined,
+              headers: config.headers && typeof config.headers === 'object' ? (config.headers as Record<string, string>) : undefined,
+            });
+            return { ok: result.ok, error: result.error };
+          },
+        },
+        // v1.1：删除 MCP 服务器配置。
+        'mcp.remove': {
+          id: 'mcp.remove',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const serverId = String(params.serverId ?? '');
+            if (!serverId) return { ok: false, error: 'serverId is required' };
+            const configPath = process.env.STUDIO_CONFIG_DIR
+              ? path.join(process.env.STUDIO_CONFIG_DIR, 'mcp-servers.json')
+              : path.join(os.homedir(), '.config', 'deepseek-studio', 'mcp-servers.json');
+            try {
+              const all = JSON.parse(readFileSync(configPath, 'utf8'));
+              delete all[serverId];
+              writeFileSync(configPath, JSON.stringify(all, null, 2), 'utf8');
+              getMcpController().reload();
+              return { ok: true };
+            } catch (e) {
+              return { ok: false, error: e instanceof Error ? e.message : String(e) };
+            }
+          },
+        },
+        // v1.1：删除记忆。
+        'memory.delete': {
+          id: 'memory.delete',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const id = String(params.id ?? '');
+            if (!id) return { ok: false, error: 'id is required' };
+            const store = getMemoryStore();
+            const ok = store.remove(id);
+            return { ok: ok ?? true };
+          },
+        },
+        // v1.1：设置工作区根目录。
+        'workspace.set': {
+          id: 'workspace.set',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const root = String(params.root ?? '');
+            if (!root) return { ok: false, error: 'root is required' };
+            if (!existsSync(root)) return { ok: false, error: `path not found: ${root}` };
+            mutableWorkspace.setRoot(root);
+            process.env.STUDIO_WORKSPACE_ROOT = root;
+            return { ok: true, data: { root } };
+          },
+        },
+        // v1.1：设置策略模式。
+        'policy.set': {
+          id: 'policy.set',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const mode = String(params.mode ?? 'auto') as 'workspace' | 'ask' | 'auto' | 'full';
+            if (!['workspace', 'ask', 'auto', 'full'].includes(mode)) {
+              return { ok: false, error: `invalid policy mode: ${mode}` };
+            }
+            policyMode = mode;
+            process.env.STUDIO_POLICY_MODE = mode;
+            return { ok: true, data: { mode } };
+          },
+        },
+        // v1.1：项目列表（从配置文件读取）。
+        'project.list': {
+          id: 'project.list',
+          async execute(): Promise<ExecuteResult> {
+            const configPath = process.env.STUDIO_CONFIG_DIR
+              ? path.join(process.env.STUDIO_CONFIG_DIR, 'projects.json')
+              : path.join(os.homedir(), '.config', 'deepseek-studio', 'projects.json');
+            try {
+              const projects = JSON.parse(readFileSync(configPath, 'utf8'));
+              return { ok: true, data: { projects: Array.isArray(projects) ? projects : [] } };
+            } catch {
+              return { ok: true, data: { projects: [] } };
+            }
+          },
+        },
+        // v1.1：创建项目（写入配置文件 + 创建目录）。
+        'project.create': {
+          id: 'project.create',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const name = String(params.name ?? '');
+            const projectPath = String(params.path ?? '');
+            if (!name || !projectPath) return { ok: false, error: 'name and path are required' };
+            const configPath = process.env.STUDIO_CONFIG_DIR
+              ? path.join(process.env.STUDIO_CONFIG_DIR, 'projects.json')
+              : path.join(os.homedir(), '.config', 'deepseek-studio', 'projects.json');
+            try {
+              mkdirSync(path.dirname(configPath), { recursive: true });
+              let projects: Array<{ id: string; name: string; path: string }> = [];
+              try { projects = JSON.parse(readFileSync(configPath, 'utf8')); } catch { /* new */ }
+              const id = name.toLowerCase().replace(/[^a-z0-9]/g, '-');
+              if (!projects.find((p) => p.id === id)) {
+                projects.push({ id, name, path: projectPath });
+                // 原子写：tmp + rename，避免崩溃半截损坏 projects.json
+                const tmp = `${configPath}.tmp`;
+                writeFileSync(tmp, JSON.stringify(projects, null, 2), 'utf8');
+                renameSync(tmp, configPath);
+              }
+              if (!existsSync(projectPath)) mkdirSync(projectPath, { recursive: true });
+              return { ok: true, data: { id, name, path: projectPath } };
+            } catch (e) {
+              return { ok: false, error: e instanceof Error ? e.message : String(e) };
+            }
+          },
+        },
+        // v1.1：选择文件夹（Node 宿主无法弹原生对话框，返回 STUDIO_PICK_FOLDER 环境变量或 not-supported）。
+        'folder.pick': {
+          id: 'folder.pick',
+          async execute(): Promise<ExecuteResult> {
+            const envPath = process.env.STUDIO_PICK_FOLDER;
+            if (envPath && existsSync(envPath)) {
+              return { ok: true, data: { path: envPath } };
+            }
+            return { ok: false, error: 'folder.pick requires Tauri dialog; set STUDIO_PICK_FOLDER env var as fallback' };
           },
         },
       },
@@ -285,10 +526,18 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   const agentToolCounter = { current: 0 };
   const agentStopFlag = { stopped: false };
   const agentListeners = new Set<(event: AgentLoopEvent) => void>();
+  // v0.9：页端 auto-continue 推送的模型回复（不渲染到 DOM，通过 WebSocket 推送）
+  const lastAutoReply = { text: '', loop: 0, updatedAt: 0, fresh: false };
   const webEngine: ModelEngine = createWebEngine({
     dispatch: (tool, params) => invokeTool(tool, params),
     toolCallCounter: agentToolCounter,
     isStopped: () => agentStopFlag.stopped,
+    getAutoReply: () => lastAutoReply,
+    consumeAutoReply: () => {
+      const r = { ...lastAutoReply };
+      lastAutoReply.fresh = false;
+      return r;
+    },
   });
   const agentLoop: AgentLoop = createAgentLoop({
     engine: webEngine,
@@ -320,6 +569,26 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     pickFolder: () => pickFolderViaDialog(),
   };
 
+  // v0.9：外部 agent 控制链——发消息到页面并等待最终回答。
+  // 收集 AgentLoop 的 assistant 事件作为最终回答返回。
+  async function agentSender(text: string): Promise<string> {
+    sessionAllowlist.add('chat-insert');
+    sessionAllowlist.add('chat-send');
+    let finalAnswer = '';
+    const listener = (event: AgentLoopEvent) => {
+      if (event.type === 'assistant' && event.text) {
+        finalAnswer = event.text;
+      }
+    };
+    agentListeners.add(listener);
+    try {
+      await agentLoop.send(`${AGENT_SENTINEL}${text}`);
+      return finalAnswer;
+    } finally {
+      agentListeners.delete(listener);
+    }
+  }
+
   /** 切换审批档位并持久化（channel 与 DesktopHost 返回对象共用）。 */
   function setPolicyMode(mode: PolicyMode): void {
     if (!(POLICY_MODES as readonly string[]).includes(mode)) {
@@ -350,6 +619,22 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   // 每请求重新取令牌集合，使轮换无需重启进程（默认不自动轮换，见 rotateApiToken）
   const authenticator = createBearerAuthenticator(() => apiTokenRing.accepted);
   const backend = createFakeOfficialBackend();
+
+  // v0.12 Phase 2：自动化调度引擎
+  const automationManager: AutomationManager = createAutomationManager({
+    onTaskTrigger: async (task) => {
+      if (task.type === 'prompt' && task.payload.prompt) {
+        // 通过 agentSender 发送提示词到页面
+        try {
+          await agentSender(task.payload.prompt);
+        } catch (err) {
+          console.warn(`[automation] prompt task failed: ${err}`);
+        }
+      }
+    },
+  });
+  automationManager.start();
+
   const server: ApiServer = createApiServer({
     config: options.config,
     backend,
@@ -367,6 +652,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     })),
     rateLimit: options.rateLimit,
     agentPage: options.agentPage,
+    agentSender,
+    automationManager: automationManager as NonNullable<import('../api/server').ApiServerOptions['automationManager']>,
   });
 
   // v0.7：全局 KV 存储（页端 chrome.storage shim 经 ws 读写此 backend，落盘）。
@@ -528,12 +815,30 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       const tool = hostTools.get(name);
       if (!tool) return { ok: false, reason: 'unknown-capability' };
       const r = await tool.execute(params as Record<string, unknown>, { allowOutsideWorkspace: outsideApproved });
-      return { ok: r.ok, reason: r.error, data: r.data };
+      return {
+        ok: r.ok,
+        reason: r.error,
+        data: r.data,
+        // v1.2：透传 Pi Agent 风格新格式字段（能力已给了就透传，缺省即回退旧格式）
+        ...(r.content !== undefined ? { content: r.content } : {}),
+        ...(r.details !== undefined ? { details: r.details } : {}),
+        ...(r.isError !== undefined ? { isError: r.isError } : {}),
+        ...(r.terminate !== undefined ? { terminate: r.terminate } : {}),
+      };
     }
     // 派发只看可信页：被自检判定为篡改的页面不得再收到工具调用
     if (hub && hub.trustedPages.length > 0) {
       const r = await hub.dispatch(name, params, randomCallId());
-      return { ok: r.ok, reason: r.error, data: r.data };
+      return {
+        ok: r.ok,
+        reason: r.error,
+        data: r.data,
+        // v1.2：透传新格式字段
+        ...(r.content !== undefined ? { content: r.content } : {}),
+        ...(r.details !== undefined ? { details: r.details } : {}),
+        ...(r.isError !== undefined ? { isError: r.isError } : {}),
+        ...(r.terminate !== undefined ? { terminate: r.terminate } : {}),
+      };
     }
     // 回退：Node 宿主内 rehydrate（仅 echo 等无 DOM 依赖能力）。
     const cap = capabilities.get(name);
@@ -594,9 +899,29 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         onToolCall: () => {
           agentToolCounter.current += 1;
         },
+        // v0.9：页端 auto-continue 推送的模型回复（不渲染到 DOM）。
+        onAssistantReply: (text, loop) => {
+          console.log(`[desktop-host] onAssistantReply loop=${loop} len=${text.length} fresh=true`);
+          lastAutoReply.text = text;
+          lastAutoReply.loop = loop;
+          lastAutoReply.updatedAt = Date.now();
+          lastAutoReply.fresh = true;
+        },
         // v0.7：页端 storage shim 的 KV 落盘 backend。
         kvStore: { get: kvGet, set: kvSet, remove: kvRemove },
       });
+      // v1.0：连接建立后立即推送当前记忆列表。
+      const pushMemories = () => {
+        const memories = getMemoryStore().list().map((m) => ({
+          id: m.id, type: m.type, name: m.name, content: m.content, tags: m.tags,
+        }));
+        hub?.broadcastMemories(memories);
+      };
+      pushMemories();
+      // v1.0：确保技能目录存在
+      ensureSkillsDir();
+      // v1.0：确保 MCP 配置文件存在
+      ensureMcpConfig();
     },
     async stop() {
       agentChannel?.dispose();

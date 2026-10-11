@@ -61,6 +61,10 @@ export interface PageRuntimeHubOptions {
    * 面板据此展示工具卡片）。观察者，不影响执行链路。
    */
   onToolCall?: (info: { callId: string; invocationName: string; tool: string; params: unknown }) => void;
+  /** v0.9：页端 auto-continue 收到模型最终回复时的回调。 */
+  onAssistantReply?: (text: string, loop: number) => void;
+  /** v1.0：宿主推送记忆列表更新时的回调。 */
+  onMemoriesUpdate?: (memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>) => void;
   onToolResult?: (info: { callId: string; tool: string; ok: boolean; error?: string }) => void;
   /** v0.7：页端 storage shim 的 KV 后端（宿主侧落盘）。缺省时 kv-* 消息回 no-kv-store。 */
   kvStore?: {
@@ -78,6 +82,8 @@ export interface PageRuntimeHub {
   dispatch(tool: string, params: unknown, callId: string): Promise<ExecuteResult>;
   /** 向页端请求用户同意；无页/超时 → 'deny'（fail-closed）。meta 为可选的呈现信息。 */
   requestConsent(callId: string, tool: string, params: unknown, meta?: ConsentMeta): Promise<ConsentDecision>;
+  /** v1.0：向所有已连接页端广播记忆列表更新。 */
+  broadcastMemories(memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>): void;
   dispose(): void;
 }
 
@@ -108,6 +114,24 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
   const clients = new Map<string, { ws: WebSocket; origin: string | null; untrusted: boolean }>();
   const pendingDispatch = new Map<string, { resolve: (r: ExecuteResult) => void; timer: ReturnType<typeof setTimeout> }>();
   const pendingConsent = new Map<string, { resolve: (d: ConsentDecision) => void; timer: ReturnType<typeof setTimeout> }>();
+
+  /**
+   * C4 修复：页端断开时立即结算所有待决请求，不干等 30s/60s 超时。
+   * 修复前 ws.on('close') 只做 clients.delete(id)，pendingDispatch/pendingConsent
+   * 中的 Promise 只能等 dispatchTimeoutMs/consentTimeoutMs 才结算。
+   */
+  function failAllPending(reason: string): void {
+    for (const [id, p] of pendingDispatch) {
+      clearTimeout(p.timer);
+      pendingDispatch.delete(id);
+      p.resolve({ ok: false, error: reason });
+    }
+    for (const [id, p] of pendingConsent) {
+      clearTimeout(p.timer);
+      pendingConsent.delete(id);
+      p.resolve('deny');
+    }
+  }
 
   function safeSend(ws: WebSocket, msg: HostToPageMessage): void {
     try {
@@ -153,6 +177,8 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         options.onError?.(`integrity violation: page=${id} reason=${msg.reason}${msg.detail ? ` detail=${msg.detail}` : ''}`);
       } else if (msg.type === 'log') {
         console.log(`[page ${id}] ${msg.text}`);
+      } else if (msg.type === 'assistant-reply') {
+        options.onAssistantReply?.(msg.text, msg.loop);
       } else if (msg.type === 'kv-get') {
         const store = options.kvStore;
         if (!store) { safeSend(ws, { type: 'kv-result', requestId: msg.requestId, ok: false, error: 'no-kv-store' }); return; }
@@ -231,7 +257,18 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         void exec(mapped.id, mapped.params)
           .then((r) => {
             options.onToolResult?.({ callId: msg.callId, tool: mapped.id, ok: r.ok, error: r.reason });
-            safeSend(ws, { type: 'tool-call-result', callId: msg.callId, ok: r.ok, data: r.data, error: r.reason });
+            safeSend(ws, {
+              type: 'tool-call-result',
+              callId: msg.callId,
+              ok: r.ok,
+              data: r.data,
+              error: r.reason,
+              // v1.2：透传 Pi Agent 风格新格式字段
+              ...(r.content !== undefined ? { content: r.content } : {}),
+              ...(r.details !== undefined ? { details: r.details } : {}),
+              ...(r.isError !== undefined ? { isError: r.isError } : {}),
+              ...(r.terminate !== undefined ? { terminate: r.terminate } : {}),
+            });
           })
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e);
@@ -245,8 +282,8 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           });
       }
     });
-    ws.on('close', () => clients.delete(id));
-    ws.on('error', () => clients.delete(id));
+    ws.on('close', () => { clients.delete(id); failAllPending('page-disconnected'); });
+    ws.on('error', () => { clients.delete(id); failAllPending('page-disconnected'); });
   });
 
   return {
@@ -291,6 +328,12 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         safeSend(client.ws, { type: 'consent-required', callId, tool, params, meta });
       });
     },
+    broadcastMemories(memories) {
+      const msg: HostToPageMessage = { type: 'memories-update', memories };
+      for (const c of clients.values()) {
+        if (!c.untrusted) safeSend(c.ws, msg);
+      }
+    },
     dispose() {
       wss.close();
       for (const c of clients.values()) {
@@ -301,8 +344,15 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         }
       }
       clients.clear();
-      for (const p of pendingDispatch.values()) clearTimeout(p.timer);
-      for (const p of pendingConsent.values()) clearTimeout(p.timer);
+      // 先 resolve 所有 pending Promise，避免调用方 await 悬挂
+      for (const p of pendingDispatch.values()) {
+        clearTimeout(p.timer);
+        p.resolve({ ok: false, error: 'disposed' });
+      }
+      for (const p of pendingConsent.values()) {
+        clearTimeout(p.timer);
+        p.resolve('deny');
+      }
       pendingDispatch.clear();
       pendingConsent.clear();
     },
