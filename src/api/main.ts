@@ -92,11 +92,20 @@ function loadConfig(): ResolvedConfig {
   const host = process.env.DEEPSEEK_STUDIO_HOST ?? stored.host ?? '127.0.0.1';
   const port = Number(process.env.DEEPSEEK_STUDIO_PORT ?? stored.port ?? 8760);
 
+  // v0.5：工作区根与审批档位。档位非法值一律回落到 auto（fail-safe：宁可多问不可少问）。
+  const workspaceRoot = process.env.STUDIO_WORKSPACE_ROOT ?? stored.workspaceRoot ?? '';
+  const rawMode = process.env.STUDIO_POLICY_MODE ?? stored.policyMode ?? '';
+  const policyMode: PolicyMode = isPolicyMode(rawMode) ? rawMode : DEFAULT_POLICY_MODE;
+
   // 缺失则生成并落盘（仅本地文件，0600；不回显 secret）。
+  // v0.13 修复：写入时保留 workspaceRoot/policyMode，避免覆盖用户配置。
   if (!stored.token || !stored.secret) {
     try {
       fs.mkdirSync(cfgDir, { recursive: true });
-      fs.writeFileSync(cfgPath, JSON.stringify({ host, port, token, secret }, null, 2), { mode: 0o600 });
+      const toWrite: Record<string, unknown> = { host, port, token, secret };
+      if (workspaceRoot) toWrite.workspaceRoot = workspaceRoot;
+      if (policyMode) toWrite.policyMode = policyMode;
+      fs.writeFileSync(cfgPath, JSON.stringify(toWrite, null, 2), { mode: 0o600 });
     } catch (err) {
       // fail-open：持久化失败仍可运行（token/secret 仅本进程有效）。
       console.warn(
@@ -104,11 +113,6 @@ function loadConfig(): ResolvedConfig {
       );
     }
   }
-
-  // v0.5：工作区根与审批档位。档位非法值一律回落到 auto（fail-safe：宁可多问不可少问）。
-  const workspaceRoot = process.env.STUDIO_WORKSPACE_ROOT ?? stored.workspaceRoot ?? '';
-  const rawMode = process.env.STUDIO_POLICY_MODE ?? stored.policyMode ?? '';
-  const policyMode: PolicyMode = isPolicyMode(rawMode) ? rawMode : DEFAULT_POLICY_MODE;
 
   return { config: { host, port, token }, secret, workspaceRoot, policyMode };
 }
