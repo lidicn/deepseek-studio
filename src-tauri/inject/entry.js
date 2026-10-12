@@ -2360,13 +2360,57 @@ ${cleanStderr}`);
 
   // src/ui/studio-sidebar.ts
   var sidebarStyles = `
+  /* \u6D6E\u52A8\u89E6\u53D1\u6309\u94AE */
+  .studio-fab {
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    background: rgba(255,255,255,0.9);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(0,0,0,0.08);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    z-index: 2147483646;
+    transition: all 0.2s ease;
+    color: #4D6BFE;
+    user-select: none;
+  }
+  .studio-fab:hover {
+    background: #fff;
+    box-shadow: 0 4px 12px rgba(77,107,254,0.2);
+    transform: scale(1.05);
+  }
+  .studio-fab svg { width: 18px; height: 18px; }
+
+  /* \u906E\u7F69\u5C42 */
+  .studio-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.3);
+    z-index: 2147483644;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.2s ease, visibility 0.2s ease;
+  }
+  .studio-overlay.visible {
+    opacity: 1;
+    visibility: visible;
+  }
+
+  /* \u4FA7\u8FB9\u680F\u9762\u677F */
   .studio-sidebar {
     position: fixed;
     top: 0;
     left: 0;
-    width: 240px;
+    width: 260px;
     height: 100vh;
-    background: #fafbfc;
+    background: #ffffff;
     border-right: 1px solid #e8e8e8;
     display: flex;
     flex-direction: column;
@@ -2376,44 +2420,63 @@ ${cleanStderr}`);
     font-size: 13px;
     color: #333;
     overflow: hidden;
-    box-shadow: 2px 0 8px rgba(0,0,0,0.05);
+    box-shadow: 4px 0 16px rgba(0,0,0,0.1);
+    transform: translateX(-100%);
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .studio-sidebar.visible {
+    transform: translateX(0);
   }
   .studio-sidebar-header {
-    padding: 12px 16px;
+    padding: 14px 16px;
     border-bottom: 1px solid #f0f0f0;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
+    flex-shrink: 0;
   }
   .studio-logo {
-    width: 28px;
-    height: 28px;
+    width: 30px;
+    height: 30px;
     background: linear-gradient(135deg, #4D6BFE, #7B8FFF);
-    border-radius: 6px;
+    border-radius: 7px;
     display: flex;
     align-items: center;
     justify-content: center;
     color: #fff;
     font-weight: 700;
     font-size: 14px;
+    flex-shrink: 0;
   }
-  .studio-logo-text { font-weight: 600; font-size: 15px; color: #1a1a2e; }
+  .studio-logo-text { font-weight: 600; font-size: 15px; color: #1a1a2e; flex: 1; }
+  .studio-close-btn {
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    border: none; background: transparent; cursor: pointer;
+    border-radius: 6px; color: #999; flex-shrink: 0;
+    transition: all 0.15s;
+  }
+  .studio-close-btn:hover { background: #f5f5f5; color: #333; }
+  .studio-close-btn svg { width: 16px; height: 16px; }
+
   .studio-nav-section {
     padding: 8px 0;
     border-bottom: 1px solid #f0f0f0;
+    flex-shrink: 0;
   }
   .studio-nav-item {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 16px;
+    padding: 9px 16px;
     cursor: pointer;
     color: #555;
     transition: all 0.15s;
     user-select: none;
   }
   .studio-nav-item:hover { background: #f0f2ff; color: #4D6BFE; }
-  .studio-nav-item svg { flex-shrink: 0; opacity: 0.7; }
+  .studio-nav-item svg { flex-shrink: 0; opacity: 0.7; width: 16px; height: 16px; }
+
   .studio-projects-section {
     flex: 1;
     overflow-y: auto;
@@ -2431,7 +2494,7 @@ ${cleanStderr}`);
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 7px 16px;
+    padding: 8px 16px;
     cursor: pointer;
     color: #555;
     transition: all 0.15s;
@@ -2445,76 +2508,79 @@ ${cleanStderr}`);
     border-left-color: #4D6BFE;
     font-weight: 500;
   }
+  .studio-project-item svg { width: 14px; height: 14px; flex-shrink: 0; }
   .studio-project-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .studio-project-path { font-size: 11px; color: #aaa; padding: 0 16px 4px 42px; }
+
   .studio-sidebar-footer {
     padding: 12px 16px;
     border-top: 1px solid #f0f0f0;
     display: flex;
     align-items: center;
     gap: 10px;
+    flex-shrink: 0;
   }
   .studio-user-avatar {
-    width: 32px;
-    height: 32px;
+    width: 32px; height: 32px;
     border-radius: 50%;
     background: linear-gradient(135deg, #667eea, #764ba2);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: #fff;
-    font-weight: 600;
-    font-size: 13px;
-    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 600; font-size: 13px; flex-shrink: 0;
   }
   .studio-user-info { flex: 1; min-width: 0; }
   .studio-user-name { font-weight: 500; font-size: 13px; color: #333; }
   .studio-user-plan { font-size: 11px; color: #999; }
   .studio-settings-btn {
-    width: 32px;
-    height: 32px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: none;
-    background: transparent;
-    cursor: pointer;
-    border-radius: 6px;
-    color: #666;
-    flex-shrink: 0;
+    width: 32px; height: 32px;
+    display: flex; align-items: center; justify-content: center;
+    border: none; background: transparent; cursor: pointer;
+    border-radius: 6px; color: #666; flex-shrink: 0;
+    transition: all 0.15s;
   }
   .studio-settings-btn:hover { background: #f0f0f0; color: #4D6BFE; }
+  .studio-settings-btn svg { width: 18px; height: 18px; }
+
   .studio-new-project-btn {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 16px;
-    margin: 4px 8px;
-    border: 1px dashed #d0d0d0;
-    border-radius: 6px;
-    background: transparent;
-    cursor: pointer;
-    color: #888;
-    font-size: 12px;
-    width: calc(100% - 16px);
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 16px; margin: 4px 8px;
+    border: 1px dashed #d0d0d0; border-radius: 6px;
+    background: transparent; cursor: pointer;
+    color: #888; font-size: 12px; width: calc(100% - 16px);
     transition: all 0.15s;
   }
   .studio-new-project-btn:hover { border-color: #4D6BFE; color: #4D6BFE; background: #f8f9ff; }
+  .studio-new-project-btn svg { width: 14px; height: 14px; }
 `;
   function createSidebar() {
     const { container, shadow } = createShadowContainer("studio-sidebar-root");
     injectStyles(shadow, sidebarStyles);
+    let isOpen = false;
+    const fab = el("button", { className: "studio-fab", attrs: { title: "Studio \u9762\u677F" } }, [
+      icon(Icons.folder, 18)
+    ]);
+    const overlay = el("div", { className: "studio-overlay" });
     const sidebar = el("div", { className: "studio-sidebar" });
     const header = el("div", { className: "studio-sidebar-header" }, [
       el("div", { className: "studio-logo", text: "S" }),
       el("span", { className: "studio-logo-text", text: "Studio" })
     ]);
+    const closeBtn = el("button", { className: "studio-close-btn", attrs: { title: "\u5173\u95ED" } }, [icon(Icons.x, 16)]);
+    header.appendChild(closeBtn);
     sidebar.appendChild(header);
     const navSection = el("div", { className: "studio-nav-section" });
     const navItems = [
-      { icon: Icons.plus, label: "\u65B0\u5DE5\u4F5C\u4EFB\u52A1", action: () => globalEvents.emit("ui:new-task") },
-      { icon: Icons.clock, label: "\u5B9A\u65F6\u4EFB\u52A1", action: () => globalEvents.emit("ui:scheduled-tasks") },
-      { icon: Icons.puzzle, label: "\u63D2\u4EF6\xB7\u6280\u80FD\xB7\u4F19\u4F34", action: () => globalEvents.emit("ui:skills") }
+      { icon: Icons.plus, label: "\u65B0\u5DE5\u4F5C\u4EFB\u52A1", action: () => {
+        hide();
+        globalEvents.emit("ui:new-task");
+      } },
+      { icon: Icons.clock, label: "\u5B9A\u65F6\u4EFB\u52A1", action: () => {
+        hide();
+        globalEvents.emit("ui:scheduled-tasks");
+      } },
+      { icon: Icons.puzzle, label: "\u63D2\u4EF6\xB7\u6280\u80FD\xB7\u4F19\u4F34", action: () => {
+        hide();
+        globalEvents.emit("ui:skills");
+      } }
     ];
     for (const item of navItems) {
       const navItem = el("div", { className: "studio-nav-item" }, [
@@ -2533,7 +2599,10 @@ ${cleanStderr}`);
       icon(Icons.plus, 14),
       el("span", { text: "\u521B\u5EFA\u65B0\u9879\u76EE" })
     ]);
-    newProjectBtn.addEventListener("click", () => globalEvents.emit("ui:new-project"));
+    newProjectBtn.addEventListener("click", () => {
+      hide();
+      globalEvents.emit("ui:new-project");
+    });
     projectsSection.appendChild(newProjectBtn);
     sidebar.appendChild(projectsSection);
     const footer = el("div", { className: "studio-sidebar-footer" }, [
@@ -2544,10 +2613,35 @@ ${cleanStderr}`);
       ])
     ]);
     const settingsBtn = el("button", { className: "studio-settings-btn" }, [icon(Icons.settings, 18)]);
-    settingsBtn.addEventListener("click", () => globalEvents.emit("ui:settings"));
+    settingsBtn.addEventListener("click", () => {
+      hide();
+      globalEvents.emit("ui:settings");
+    });
     footer.appendChild(settingsBtn);
     sidebar.appendChild(footer);
+    shadow.appendChild(fab);
+    shadow.appendChild(overlay);
     shadow.appendChild(sidebar);
+    function show() {
+      isOpen = true;
+      sidebar.classList.add("visible");
+      overlay.classList.add("visible");
+    }
+    function hide() {
+      isOpen = false;
+      sidebar.classList.remove("visible");
+      overlay.classList.remove("visible");
+    }
+    function toggle() {
+      if (isOpen) hide();
+      else show();
+    }
+    fab.addEventListener("click", toggle);
+    overlay.addEventListener("click", hide);
+    closeBtn.addEventListener("click", hide);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && isOpen) hide();
+    });
     function renderProjects(projects, currentId) {
       projectList.innerHTML = "";
       for (const p of projects) {
@@ -2559,6 +2653,7 @@ ${cleanStderr}`);
           globalState.currentProject = p.id;
           globalEvents.emit("ui:project-switched", p);
           renderProjects(projects, p.id);
+          hide();
         });
         projectList.appendChild(item);
         if (p.path) {
@@ -2576,12 +2671,9 @@ ${cleanStderr}`);
     });
     return {
       container,
-      show: () => {
-        container.style.display = "block";
-      },
-      hide: () => {
-        container.style.display = "none";
-      }
+      show,
+      hide,
+      toggle
     };
   }
 
@@ -3843,7 +3935,7 @@ ${cleanStderr}`);
     console.log("[StudioUI] install start, document.body:", !!document.body);
     setHostBridge(options.host);
     const containers = [];
-    let sidebarVisible = options.enableSidebar !== false;
+    let sidebarHandle = null;
     let destroyed = false;
     function mount() {
       if (destroyed) return;
@@ -3855,12 +3947,10 @@ ${cleanStderr}`);
       console.log("[StudioUI] mounting to document.body");
       if (options.enableSidebar !== false) {
         try {
-          const sidebar = createSidebar();
-          document.body.appendChild(sidebar.container);
-          containers.push(sidebar.container);
-          if (!sidebarVisible) sidebar.hide();
-          adjustMainContentMargin(240);
-          console.log("[StudioUI] sidebar installed");
+          sidebarHandle = createSidebar();
+          document.body.appendChild(sidebarHandle.container);
+          containers.push(sidebarHandle.container);
+          console.log("[StudioUI] sidebar installed (collapsible floating panel)");
         } catch (e) {
           console.error("[StudioUI] sidebar failed:", e);
         }
@@ -4004,8 +4094,7 @@ ${cleanStderr}`);
       }
       if ((e.ctrlKey || e.metaKey) && e.key === "b") {
         e.preventDefault();
-        sidebarVisible = !sidebarVisible;
-        adjustMainContentMargin(sidebarVisible ? 240 : 0);
+        sidebarHandle?.toggle();
       }
     }
     mount();
@@ -4016,29 +4105,11 @@ ${cleanStderr}`);
         for (const c of containers) {
           c.remove();
         }
-        adjustMainContentMargin(0);
       },
       toggleSidebar: () => {
-        sidebarVisible = !sidebarVisible;
-        adjustMainContentMargin(sidebarVisible ? 240 : 0);
+        sidebarHandle?.toggle();
       }
     };
-  }
-  function adjustMainContentMargin(margin) {
-    const selectors = [
-      ".flex-1.overflow-hidden",
-      '[class*="chat"] main',
-      "main",
-      ".app-main"
-    ];
-    for (const selector of selectors) {
-      const el2 = document.querySelector(selector);
-      if (el2) {
-        el2.style.marginLeft = margin > 0 ? `${margin}px` : "";
-        return;
-      }
-    }
-    document.body.style.paddingLeft = margin > 0 ? `${margin}px` : "";
   }
   function injectIntoChatInput(barContainer) {
     const toolbarSelectors = [

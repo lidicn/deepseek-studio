@@ -41,7 +41,7 @@ export function installStudioUI(options: StudioUIOptions): StudioUIHandle {
   setHostBridge(options.host);
 
   const containers: HTMLElement[] = [];
-  let sidebarVisible = options.enableSidebar !== false;
+  let sidebarHandle: { container: HTMLElement; show: () => void; hide: () => void; toggle: () => void } | null = null;
   let destroyed = false;
 
   function mount(): void {
@@ -53,15 +53,13 @@ export function installStudioUI(options: StudioUIOptions): StudioUIHandle {
     }
     console.log('[StudioUI] mounting to document.body');
 
-  // 1. 左侧边栏
+  // 1. 左侧边栏（v2.0 可折叠浮动面板，默认收起不遮挡网页）
   if (options.enableSidebar !== false) {
     try {
-      const sidebar = createSidebar();
-      document.body.appendChild(sidebar.container);
-      containers.push(sidebar.container);
-      if (!sidebarVisible) sidebar.hide();
-      adjustMainContentMargin(240);
-      console.log('[StudioUI] sidebar installed');
+      sidebarHandle = createSidebar();
+      document.body.appendChild(sidebarHandle.container);
+      containers.push(sidebarHandle.container);
+      console.log('[StudioUI] sidebar installed (collapsible floating panel)');
     } catch (e) {
       console.error('[StudioUI] sidebar failed:', e);
     }
@@ -236,8 +234,7 @@ export function installStudioUI(options: StudioUIOptions): StudioUIHandle {
     }
     if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
       e.preventDefault();
-      sidebarVisible = !sidebarVisible;
-      adjustMainContentMargin(sidebarVisible ? 240 : 0);
+      sidebarHandle?.toggle();
     }
   }
 
@@ -251,35 +248,11 @@ export function installStudioUI(options: StudioUIOptions): StudioUIHandle {
       for (const c of containers) {
         c.remove();
       }
-      adjustMainContentMargin(0);
     },
     toggleSidebar: () => {
-      sidebarVisible = !sidebarVisible;
-      adjustMainContentMargin(sidebarVisible ? 240 : 0);
+      sidebarHandle?.toggle();
     },
   };
-}
-
-/**
- * 调整 deepseek 网页主内容区的左边距，为侧边栏腾出空间。
- */
-function adjustMainContentMargin(margin: number): void {
-  // 尝试找到 deepseek 主内容区
-  const selectors = [
-    '.flex-1.overflow-hidden',
-    '[class*="chat"] main',
-    'main',
-    '.app-main',
-  ];
-  for (const selector of selectors) {
-    const el = document.querySelector(selector);
-    if (el) {
-      (el as HTMLElement).style.marginLeft = margin > 0 ? `${margin}px` : '';
-      return;
-    }
-  }
-  // 如果找不到，给 body 加 padding
-  document.body.style.paddingLeft = margin > 0 ? `${margin}px` : '';
 }
 
 /**
