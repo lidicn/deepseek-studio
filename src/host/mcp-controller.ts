@@ -43,6 +43,12 @@ export interface McpCallResult {
   readonly ok: boolean;
   readonly data?: unknown;
   readonly error?: string;
+  /** Pi Agent 风格：多模态内容数组（文本+图片） */
+  readonly content?: Array<{ type: string; text?: string; image_url?: { url: string } }>;
+  /** 结构化详情（工具返回的元数据） */
+  readonly details?: Record<string, unknown>;
+  /** 是否为错误结果 */
+  readonly isError?: boolean;
 }
 
 interface McpServerConnection {
@@ -384,13 +390,15 @@ export class McpController {
 
     try {
       const result = (await this.sendRequest(conn, 'tools/call', { name: toolName, arguments: args })) as {
-        content?: Array<{ type: string; text?: string }>;
+        content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
         isError?: boolean;
       };
       if (result.isError) {
         const text = result.content?.find((c) => c.type === 'text')?.text ?? 'Unknown MCP tool error';
-        return { ok: false, error: text };
+        return { ok: false, error: text, isError: true };
       }
+
+      // 提取文本内容
       const text = result.content?.find((c) => c.type === 'text')?.text ?? '';
       let data: unknown = text;
       try {
@@ -398,7 +406,36 @@ export class McpController {
       } catch {
         // 非 JSON 文本，原样返回
       }
-      return { ok: true, data };
+
+      // 构建 Pi Agent 风格的 content 数组（文本 + 图片）
+      const content: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+      if (text) {
+        content.push({ type: 'text', text });
+      }
+
+      // 处理 MCP 标准 image 类型 content
+      for (const c of result.content ?? []) {
+        if (c.type === 'image' && c.data) {
+          const mime = c.mimeType ?? 'image/png';
+          content.push({ type: 'image_url', image_url: { url: `data:${mime};base64,${c.data}` } });
+        }
+      }
+
+      // 处理 TVPilot 风格的 inline_bytes（在 JSON data 里）
+      if (data && typeof data === 'object' && !Array.isArray(data)) {
+        const obj = data as Record<string, unknown>;
+        if (typeof obj.inline_bytes === 'string') {
+          const mime = typeof obj.format === 'string' ? `image/${obj.format}` : 'image/png';
+          content.push({ type: 'image_url', image_url: { url: `data:${mime};base64,${obj.inline_bytes}` } });
+        }
+      }
+
+      return {
+        ok: true,
+        data,
+        content: content.length > 0 ? content : undefined,
+        details: data && typeof data === 'object' && !Array.isArray(data) ? (data as Record<string, unknown>) : undefined,
+      };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }

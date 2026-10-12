@@ -1927,6 +1927,18 @@ ${cleanStderr}`);
     text-align: center;
   }
   .ds-studio-tool-card-expand-btn:hover { background: #e5e7eb; color: #374151; }
+  .ds-studio-tool-card-images {
+    margin-bottom: 8px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid #e5e7eb;
+  }
+  .ds-studio-tool-card-image {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    cursor: zoom-in;
+  }
 `;
   var styleInjected = false;
   function ensureStyle() {
@@ -1997,6 +2009,15 @@ ${cleanStderr}`);
     const terminated = !!data.result && data.result.terminate === true;
     const resultText = data.result ? formatResult(data.result) : "";
     const isLongResult = resultText.length > 2048;
+    const imageUrls = [];
+    if (data.result?.content) {
+      for (const c of data.result.content) {
+        if (c.type === "image_url" && c.image_url?.url) {
+          imageUrls.push(c.image_url.url);
+        }
+      }
+    }
+    const imagesHtml = imageUrls.length > 0 ? imageUrls.map((url) => `<img class="ds-studio-tool-card-image" src="${url}" alt="tool result image" />`).join("") : "";
     return `
     <div class="ds-studio-tool-card-header">
       <span class="ds-studio-tool-card-badge ${status}"><span class="dot"></span>${statusText}</span>
@@ -2010,10 +2031,11 @@ ${cleanStderr}`);
         <pre>${formatJson2(data.params)}</pre>
       </div>
       ${data.result ? `
-      <div class="ds-studio-tool-card-section ${isLongResult ? "ds-studio-tool-card-result-collapsed" : ""}">
+      <div class="ds-studio-tool-card-section ${isLongResult && !imagesHtml ? "ds-studio-tool-card-result-collapsed" : ""}">
         <div class="ds-studio-tool-card-label">\u7ED3\u679C</div>
+        ${imagesHtml ? `<div class="ds-studio-tool-card-images">${imagesHtml}</div>` : ""}
         <pre>${resultText}</pre>
-        ${isLongResult ? '<button class="ds-studio-tool-card-expand-btn">\u5C55\u5F00\u5168\u90E8</button>' : ""}
+        ${isLongResult && !imagesHtml ? '<button class="ds-studio-tool-card-expand-btn">\u5C55\u5F00\u5168\u90E8</button>' : ""}
       </div>
       ` : ""}
     </div>

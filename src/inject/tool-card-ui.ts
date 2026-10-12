@@ -21,7 +21,10 @@ export interface ToolCardData {
     data?: unknown;
     error?: string;
     // v1.2 新格式字段（可选，语义见 src/shared/tool-result-format.ts）
-    content?: Array<{ type: 'text'; text: string }>;
+    content?: Array<
+      | { type: 'text'; text: string }
+      | { type: 'image_url'; image_url: { url: string } }
+    >;
     details?: Record<string, unknown>;
     isError?: boolean;
     terminate?: boolean;
@@ -169,6 +172,18 @@ const CARD_STYLE = `
     text-align: center;
   }
   .ds-studio-tool-card-expand-btn:hover { background: #e5e7eb; color: #374151; }
+  .ds-studio-tool-card-images {
+    margin-bottom: 8px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid #e5e7eb;
+  }
+  .ds-studio-tool-card-image {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    cursor: zoom-in;
+  }
 `;
 
 let styleInjected = false;
@@ -262,6 +277,19 @@ function buildCardHtml(data: ToolCardData, _callId: string): string {
   const resultText = data.result ? formatResult(data.result) : '';
   const isLongResult = resultText.length > 2048;
 
+  // 从 content 数组提取图片（MCP 截图等多模态结果）
+  const imageUrls: string[] = [];
+  if (data.result?.content) {
+    for (const c of data.result.content) {
+      if (c.type === 'image_url' && c.image_url?.url) {
+        imageUrls.push(c.image_url.url);
+      }
+    }
+  }
+  const imagesHtml = imageUrls.length > 0
+    ? imageUrls.map((url) => `<img class="ds-studio-tool-card-image" src="${url}" alt="tool result image" />`).join('')
+    : '';
+
   return `
     <div class="ds-studio-tool-card-header">
       <span class="ds-studio-tool-card-badge ${status}"><span class="dot"></span>${statusText}</span>
@@ -275,10 +303,11 @@ function buildCardHtml(data: ToolCardData, _callId: string): string {
         <pre>${formatJson(data.params)}</pre>
       </div>
       ${data.result ? `
-      <div class="ds-studio-tool-card-section ${isLongResult ? 'ds-studio-tool-card-result-collapsed' : ''}">
+      <div class="ds-studio-tool-card-section ${isLongResult && !imagesHtml ? 'ds-studio-tool-card-result-collapsed' : ''}">
         <div class="ds-studio-tool-card-label">结果</div>
+        ${imagesHtml ? `<div class="ds-studio-tool-card-images">${imagesHtml}</div>` : ''}
         <pre>${resultText}</pre>
-        ${isLongResult ? '<button class="ds-studio-tool-card-expand-btn">展开全部</button>' : ''}
+        ${isLongResult && !imagesHtml ? '<button class="ds-studio-tool-card-expand-btn">展开全部</button>' : ''}
       </div>
       ` : ''}
     </div>
