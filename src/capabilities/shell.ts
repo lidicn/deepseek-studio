@@ -145,7 +145,7 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
 
       // v0.9：Windows 中文路径编码修复——powershell -Command 的参数经 argv 传递时
       // 中文会变 ????（PowerShell 用系统 ANSI 代码页解析命令行）。改用 -EncodedCommand（Base64 UTF-16LE）。
-      if (process.platform === 'win32' && /^powershell(\.exe)?$/i.test(argv[0]) || /^pwsh(\.exe)?$/i.test(argv[0] || '')) {
+      if (process.platform === 'win32' && (/^powershell(\.exe)?$/i.test(argv[0]) || /^pwsh(\.exe)?$/i.test(argv[0] || ''))) {
         const cmdIdx = argv.findIndex((a) => a === '-Command' || a === '-c');
         if (cmdIdx >= 0 && argv[cmdIdx + 1]) {
           const script = argv[cmdIdx + 1];
@@ -212,10 +212,16 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
         });
         child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
           const exitCode = code ?? (signal ? -1 : 0);
+          const durationMs = Date.now() - startedAt;
+          const isError = exitCode !== 0;
           finish({
-            ok: exitCode === 0,
-            error: exitCode === 0 ? undefined : 'nonzero-exit',
+            ok: !isError,
+            error: isError ? 'nonzero-exit' : undefined,
             data: { ...common(), exitCode },
+            // v1.2：Pi Agent 风格统一结果格式
+            content: [{ type: 'text', text: stdout }],
+            details: { exitCode, durationMs, cwd, argv },
+            isError,
           });
         });
 

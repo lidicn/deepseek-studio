@@ -14,6 +14,17 @@ export interface ExecuteResult {
   data?: unknown;
   /** 失败时的结构化错误码（非异常文本），用于宿主判定与前端呈现。 */
   error?: string;
+
+  // ---- v1.2 新增：Pi Agent 风格统一结果格式（全可选，缺省即回退旧格式）----
+  // 语义真相源见 src/shared/tool-result-format.ts 的 ToolResultExtras。
+  /** 给模型看的纯文本内容。 */
+  content?: Array<{ type: 'text'; text: string }>;
+  /** 给 UI 看的元数据（exitCode / durationMs / path 等）。 */
+  details?: Record<string, unknown>;
+  /** 显式错误标记（等价于 !ok，但语义更清晰）。 */
+  isError?: boolean;
+  /** 提示跳过自动续跑（批次内全部为 true 时才生效）。 */
+  terminate?: boolean;
 }
 
 /**

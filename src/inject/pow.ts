@@ -8,7 +8,8 @@
  * 3. 构造 X-DS-PoW-Response header (Base64 JSON)
  */
 
-const WASM_PATH = '/deepseek/sha3_wasm_bg.wasm';
+import { WASM_BASE64 } from './pow-wasm';
+
 const SUPPORTED_ALGORITHM = 'DeepSeekHashV1';
 
 interface PowChallenge {
@@ -20,7 +21,6 @@ interface PowChallenge {
   expire_at: number;
   expire_after?: number;
 }
-
 interface PowAnswer {
   algorithm: string;
   challenge: string;
@@ -41,9 +41,9 @@ const textEncoder = new TextEncoder();
 
 async function loadWasm(): Promise<WasmExports> {
   if (wasmInstance) return wasmInstance;
-  const resp = await fetch(WASM_PATH);
-  if (!resp.ok) throw new Error(`Failed to load PoW WASM: ${resp.status}`);
-  const { instance } = await WebAssembly.instantiate(await resp.arrayBuffer(), {});
+  // 内嵌 base64 WASM，避免页端相对路径 fetch 返回 404 HTML
+  const binary = Uint8Array.from(atob(WASM_BASE64), (c) => c.charCodeAt(0));
+  const { instance } = await WebAssembly.instantiate(binary, {});
   wasmInstance = instance.exports as unknown as WasmExports;
   return wasmInstance;
 }
@@ -74,7 +74,6 @@ function solvePowWithWasm(wasm: WasmExports, target: string, prefix: string, dif
 }
 
 async function createPowChallenge(headers: Record<string, string>, targetPath: string): Promise<PowChallenge> {
-  console.log('[pow] challenge headers:', Object.keys(headers), 'target:', targetPath);
   const resp = await fetch('/api/v0/chat/create_pow_challenge', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...headers },
@@ -82,13 +81,20 @@ async function createPowChallenge(headers: Record<string, string>, targetPath: s
     credentials: 'include',
   });
   const respText = await resp.text();
-  console.log('[pow] challenge status:', resp.status, 'body:', respText.slice(0, 500));
   if (!resp.ok) throw new Error(`PoW challenge failed: ${resp.status} ${respText.slice(0, 200)}`);
   const data = JSON.parse(respText);
-  // 响应可能是 { data: { biz_data: { challenge... } } } 或直接 { challenge... }
-  const challenge = data?.data?.biz_data ?? data?.data ?? data;
-  if (!challenge?.challenge) throw new Error('Invalid PoW challenge response');
-  return challenge as PowChallenge;
+  // deepseek++ 解析：json.data.biz_data.challenge
+  const challenge = data?.data?.biz_data?.challenge ?? data?.data?.challenge ?? data?.challenge ?? data;
+  if (!challenge?.challenge) throw new Error(`Invalid PoW challenge response: ${respText.slice(0, 300)}`);
+  return {
+    algorithm: String(challenge.algorithm),
+    challenge: String(challenge.challenge),
+    salt: String(challenge.salt),
+    difficulty: Number(challenge.difficulty),
+    signature: String(challenge.signature),
+    expire_at: Number(challenge.expire_at ?? challenge.expireAt ?? 0),
+    expire_after: Number(challenge.expire_after ?? challenge.expireAfter ?? 0),
+  } as PowChallenge;
 }
 
 function base64EncodeUtf8(str: string): string {

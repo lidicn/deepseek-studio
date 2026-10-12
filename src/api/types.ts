@@ -2,7 +2,7 @@
  * 本地 HTTP API · 类型
  *
  * 暴露 OpenAI 兼容的 /v1/chat/completions（支持 SSE 流式）与 /v1/models，供桌面宿主内
- * 的 agent loop / 第三方客户端通过 http://127.0.0.1:8756 调用（端口从 8765 改 8756，避开 DeskPilot）。
+ * 的 agent loop / 第三方客户端通过 http://127.0.0.1:8760 调用（端口从 8756 改 8760，避开豆包沙箱）。
  */
 
 export interface ChatMessage {

@@ -24,6 +24,10 @@ export interface WebEngineOptions {
   stepTimeoutMs?: number;
   /** 中止钩子：AgentLoop.stop() 置位后，等待中的 send 尽快返回。 */
   isStopped?(): boolean;
+  /** v0.9：读取页端 auto-continue 推送的模型回复（不渲染到 DOM）。 */
+  getAutoReply?(): { text: string; loop: number; updatedAt: number; fresh: boolean };
+  /** v0.9：消费（读取并清除 fresh 标志）页端 auto-continue 推送的回复。 */
+  consumeAutoReply?(): { text: string; loop: number; updatedAt: number; fresh: boolean };
 }
 
 export interface WebEngine extends ModelEngine {}
@@ -81,6 +85,62 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
         if (lastText !== baselineText && lastText.length > 0 && lastText === prevSnapshot) {
           stableHits += 1;
           // 连续两次轮询（间隔 pollIntervalMs）快照一致 → 回复结束
+          if (stableHits >= 2) break;
+        } else {
+          stableHits = 0;
+        }
+        prevSnapshot = lastText;
+      }
+
+      const toolCalls = options.toolCallCounter.current - counterStart;
+      return { content: lastText, toolCalls, timedOut: timedOut || undefined };
+    },
+    /**
+     * 不发消息，只等待下一条回复（页端 auto-continue 触发）。
+     * v0.9：优先读 getAutoReply（页端通过 WebSocket 推送的回复，不渲染到 DOM）；
+     * 降级为 DOM 轮询（兼容 auto-continue 未推送的情况）。
+     */
+    async waitForNextReply(): Promise<EngineSendResult> {
+      const counterStart = options.toolCallCounter.current;
+      const startedAt = Date.now();
+      console.log(`[web-engine] waitForNextReply start, hasConsume=${!!options.consumeAutoReply}`);
+
+      // 路径 A：consumeAutoReply 可用时，等待 fresh 标志（auto-continue 完成时置位）
+      if (options.consumeAutoReply) {
+        while (Date.now() - startedAt < stepTimeoutMs) {
+          if (options.isStopped?.()) break;
+          const reply = options.consumeAutoReply();
+          if (reply.fresh && reply.text.length > 0) {
+            const toolCalls = options.toolCallCounter.current - counterStart;
+            console.log(`[web-engine] waitForNextReply got fresh reply len=${reply.text.length} toolCalls=${toolCalls} elapsed=${Date.now()-startedAt}ms`);
+            return { content: reply.text, toolCalls };
+          }
+          await sleep(pollIntervalMs);
+        }
+        console.log(`[web-engine] waitForNextReply path A timeout after ${Date.now()-startedAt}ms, fallback to DOM`);
+        // 超时降级到 DOM 轮询
+      }
+
+      // 路径 B：DOM 轮询（降级）
+      const baseline = await readLastMessage();
+      const baselineText = baseline?.text ?? '';
+      let prevSnapshot: string | null = null;
+      let stableHits = 0;
+      let lastText = '';
+      let timedOut = false;
+
+      for (;;) {
+        if (options.isStopped?.()) break;
+        if (Date.now() - startedAt > stepTimeoutMs) {
+          timedOut = true;
+          break;
+        }
+        await sleep(pollIntervalMs);
+        const snap = await readLastMessage();
+        if (!snap) continue;
+        lastText = snap.text;
+        if (lastText !== baselineText && lastText.length > 0 && lastText === prevSnapshot) {
+          stableHits += 1;
           if (stableHits >= 2) break;
         } else {
           stableHits = 0;

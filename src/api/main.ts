@@ -3,7 +3,7 @@
  *
  * 配置来源（优先级从高到低）：环境变量 DEEPSEEK_STUDIO_* > 本地配置文件 >
  * 自动生成（首次运行随机 token/secret 并落盘 ~/.config/deepseek-studio/config.json，权限 0600）。
- * 端口固定 8756（避开 DeskPilot 占用的 8765）。
+ * 端口固定 8760（避开豆包沙箱 8756 和 DeskPilot 8765）。
  */
 
 import { createDesktopHost } from '../host/desktop-host';
@@ -15,6 +15,49 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ApiConfig } from './types';
+
+// ── v0.12 Phase 1：孤儿防护（DCD 修正条件 3）──────────────────────────────
+// 父进程（Tauri 主进程）消失 → self-exit，不留孤儿 Node。
+// POSIX：父死后 process.ppid 变为 1（变化可判）；
+// Windows：ppid 是启动时记录的陈旧值（父死后不变），必须再做 liveness 探活
+//         （process.kill(pid, 0)：ESRCH=已消失，EPERM=存在但无权限）。
+type GuardDeps = {
+  getPpid: () => number;
+  alive: (pid: number) => boolean;
+  exit: (code: number) => void;
+  setInterval: typeof setInterval;
+  clearInterval: typeof clearInterval;
+  on: (sig: 'SIGTERM' | 'SIGBREAK', fn: () => void) => void;
+  log?: (msg: string) => void;
+};
+function installOrphanGuard(d: GuardDeps, intervalMs = 2_000): () => void {
+  const ppid0 = d.getPpid();
+  const timer = d.setInterval(() => {
+    if (d.getPpid() !== ppid0 || !d.alive(ppid0)) {
+      d.log?.(`[deepseek-studio] 父进程 ${ppid0} 消失，孤儿防护触发 self-exit`);
+      d.exit(0);
+    }
+  }, intervalMs);
+  const stop = () => d.clearInterval(timer);
+  for (const sig of ['SIGTERM', 'SIGBREAK'] as const) {
+    d.on(sig, () => { stop(); d.exit(0); });
+  }
+  return stop;
+}
+if (!process.env.STUDIO_TEST) {
+  installOrphanGuard({
+    getPpid: () => process.ppid,
+    alive: (pid) => {
+      try { process.kill(pid, 0); return true; }
+      catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; }
+    },
+    exit: (c) => process.exit(c),
+    setInterval, clearInterval,
+    on: (sig, fn) => { process.on(sig, fn); },
+    log: (m) => console.warn(m),
+  });
+}
+// ── 孤儿防护结束 ────────────────────────────────────────────────────────
 
 interface StoredConfig extends Partial<ApiConfig> {
   secret?: string;
@@ -47,7 +90,7 @@ function loadConfig(): ResolvedConfig {
   const token = process.env.DEEPSEEK_STUDIO_TOKEN ?? stored.token ?? randomToken();
   const secret = process.env.DEEPSEEK_STUDIO_SECRET ?? stored.secret ?? randomToken();
   const host = process.env.DEEPSEEK_STUDIO_HOST ?? stored.host ?? '127.0.0.1';
-  const port = Number(process.env.DEEPSEEK_STUDIO_PORT ?? stored.port ?? 8756);
+  const port = Number(process.env.DEEPSEEK_STUDIO_PORT ?? stored.port ?? 8760);
 
   // 缺失则生成并落盘（仅本地文件，0600；不回显 secret）。
   if (!stored.token || !stored.secret) {

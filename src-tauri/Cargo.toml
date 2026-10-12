@@ -10,10 +10,17 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
+dirs = "5"
+
+# v0.12 Phase 1：sidecar 监管层平台信号（POSIX SIGTERM）
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [features]
 # 生产分发时由 tauri 注入自定义协议；开发期不开启。

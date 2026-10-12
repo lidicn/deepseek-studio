@@ -34,6 +34,11 @@ export interface ModelEngine {
    * 实现负责：注入文本 → 触发发送 → 完成检测（稳定性启发式 + 看门狗）。
    */
   send(text: string): Promise<EngineSendResult>;
+  /**
+   * 不发消息，只轮询等待下一条回复（由页端 auto-continue 触发）。
+   * v0.9：页端 POW auto-continue 是唯一续跑权威，宿主不再发 continueNudge。
+   */
+  waitForNextReply?(): Promise<EngineSendResult>;
 }
 
 /** ApiEngine 占位（M3）：只提供明确的「未实现」语义，避免误用。 */

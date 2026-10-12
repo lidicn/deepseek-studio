@@ -61,6 +61,21 @@ export interface ApiServerOptions {
   auditReader?: AuditReader;
   /** v0.9：工具目录读取；提供后开放 GET /v1/tools/catalog。 */
   toolCatalog?: () => unknown[];
+  /** v0.9：外部 agent 控制链；提供后开放 POST /v1/agent/send（发消息到页面并等待最终回答）。 */
+  agentSender?: (text: string) => Promise<string>;
+  /** v0.12：自动化调度管理器；提供后开放 /v1/automation/* 端点。 */
+  automationManager?: {
+    list: () => unknown[];
+    get: (id: string) => unknown | undefined;
+    create: (input: unknown) => unknown;
+    update: (id: string, patch: unknown) => unknown | undefined;
+    remove: (id: string) => boolean;
+    toggle: (id: string, enabled: boolean) => unknown | undefined;
+    runNow: (id: string) => Promise<unknown | undefined>;
+    logs: (taskId?: string, limit?: number) => unknown[];
+    start: () => void;
+    stop: () => void;
+  };
   /** 限流与并发（默认串行 + 60/分钟）。 */
   rateLimit?: RateLimitOptions;
   /**
@@ -314,6 +329,137 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         }
         const result = await options.toolExecutor(body.tool, body.params ?? {});
         sendJson(200, result);
+        return;
+      }
+
+      // v0.9：外部 agent 控制链——发消息到页面并等待最终回答。
+      if (pathname === '/v1/agent/send' && req.method === 'POST') {
+        if (!options.agentSender) {
+          sendJson(501, { error: { code: 'not_implemented', message: 'agent sender not configured' } });
+          return;
+        }
+        const raw = await readBody(req);
+        let body: { message?: unknown };
+        try {
+          body = JSON.parse(raw) as { message?: unknown };
+        } catch {
+          sendJson(400, { error: { code: 'bad_request', message: 'invalid json body' } });
+          return;
+        }
+        if (typeof body.message !== 'string' || body.message.length === 0) {
+          sendJson(400, { error: { code: 'bad_request', message: 'missing message' } });
+          return;
+        }
+        try {
+          const answer = await options.agentSender(body.message);
+          sendJson(200, { ok: true, answer });
+        } catch (e) {
+          sendJson(500, { ok: false, error: e instanceof Error ? e.message : String(e) });
+        }
+        return;
+      }
+
+      // v0.12：自动化调度 API
+      if (pathname === '/v1/automation/tasks' && req.method === 'GET') {
+        if (!options.automationManager) {
+          sendJson(501, { error: { code: 'not_implemented', message: 'automation not configured' } });
+          return;
+        }
+        sendJson(200, { object: 'list', data: options.automationManager.list() });
+        return;
+      }
+
+      if (pathname === '/v1/automation/tasks' && req.method === 'POST') {
+        if (!options.automationManager) {
+          sendJson(501, { error: { code: 'not_implemented', message: 'automation not configured' } });
+          return;
+        }
+        const raw = await readBody(req);
+        try {
+          const input = JSON.parse(raw);
+          const task = options.automationManager.create(input);
+          sendJson(200, { ok: true, task });
+        } catch (e) {
+          sendJson(400, { error: { code: 'bad_request', message: e instanceof Error ? e.message : String(e) } });
+        }
+        return;
+      }
+
+      if (pathname.startsWith('/v1/automation/tasks/') && req.method === 'GET') {
+        if (!options.automationManager) {
+          sendJson(501, { error: { code: 'not_implemented', message: 'automation not configured' } });
+          return;
+        }
+        const id = pathname.slice('/v1/automation/tasks/'.length);
+        const task = options.automationManager.get(id);
+        if (!task) {
+          sendJson(404, { error: { code: 'not_found', message: 'task not found' } });
+          return;
+        }
+        sendJson(200, { ok: true, task });
+        return;
+      }
+
+      if (pathname.startsWith('/v1/automation/tasks/') && req.method === 'PATCH') {
+        if (!options.automationManager) {
+          sendJson(501, { error: { code: 'not_implemented', message: 'automation not configured' } });
+          return;
+        }
+        const id = pathname.slice('/v1/automation/tasks/'.length);
+        const raw = await readBody(req);
+        try {
+          const patch = JSON.parse(raw);
+          const task = options.automationManager.update(id, patch);
+          if (!task) {
+            sendJson(404, { error: { code: 'not_found', message: 'task not found' } });
+            return;
+          }
+          sendJson(200, { ok: true, task });
+        } catch (e) {
+          sendJson(400, { error: { code: 'bad_request', message: e instanceof Error ? e.message : String(e) } });
+        }
+        return;
+      }
+
+      if (pathname.startsWith('/v1/automation/tasks/') && req.method === 'DELETE') {
+        if (!options.automationManager) {
+          sendJson(501, { error: { code: 'not_implemented', message: 'automation not configured' } });
+          return;
+        }
+        const id = pathname.slice('/v1/automation/tasks/'.length);
+        const ok = options.automationManager.remove(id);
+        sendJson(200, { ok });
+        return;
+      }
+
+      if (pathname.startsWith('/v1/automation/tasks/') && pathname.endsWith('/run') && req.method === 'POST') {
+        if (!options.automationManager) {
+          sendJson(501, { error: { code: 'not_implemented', message: 'automation not configured' } });
+          return;
+        }
+        const id = pathname.slice('/v1/automation/tasks/'.length, -'/run'.length);
+        try {
+          const log = await options.automationManager.runNow(id);
+          if (!log) {
+            sendJson(404, { error: { code: 'not_found', message: 'task not found' } });
+            return;
+          }
+          sendJson(200, { ok: true, log });
+        } catch (e) {
+          sendJson(500, { ok: false, error: e instanceof Error ? e.message : String(e) });
+        }
+        return;
+      }
+
+      if (pathname === '/v1/automation/logs' && req.method === 'GET') {
+        if (!options.automationManager) {
+          sendJson(501, { error: { code: 'not_implemented', message: 'automation not configured' } });
+          return;
+        }
+        const taskId = url.searchParams.get('taskId') ?? undefined;
+        const rawLimit = url.searchParams.get('limit');
+        const limit = rawLimit === null ? 50 : Math.max(1, Math.min(500, Number(rawLimit) || 50));
+        sendJson(200, { object: 'list', data: options.automationManager.logs(taskId, limit) });
         return;
       }
 

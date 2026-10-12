@@ -49,6 +49,12 @@ function findGlobalSendButton(doc: Document): HTMLElement | null {
   ]) as HTMLElement | null;
 }
 
+/** 读取输入框当前文本（textarea / input 用 value，contenteditable 用 textContent）。 */
+function readInputValue(el: HTMLElement): string {
+  if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) return el.value;
+  return el.textContent ?? '';
+}
+
 export function createChatSendCapability(): ContentCapabilityController & ExecutableCapability {
   return {
     id: 'chat-send',
@@ -68,13 +74,27 @@ export function createChatSendCapability(): ContentCapabilityController & Execut
       if (globalBtn && clickElement(globalBtn)) {
         return { ok: true, data: { sent: true, via: 'circle-button-global' } };
       }
-      // 策略 3：传统候选
-      const legacy = input ? null : queryFirst(doc, LEGACY_SEND_SELECTORS);
+      // 策略 3：传统候选（R2-C2 修复：原先 `input ? null : ...` 使有输入框时
+      // 传统候选永不尝试，回退链实际少一环；改为无条件尝试）。
+      const legacy = queryFirst(doc, LEGACY_SEND_SELECTORS);
       if (legacy && clickElement(legacy)) return { ok: true, data: { sent: true, via: 'legacy-button' } };
-      // 策略 4：对输入框合成 Enter
+      // 策略 4：对输入框合成 Enter。
+      // R2-C2 修复：合成 Enter 常被 React 受控输入忽略，此时消息并未发出。
+      // 必须验证「输入框确已被清空」这一可判定证据，否则报 send-unconfirmed，
+      // 不允许把「调用没抛错」当成「事情做成了」（假成功）。
       if (input) {
+        const before = readInputValue(input);
         pressEnter(input);
-        return { ok: true, data: { sent: true, via: 'enter-key' } };
+        const after = readInputValue(input);
+        // 输入框原为空，或 Enter 后已被清空 → 视为发送成功
+        if (before.length === 0 || after.length === 0 || after !== before) {
+          return { ok: true, data: { sent: true, via: 'enter-key' } };
+        }
+        return {
+          ok: false,
+          error: 'send-unconfirmed',
+          data: { via: 'enter-key', hint: '合成 Enter 未被采纳，输入框内容未变' },
+        };
       }
       return { ok: false, error: 'send-button-not-found' };
     },

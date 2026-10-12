@@ -93,4 +93,121 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },
+  // v1.0：长期记忆（移植自 deepseek++）。
+  {
+    id: 'memory.save',
+    title: '保存记忆',
+    description: '保存一条长期记忆（用户身份/偏好/技术栈/项目决策等），跨会话持久化存储。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
+  // v1.0：Python 代码执行（移植自 deepseek++）。
+  {
+    id: 'python.exec',
+    title: '执行 Python',
+    description: '在宿主环境执行 Python 代码（特权级，受工作区策略约束）。',
+    risk: 'privileged',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
+  // v1.0：MCP 工具列表（只读，自动放行）。
+  {
+    id: 'mcp.list',
+    title: '列出 MCP 工具',
+    description: '列出已配置的 MCP 服务器及其提供的工具（只读，自动放行）。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
+  // v1.0：MCP 工具调用（特权级）。
+  {
+    id: 'mcp.call',
+    title: '调用 MCP 工具',
+    description: '调用指定 MCP 服务器上的工具（特权级，受审批策略约束）。',
+    risk: 'privileged',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
+  // v1.1：MCP 连接测试（只读，自动放行）。
+  {
+    id: 'mcp.test',
+    title: '测试 MCP 连接',
+    description: '测试 MCP 服务器配置是否能正常连接（只读，自动放行）。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
+  // v1.1：MCP 配置保存（配置管理，自动放行）。
+  {
+    id: 'mcp.save',
+    title: '保存 MCP 配置',
+    description: '保存 MCP 服务器配置到磁盘（配置管理，自动放行）。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
+  // v1.1：删除 MCP 配置（配置管理，自动放行）。
+  {
+    id: 'mcp.remove',
+    title: '删除 MCP 配置',
+    description: '从配置中删除指定 MCP 服务器（配置管理，自动放行）。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
+  // v1.1：删除记忆（自动放行）。
+  {
+    id: 'memory.delete',
+    title: '删除记忆',
+    description: '删除一条长期记忆（自动放行）。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
+  // v1.1：设置工作区（配置管理，自动放行）。
+  {
+    id: 'workspace.set',
+    title: '设置工作区',
+    description: '设置当前工作区根目录（配置管理，自动放行）。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
+  // v1.1：设置策略模式（配置管理，自动放行）。
+  {
+    id: 'policy.set',
+    title: '设置策略模式',
+    description: '设置工具执行策略模式（workspace/ask/auto/full）（配置管理，自动放行）。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
+  // v1.1：项目列表（只读，自动放行）。
+  {
+    id: 'project.list',
+    title: '列出项目',
+    description: '列出已配置的项目（只读，自动放行）。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
+  // v1.1：创建项目（配置管理，自动放行）。
+  {
+    id: 'project.create',
+    title: '创建项目',
+    description: '创建新项目并写入配置（配置管理，自动放行）。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
+  // v1.1：选择文件夹（配置管理，自动放行；需 Tauri dialog 或环境变量回退）。
+  {
+    id: 'folder.pick',
+    title: '选择文件夹',
+    description: '弹出文件夹选择对话框（需 Tauri dialog；Node 宿主回退到 STUDIO_PICK_FOLDER 环境变量）。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
 ];

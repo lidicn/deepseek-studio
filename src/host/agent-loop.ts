@@ -29,8 +29,9 @@ export const FORMAT_CORRECTION_NUDGE =
   '<local_file_write>{"path":"绝对路径","content":"文本"}</local_file_write>\n' +
   '<shell_exec>{"command":"命令行"}</shell_exec>';
 
-/** 未被解析器消费的原始工具标签（出现即说明 JSON 解析失败，需要纠偏）。 */
-const RAW_TOOL_TAG_RE = /<local_file_(?:read|write|stat)>\s*[^<]*<\/local_file_(?:read|write|stat)>|<shell_exec>\s*[^<]*<\/shell_exec>/;
+/** 未被解析器消费的原始工具标签（出现即说明 JSON 解析失败，需要纠偏）。
+ *  用非贪婪 [\s\S]*? 替代 [^<]*，允许标签体内含 <（如写 HTML、命令重定向）。 */
+const RAW_TOOL_TAG_RE = /<(?:local_file_(?:read|write|stat)|shell_exec|python_exec|memory_save|mcp_(?:list|call|test|save))>[\s\S]*?<\/(?:local_file_(?:read|write|stat)|shell_exec|python_exec|memory_save|mcp_(?:list|call|test|save))>/;
 
 export type AgentEventType = 'user' | 'assistant' | 'tool' | 'status' | 'error' | 'done';
 
@@ -111,8 +112,14 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
               emit({ type: 'error', text: `已达最大步数（${maxSteps}）上限，自动停止。可发送「继续」让模型接着做`, step });
               break;
             }
-            emit({ type: 'status', text: '工具结果已回填，请求模型继续…', step: step + 1 });
-            result = await options.engine.send(continueNudge);
+            // v0.9：页端 POW auto-continue 是唯一续跑权威，宿主只等待结果，不再发 continueNudge
+            emit({ type: 'status', text: '工具结果已回填，等待页端续跑…', step: step + 1 });
+            if (options.engine.waitForNextReply) {
+              result = await options.engine.waitForNextReply();
+            } else {
+              // 降级：引擎不支持 waitForNextReply 时，发一个最小 nudge 触发回复
+              result = await options.engine.send(continueNudge);
+            }
             continue;
           }
 

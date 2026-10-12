@@ -126,6 +126,10 @@ export function createFileCapability(id: FileToolId, options: FileCapabilityOpti
           return {
             ok: true,
             data: { path: resolved, text, bytes: read, offset, nextOffset: moreAvailable ? offset + read : null, totalBytes: stat.size, truncated: moreAvailable },
+            // v1.2：Pi Agent 风格统一结果格式
+            content: [{ type: 'text', text }],
+            details: { path: resolved, size: read, offset, limit },
+            isError: false,
           };
         } finally {
           await handle.close();

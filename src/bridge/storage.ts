@@ -349,13 +349,27 @@ function createStorageArea(deps: StorageAreaDeps): StorageArea {
     return bytesInUseOf(data);
   }
 
+  // R2-C1 修复：把「读快照 -> 写后端 -> 更新内存」整段串行化。
+  // 否则两次并发 set 会在 await writeBatch 的 IO 窗口内交错，
+  // 后完成者用基于旧快照的 next 全量替换 items，抹掉先完成者写入的 key（丢更新）。
+  let mutationTail: Promise<unknown> = Promise.resolve();
+  function enqueueMutation<T>(op: () => Promise<T>): Promise<T> {
+    const run = mutationTail.then(() => op());
+    // 前一个操作的失败不得阻断后续操作，但必须原样传递给本次调用方。
+    mutationTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
   return {
     name: deps.name,
     QUOTA_BYTES: deps.quotaBytes,
     get: (keys, callback) => runOperation(callback, () => getOperation(keys), deps.lastError),
-    set: (entries, callback) => runOperation(callback, () => setOperation(entries), deps.lastError),
-    remove: (keys, callback) => runOperation(callback, () => removeOperation(keys), deps.lastError),
-    clear: (callback) => runOperation(callback, () => clearOperation(), deps.lastError),
+    set: (entries, callback) => runOperation(callback, () => enqueueMutation(() => setOperation(entries)), deps.lastError),
+    remove: (keys, callback) => runOperation(callback, () => enqueueMutation(() => removeOperation(keys)), deps.lastError),
+    clear: (callback) => runOperation(callback, () => enqueueMutation(() => clearOperation()), deps.lastError),
     getBytesInUse: (keys, callback) =>
       runOperation(callback, () => getBytesInUseOperation(keys), deps.lastError),
   };

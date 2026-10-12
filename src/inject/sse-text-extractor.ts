@@ -37,11 +37,13 @@ export function extractTextFromSseLine(line: string): string {
   }
   if (Array.isArray(obj.v)) {
     // BATCH/APPEND：v 是 fragment 对象数组，content 字段是文本
+    // 过滤 type=THINK 的推理段，只保留 type=RESPONSE 的可见回答
     let out = '';
     for (const item of obj.v) {
-      if (item && typeof item === 'object' && typeof (item as { content?: unknown }).content === 'string') {
-        out += (item as { content: string }).content;
-      }
+      if (!item || typeof item !== 'object') continue;
+      const frag = item as { type?: unknown; content?: unknown };
+      if (frag.type === 'THINK') continue;
+      if (typeof frag.content === 'string') out += frag.content;
     }
     return out;
   }
@@ -51,10 +53,14 @@ export function extractTextFromSseLine(line: string): string {
 /**
  * 有状态的 SSE 文本提取器。每个 HTTP 响应流（fetch）或每个 XHR 对象持有一个实例，
  * 逐 chunk 喂入原始 SSE 文本，吐出累积的可见纯文本。
+ *
+ * v0.9：跟踪当前活跃 fragment 类型（THINK/RESPONSE），过滤 THINK 推理段的单字符增量。
  */
 export class SseTextStreamExtractor {
   /** 尚未遇到换行的不完整行（跨 chunk 保留）。 */
   private lineBuffer = '';
+  /** 当前活跃 fragment 类型：THINK 时跳过单字符增量，RESPONSE 时保留。 */
+  private activeFragmentType: 'THINK' | 'RESPONSE' | null = null;
 
   /**
    * 喂入一段原始 SSE 文本（可能在任意字节边界截断），返回本次可确认的完整行所携带的文本。
@@ -63,22 +69,69 @@ export class SseTextStreamExtractor {
   feed(rawChunk: string): string {
     const combined = this.lineBuffer + rawChunk;
     const lines = combined.split('\n');
-    // split 后最后一个元素：combined 以 \n 结尾时为 ''（无残留），否则是不完整末行。
     this.lineBuffer = lines.pop() ?? '';
     let out = '';
     for (const line of lines) {
-      out += extractTextFromSseLine(line);
+      out += this.extractLine(line);
     }
     return out;
   }
 
-  /**
-   * 流结束时调用：尝试解析缓冲区里最后的残留行（不带换行的最后一个事件）。
-   */
+  /** 流结束时调用：尝试解析缓冲区里最后的残留行。 */
   flush(): string {
     const tail = this.lineBuffer;
     this.lineBuffer = '';
-    return extractTextFromSseLine(tail);
+    return this.extractLine(tail);
+  }
+
+  /** 解析一行 SSE，更新 fragment 类型状态，返回可见文本（THINK 段返回空串）。 */
+  private extractLine(line: string): string {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('data:')) return '';
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === '[DONE]') return '';
+    let obj: { v?: unknown; p?: unknown };
+    try {
+      obj = JSON.parse(payload) as { v?: unknown; p?: unknown };
+    } catch {
+      return '';
+    }
+    // fragment APPEND 事件：更新当前活跃 fragment 类型，并提取其中 RESPONSE 的 content
+    if (obj.p === 'response/fragments' && Array.isArray(obj.v)) {
+      for (const item of obj.v) {
+        if (item && typeof item === 'object') {
+          const t = (item as { type?: unknown }).type;
+          if (t === 'THINK' || t === 'RESPONSE') this.activeFragmentType = t;
+        }
+      }
+      let out = '';
+      for (const item of obj.v) {
+        if (!item || typeof item !== 'object') continue;
+        const frag = item as { type?: unknown; content?: unknown };
+        if (frag.type === 'THINK') continue;
+        if (typeof frag.content === 'string') out += frag.content;
+      }
+      return out;
+    }
+    // 单字符增量：只在活跃 fragment 是 RESPONSE（或未知）时保留
+    // 过滤 response/status、response/fragments/-1/elapsed_secs 等控制事件
+    if (typeof obj.v === 'string') {
+      const p = String(obj.p ?? '');
+      if (p && p !== 'response/fragments/-1/content') return '';
+      return this.activeFragmentType === 'THINK' ? '' : obj.v;
+    }
+    // BATCH 数组
+    if (Array.isArray(obj.v)) {
+      let out = '';
+      for (const item of obj.v) {
+        if (!item || typeof item !== 'object') continue;
+        const frag = item as { type?: unknown; content?: unknown };
+        if (frag.type === 'THINK') continue;
+        if (typeof frag.content === 'string') out += frag.content;
+      }
+      return out;
+    }
+    return '';
   }
 }
 

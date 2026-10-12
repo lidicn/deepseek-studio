@@ -1,7 +1,7 @@
 /**
  * 智能体面板通道（M1）：/agent-ws WebSocket。
  *
- * 面板（独立 Tauri 窗口，加载 http://127.0.0.1:8756/agent）经本通道驱动宿主智能体：
+ * 面板（独立 Tauri 窗口，加载 http://127.0.0.1:8760/agent）经本通道驱动宿主智能体：
  *   send / stop / set-policy / set-workspace / pick-folder / get-state
  * 宿主 → 面板：AgentLoop 事件流（event）与请求响应（ack）、状态快照（state）。
  *

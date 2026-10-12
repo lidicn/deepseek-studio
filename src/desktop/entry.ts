@@ -25,7 +25,7 @@ import { installMainWorldInterceptor } from '../inject/main-world-interceptor';
 import { freezeStudioObject, startIntegrityProbe } from './integrity';
 import type { ExecutableCapability } from '../capabilities/types';
 
-const DEFAULT_HOST_URL = 'ws://127.0.0.1:8756/studio';
+const DEFAULT_HOST_URL = 'ws://127.0.0.1:8760/studio';
 
 export interface InstallStudioOptions {
   capabilities?: readonly ContentCapabilityController[];
@@ -118,10 +118,14 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
   // 避免「没连上宿主就不拦截」导致页面直接把原始 XML 工具标签暴露给用户。
   if (typeof globalThis.document !== 'undefined') {
     try {
-      installMainWorldInterceptor(
-        (req) => host.sendToolCall(req),
-        (msg) => host.log(`[interceptor] ${msg}`),
-      );
+      installMainWorldInterceptor({
+        sender: (req) => host.sendToolCall(req),
+        diag: (msg) => host.log(`[interceptor] ${msg}`),
+        onAssistantReply: (text, loop) => host.assistantReply(text, loop),
+        onMemoriesUpdate: (memories) => {
+          (globalThis as { __studioMemories?: unknown }).__studioMemories = memories;
+        },
+      });
     } catch (err) {
       options.reportError?.('failed to install main-world interceptor', err);
     }

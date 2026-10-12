@@ -36,11 +36,24 @@ export type HostToPageMessage =
   | { type: 'dispatch'; callId: string; tool: string; params: unknown }
   | { type: 'consent-required'; callId: string; tool: string; params: unknown; meta?: ConsentMeta }
   /** v0.6：宿主把工具执行结果回传给页端（按 callId 关联页端发来的 tool-call）。 */
-  | { type: 'tool-call-result'; callId: string; ok: boolean; data?: unknown; error?: string }
+  | {
+      type: 'tool-call-result';
+      callId: string;
+      ok: boolean;
+      data?: unknown;
+      error?: string;
+      // v1.2：Pi Agent 风格统一结果格式（全可选，缺省即回退旧格式）
+      content?: Array<{ type: 'text'; text: string }>;
+      details?: Record<string, unknown>;
+      isError?: boolean;
+      terminate?: boolean;
+    }
   /** v0.7：KV 读写结果回传。 */
   | { type: 'kv-result'; requestId: string; ok: boolean; value?: unknown; error?: string }
   /** v0.7：runtime envelope 响应。 */
-  | { type: 'runtime-envelope-result'; requestId: string; response: unknown };
+  | { type: 'runtime-envelope-result'; requestId: string; response: unknown }
+  /** v1.0：宿主推送当前记忆列表（页端用于注入 "Existing Memories" 到系统提示词）。 */
+  | { type: 'memories-update'; memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }> };
 
 /** 注入页 → 宿主 */
 export type PageToHostMessage =
@@ -58,6 +71,8 @@ export type PageToHostMessage =
   | { type: 'kv-set'; requestId: string; key: string; value: unknown }
   | { type: 'kv-remove'; requestId: string; key: string }
   /** v0.7：页端 chrome.runtime.sendMessage 的 envelope（RuntimeBridge post 到宿主）。 */
-  | { type: 'runtime-envelope'; envelope: { command: string; requestId: string; payload: unknown } };
+  | { type: 'runtime-envelope'; envelope: { command: string; requestId: string; payload: unknown } }
+  /** v0.9：页端 auto-continue（POW 直连 API）收到模型最终回复后，推送给宿主。 */
+  | { type: 'assistant-reply'; text: string; loop: number };
 
 export type { ExecuteResult };
