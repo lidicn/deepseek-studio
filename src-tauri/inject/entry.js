@@ -1,8 +1,167 @@
 "use strict";
 (() => {
   var __defProp = Object.defineProperty;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
   var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+  var __esm = (fn, res) => function __init() {
+    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+  };
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
   var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+
+  // src/inject/tool-card-dom.ts
+  var tool_card_dom_exports = {};
+  __export(tool_card_dom_exports, {
+    startToolCardObserver: () => startToolCardObserver,
+    stopToolCardObserver: () => stopToolCardObserver
+  });
+  function injectToolCardStyles() {
+    if (document.getElementById(TOOL_CARD_STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = TOOL_CARD_STYLE_ID;
+    style.textContent = `
+    .ds-tc-card { margin: 6px 0; border: 1px solid #e5e6eb; border-radius: 8px; overflow: hidden; }
+    .ds-tc-toggle { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 13px; background: #f7f8fa; border: none; cursor: pointer; width: 100%; text-align: left; color: #1f2329; }
+    .ds-tc-icon { flex: none; width: 14px; height: 14px; }
+    .ds-tc-name { flex: none; font-weight: 500; }
+    .ds-tc-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8f959e; font-size: 12px; }
+    .ds-tc-chevron { flex: none; width: 12px; height: 12px; color: #8f959e; transition: transform .15s; }
+    .ds-tc-card[data-expanded="true"] .ds-tc-chevron { transform: rotate(90deg); }
+    .ds-tc-detail { display: none; padding: 8px 12px; font-size: 12px; line-height: 1.5; color: #646a73; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; border-top: 1px solid #e5e6eb; }
+    .ds-tc-card[data-expanded="true"] .ds-tc-detail { display: block; }
+  `;
+    document.head.appendChild(style);
+  }
+  function createToolCard2(icon2, name, summary, detail) {
+    const card = document.createElement("div");
+    card.className = "ds-tc-card";
+    card.setAttribute("data-expanded", "false");
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "ds-tc-toggle";
+    const iconEl = document.createElement("span");
+    iconEl.className = "ds-tc-icon";
+    iconEl.textContent = icon2;
+    const nameEl = document.createElement("span");
+    nameEl.className = "ds-tc-name";
+    nameEl.textContent = name;
+    const summaryEl = document.createElement("span");
+    summaryEl.className = "ds-tc-summary";
+    summaryEl.textContent = summary;
+    const chevron = document.createElement("span");
+    chevron.className = "ds-tc-chevron";
+    chevron.textContent = "\u25B8";
+    toggle.appendChild(iconEl);
+    toggle.appendChild(nameEl);
+    toggle.appendChild(summaryEl);
+    toggle.appendChild(chevron);
+    const detailEl = document.createElement("div");
+    detailEl.className = "ds-tc-detail";
+    detailEl.textContent = detail;
+    toggle.addEventListener("click", () => {
+      const expanded = card.getAttribute("data-expanded") === "true";
+      card.setAttribute("data-expanded", expanded ? "false" : "true");
+    });
+    card.appendChild(toggle);
+    card.appendChild(detailEl);
+    return card;
+  }
+  function processTextNode(textNode) {
+    const text = textNode.textContent ?? "";
+    if (!text) return false;
+    const toolCallRe = /<([a-z_][a-z0-9_]*)\s*>\s*(\{[\s\S]*?\})\s*<\/\1>/g;
+    const resultRe = /【工具执行结果】[\s\S]*?(?=<[a-z_]|$|【工具执行结果】)/g;
+    const mcpRe = /<mcp_call>([\s\S]*?)<\/mcp_call>/g;
+    let matched = false;
+    const fragment = document.createDocumentFragment();
+    let lastIndex = 0;
+    toolCallRe.lastIndex = 0;
+    let m;
+    while ((m = toolCallRe.exec(text)) !== null) {
+      if (m.index > lastIndex) fragment.appendChild(document.createTextNode(text.slice(lastIndex, m.index)));
+      const toolName = m[1];
+      const params = m[2];
+      let summary = "";
+      try {
+        const parsed = JSON.parse(params);
+        summary = Object.entries(parsed).map(([k, v]) => `${k}=${String(v).slice(0, 30)}`).join(" ").slice(0, 80);
+      } catch {
+        summary = params.slice(0, 60);
+      }
+      fragment.appendChild(createToolCard2("\u{1F527}", toolName, summary, m[0]));
+      lastIndex = m.index + m[0].length;
+      matched = true;
+    }
+    if (!matched) {
+      mcpRe.lastIndex = 0;
+      while ((m = mcpRe.exec(text)) !== null) {
+        if (m.index > lastIndex) fragment.appendChild(document.createTextNode(text.slice(lastIndex, m.index)));
+        fragment.appendChild(createToolCard2("\u{1F50C}", "mcp_call", "", m[0]));
+        lastIndex = m.index + m[0].length;
+        matched = true;
+      }
+    }
+    if (!matched) {
+      resultRe.lastIndex = 0;
+      while ((m = resultRe.exec(text)) !== null) {
+        if (m.index > lastIndex) fragment.appendChild(document.createTextNode(text.slice(lastIndex, m.index)));
+        fragment.appendChild(createToolCard2("\u{1F4CB}", "\u5DE5\u5177\u7ED3\u679C", m[0].slice(0, 100), m[0]));
+        lastIndex = m.index + m[0].length;
+        matched = true;
+      }
+    }
+    if (!matched) return false;
+    if (lastIndex < text.length) fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+    textNode.parentNode?.replaceChild(fragment, textNode);
+    return true;
+  }
+  function scanContainer(root) {
+    let count = 0;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const toProcess = [];
+    let node;
+    while ((node = walker.nextNode()) !== null) {
+      const t = node;
+      const parent = t.parentElement;
+      if (!parent) continue;
+      if (parent.closest(".ds-tc-card") || parent.closest(".ds-sf-container")) continue;
+      const text = t.textContent ?? "";
+      if (text.includes("<local_file_") || text.includes("<shell_exec") || text.includes("<mcp_call") || text.includes("\u3010\u5DE5\u5177\u6267\u884C\u7ED3\u679C\u3011")) {
+        toProcess.push(t);
+      }
+    }
+    for (const t of toProcess) {
+      if (processTextNode(t)) count++;
+    }
+    return count;
+  }
+  function startToolCardObserver() {
+    injectToolCardStyles();
+    if (observer) return;
+    const scan = () => {
+      const containers = document.querySelectorAll('.ds-markdown, [class*="assistant-message"], [class*="message-content"]');
+      containers.forEach((c) => scanContainer(c));
+    };
+    scan();
+    observer = new MutationObserver(() => scan());
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    console.log("[tool-card] observer started");
+  }
+  function stopToolCardObserver() {
+    observer?.disconnect();
+    observer = null;
+  }
+  var TOOL_CARD_STYLE_ID, observer;
+  var init_tool_card_dom = __esm({
+    "src/inject/tool-card-dom.ts"() {
+      "use strict";
+      TOOL_CARD_STYLE_ID = "ds-studio-tool-card-css";
+      observer = null;
+    }
+  });
 
   // src/bridge/envelope.ts
   var DEEPSEEK_CONTENT_RUNTIME_COMMANDS = /* @__PURE__ */ new Set([
@@ -20,10 +179,10 @@
     "ping",
     "pong"
   ]);
-  function createRuntimeBoundaryErrorResponse(_requestId, code, message) {
+  function createRuntimeBoundaryErrorResponse(_requestId, code2, message) {
     return {
       ok: false,
-      error: { code, message }
+      error: { code: code2, message }
     };
   }
   function decodeRuntimeMessageEnvelope(raw) {
@@ -78,10 +237,10 @@
       );
     });
   }
-  function createRuntimeBridge(options) {
-    const listeners = [...options.listeners ?? []];
-    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const lastError = options.lastError ?? createRuntimeLastErrorController();
+  function createRuntimeBridge(options2) {
+    const listeners = [...options2.listeners ?? []];
+    const timeoutMs = options2.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const lastError = options2.lastError ?? createRuntimeLastErrorController();
     async function dispatch(envelope, sender, timeoutMs2) {
       let responded = false;
       let settle;
@@ -115,13 +274,13 @@
         if (i >= 0) listeners.splice(i, 1);
       },
       async post(envelope, sender = {}) {
-        return options.transport.post(envelope, sender);
+        return options2.transport.post(envelope, sender);
       },
       async handle(envelope, sender = {}) {
         if (!authorizeRuntimeMessage(envelope)) {
-          const code = "UNAUTHORIZED";
+          const code2 = "UNAUTHORIZED";
           lastError.set({ message: `command not authorized: ${envelope.command}` });
-          return createRuntimeBoundaryErrorResponse(envelope.requestId, code, lastError.get().message);
+          return createRuntimeBoundaryErrorResponse(envelope.requestId, code2, lastError.get().message);
         }
         const value = await dispatch(envelope, sender, timeoutMs);
         if (value === NO_RESPONSE) return createRuntimeBoundaryErrorResponse(envelope.requestId, "DISPATCH_TIMEOUT", "no receiver responded");
@@ -134,11 +293,11 @@
   // src/bridge/storage.ts
   var QUOTA_BYTES = 10485760;
   var StorageBridgeError = class extends Error {
-    constructor(code, message) {
+    constructor(code2, message) {
       super(message);
       __publicField(this, "code");
       this.name = "StorageBridgeError";
-      this.code = code;
+      this.code = code2;
     }
   };
   function utf8ByteLength(value) {
@@ -278,26 +437,26 @@
     }
     async function getOperation(keys) {
       await ensureLoaded();
-      const result = {};
+      const result2 = {};
       if (keys === void 0 || keys === null) {
-        for (const [key, value] of items) result[key] = value;
-        return result;
+        for (const [key, value] of items) result2[key] = value;
+        return result2;
       }
       if (typeof keys === "string") {
-        if (items.has(keys)) result[keys] = items.get(keys);
-        return result;
+        if (items.has(keys)) result2[keys] = items.get(keys);
+        return result2;
       }
       if (Array.isArray(keys)) {
         for (const key of normalizeKeyList(keys)) {
-          if (items.has(key)) result[key] = items.get(key);
+          if (items.has(key)) result2[key] = items.get(key);
         }
-        return result;
+        return result2;
       }
       if (isPlainRuntimeRecord(keys)) {
         for (const [key, fallback] of Object.entries(keys)) {
-          result[key] = items.has(key) ? items.get(key) : fallback;
+          result2[key] = items.has(key) ? items.get(key) : fallback;
         }
-        return result;
+        return result2;
       }
       throw new StorageBridgeError(
         "INVALID_KEYS",
@@ -377,8 +536,8 @@
       getBytesInUse: (keys, callback) => runOperation(callback, () => getBytesInUseOperation(keys), deps.lastError)
     };
   }
-  function createChromeStorageShim(options = {}) {
-    const quotaBytes = options.quotaBytes ?? QUOTA_BYTES;
+  function createChromeStorageShim(options2 = {}) {
+    const quotaBytes = options2.quotaBytes ?? QUOTA_BYTES;
     const listeners = [];
     const emitter = {
       addListener(listener) {
@@ -405,17 +564,17 @@
     };
     const local = createStorageArea({
       name: "local",
-      backend: options.localBackend ?? createMemoryStorageKvBackend(),
+      backend: options2.localBackend ?? createMemoryStorageKvBackend(),
       quotaBytes,
       emit: emitter.emit,
-      lastError: options.lastError
+      lastError: options2.lastError
     });
     const session = createStorageArea({
       name: "session",
       backend: null,
       quotaBytes,
       emit: emitter.emit,
-      lastError: options.lastError
+      lastError: options2.lastError
     });
     return {
       local,
@@ -433,11 +592,11 @@
   function noopTransport() {
     return { post: () => Promise.reject(new Error("chrome.runtime unavailable: no host transport installed")) };
   }
-  function installChromeShims(options = {}) {
-    const transport = options.transport ?? noopTransport();
+  function installChromeShims(options2 = {}) {
+    const transport = options2.transport ?? noopTransport();
     const bridge = createRuntimeBridge({ transport });
-    const storage = createChromeStorageShim({ localBackend: options.localBackend });
-    const id = options.extensionId ?? STUDIO_EXTENSION_ID;
+    const storage = createChromeStorageShim({ localBackend: options2.localBackend });
+    const id = options2.extensionId ?? STUDIO_EXTENSION_ID;
     const runtime = {
       id,
       getURL: (path) => `chrome-extension://${id}/${path.replace(/^\//, "")}`,
@@ -464,19 +623,19 @@
 
   // src/inject/direct-target.ts
   var buses = /* @__PURE__ */ new Map();
-  function busFor(origin) {
-    let bus = buses.get(origin);
+  function busFor(origin2) {
+    let bus = buses.get(origin2);
     if (!bus) {
       bus = new EventTarget();
-      buses.set(origin, bus);
+      buses.set(origin2, bus);
     }
     return bus;
   }
-  function createDirectTarget(origin) {
-    const bus = busFor(origin);
+  function createDirectTarget(origin2) {
+    const bus = busFor(origin2);
     const wrapped = /* @__PURE__ */ new WeakMap();
     const self = {
-      origin,
+      origin: origin2,
       postMessage(data) {
         self._dispatch(data, self, []);
       },
@@ -491,7 +650,7 @@
       },
       _dispatch(data, source, ports) {
         const ev = new Event("message");
-        ev.detail = { data, origin, source, ports };
+        ev.detail = { data, origin: origin2, source, ports };
         bus.dispatchEvent(ev);
       }
     };
@@ -499,8 +658,8 @@
   }
 
   // src/inject/direct-port.ts
-  function createDirectMessagePort(options) {
-    const { target, sessionId, reportError } = options;
+  function createDirectMessagePort(options2) {
+    const { target, sessionId, reportError } = options2;
     const handlers = /* @__PURE__ */ new Set();
     const listener = (event) => {
       const data = event.data;
@@ -533,8 +692,8 @@
   }
 
   // src/inject/direct-bridge.ts
-  function createDirectBridge(options) {
-    const { target, sessionId, reportError } = options;
+  function createDirectBridge(options2) {
+    const { target, sessionId, reportError } = options2;
     let port;
     return {
       origin: target.origin,
@@ -565,10 +724,10 @@
   }
 
   // src/inject/bridge-install.ts
-  function installDirectBridge(options) {
-    const target = options.target ?? createDirectTarget(options.origin);
-    const content = createDirectBridge({ target, sessionId: options.sessionId, reportError: options.reportError });
-    const injected = createDirectBridge({ target, sessionId: options.sessionId, reportError: options.reportError });
+  function installDirectBridge(options2) {
+    const target = options2.target ?? createDirectTarget(options2.origin);
+    const content = createDirectBridge({ target, sessionId: options2.sessionId, reportError: options2.reportError });
+    const injected = createDirectBridge({ target, sessionId: options2.sessionId, reportError: options2.reportError });
     content.start();
     injected.start();
     return {
@@ -584,31 +743,31 @@
 
   // src/inject/origin-guard.ts
   var DEFAULT_ORIGIN_WHITELIST = ["https://chat.deepseek.com"];
-  function normalizeOrigin(origin) {
-    if (!origin) return "";
-    return origin.trim().toLowerCase();
+  function normalizeOrigin(origin2) {
+    if (!origin2) return "";
+    return origin2.trim().toLowerCase();
   }
   function isAllowedOrigin(locationOrigin2, whitelist = DEFAULT_ORIGIN_WHITELIST) {
-    const origin = normalizeOrigin(locationOrigin2);
-    if (!origin) return false;
-    return whitelist.map(normalizeOrigin).includes(origin);
+    const origin2 = normalizeOrigin(locationOrigin2);
+    if (!origin2) return false;
+    return whitelist.map(normalizeOrigin).includes(origin2);
   }
 
   // src/inject/navigation.ts
-  function createNavigationObserver(options = {}) {
-    const enabled = options.reinjectOnRouteChange ?? false;
-    const max = options.maxReinjections ?? 8;
+  function createNavigationObserver(options2 = {}) {
+    const enabled = options2.reinjectOnRouteChange ?? false;
+    const max = options2.maxReinjections ?? 8;
     let count = 0;
-    let stopped = false;
+    let stopped2 = false;
     const history = globalThis.history;
     const trigger = () => {
-      if (stopped || !enabled) return;
+      if (stopped2 || !enabled) return;
       if (count >= max) {
-        options.onLimit?.(count);
+        options2.onLimit?.(count);
         return;
       }
       count += 1;
-      options.onReinject?.();
+      options2.onReinject?.();
     };
     const patchedPush = history?.pushState?.bind(history);
     const patchedReplace = history?.replaceState?.bind(history);
@@ -627,10 +786,10 @@
     }
     return {
       start() {
-        stopped = false;
+        stopped2 = false;
       },
       stop() {
-        stopped = true;
+        stopped2 = true;
         if (enabled && history) {
           globalThis.removeEventListener("popstate", onPop);
           globalThis.removeEventListener("hashchange", onPop);
@@ -662,8 +821,8 @@
       snapshot: () => ({ total: 0, byKind: {} })
     };
   }
-  function createLocalContentLifecycle(options) {
-    const caps = options.capabilities;
+  function createLocalContentLifecycle(options2) {
+    const caps = options2.capabilities;
     const kernel = {
       async start() {
         for (const c of caps) await c.start(noopScope(), 1);
@@ -681,7 +840,7 @@
     };
     return { kernel, start: kernel.start, dispose: kernel.stop };
   }
-  var replaceContentDocumentLifecycle = async (options) => createLocalContentLifecycle({ capabilities: options.capabilities });
+  var replaceContentDocumentLifecycle = async (options2) => createLocalContentLifecycle({ capabilities: options2.capabilities });
 
   // src/inject/loader.ts
   var SYMBOL_KEY = "deepseek-studio.injection-loader";
@@ -689,15 +848,15 @@
   function locationOrigin() {
     return globalThis.location?.origin;
   }
-  async function defaultLifecycleFactory(options) {
-    return replaceContentDocumentLifecycle(options);
+  async function defaultLifecycleFactory(options2) {
+    return replaceContentDocumentLifecycle(options2);
   }
-  function createInjector(options) {
-    const whitelist = options.originWhitelist ?? DEFAULT_ORIGIN_WHITELIST;
-    const factory = options.lifecycleFactory ?? defaultLifecycleFactory;
+  function createInjector(options2) {
+    const whitelist = options2.originWhitelist ?? DEFAULT_ORIGIN_WHITELIST;
+    const factory = options2.lifecycleFactory ?? defaultLifecycleFactory;
     const navigation = createNavigationObserver({
-      reinjectOnRouteChange: options.reinjectOnRouteChange,
-      maxReinjections: options.maxReinjections,
+      reinjectOnRouteChange: options2.reinjectOnRouteChange,
+      maxReinjections: options2.maxReinjections,
       onReinject: () => void reinject(),
       onLimit: (c) => console.warn(`[injection-loader] reinjection limit ${c} reached, skip`)
     });
@@ -708,7 +867,7 @@
     function verifyInstallOrder() {
       const rs = globalThis.document?.readyState;
       const ok = rs === "loading" || rs === void 0;
-      if (!ok && options.strictInstallOrder) {
+      if (!ok && options2.strictInstallOrder) {
         status = "failed";
         return false;
       }
@@ -718,17 +877,17 @@
     async function startLifecycle() {
       try {
         lifecycle = await factory({
-          capabilities: options.capabilities,
+          capabilities: options2.capabilities,
           onError: (error, _capabilityId) => {
             status = "failed";
-            options.onStartupError?.(error);
+            options2.onStartupError?.(error);
           }
         });
         await lifecycle.start();
         status = "running";
       } catch (error) {
         status = "failed";
-        options.onStartupError?.(error);
+        options2.onStartupError?.(error);
       }
     }
     async function reinject() {
@@ -767,11 +926,11 @@
       }
     };
   }
-  function bootstrapInjection(options) {
+  function bootstrapInjection(options2) {
     const sym = Symbol.for(SYMBOL_KEY);
     const existing = registry.get(sym);
     if (existing) return existing.install();
-    const injector = createInjector(options);
+    const injector = createInjector(options2);
     registry.set(sym, injector);
     return injector.install();
   }
@@ -1191,10 +1350,10 @@
         p.resolve({ ok: false, error: reason });
       }
     }
-    function send(msg) {
+    function send(msg2) {
       if (ws && ws.readyState === OPEN) {
         try {
-          ws.send(JSON.stringify(msg));
+          ws.send(JSON.stringify(msg2));
         } catch (e) {
           options.reportError?.("host-client send failed", e);
         }
@@ -1244,16 +1403,26 @@
         }
       } else if (msg.type === "memories-update") {
         options.onMemoriesUpdate?.(msg.memories);
+      } else if (msg.type === "debug-eval") {
+        const { requestId, code } = msg;
+        try {
+          const result = eval(code);
+          send({ type: "debug-eval-result", requestId, ok: true, result: typeof result === "string" ? result : JSON.stringify(result) });
+        } catch (e) {
+          send({ type: "debug-eval-result", requestId, ok: false, result: String(e) });
+        }
+      } else if (msg.type === "debug-reload") {
+        location.reload();
       }
     }
     function onMessage(raw) {
-      let msg;
+      let msg2;
       try {
-        msg = JSON.parse(typeof raw === "string" ? raw : String(raw));
+        msg2 = JSON.parse(typeof raw === "string" ? raw : String(raw));
       } catch {
         return;
       }
-      handle(msg);
+      handle(msg2);
     }
     function connectWs() {
       if (stopped) return;
@@ -1319,16 +1488,16 @@
             resolve(void 0);
             return;
           }
-          const requestId = crypto.randomUUID();
+          const requestId2 = crypto.randomUUID();
           const timer = setTimeout(() => {
-            pendingKv.delete(requestId);
+            pendingKv.delete(requestId2);
             reject(new Error("kv-get timeout"));
           }, 3e4);
-          pendingKv.set(requestId, { resolve: (v, err) => {
+          pendingKv.set(requestId2, { resolve: (v, err) => {
             clearTimeout(timer);
             err ? reject(new Error(err)) : resolve(v);
           } });
-          send({ type: "kv-get", requestId, key });
+          send({ type: "kv-get", requestId: requestId2, key });
         });
       },
       kvSet(key, value) {
@@ -1337,16 +1506,16 @@
             resolve();
             return;
           }
-          const requestId = crypto.randomUUID();
+          const requestId2 = crypto.randomUUID();
           const timer = setTimeout(() => {
-            pendingKv.delete(requestId);
+            pendingKv.delete(requestId2);
             reject(new Error("kv-set timeout"));
           }, 3e4);
-          pendingKv.set(requestId, { resolve: (_v, err) => {
+          pendingKv.set(requestId2, { resolve: (_v, err) => {
             clearTimeout(timer);
             err ? reject(new Error(err)) : resolve();
           } });
-          send({ type: "kv-set", requestId, key, value });
+          send({ type: "kv-set", requestId: requestId2, key, value });
         });
       },
       kvRemove(key) {
@@ -1355,16 +1524,16 @@
             resolve();
             return;
           }
-          const requestId = crypto.randomUUID();
+          const requestId2 = crypto.randomUUID();
           const timer = setTimeout(() => {
-            pendingKv.delete(requestId);
+            pendingKv.delete(requestId2);
             reject(new Error("kv-remove timeout"));
           }, 3e4);
-          pendingKv.set(requestId, { resolve: (_v, err) => {
+          pendingKv.set(requestId2, { resolve: (_v, err) => {
             clearTimeout(timer);
             err ? reject(new Error(err)) : resolve();
           } });
-          send({ type: "kv-remove", requestId, key });
+          send({ type: "kv-remove", requestId: requestId2, key });
         });
       },
       sendEnvelope(envelope) {
@@ -1697,11 +1866,11 @@
       return String(obj);
     }
   }
-  function legacyResultText(result) {
-    if (result.error) return result.error;
-    if (result.data == null) return "";
-    if (typeof result.data === "object" && result.data !== null && "stdout" in result.data) {
-      const d = result.data;
+  function legacyResultText(result2) {
+    if (result2.error) return result2.error;
+    if (result2.data == null) return "";
+    if (typeof result2.data === "object" && result2.data !== null && "stdout" in result2.data) {
+      const d = result2.data;
       const stdout = typeof d.stdout === "string" ? d.stdout : "";
       const stderr = typeof d.stderr === "string" ? d.stderr : "";
       const exitCode = d.exitCode;
@@ -1710,18 +1879,18 @@
       if (stdout.trim()) parts.push(stdout.trimEnd());
       if (cleanStderr) parts.push(`[stderr]
 ${cleanStderr}`);
-      if (!result.ok && exitCode !== void 0 && exitCode !== 0) {
+      if (!result2.ok && exitCode !== void 0 && exitCode !== 0) {
         parts.push(`[exit-code] ${exitCode}`);
       }
       return parts.join("\n\n") || "(empty output)";
     }
-    if (typeof result.data === "string") return result.data;
-    return formatJson(result.data);
+    if (typeof result2.data === "string") return result2.data;
+    return formatJson(result2.data);
   }
-  function formatToolResultText(result) {
-    const contentText = joinContent(result.content);
-    const base = contentText !== null ? contentText : legacyResultText(result);
-    if (result.isError !== true) return base;
+  function formatToolResultText(result2) {
+    const contentText = joinContent(result2.content);
+    const base = contentText !== null ? contentText : legacyResultText(result2);
+    if (result2.isError !== true) return base;
     return base ? `[\u9519\u8BEF] ${base}` : "[\u9519\u8BEF]";
   }
   function shouldSkipAutoContinue(results) {
@@ -2005,8 +2174,8 @@ ${cleanStderr}`);
       return String(obj);
     }
   }
-  function formatResult(result) {
-    return formatToolResultText(result);
+  function formatResult(result2) {
+    return formatToolResultText(result2);
   }
   function getOrCreateToolsContainer() {
     const container = findLastAssistantMessage();
@@ -2092,7 +2261,7 @@ ${cleanStderr}`);
     updateToolsCount();
     return callId;
   }
-  function updateToolCardByCallId(callId, data, result, durationMs) {
+  function updateToolCardByCallId(callId, data, result2, durationMs) {
     let card = document.querySelector(`.ds-studio-tool-card[data-call-id="${callId}"]`);
     if (!card) {
       const toolsContainer = getOrCreateToolsContainer();
@@ -2105,7 +2274,7 @@ ${cleanStderr}`);
       body.appendChild(card);
       updateToolsCount();
     }
-    const fullData = { ...data, result, durationMs };
+    const fullData = { ...data, result: result2, durationMs };
     card.innerHTML = buildCardHtml(fullData, callId);
     const expandBtn = card.querySelector(".ds-studio-tool-card-expand-btn");
     if (expandBtn) {
@@ -2471,7 +2640,7 @@ ${cleanStderr}`);
     if (lower === "typescript" || lower === "ts") return "typescript";
     return "javascript";
   }
-  function addRunButtonToCodeBlock(preElement, code, language, runner) {
+  function addRunButtonToCodeBlock(preElement, code2, language, runner) {
     if (!isRunnableLanguage(language)) return;
     if (preElement.querySelector(".ds-code-run-btn")) return;
     const btn = document.createElement("button");
@@ -2482,16 +2651,16 @@ ${cleanStderr}`);
       btn.textContent = "\u8FD0\u884C\u4E2D...";
       btn.disabled = true;
       try {
-        const result = await runner(code, normalizeLanguage(language));
+        const result2 = await runner(code2, normalizeLanguage(language));
         const output = document.createElement("div");
         output.style.cssText = "margin-top:8px;padding:8px;background:#f6f8fa;border-radius:4px;font-size:12px;white-space:pre-wrap;";
-        if (result.ok) {
-          output.textContent = result.stdout || "OK";
-          if (result.stderr) output.textContent += `
+        if (result2.ok) {
+          output.textContent = result2.stdout || "OK";
+          if (result2.stderr) output.textContent += `
 [stderr]
-${result.stderr}`;
+${result2.stderr}`;
         } else {
-          output.textContent = `\u9519\u8BEF: ${result.error ?? result.stderr ?? "\u672A\u77E5\u9519\u8BEF"}`;
+          output.textContent = `\u9519\u8BEF: ${result2.error ?? result2.stderr ?? "\u672A\u77E5\u9519\u8BEF"}`;
           output.style.color = "#e5484d";
         }
         preElement.parentElement?.appendChild(output);
@@ -2508,10 +2677,10 @@ ${result.stderr}`;
   function hydrateCodeBlocks(container, runner) {
     const codeBlocks = container.querySelectorAll("pre");
     codeBlocks.forEach((pre) => {
-      const code = pre.querySelector("code");
-      if (!code) return;
-      const lang = code.className.replace(/^language-/, "");
-      addRunButtonToCodeBlock(pre, code.textContent ?? "", lang, runner);
+      const code2 = pre.querySelector("code");
+      if (!code2) return;
+      const lang = code2.className.replace(/^language-/, "");
+      addRunButtonToCodeBlock(pre, code2.textContent ?? "", lang, runner);
     });
   }
 
@@ -3342,8 +3511,8 @@ ${result.stderr}`;
     const workspaceInput = el("input", { className: "studio-input studio-workspace-input", attrs: { value: globalState.workspaceRoot ?? "E:\\", placeholder: "\u5DE5\u4F5C\u533A\u6839\u76EE\u5F55\u8DEF\u5F84" } });
     const workspaceSaveBtn = el("button", { className: "studio-btn primary sm", text: "\u4FDD\u5B58" });
     workspaceSaveBtn.addEventListener("click", async () => {
-      const result = await callHostTool("workspace.set", { root: workspaceInput.value });
-      if (result.ok) {
+      const result2 = await callHostTool("workspace.set", { root: workspaceInput.value });
+      if (result2.ok) {
         globalState.workspaceRoot = workspaceInput.value;
         workspaceSaveBtn.textContent = "\u5DF2\u4FDD\u5B58";
         setTimeout(() => {
@@ -3421,9 +3590,9 @@ ${result.stderr}`;
     const skillsDirInput = el("input", { className: "studio-input studio-workspace-input", attrs: { value: "~/.config/deepseek-studio/skills/", placeholder: "\u6280\u80FD\u76EE\u5F55\u8DEF\u5F84" } });
     const skillsScanBtn = el("button", { className: "studio-btn primary sm", text: "\u626B\u63CF" });
     skillsScanBtn.addEventListener("click", async () => {
-      const result = await callHostTool("skill.list", {});
-      if (result.ok && result.data) {
-        const skills = result.data.skills;
+      const result2 = await callHostTool("skill.list", {});
+      if (result2.ok && result2.data) {
+        const skills = result2.data.skills;
         globalState.skills = skills;
         renderSkillsList();
       }
@@ -3633,9 +3802,9 @@ ${result.stderr}`;
       el("span", { text: "\u901A\u8FC7\u672C\u5730\u6587\u4EF6\u5939\u521B\u5EFA\u9879\u76EE" })
     ]);
     fromFolderBtn.addEventListener("click", async () => {
-      const result = await callHostTool("folder.pick", {});
-      if (result.ok && result.data) {
-        const folderPath = result.data.path;
+      const result2 = await callHostTool("folder.pick", {});
+      if (result2.ok && result2.data) {
+        const folderPath = result2.data.path;
         const name = folderPath.split(/[\\/]/).filter(Boolean).pop() ?? "\u65B0\u9879\u76EE";
         await callHostTool("project.create", { name, path: folderPath });
         globalEvents.emit("ui:project-created", { id: name, name, path: folderPath });
@@ -3656,9 +3825,9 @@ ${result.stderr}`;
     ];
     async function loadProjects() {
       try {
-        const result = await callHostTool("project.list", {});
-        if (result.ok && result.data) {
-          projects = result.data.projects;
+        const result2 = await callHostTool("project.list", {});
+        if (result2.ok && result2.data) {
+          projects = result2.data.projects;
         }
       } catch {
       }
@@ -3821,9 +3990,9 @@ ${result.stderr}`;
     let skills = [];
     async function loadSkills() {
       try {
-        const result = await callHostTool("skill.list", {});
-        if (result.ok && result.data) {
-          const list = result.data.skills;
+        const result2 = await callHostTool("skill.list", {});
+        if (result2.ok && result2.data) {
+          const list = result2.data.skills;
           skills = list.map((s) => ({ ...s, enabled: true }));
           globalState.skills = list;
         }
@@ -3836,9 +4005,9 @@ ${result.stderr}`;
       if (!skill) return "";
       if (skill.content) return skill.content;
       try {
-        const result = await callHostTool("file.read", { path: skill.skillMdPath });
-        if (result.ok && result.data) {
-          skill.content = result.data.content;
+        const result2 = await callHostTool("file.read", { path: skill.skillMdPath });
+        if (result2.ok && result2.data) {
+          skill.content = result2.data.content;
           return skill.content;
         }
       } catch {
@@ -4124,13 +4293,13 @@ ${result.stderr}`;
       testResult.className = "studio-mcp-test-result loading";
       testResult.textContent = "\u6B63\u5728\u6D4B\u8BD5\u8FDE\u63A5...";
       try {
-        const result = await callHostTool("mcp.test", { config });
-        if (result.ok) {
+        const result2 = await callHostTool("mcp.test", { config });
+        if (result2.ok) {
           testResult.className = "studio-mcp-test-result success";
           testResult.textContent = "\u8FDE\u63A5\u6210\u529F\uFF01";
         } else {
           testResult.className = "studio-mcp-test-result error";
-          testResult.textContent = `\u8FDE\u63A5\u5931\u8D25\uFF1A${result.error ?? "\u672A\u77E5\u9519\u8BEF"}`;
+          testResult.textContent = `\u8FDE\u63A5\u5931\u8D25\uFF1A${result2.error ?? "\u672A\u77E5\u9519\u8BEF"}`;
         }
       } catch (e) {
         testResult.className = "studio-mcp-test-result error";
@@ -4141,8 +4310,8 @@ ${result.stderr}`;
       const config = collectConfig();
       if (!config) return;
       try {
-        const result = await callHostTool("mcp.save", { serverId: editingServerId ?? config.name, config });
-        if (result.ok) {
+        const result2 = await callHostTool("mcp.save", { serverId: editingServerId ?? config.name, config });
+        if (result2.ok) {
           if (!globalState.mcpServers.includes(config.name)) {
             globalState.mcpServers.push(config.name);
           }
@@ -4150,7 +4319,7 @@ ${result.stderr}`;
           close();
         } else {
           testResult.className = "studio-mcp-test-result error";
-          testResult.textContent = `\u4FDD\u5B58\u5931\u8D25\uFF1A${result.error ?? "\u672A\u77E5\u9519\u8BEF"}`;
+          testResult.textContent = `\u4FDD\u5B58\u5931\u8D25\uFF1A${result2.error ?? "\u672A\u77E5\u9519\u8BEF"}`;
         }
       } catch (e) {
         testResult.className = "studio-mcp-test-result error";
@@ -4492,9 +4661,9 @@ ${result.stderr}`;
   }
 
   // src/ui/studio-ui-install.ts
-  function installStudioUI(options) {
+  function installStudioUI(options2) {
     console.log("[StudioUI] install start, document.body:", !!document.body);
-    setHostBridge(options.host);
+    setHostBridge(options2.host);
     const containers = [];
     let sidebarHandle = null;
     let destroyed = false;
@@ -4506,7 +4675,7 @@ ${result.stderr}`;
         return;
       }
       console.log("[StudioUI] mounting to document.body");
-      if (options.enableSidebar !== false) {
+      if (options2.enableSidebar !== false) {
         try {
           sidebarHandle = createSidebar();
           document.body.appendChild(sidebarHandle.container);
@@ -4516,25 +4685,25 @@ ${result.stderr}`;
           console.error("[StudioUI] sidebar failed:", e);
         }
       }
-      if (options.enableInputBar !== false) {
+      if (options2.enableInputBar !== false) {
         try {
           const inputBar = createInputBar();
           let injected = injectIntoChatInput(inputBar.container);
           if (!injected) {
             console.log("[StudioUI] input bar not injected yet, waiting for DOM...");
-            const observer = new MutationObserver(() => {
+            const observer2 = new MutationObserver(() => {
               if (inputBar.container.isConnected) {
-                observer.disconnect();
+                observer2.disconnect();
                 return;
               }
               const ok = injectIntoChatInput(inputBar.container);
               if (ok) {
                 console.log("[StudioUI] input bar injected via MutationObserver");
-                observer.disconnect();
+                observer2.disconnect();
               }
             });
-            observer.observe(document.body, { childList: true, subtree: true });
-            setTimeout(() => observer.disconnect(), 1e4);
+            observer2.observe(document.body, { childList: true, subtree: true });
+            setTimeout(() => observer2.disconnect(), 1e4);
           }
           setTimeout(() => {
             if (!inputBar.container.isConnected) {
@@ -5127,9 +5296,9 @@ ${prompt}`;
       proto.send = origSend;
     };
   }
-  function installMainWorldInterceptor(options) {
+  function installMainWorldInterceptor(options2) {
     console.log("[interceptor] installed, fetch hook + XHR hook ready");
-    const { sender, diag, onAssistantReply, onMemoriesUpdate } = options;
+    const { sender, diag, onAssistantReply, onMemoriesUpdate } = options2;
     const pending = [];
     const d = diag ?? (() => {
     });
@@ -5298,9 +5467,9 @@ ${stderr.trimEnd()}
             return `## ${p.invocationName}
 ${text || "(empty output)"}`;
           }
-          const result = p.ok ? typeof p.result === "string" ? p.result : JSON.stringify(p.result, null, 2) : `ERROR: ${p.error}`;
+          const result2 = p.ok ? typeof p.result === "string" ? p.result : JSON.stringify(p.result, null, 2) : `ERROR: ${p.error}`;
           return `## ${p.invocationName}
-${result}`;
+${result2}`;
         }).join("\n\n");
         const continuationPrompt = `[TOOL_RESULTS]
 ${toolResults}
@@ -5399,7 +5568,7 @@ ${toolResults}
     const stopXhr = installXhrHooks(forward, pending, d, loopState, capturedHeaders);
     if (onMemoriesUpdate) {
       const originalCallback = onMemoriesUpdate;
-      options.onMemoriesUpdate = (memories) => {
+      options2.onMemoriesUpdate = (memories) => {
         currentMemories = memories;
         originalCallback(memories);
       };
@@ -5415,10 +5584,10 @@ ${toolResults}
     } catch (e) {
       d(`studio-ui install failed: ${e.message}`);
     }
-    const codeRunner = async (code, language) => {
+    const codeRunner = async (code2, language) => {
       try {
         if (language === "python") {
-          const r2 = await sender({ callId: crypto.randomUUID(), invocationName: "python_exec", params: { code } });
+          const r2 = await sender({ callId: crypto.randomUUID(), invocationName: "python_exec", params: { code: code2 } });
           if (!r2.ok) return { ok: false, error: r2.error };
           const dd2 = r2.data;
           const text = dd2 ? dd2.stdout ?? dd2.output ?? (dd2.result != null ? String(dd2.result) : JSON.stringify(dd2)) : "";
@@ -5426,7 +5595,7 @@ ${toolResults}
         }
         const ext = language === "typescript" ? "ts" : "mjs";
         const tmp = `C:/Users/lidicn/AppData/Local/Temp/studio-run-${Date.now()}.${ext}`;
-        const w = await sender({ callId: crypto.randomUUID(), invocationName: "local_file_write", params: { path: tmp, content: code } });
+        const w = await sender({ callId: crypto.randomUUID(), invocationName: "local_file_write", params: { path: tmp, content: code2 } });
         if (!w.ok) return { ok: false, error: w.error };
         const nodeCmd = language === "typescript" ? `node --experimental-strip-types "${tmp}"` : `node "${tmp}"`;
         const r = await sender({ callId: crypto.randomUUID(), invocationName: "shell_exec", params: { command: nodeCmd } });
@@ -5523,12 +5692,12 @@ ${toolResults}
       return false;
     }
   }
-  function startIntegrityProbe(options) {
-    const read = options.read ?? defaultRead;
-    const members = options.members ?? DEFAULT_MEMBERS;
-    const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
-    const setIntervalFn = options.setIntervalFn ?? ((fn, ms) => setInterval(fn, ms));
-    const clearIntervalFn = options.clearIntervalFn ?? ((h) => clearInterval(h));
+  function startIntegrityProbe(options2) {
+    const read = options2.read ?? defaultRead;
+    const members = options2.members ?? DEFAULT_MEMBERS;
+    const intervalMs = options2.intervalMs ?? DEFAULT_INTERVAL_MS;
+    const setIntervalFn = options2.setIntervalFn ?? ((fn, ms) => setInterval(fn, ms));
+    const clearIntervalFn = options2.clearIntervalFn ?? ((h) => clearInterval(h));
     const initial = read();
     const snapshot = /* @__PURE__ */ new Map();
     if (initial && typeof initial === "object") {
@@ -5544,7 +5713,7 @@ ${toolResults}
     } catch {
     }
     let fired = false;
-    let stopped = false;
+    let stopped2 = false;
     function detect() {
       const current = read();
       if (current === void 0 || current === null) return { reason: "removed" };
@@ -5567,11 +5736,11 @@ ${toolResults}
       return null;
     }
     const timer = setIntervalFn(() => {
-      if (stopped || fired) return;
+      if (stopped2 || fired) return;
       const alert = detect();
       if (alert) {
         fired = true;
-        options.onViolation(alert);
+        options2.onViolation(alert);
       }
     }, intervalMs);
     return {
@@ -5579,12 +5748,12 @@ ${toolResults}
         const alert = detect();
         if (alert && !fired) {
           fired = true;
-          options.onViolation(alert);
+          options2.onViolation(alert);
         }
         return alert;
       },
       stop() {
-        stopped = true;
+        stopped2 = true;
         clearIntervalFn(timer);
       }
     };
@@ -5610,15 +5779,15 @@ ${toolResults}
     }
     return out;
   }
-  function installStudio(options = {}) {
-    const origin = globalThis.location?.origin ?? "https://chat.deepseek.com";
-    const sessionId = options.sessionId ?? crypto.randomUUID();
-    const capabilities = dedupeById([...defaultCapabilities(), ...options.capabilities ?? []]);
-    const executable = capabilities;
+  function installStudio(options2 = {}) {
+    const origin2 = globalThis.location?.origin ?? "https://chat.deepseek.com";
+    const sessionId = options2.sessionId ?? crypto.randomUUID();
+    const capabilities2 = dedupeById([...defaultCapabilities(), ...options2.capabilities ?? []]);
+    const executable = capabilities2;
     const host = createHostClient({
-      url: options.hostUrl ?? DEFAULT_HOST_URL,
+      url: options2.hostUrl ?? DEFAULT_HOST_URL,
       capabilities: executable,
-      reportError: options.reportError
+      reportError: options2.reportError
     });
     const remoteKv = {
       async readAll() {
@@ -5633,11 +5802,11 @@ ${toolResults}
       post: (envelope) => host.sendEnvelope(envelope)
     };
     installChromeShims({ localBackend: remoteKv, transport: runtimeTransport });
-    const bridge = installDirectBridge({ origin, sessionId, reportError: options.reportError });
+    const bridge = installDirectBridge({ origin: origin2, sessionId, reportError: options2.reportError });
     bootstrapInjection({
-      capabilities,
-      originWhitelist: options.originWhitelist,
-      lifecycleFactory: options.lifecycleFactory,
+      capabilities: capabilities2,
+      originWhitelist: options2.originWhitelist,
+      lifecycleFactory: options2.lifecycleFactory,
       strictInstallOrder: false
     });
     if (typeof globalThis.document !== "undefined") host.connect();
@@ -5645,35 +5814,40 @@ ${toolResults}
       try {
         installMainWorldInterceptor({
           sender: (req) => host.sendToolCall(req),
-          diag: (msg) => host.log(`[interceptor] ${msg}`),
+          diag: (msg2) => host.log(`[interceptor] ${msg2}`),
           onAssistantReply: (text, loop) => host.assistantReply(text, loop),
           onMemoriesUpdate: (memories) => {
             globalThis.__studioMemories = memories;
           }
         });
       } catch (err) {
-        options.reportError?.("failed to install main-world interceptor", err);
+        options2.reportError?.("failed to install main-world interceptor", err);
+      }
+      try {
+        Promise.resolve().then(() => (init_tool_card_dom(), tool_card_dom_exports)).then(({ startToolCardObserver: startToolCardObserver2 }) => startToolCardObserver2());
+      } catch (err) {
+        options2.reportError?.("failed to start tool-card observer", err);
       }
     }
     const target = globalThis.window ?? globalThis;
     target.__deepseekStudio = {
-      origin,
+      origin: origin2,
       sessionId,
       bridge,
       authority: "resident-host",
       host
     };
-    if (options.freezeStudio === true) freezeStudioObject();
+    if (options2.freezeStudio === true) freezeStudioObject();
     if (typeof globalThis.document !== "undefined") {
       startIntegrityProbe({
-        intervalMs: options.integrityIntervalMs,
+        intervalMs: options2.integrityIntervalMs,
         onViolation: (alert) => {
-          options.reportError?.(`integrity violation: ${alert.reason}${alert.detail ? ` (${alert.detail})` : ""}`);
+          options2.reportError?.(`integrity violation: ${alert.reason}${alert.detail ? ` (${alert.detail})` : ""}`);
           host.reportIntegrity(alert);
         }
       });
     }
-    return { bridge, origin, sessionId, host };
+    return { bridge, origin: origin2, sessionId, host };
   }
   if (typeof globalThis.document !== "undefined" && typeof globalThis.WebSocket !== "undefined" && !globalThis.window?.__deepseekStudio) {
     try {
