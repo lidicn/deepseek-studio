@@ -4,6 +4,7 @@
 import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import fs from 'node:fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -16,6 +17,14 @@ await build({
   outfile: 'src-tauri/inject/entry.js',
   logLevel: 'info',
 });
+
+// 自动同步到 Tauri debug 运行时目录（工作目录是 target/debug/）
+const debugInjectDir = path.join(__dirname, 'src-tauri/target/debug/inject');
+if (fs.existsSync(path.dirname(debugInjectDir))) {
+  fs.mkdirSync(debugInjectDir, { recursive: true });
+  fs.copyFileSync(path.join(__dirname, 'src-tauri/inject/entry.js'), path.join(debugInjectDir, 'entry.js'));
+  console.log(`[inject] synced to ${debugInjectDir}`);
+}
 
 await build({
   entryPoints: [path.join(__dirname, 'src/ui/agent-panel.ts')],
