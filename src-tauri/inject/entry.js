@@ -2147,7 +2147,7 @@ ${cleanStderr}`);
     const style = document.createElement("style");
     style.id = STEP_FLOW_STYLE_ID;
     style.textContent = `
-    .ds-sf-container { position: relative; margin: 8px 0; color: #1f2329; }
+    .ds-sf-container { position: fixed; bottom: 160px; left: 50%; transform: translateX(-50%); width: min(768px, 92vw); margin: 0; padding: 8px 14px; border-radius: 10px; background: #eef0ff; color: #1f2329; z-index: 2147483647; box-shadow: 0 2px 12px rgba(51,112,255,.12); }
     .ds-sf-status-line { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 13px; line-height: 1.5; color: #646a73; }
     .ds-sf-status-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #8f959e; }
     .ds-sf-container[data-phase="running"] .ds-sf-status-dot { background: #3370ff; animation: ds-sf-pulse 1.1s ease-in-out infinite; }
@@ -2254,7 +2254,7 @@ ${cleanStderr}`);
         const s = step ?? state.stepCount;
         const tc = toolCount ?? state.toolCount;
         const el2 = elapsed ?? Math.round((Date.now() - state.startTime) / 1e3);
-        status.textContent = `\u6B63\u5728\u8FD0\u884C \xB7 \u7B2C${s + 1}\u6B65 \xB7 \u5DF2\u8C03\u7528${tc}\u6B21\u5DE5\u5177 \xB7 ${el2}s`;
+        status.textContent = `deepseek++ \u6267\u884C\u4E2D \xB7 \u7B2C${s + 1}\u6B65 \xB7 \u5DF2\u8C03\u7528${tc}\u6B21\u5DE5\u5177 \xB7 ${el2}s`;
       } else if (phase === "complete") {
         status.textContent = `\u5B8C\u6210 \xB7 ${state.stepCount}\u6B65 \xB7 ${state.toolCount}\u6B21\u5DE5\u5177 \xB7 ${Math.round((Date.now() - state.startTime) / 1e3)}s`;
       } else if (phase === "error") {
@@ -5128,6 +5128,7 @@ ${prompt}`;
     };
   }
   function installMainWorldInterceptor(options) {
+    console.log("[interceptor] installed, fetch hook + XHR hook ready");
     const { sender, diag, onAssistantReply, onMemoriesUpdate } = options;
     const pending = [];
     const d = diag ?? (() => {
@@ -5142,6 +5143,7 @@ ${prompt}`;
     const MAX_LOOP = 8;
     const capturedHeaders = {};
     const forward = (call) => {
+      console.log("[interceptor] forward:", call.invocationName, JSON.stringify(call.params).slice(0, 150));
       d(`forward: ${call.invocationName} params=${JSON.stringify(call.params).slice(0, 200)}`);
       if (!isSupportedUpstreamTool(call.invocationName)) {
         d(`forward: unsupported, skipping`);
@@ -5156,22 +5158,29 @@ ${prompt}`;
         d(`forward: createToolCard failed: ${e instanceof Error ? e.message : String(e)}`);
       }
       if (!stepFlow) {
-        const msgSelectors = [".ds-assistant-message-main-content", '[class*="assistant-message"]', '[class*="message-item"]'];
-        let assistantMsg = null;
-        for (const sel of msgSelectors) {
+        document.querySelectorAll(".ds-sf-container").forEach((n) => n.remove());
+        const composerSelectors = [
+          "#root > div > div.c3ecdb44 > div._7780f2e > div > div.ds-virtual-list > div.ds-virtual-list-items > div > div._4f9bf79.d7dc56a8._43c05b5 > div.ds-flex._0a3d93b",
+          "div._4f9bf79.d7dc56a8._43c05b5 > div.ds-flex._0a3d93b",
+          "div.ec4f5d61",
+          'div[class*="editor"]',
+          "footer"
+        ];
+        let composer = null;
+        for (const sel of composerSelectors) {
           const nodes = document.querySelectorAll(sel);
           if (nodes.length > 0) {
-            assistantMsg = nodes[nodes.length - 1];
+            composer = nodes[nodes.length - 1];
             break;
           }
         }
-        d(`step-flow: assistantMsg found=${!!assistantMsg}`);
-        if (assistantMsg) {
+        console.log("[step-flow] composer found=", !!composer, "selector hit=", composerSelectors.find((sel) => document.querySelectorAll(sel).length > 0));
+        if (composer) {
           stepFlow = createStepFlowContainer();
           stepFlowStartTime = Date.now();
-          assistantMsg.appendChild(stepFlow.container);
+          document.body.appendChild(stepFlow.container);
           stepFlow.setPhase("running", stepFlowStep, stepFlowToolCount);
-          d(`step-flow: container appended`);
+          console.log("[step-flow] container appended to body");
         }
       }
       if (stepFlow) {
@@ -5255,6 +5264,7 @@ ${prompt}`;
         scheduleAutoContinue();
       } else if (stepFlow) {
         stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1e3));
+        stepFlow.destroy();
         stepFlow = null;
         stepFlowStep = 0;
         stepFlowToolCount = 0;

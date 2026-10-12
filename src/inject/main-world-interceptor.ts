@@ -543,6 +543,7 @@ function installXhrHooks(
  * @param sender 把工具调用投递给宿主并取回结果的回调（由 entry.ts 接到 host-client）。
  */
 export function installMainWorldInterceptor(options: MainWorldInterceptorOptions): MainWorldInterceptorHandle {
+  console.log('[interceptor] installed, fetch hook + XHR hook ready');
   const { sender, diag, onAssistantReply, onMemoriesUpdate } = options;
   const pending: PendingResult[] = [];
   const d: InterceptorDiag = diag ?? (() => {});
@@ -560,6 +561,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   const capturedHeaders: Record<string, string> = {};
 
   const forward = (call: ParsedToolCall): void => {
+    console.log('[interceptor] forward:', call.invocationName, JSON.stringify(call.params).slice(0, 150));
     d(`forward: ${call.invocationName} params=${JSON.stringify(call.params).slice(0, 200)}`);
     if (!isSupportedUpstreamTool(call.invocationName)) {
       d(`forward: unsupported, skipping`);
@@ -576,21 +578,30 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       d(`forward: createToolCard failed: ${e instanceof Error ? e.message : String(e)}`);
     }
 
-    // v1.3：步骤流 UI —— 第一次工具调用时创建状态栏（appendChild 到助手消息末尾，和 tool-card 同方式）
+    // v1.3：步骤流 UI —— 第一次工具调用时创建状态栏（固定在输入框上方，不随对话滚动）
     if (!stepFlow) {
-      const msgSelectors = ['.ds-assistant-message-main-content', '[class*="assistant-message"]', '[class*="message-item"]'];
-      let assistantMsg: HTMLElement | null = null;
-      for (const sel of msgSelectors) {
+      // 清掉残留的旧状态栏
+      document.querySelectorAll('.ds-sf-container').forEach((n) => n.remove());
+      // 找输入框容器（composer），把状态栏挂在它里面，避免 fixed 被祖先 transform 破坏
+      const composerSelectors = [
+        '#root > div > div.c3ecdb44 > div._7780f2e > div > div.ds-virtual-list > div.ds-virtual-list-items > div > div._4f9bf79.d7dc56a8._43c05b5 > div.ds-flex._0a3d93b',
+        'div._4f9bf79.d7dc56a8._43c05b5 > div.ds-flex._0a3d93b',
+        'div.ec4f5d61',
+        'div[class*="editor"]',
+        'footer',
+      ];
+      let composer: HTMLElement | null = null;
+      for (const sel of composerSelectors) {
         const nodes = document.querySelectorAll(sel);
-        if (nodes.length > 0) { assistantMsg = nodes[nodes.length - 1] as HTMLElement; break; }
+        if (nodes.length > 0) { composer = nodes[nodes.length - 1] as HTMLElement; break; }
       }
-      d(`step-flow: assistantMsg found=${!!assistantMsg}`);
-      if (assistantMsg) {
+      console.log('[step-flow] composer found=', !!composer, 'selector hit=', composerSelectors.find(sel => document.querySelectorAll(sel).length > 0));
+      if (composer) {
         stepFlow = createStepFlowContainer();
         stepFlowStartTime = Date.now();
-        assistantMsg.appendChild(stepFlow.container);
+        document.body.appendChild(stepFlow.container);
         stepFlow.setPhase('running', stepFlowStep, stepFlowToolCount);
-        d(`step-flow: container appended`);
+        console.log('[step-flow] container appended to body');
       }
     }
     if (stepFlow) {
@@ -678,6 +689,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     } else if (stepFlow) {
       // v1.3：代理循环结束，完成步骤流
       stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1000));
+      stepFlow.destroy();
       stepFlow = null;
       stepFlowStep = 0;
       stepFlowToolCount = 0;

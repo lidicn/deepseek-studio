@@ -25,7 +25,7 @@ function injectStepFlowStyles(): void {
   const style = document.createElement('style');
   style.id = STEP_FLOW_STYLE_ID;
   style.textContent = `
-    .ds-sf-container { position: relative; margin: 8px 0; color: #1f2329; }
+    .ds-sf-container { position: fixed; bottom: 160px; left: 50%; transform: translateX(-50%); width: min(768px, 92vw); margin: 0; padding: 8px 14px; border-radius: 10px; background: #eef0ff; color: #1f2329; z-index: 2147483647; box-shadow: 0 2px 12px rgba(51,112,255,.12); }
     .ds-sf-status-line { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 13px; line-height: 1.5; color: #646a73; }
     .ds-sf-status-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #8f959e; }
     .ds-sf-container[data-phase="running"] .ds-sf-status-dot { background: #3370ff; animation: ds-sf-pulse 1.1s ease-in-out infinite; }
@@ -165,7 +165,7 @@ export function createStepFlowContainer(onStop?: () => void): StepFlowHandle {
       const s = step ?? state.stepCount;
       const tc = toolCount ?? state.toolCount;
       const el = elapsed ?? Math.round((Date.now() - state.startTime) / 1000);
-      status.textContent = `正在运行 · 第${s + 1}步 · 已调用${tc}次工具 · ${el}s`;
+      status.textContent = `deepseek++ 执行中 · 第${s + 1}步 · 已调用${tc}次工具 · ${el}s`;
     } else if (phase === 'complete') {
       status.textContent = `完成 · ${state.stepCount}步 · ${state.toolCount}次工具 · ${Math.round((Date.now() - state.startTime) / 1000)}s`;
     } else if (phase === 'error') {
