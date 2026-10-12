@@ -5180,7 +5180,13 @@ ${prompt}`;
           stepFlowStartTime = Date.now();
           document.body.appendChild(stepFlow.container);
           stepFlow.setPhase("running", stepFlowStep, stepFlowToolCount);
-          console.log("[step-flow] container appended to body");
+          const cr = composer.getBoundingClientRect();
+          const sf = stepFlow.container;
+          sf.style.left = cr.left + "px";
+          sf.style.width = cr.width + "px";
+          sf.style.transform = "none";
+          const r = sf.getBoundingClientRect();
+          console.log("[step-flow] DIAG rect=", JSON.stringify({ top: Math.round(r.top), bottom: Math.round(r.bottom), left: Math.round(r.left), w: Math.round(r.width) }), "composerRect=", JSON.stringify({ left: Math.round(cr.left), w: Math.round(cr.width) }));
         }
       }
       if (stepFlow) {
@@ -5264,10 +5270,11 @@ ${prompt}`;
         scheduleAutoContinue();
       } else if (stepFlow) {
         stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1e3));
-        stepFlow.destroy();
+        const sf = stepFlow;
         stepFlow = null;
         stepFlowStep = 0;
         stepFlowToolCount = 0;
+        setTimeout(() => sf.destroy(), 3e3);
       }
     };
     async function autoContinueWithPow() {
