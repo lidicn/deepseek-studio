@@ -371,9 +371,10 @@ function installFetchHook(
               stepReasoningAccum += rsn;
               stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
             }
-            const { calls, clean } = parser.feed(text);
+            const { calls } = parser.feed(text);
             for (const c of calls) forward(c);
-            if (clean) controller.enqueue(encoder.encode(clean));
+            // 原样转发原始 SSE chunk，不修改内容（避免编码破坏 + SSE 解析器崩溃）
+            controller.enqueue(value);
           }
           // 流结束：先刷出 SSE 缓冲区最后一个事件，再刷工具解析器尾部
           const sseTail = sse.flush();
@@ -385,11 +386,11 @@ function installFetchHook(
           if (sseTail) {
             const tailParsed = parser.feed(sseTail);
             for (const c of tailParsed.calls) forward(c);
-            if (tailParsed.clean) controller.enqueue(encoder.encode(tailParsed.clean));
+            // 尾部也原样转发
           }
           const fin = parser.flush();
           for (const c of fin.calls) forward(c);
-          if (fin.clean) controller.enqueue(encoder.encode(fin.clean));
+          // 尾部 flush 不发内容（原始 chunk 已转发）
         } catch (err) {
           controller.error(err);
           return;
