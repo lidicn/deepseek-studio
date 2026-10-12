@@ -96,12 +96,78 @@ export class StreamingToolCallParser {
       if (parsed && typeof parsed === 'object') params = parsed as Record<string, unknown>;
     } catch (e) {
       // F3 修复：JSON 解析失败时标记错误，让模型看到确切原因，而不是静默交空对象
+      // v1.5 容错：尝试修复被吞掉反斜杠的转义引号（SSE 提取链路把 \" 退化成 "）
+      const fixed = tryFixEscapedQuotes(body);
+      if (fixed !== body) {
+        try {
+          const parsed = JSON.parse(fixed);
+          if (parsed && typeof parsed === 'object') {
+            params = parsed as Record<string, unknown>;
+            // 修复成功，不标记 __invalid_json
+            return { id: this.genId(), invocationName: name, params, raw };
+          }
+        } catch {
+          // 修复后还是失败，继续走错误标记
+        }
+      }
       params = { __invalid_json: true, __error: e instanceof Error ? e.message : String(e), __raw: body };
     }
-    const id =
-      typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.randomUUID === 'function'
-        ? globalThis.crypto.randomUUID()
-        : `call-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    return { id, invocationName: name, params, raw };
+    return { id: this.genId(), invocationName: name, params, raw };
   }
+
+  private genId(): string {
+    return typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.randomUUID === 'function'
+      ? globalThis.crypto.randomUUID()
+      : `call-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+}
+
+/**
+ * v1.5：尝试修复被吞掉反斜杠的转义引号。
+ * 场景：SSE 提取链路把 {\"command\":\"...\"} 里的 \\\" 退化成 \"，导致字符串提前闭合。
+ * 修复策略：遍历 body，跟踪是否在字符串内；遇到字符串内的裸引号（后面不是 , } ] 或换行），补反斜杠。
+ */
+function tryFixEscapedQuotes(body: string): string {
+  let out = '';
+  let inString = false;
+  let i = 0;
+  while (i < body.length) {
+    const ch = body[i];
+    if (ch === '\\' && inString) {
+      // 保留转义序列原样
+      out += ch;
+      if (i + 1 < body.length) {
+        out += body[i + 1];
+        i += 2;
+      } else {
+        i += 1;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      if (!inString) {
+        inString = true;
+        out += ch;
+      } else {
+        // 判断这个引号是字符串结束还是字符串内裸引号
+        // 向后看非空白字符
+        let j = i + 1;
+        while (j < body.length && (body[j] === ' ' || body[j] === '\t' || body[j] === '\n')) j++;
+        const next = body[j];
+        if (next === ',' || next === '}' || next === ']' || next === undefined) {
+          // 字符串结束
+          inString = false;
+          out += ch;
+        } else {
+          // 字符串内裸引号，补反斜杠
+          out += '\\"';
+        }
+      }
+      i += 1;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
 }

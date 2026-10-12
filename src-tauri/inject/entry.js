@@ -1622,12 +1622,64 @@
         const parsed = JSON.parse(body);
         if (parsed && typeof parsed === "object") params = parsed;
       } catch (e) {
+        const fixed = tryFixEscapedQuotes(body);
+        if (fixed !== body) {
+          try {
+            const parsed = JSON.parse(fixed);
+            if (parsed && typeof parsed === "object") {
+              params = parsed;
+              return { id: this.genId(), invocationName: name, params, raw };
+            }
+          } catch {
+          }
+        }
         params = { __invalid_json: true, __error: e instanceof Error ? e.message : String(e), __raw: body };
       }
-      const id = typeof globalThis.crypto !== "undefined" && typeof globalThis.crypto.randomUUID === "function" ? globalThis.crypto.randomUUID() : `call-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      return { id, invocationName: name, params, raw };
+      return { id: this.genId(), invocationName: name, params, raw };
+    }
+    genId() {
+      return typeof globalThis.crypto !== "undefined" && typeof globalThis.crypto.randomUUID === "function" ? globalThis.crypto.randomUUID() : `call-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     }
   };
+  function tryFixEscapedQuotes(body) {
+    let out = "";
+    let inString = false;
+    let i = 0;
+    while (i < body.length) {
+      const ch = body[i];
+      if (ch === "\\" && inString) {
+        out += ch;
+        if (i + 1 < body.length) {
+          out += body[i + 1];
+          i += 2;
+        } else {
+          i += 1;
+        }
+        continue;
+      }
+      if (ch === '"') {
+        if (!inString) {
+          inString = true;
+          out += ch;
+        } else {
+          let j = i + 1;
+          while (j < body.length && (body[j] === " " || body[j] === "	" || body[j] === "\n")) j++;
+          const next = body[j];
+          if (next === "," || next === "}" || next === "]" || next === void 0) {
+            inString = false;
+            out += ch;
+          } else {
+            out += '\\"';
+          }
+        }
+        i += 1;
+        continue;
+      }
+      out += ch;
+      i += 1;
+    }
+    return out;
+  }
 
   // src/inject/sse-text-extractor.ts
   var SseTextStreamExtractor = class {
@@ -4950,6 +5002,8 @@ ${formatToolResultBlock(results)}`;
 - Windows \u8DEF\u5F84\u4E00\u5F8B\u7528\u6B63\u659C\u6760\uFF08\u5982 E:/Users/name\uFF09\uFF0C\u4E0D\u8981\u7528\u53CD\u659C\u6760\uFF0C\u4E0D\u8981\u5199\u56DB\u53CD\u659C\u6760
 - \u5217\u51FA\u6587\u4EF6/\u76EE\u5F55\u4F18\u5148\u7528 PowerShell \u7684 Get-ChildItem\uFF0C\u4E0D\u8981\u7528 cmd \u7684 dir\uFF08dir \u5BF9\u6B63\u659C\u6760\u8DEF\u5F84\u4F1A\u62A5\u9519\uFF09
 - \u4E00\u6B21\u53EA\u8C03\u7528\u4E00\u4E2A\u5DE5\u5177\uFF0C\u7B49\u7ED3\u679C\u8FD4\u56DE\u540E\u518D\u51B3\u5B9A\u4E0B\u4E00\u6B65
+- **\u601D\u8003\u8FC7\u7A0B\u653E THINK \u6BB5\uFF0C\u6700\u7EC8\u56DE\u7B54\u76F4\u63A5\u7ED9\u7ED3\u8BBA\uFF0C\u4E0D\u8981\u5728\u56DE\u7B54\u5F00\u5934\u5199\u82F1\u6587\u603B\u7ED3\u6216"user asked... I got... Now output..."\u8FD9\u7C7B\u8BDD**
+- **\u5168\u7A0B\u7528\u4E2D\u6587\u56DE\u7B54\uFF0C\u9664\u975E\u7528\u6237\u660E\u786E\u8981\u6C42\u5176\u4ED6\u8BED\u8A00**
 
 ## \u7981\u6B62
 - \u4F7F\u7528 <invoke name="...">\u3001<tool_call> \u7B49\u5305\u88C5\u6807\u7B7E
@@ -5012,6 +5066,20 @@ ${formatToolResultBlock(results)}`;
     }
     lines.push('\u8C03\u7528\u65B9\u5F0F\uFF1A<mcp_call>{"serverId":"\u670D\u52A1\u5668\u540D","tool":"\u5DE5\u5177\u540D","args":{...}}</mcp_call>');
     return lines.join("\n");
+  }
+  function extractThinkingPreface(reply) {
+    if (!reply) return { thinking: "", answer: reply };
+    const firstCjk = reply.search(/[\u4e00-\u9fff]/);
+    if (firstCjk <= 0) return { thinking: "", answer: reply };
+    const preface = reply.slice(0, firstCjk).trim();
+    const blankLine = reply.indexOf("\n\n");
+    if (blankLine > 0 && blankLine < firstCjk) {
+      return { thinking: reply.slice(0, blankLine).trim(), answer: reply.slice(blankLine + 2).trim() };
+    }
+    if (preface.length > 10 && !/[\u4e00-\u9fff]/.test(preface)) {
+      return { thinking: preface, answer: reply.slice(firstCjk).trim() };
+    }
+    return { thinking: "", answer: reply };
   }
   function buildCapabilityPrompt() {
     const mcpBlock = formatMcpToolsBlock();
@@ -5121,7 +5189,6 @@ ${prompt}`;
       const sse = new SseTextStreamExtractor();
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      const encoder = new TextEncoder();
       const stream = new ReadableStream({
         async start(controller) {
           try {
@@ -5135,9 +5202,9 @@ ${prompt}`;
                 stepReasoningAccum += rsn;
                 stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
               }
-              const { calls, clean } = parser.feed(text);
+              const { calls } = parser.feed(text);
               for (const c of calls) forward(c);
-              if (clean) controller.enqueue(encoder.encode(clean));
+              controller.enqueue(value);
             }
             const sseTail = sse.flush();
             const rsnTail = sse.consumeReasoning();
@@ -5148,11 +5215,9 @@ ${prompt}`;
             if (sseTail) {
               const tailParsed = parser.feed(sseTail);
               for (const c of tailParsed.calls) forward(c);
-              if (tailParsed.clean) controller.enqueue(encoder.encode(tailParsed.clean));
             }
             const fin = parser.flush();
             for (const c of fin.calls) forward(c);
-            if (fin.clean) controller.enqueue(encoder.encode(fin.clean));
           } catch (err) {
             controller.error(err);
             return;
@@ -5513,11 +5578,20 @@ ${toolResults}
                   const last = nodes[nodes.length - 1];
                   if (last) {
                     const existingCards = Array.from(last.querySelectorAll(".ds-studio-tool-card"));
-                    last.textContent = reply;
+                    const { thinking, answer } = extractThinkingPreface(reply);
+                    last.textContent = answer;
+                    if (thinking) {
+                      const tdiv = document.createElement("div");
+                      tdiv.className = "ds-studio-thinking-preface";
+                      tdiv.style.cssText = "font-size:12px;color:#888;margin-bottom:8px;padding:6px 10px;background:#f5f5f5;border-radius:6px;cursor:pointer;";
+                      tdiv.textContent = `\u{1F4AD} \u5DF2\u601D\u8003\uFF1A${thinking.slice(0, 80)}${thinking.length > 80 ? "..." : ""}`;
+                      tdiv.title = thinking;
+                      last.insertBefore(tdiv, last.firstChild);
+                    }
                     for (const card of existingCards) {
                       last.appendChild(card);
                     }
-                    d(`auto-continue rendered to DOM, len=${reply.length}, cards preserved=${existingCards.length}`);
+                    d(`auto-continue rendered to DOM, len=${answer.length}, thinking=${thinking.length}, cards preserved=${existingCards.length}`);
                   } else {
                     d("auto-continue render: no .ds-assistant-message-main-content found");
                   }
