@@ -43,7 +43,10 @@ export type HostToPageMessage =
       data?: unknown;
       error?: string;
       // v1.2：Pi Agent 风格统一结果格式（全可选，缺省即回退旧格式）
-      content?: Array<{ type: 'text'; text: string }>;
+      content?: Array<
+        | { type: 'text'; text: string }
+        | { type: 'image_url'; image_url: { url: string } }
+      >;
       details?: Record<string, unknown>;
       isError?: boolean;
       terminate?: boolean;

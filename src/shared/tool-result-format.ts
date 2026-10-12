@@ -12,10 +12,11 @@
 
 // ---------------------------------------------------------------- 类型
 
-/** Pi Agent 风格的内容片段。第一阶段只支持 text。 */
+/** Pi Agent 风格的内容片段。支持 text 和 image_url。 */
 export interface ToolResultContentPart {
-  type: 'text';
-  text: string;
+  type: 'text' | 'image_url';
+  text?: string;
+  image_url?: { url: string };
 }
 
 /**

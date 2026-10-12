@@ -567,7 +567,22 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       .then((r: ExecuteResult) => {
         d(`forward: done ok=${r.ok} err=${r.error ?? ''}`);
         pending.push({ invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error });
-        try { updateToolCardByCallId(callId, cardData, { ok: r.ok, data: r.data, error: r.error }, Date.now() - startedAt); } catch { /* ignore */ }
+        try {
+          updateToolCardByCallId(
+            callId,
+            cardData,
+            {
+              ok: r.ok,
+              data: r.data,
+              error: r.error,
+              content: r.content,
+              details: r.details,
+              isError: r.isError,
+              terminate: r.terminate,
+            },
+            Date.now() - startedAt,
+          );
+        } catch { /* ignore */ }
         if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
           scheduleAutoContinue();
         }

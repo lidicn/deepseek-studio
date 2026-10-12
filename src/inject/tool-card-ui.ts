@@ -341,7 +341,7 @@ export function createToolCard(data: ToolCardData, callId: string): string | nul
 export function updateToolCardByCallId(
   callId: string,
   data: ToolCardData,
-  result: { ok: boolean; data?: unknown; error?: string },
+  result: NonNullable<ToolCardData['result']>,
   durationMs?: number,
 ): void {
   let card = document.querySelector(`.ds-studio-tool-card[data-call-id="${callId}"]`) as HTMLElement | null;

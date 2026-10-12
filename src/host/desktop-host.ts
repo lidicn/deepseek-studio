@@ -124,8 +124,11 @@ export interface ToolExecutionResult {
   snapshot?: { total: number; byKind: Record<string, number> };
   // ---- v1.2 新增：Pi Agent 风格统一结果格式（全可选，缺省即回退旧格式）----
   // 语义真相源见 src/shared/tool-result-format.ts 的 ToolResultExtras。
-  /** 给模型看的纯文本内容。 */
-  content?: Array<{ type: 'text'; text: string }>;
+  /** 给模型看的内容（文本 + 图片等多模态）。 */
+  content?: Array<
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string } }
+  >;
   /** 给 UI 看的元数据（exitCode / durationMs / path 等）。 */
   details?: Record<string, unknown>;
   /** 显式错误标记（等价于 !ok，但语义更清晰）。 */
