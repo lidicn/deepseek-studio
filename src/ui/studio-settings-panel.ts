@@ -89,6 +89,7 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
     { id: 'mcp', label: 'MCP' },
     { id: 'skills', label: '技能' },
     { id: 'memory', label: '记忆' },
+    { id: 'leverhub', label: '投喂' },
   ];
   const tabContents: Record<string, HTMLElement> = {};
 
@@ -273,6 +274,37 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
   tabContents['memory'] = memoryTab;
   body.appendChild(memoryTab);
 
+  // Lever-Hub tab（v0.15：MiMo 投喂）
+  const leverTab = el('div', { className: 'studio-tab-content' });
+  leverTab.innerHTML = `
+    <div class="studio-info-row"><span class="studio-info-label">服务</span><span class="studio-info-value">http://127.0.0.1:8762</span></div>
+    <div class="studio-info-row"><span class="studio-info-label">状态</span><span class="studio-info-value" id="lh-status">检测中…</span></div>
+  `;
+  const lhAppList = el('div', { className: 'studio-memory-list', attrs: { style: 'max-height:240px;overflow:auto;margin:12px 0' } });
+  leverTab.appendChild(lhAppList);
+
+  const lhRefresh = el('button', { className: 'studio-btn sm', text: '刷新申请单' });
+  leverTab.appendChild(lhRefresh);
+
+  async function loadLeverHub(): Promise<void> {
+    try {
+      const h = await fetch('http://127.0.0.1:8762/healthz').then((r) => r.json());
+      leverTab.querySelector('#lh-status')!.textContent = h.ok ? '运行中' : '异常';
+      const data = await fetch('http://127.0.0.1:8762/v1/applications').then((r) => r.json());
+      lhAppList.innerHTML = '';
+      for (const app of data.applications.slice(0, 20)) {
+        const row = el('div', { className: 'studio-memory-item' });
+        row.innerHTML = `<div class="studio-memory-content"><div class="studio-memory-name">${app.name}</div><div class="studio-memory-text">${Math.round(app.size / 10) / 100} KB</div></div>`;
+        lhAppList.appendChild(row);
+      }
+    } catch {
+      leverTab.querySelector('#lh-status')!.textContent = '未启动';
+    }
+  }
+  lhRefresh.addEventListener('click', () => void loadLeverHub());
+  tabContents['leverhub'] = leverTab;
+  body.appendChild(leverTab);
+
   modal.appendChild(body);
 
   // Footer
@@ -292,6 +324,7 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
     renderMcpServers();
     renderSkillsList();
     renderMemories();
+    void loadLeverHub();
   }
 
   function close(): void {

@@ -225,13 +225,18 @@ fn main() {
                 save_window_state(&state);
                 eprintln!("[studio] window state saved");
 
-                // 优雅关闭 sidecar
-                let app_handle = window.app_handle();
-                if let Some(handle) = app_handle.try_state::<sidecar::SidecarHandle>() {
-                    handle.shutdown();
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                }
-                let _ = window.destroy();
+                // 优雅关闭 sidecar（R5：移到后台线程，sleep 不阻塞主线程）
+                let app_handle = window.app_handle().clone();
+                let label = window.label().to_string();
+                std::thread::spawn(move || {
+                    if let Some(handle) = app_handle.try_state::<sidecar::SidecarHandle>() {
+                        handle.shutdown();
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                    if let Some(win) = app_handle.get_webview_window(&label) {
+                        let _ = win.destroy();
+                    }
+                });
             }
         })
         .run(tauri::generate_context!())

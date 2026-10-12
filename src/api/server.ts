@@ -580,12 +580,44 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   };
 }
 
+const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10MB
+const READ_BODY_TIMEOUT_MS = 30_000;
+
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (c: Buffer) => chunks.push(c));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
-    req.on('error', reject);
+    let size = 0;
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error('read body timeout'));
+    }, READ_BODY_TIMEOUT_MS);
+
+    req.on('data', (c: Buffer) => {
+      if (settled) return;
+      size += c.length;
+      if (size > MAX_BODY_BYTES) {
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error('request body too large'));
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(Buffer.concat(chunks).toString('utf-8'));
+    });
+    req.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
   });
 }
 

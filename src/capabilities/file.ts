@@ -74,20 +74,25 @@ export function createFileCapability(id: FileToolId, options: FileCapabilityOpti
         }
 
         if (id === 'file.stat') {
-          // 目标必须已存在（stat 语义）；不存在给出明确错误而不是 io-error。
-          const info = await fsp.stat(resolved).catch(() => null);
-          if (!info) return { ok: false, error: 'not-found', data: { path: resolved } };
-          return {
-            ok: true,
-            data: {
-              path: resolved,
-              size: info.size,
-              isDirectory: info.isDirectory(),
-              isFile: info.isFile(),
-              modifiedAt: info.mtime.toISOString(),
-              createdAt: info.birthtime.toISOString(),
-            },
-          };
+          // 目标必须已存在（stat 语义）；区分 ENOENT（不存在）与其他错误（权限/IO）。
+          try {
+            const info = await fsp.stat(resolved);
+            return {
+              ok: true,
+              data: {
+                path: resolved,
+                size: info.size,
+                isDirectory: info.isDirectory(),
+                isFile: info.isFile(),
+                modifiedAt: info.mtime.toISOString(),
+                createdAt: info.birthtime.toISOString(),
+              },
+            };
+          } catch (err: unknown) {
+            const code = (err as NodeJS.ErrnoException)?.code;
+            if (code === 'ENOENT') return { ok: false, error: 'not-found', data: { path: resolved } };
+            return { ok: false, error: 'io-error', data: { path: resolved, detail: String(err) } };
+          }
         }
 
         if (id === 'file.write') {

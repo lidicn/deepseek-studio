@@ -245,7 +245,7 @@ export const baseStyles = `
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 2147483647;
+    z-index: 2147483645;
   }
   .studio-modal {
     background: #fff;

@@ -37,7 +37,7 @@ const STYLE_ID = 'ds-consent-style';
 
 const CSS = `
 .ds-consent-overlay {
-  position: fixed; inset: 0; z-index: 2147483646;
+  position: fixed; inset: 0; z-index: 2147483647;
   display: flex; align-items: center; justify-content: center;
   background: rgba(0,0,0,0.4);
   backdrop-filter: blur(2px);

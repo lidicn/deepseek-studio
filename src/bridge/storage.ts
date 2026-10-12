@@ -217,6 +217,9 @@ function createStorageArea(deps: StorageAreaDeps): StorageArea {
         for (const [key, value] of Object.entries(loaded ?? {})) {
           if (value !== undefined) items.set(key, value as StorageJsonValue);
         }
+      }).catch((err) => {
+        loadPromise = null;
+        throw err;
       });
     }
     return loadPromise;

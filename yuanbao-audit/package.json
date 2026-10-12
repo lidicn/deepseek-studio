@@ -1,0 +1,17 @@
+{
+  "name": "yuanbao-audit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/api-yuanbao/main.ts",
+    "build:inject": "node esbuild.inject.mjs",
+    "test": "tsx --test src/api-yuanbao/tests/*.test.ts src/inject-yuanbao/tests/*.test.ts"
+  },
+  "dependencies": {
+    "tsx": "^4.19.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

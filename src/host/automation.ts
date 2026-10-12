@@ -99,12 +99,47 @@ export function createAutomationManager(options?: {
     }
   }
 
+  /** 任务 schema 校验：防止被污染的 JSON 文件成为任意命令执行源。 */
+  function isValidTask(t: unknown): t is AutomationTask {
+    if (!t || typeof t !== 'object') return false;
+    const task = t as Record<string, unknown>;
+    // 必填字段
+    if (typeof task.id !== 'string' || task.id.length === 0 || task.id.length > 128) return false;
+    if (typeof task.name !== 'string' || task.name.length === 0 || task.name.length > 200) return false;
+    if (typeof task.cron !== 'string' || task.cron.length === 0 || task.cron.length > 100) return false;
+    if (task.type !== 'prompt' && task.type !== 'shell' && task.type !== 'http') return false;
+    if (typeof task.enabled !== 'boolean') return false;
+    if (typeof task.createdAt !== 'number') return false;
+    if (typeof task.updatedAt !== 'number') return false;
+    if (typeof task.runCount !== 'number') return false;
+    // payload 校验
+    if (!task.payload || typeof task.payload !== 'object') return false;
+    const payload = task.payload as Record<string, unknown>;
+    if (task.type === 'shell') {
+      if (typeof payload.command !== 'string' || payload.command.length === 0) return false;
+      if (payload.command.length > 4096) return false; // 命令长度上限
+    }
+    if (task.type === 'http') {
+      if (typeof payload.url !== 'string' || payload.url.length === 0) return false;
+      if (!payload.url.startsWith('http://') && !payload.url.startsWith('https://')) return false;
+    }
+    if (task.type === 'prompt') {
+      if (typeof payload.prompt !== 'string' || payload.prompt.length === 0) return false;
+      if (payload.prompt.length > 10000) return false;
+    }
+    return true;
+  }
+
   function loadTasks() {
     try {
       if (fs.existsSync(tasksFile)) {
         const data = JSON.parse(fs.readFileSync(tasksFile, 'utf-8'));
         if (Array.isArray(data)) {
-          tasks = new Map(data.map((t: AutomationTask) => [t.id, t]));
+          const valid = data.filter(isValidTask);
+          if (valid.length !== data.length) {
+            console.warn(`[automation] loadTasks: 过滤掉 ${data.length - valid.length} 个无效任务（schema 校验失败）`);
+          }
+          tasks = new Map(valid.map((t) => [t.id, t]));
         }
       }
     } catch (err) {
@@ -152,6 +187,8 @@ export function createAutomationManager(options?: {
 
   function addLog(entry: AutomationLogEntry) {
     logs.push(entry);
+    // 内存 logs 上限 1000 条，防止长期运行无界增长
+    if (logs.length > 1000) logs = logs.slice(-1000);
     saveLogs();
   }
 
@@ -191,6 +228,7 @@ export function createAutomationManager(options?: {
           method: task.payload.method || 'GET',
           headers: task.payload.headers,
           body: task.payload.body,
+          signal: AbortSignal.timeout(30_000),
         });
         output = await res.text();
       } else if (task.type === 'prompt' && task.payload.prompt) {

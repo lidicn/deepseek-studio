@@ -25,3 +25,5 @@ libc = "0.2"
 [features]
 # 生产分发时由 tauri 注入自定义协议；开发期不开启。
 custom-protocol = ["tauri/custom-protocol"]
+# v0.12 Phase 3：系统托盘功能
+tray-icon = []

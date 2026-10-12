@@ -61,6 +61,8 @@ export class SseTextStreamExtractor {
   private lineBuffer = '';
   /** 当前活跃 fragment 类型：THINK 时跳过单字符增量，RESPONSE 时保留。 */
   private activeFragmentType: 'THINK' | 'RESPONSE' | null = null;
+  /** v0.18：累积 THINK 推理段文本，供步骤流推理笔记使用。 */
+  private reasoningBuffer = '';
 
   /**
    * 喂入一段原始 SSE 文本（可能在任意字节边界截断），返回本次可确认的完整行所携带的文本。
@@ -84,7 +86,14 @@ export class SseTextStreamExtractor {
     return this.extractLine(tail);
   }
 
-  /** 解析一行 SSE，更新 fragment 类型状态，返回可见文本（THINK 段返回空串）。 */
+  /** v0.18：取出并清空已累积的推理文本。 */
+  consumeReasoning(): string {
+    const r = this.reasoningBuffer;
+    this.reasoningBuffer = '';
+    return r;
+  }
+
+  /** 解析一行 SSE，更新 fragment 类型状态，返回可见文本（THINK 段写入推理缓冲，返回空串）。 */
   private extractLine(line: string): string {
     const trimmed = line.trim();
     if (!trimmed.startsWith('data:')) return '';
@@ -108,8 +117,12 @@ export class SseTextStreamExtractor {
       for (const item of obj.v) {
         if (!item || typeof item !== 'object') continue;
         const frag = item as { type?: unknown; content?: unknown };
-        if (frag.type === 'THINK') continue;
-        if (typeof frag.content === 'string') out += frag.content;
+        if (typeof frag.content !== 'string') continue;
+        if (frag.type === 'THINK') {
+          this.reasoningBuffer += frag.content;
+        } else {
+          out += frag.content;
+        }
       }
       return out;
     }
@@ -118,7 +131,11 @@ export class SseTextStreamExtractor {
     if (typeof obj.v === 'string') {
       const p = String(obj.p ?? '');
       if (p && p !== 'response/fragments/-1/content') return '';
-      return this.activeFragmentType === 'THINK' ? '' : obj.v;
+      if (this.activeFragmentType === 'THINK') {
+        this.reasoningBuffer += obj.v;
+        return '';
+      }
+      return obj.v;
     }
     // BATCH 数组
     if (Array.isArray(obj.v)) {
@@ -126,8 +143,12 @@ export class SseTextStreamExtractor {
       for (const item of obj.v) {
         if (!item || typeof item !== 'object') continue;
         const frag = item as { type?: unknown; content?: unknown };
-        if (frag.type === 'THINK') continue;
-        if (typeof frag.content === 'string') out += frag.content;
+        if (typeof frag.content !== 'string') continue;
+        if (frag.type === 'THINK') {
+          this.reasoningBuffer += frag.content;
+        } else {
+          out += frag.content;
+        }
       }
       return out;
     }

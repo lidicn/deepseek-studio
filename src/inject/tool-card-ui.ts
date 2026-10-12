@@ -13,6 +13,24 @@
 
 import { formatToolResultText } from '../shared/tool-result-format';
 
+/** HTML 转义，防止工具名/参数/结果中的恶意标签注入 DOM（XSS）。 */
+function escapeHtml(value: unknown): string {
+  const str = typeof value === 'string' ? value : String(value ?? '');
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** 图片 URL 白名单：仅允许 data:image/* 和 https://，拒绝 javascript: 等危险协议。 */
+function isSafeImageUrl(url: string): boolean {
+  if (url.startsWith('data:image/')) return true;
+  if (url.startsWith('https://')) return true;
+  return false;
+}
+
 export interface ToolCardData {
   toolName: string;
   params: Record<string, unknown>;
@@ -277,36 +295,36 @@ function buildCardHtml(data: ToolCardData, _callId: string): string {
   const resultText = data.result ? formatResult(data.result) : '';
   const isLongResult = resultText.length > 2048;
 
-  // 从 content 数组提取图片（MCP 截图等多模态结果）
+  // 从 content 数组提取图片（MCP 截图等多模态结果），白名单校验
   const imageUrls: string[] = [];
   if (data.result?.content) {
     for (const c of data.result.content) {
-      if (c.type === 'image_url' && c.image_url?.url) {
+      if (c.type === 'image_url' && c.image_url?.url && isSafeImageUrl(c.image_url.url)) {
         imageUrls.push(c.image_url.url);
       }
     }
   }
   const imagesHtml = imageUrls.length > 0
-    ? imageUrls.map((url) => `<img class="ds-studio-tool-card-image" src="${url}" alt="tool result image" />`).join('')
+    ? imageUrls.map((url) => `<img class="ds-studio-tool-card-image" src="${escapeHtml(url)}" alt="tool result image" />`).join('')
     : '';
 
   return `
     <div class="ds-studio-tool-card-header">
       <span class="ds-studio-tool-card-badge ${status}"><span class="dot"></span>${statusText}</span>
       ${terminated ? '<span class="ds-studio-tool-card-badge terminated"><span class="dot"></span>已终止续跑</span>' : ''}
-      <span class="ds-studio-tool-card-name">${data.toolName}</span>
+      <span class="ds-studio-tool-card-name">${escapeHtml(data.toolName)}</span>
       ${data.durationMs ? `<span class="ds-studio-tool-card-duration">${data.durationMs}ms</span>` : ''}
     </div>
     <div class="ds-studio-tool-card-body">
       <div class="ds-studio-tool-card-section">
         <div class="ds-studio-tool-card-label">参数</div>
-        <pre>${formatJson(data.params)}</pre>
+        <pre>${escapeHtml(formatJson(data.params))}</pre>
       </div>
       ${data.result ? `
       <div class="ds-studio-tool-card-section ${isLongResult && !imagesHtml ? 'ds-studio-tool-card-result-collapsed' : ''}">
         <div class="ds-studio-tool-card-label">结果</div>
         ${imagesHtml ? `<div class="ds-studio-tool-card-images">${imagesHtml}</div>` : ''}
-        <pre>${resultText}</pre>
+        <pre>${escapeHtml(resultText)}</pre>
         ${isLongResult && !imagesHtml ? '<button class="ds-studio-tool-card-expand-btn">展开全部</button>' : ''}
       </div>
       ` : ''}

@@ -59,11 +59,12 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
   const path = options.path ?? '/agent-ws';
   // 同 page-runtime：noServer + 路径守卫，避免多个 WebSocketServer 互踩 upgrade。
   const wss = new WebSocketServer({ noServer: true });
-  options.server.on('upgrade', (req, socket, head) => {
+  const onUpgrade = (req: InstanceType<typeof import('node:http').IncomingMessage>, socket: unknown, head: Buffer): void => {
     const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
     if (pathname !== path) return;
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
-  });
+    wss.handleUpgrade(req, socket as never, head, (ws) => wss.emit('connection', ws, req));
+  };
+  options.server.on('upgrade', onUpgrade as never);
   const sockets = new Set<WebSocket>();
 
   function safeSend(ws: WebSocket, payload: unknown): void {
@@ -181,6 +182,9 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
   return {
     dispose() {
       unsubscribe();
+      // F-L1：移除 upgrade 监听器，避免泄漏
+      (options.server as unknown as { removeListener: (e: string, fn: unknown) => void })
+        .removeListener('upgrade', onUpgrade as never);
       wss.close();
       for (const ws of sockets) {
         try {

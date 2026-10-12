@@ -79,6 +79,7 @@ export function createHostClient(options: HostClientOptions): HostClient {
   let ws: WebSocketLike | null = null;
   let stopped = false;
   let backoff = 500;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   const pendingToolCalls = new Map<string, { resolve: (r: ExecuteResult) => void; timer: ReturnType<typeof setTimeout> }>();
   const pendingKv = new Map<string, { resolve: (v: unknown, error?: string) => void }>();
   const pendingEnvelope = new Map<string, { resolve: (v: unknown) => void }>();
@@ -204,7 +205,7 @@ export function createHostClient(options: HostClientOptions): HostClient {
   function scheduleReconnect(): void {
     const delay = backoff;
     backoff = Math.min(backoff * 2, maxBackoff);
-    setTimeout(connectWs, delay);
+    reconnectTimer = setTimeout(connectWs, delay);
   }
 
   return {
@@ -288,6 +289,11 @@ export function createHostClient(options: HostClientOptions): HostClient {
     },
     disconnect() {
       stopped = true;
+      // F-L3：清除待执行的重连定时器
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       for (const p of pendingToolCalls.values()) {
         clearTimeout(p.timer);
         p.resolve({ ok: false, error: 'disconnected' });

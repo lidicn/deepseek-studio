@@ -14,7 +14,10 @@ import { decodeRuntimeMessageEnvelope, type RuntimeMessageEnvelope } from './env
 export function createWebviewPostMessageTransport(
   targetWindow: { postMessage(message: unknown, targetOrigin: string): void },
   channel = 'deepseek-studio:runtime',
-  selfWindow: { addEventListener(type: string, listener: EventListener): void } = globalThis as never,
+  selfWindow: {
+    addEventListener(type: string, listener: EventListener): void;
+    removeEventListener(type: string, listener: EventListener): void;
+  } = globalThis as never,
 ): Transport {
   return createWindowMessageTransport(targetWindow, channel, selfWindow);
 }
@@ -43,7 +46,9 @@ export async function createNodeWsEnvelopeReceiver(
     });
   });
 
-  return new Promise<NodeWsEnvelopeReceiver>((resolve) => {
+  return new Promise<NodeWsEnvelopeReceiver>((resolve, reject) => {
+    // F-M4：监听 error（如端口占用 EADDRINUSE），否则 Promise 永久挂起
+    wss.on('error', (err) => reject(err));
     wss.on('listening', () => {
       const addr = wss.address();
       const actualPort = typeof addr === 'object' && addr ? (addr as { port: number }).port : port;

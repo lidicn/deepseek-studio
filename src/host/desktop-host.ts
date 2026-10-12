@@ -361,7 +361,14 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             }
             const controller = getMcpController();
             const result = await controller.callTool(serverId, toolName, args);
-            return { ok: result.ok, data: result.data, error: result.error };
+            return {
+              ok: result.ok,
+              data: result.data,
+              error: result.error,
+              content: result.content,
+              details: result.details,
+              isError: result.isError,
+            };
           },
         },
         // v1.1：测试 MCP 连接

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "yuanbao-audit",
+  "version": "0.1.0",
+  "identifier": "io.deepseekstudio.yuanbao-audit",
+  "build": {
+    "frontendDist": "placeholder-dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "DeepSeek Studio desktop client",
+    "longDescription": "Independent Tauri shell: loads a chat URL (--url), runs a Node sidecar and exposes a local control API on 127.0.0.1:8761."
+  }
+}

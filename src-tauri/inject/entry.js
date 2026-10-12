@@ -247,6 +247,9 @@
           for (const [key, value] of Object.entries(loaded ?? {})) {
             if (value !== void 0) items.set(key, value);
           }
+        }).catch((err) => {
+          loadPromise = null;
+          throw err;
         });
       }
       return loadPromise;
@@ -1000,7 +1003,7 @@
   var STYLE_ID = "ds-consent-style";
   var CSS = `
 .ds-consent-overlay {
-  position: fixed; inset: 0; z-index: 2147483646;
+  position: fixed; inset: 0; z-index: 2147483647;
   display: flex; align-items: center; justify-content: center;
   background: rgba(0,0,0,0.4);
   backdrop-filter: blur(2px);
@@ -1169,6 +1172,7 @@
     let ws = null;
     let stopped = false;
     let backoff = 500;
+    let reconnectTimer = null;
     const pendingToolCalls = /* @__PURE__ */ new Map();
     const pendingKv = /* @__PURE__ */ new Map();
     const pendingEnvelope = /* @__PURE__ */ new Map();
@@ -1276,7 +1280,7 @@
     function scheduleReconnect() {
       const delay = backoff;
       backoff = Math.min(backoff * 2, maxBackoff);
-      setTimeout(connectWs, delay);
+      reconnectTimer = setTimeout(connectWs, delay);
     }
     return {
       get connected() {
@@ -1382,6 +1386,10 @@
       },
       disconnect() {
         stopped = true;
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
         for (const p of pendingToolCalls.values()) {
           clearTimeout(p.timer);
           p.resolve({ ok: false, error: "disconnected" });
@@ -1478,6 +1486,8 @@
       __publicField(this, "lineBuffer", "");
       /** 当前活跃 fragment 类型：THINK 时跳过单字符增量，RESPONSE 时保留。 */
       __publicField(this, "activeFragmentType", null);
+      /** v0.18：累积 THINK 推理段文本，供步骤流推理笔记使用。 */
+      __publicField(this, "reasoningBuffer", "");
     }
     /**
      * 喂入一段原始 SSE 文本（可能在任意字节边界截断），返回本次可确认的完整行所携带的文本。
@@ -1499,7 +1509,13 @@
       this.lineBuffer = "";
       return this.extractLine(tail);
     }
-    /** 解析一行 SSE，更新 fragment 类型状态，返回可见文本（THINK 段返回空串）。 */
+    /** v0.18：取出并清空已累积的推理文本。 */
+    consumeReasoning() {
+      const r = this.reasoningBuffer;
+      this.reasoningBuffer = "";
+      return r;
+    }
+    /** 解析一行 SSE，更新 fragment 类型状态，返回可见文本（THINK 段写入推理缓冲，返回空串）。 */
     extractLine(line) {
       const trimmed = line.trim();
       if (!trimmed.startsWith("data:")) return "";
@@ -1522,23 +1538,35 @@
         for (const item of obj.v) {
           if (!item || typeof item !== "object") continue;
           const frag = item;
-          if (frag.type === "THINK") continue;
-          if (typeof frag.content === "string") out += frag.content;
+          if (typeof frag.content !== "string") continue;
+          if (frag.type === "THINK") {
+            this.reasoningBuffer += frag.content;
+          } else {
+            out += frag.content;
+          }
         }
         return out;
       }
       if (typeof obj.v === "string") {
         const p = String(obj.p ?? "");
         if (p && p !== "response/fragments/-1/content") return "";
-        return this.activeFragmentType === "THINK" ? "" : obj.v;
+        if (this.activeFragmentType === "THINK") {
+          this.reasoningBuffer += obj.v;
+          return "";
+        }
+        return obj.v;
       }
       if (Array.isArray(obj.v)) {
         let out = "";
         for (const item of obj.v) {
           if (!item || typeof item !== "object") continue;
           const frag = item;
-          if (frag.type === "THINK") continue;
-          if (typeof frag.content === "string") out += frag.content;
+          if (typeof frag.content !== "string") continue;
+          if (frag.type === "THINK") {
+            this.reasoningBuffer += frag.content;
+          } else {
+            out += frag.content;
+          }
         }
         return out;
       }
@@ -1787,6 +1815,15 @@ ${cleanStderr}`);
   }
 
   // src/inject/tool-card-ui.ts
+  function escapeHtml(value) {
+    const str = typeof value === "string" ? value : String(value ?? "");
+    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  function isSafeImageUrl(url) {
+    if (url.startsWith("data:image/")) return true;
+    if (url.startsWith("https://")) return true;
+    return false;
+  }
   var CARD_STYLE = `
   .ds-studio-tools-container {
     margin: 12px 0;
@@ -2012,29 +2049,29 @@ ${cleanStderr}`);
     const imageUrls = [];
     if (data.result?.content) {
       for (const c of data.result.content) {
-        if (c.type === "image_url" && c.image_url?.url) {
+        if (c.type === "image_url" && c.image_url?.url && isSafeImageUrl(c.image_url.url)) {
           imageUrls.push(c.image_url.url);
         }
       }
     }
-    const imagesHtml = imageUrls.length > 0 ? imageUrls.map((url) => `<img class="ds-studio-tool-card-image" src="${url}" alt="tool result image" />`).join("") : "";
+    const imagesHtml = imageUrls.length > 0 ? imageUrls.map((url) => `<img class="ds-studio-tool-card-image" src="${escapeHtml(url)}" alt="tool result image" />`).join("") : "";
     return `
     <div class="ds-studio-tool-card-header">
       <span class="ds-studio-tool-card-badge ${status}"><span class="dot"></span>${statusText}</span>
       ${terminated ? '<span class="ds-studio-tool-card-badge terminated"><span class="dot"></span>\u5DF2\u7EC8\u6B62\u7EED\u8DD1</span>' : ""}
-      <span class="ds-studio-tool-card-name">${data.toolName}</span>
+      <span class="ds-studio-tool-card-name">${escapeHtml(data.toolName)}</span>
       ${data.durationMs ? `<span class="ds-studio-tool-card-duration">${data.durationMs}ms</span>` : ""}
     </div>
     <div class="ds-studio-tool-card-body">
       <div class="ds-studio-tool-card-section">
         <div class="ds-studio-tool-card-label">\u53C2\u6570</div>
-        <pre>${formatJson2(data.params)}</pre>
+        <pre>${escapeHtml(formatJson2(data.params))}</pre>
       </div>
       ${data.result ? `
       <div class="ds-studio-tool-card-section ${isLongResult && !imagesHtml ? "ds-studio-tool-card-result-collapsed" : ""}">
         <div class="ds-studio-tool-card-label">\u7ED3\u679C</div>
         ${imagesHtml ? `<div class="ds-studio-tool-card-images">${imagesHtml}</div>` : ""}
-        <pre>${resultText}</pre>
+        <pre>${escapeHtml(resultText)}</pre>
         ${isLongResult && !imagesHtml ? '<button class="ds-studio-tool-card-expand-btn">\u5C55\u5F00\u5168\u90E8</button>' : ""}
       </div>
       ` : ""}
@@ -2095,6 +2132,387 @@ ${cleanStderr}`);
     for (const node of toRemove) {
       node.textContent = node.textContent?.replace(/<(shell_exec|local_file_read|local_file_write|local_file_stat)>[\s\S]*?<\/\1>/g, "") ?? "";
     }
+  }
+
+  // src/inject/step-flow-ui.ts
+  var STEP_FLOW_STYLE_ID = "ds-studio-step-flow-css";
+  var svgDataUri = (body, viewBox = "0 0 24 24") => `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" fill="currentColor">${body}</svg>`
+  )}")`;
+  var ICON_GEAR = svgDataUri('<path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62-.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>');
+  var ICON_CHEVRON_DOWN = svgDataUri('<path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z"/>');
+  var ICON_CHEVRON_RIGHT = svgDataUri('<path d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/>');
+  function injectStepFlowStyles() {
+    if (document.getElementById(STEP_FLOW_STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = STEP_FLOW_STYLE_ID;
+    style.textContent = `
+    .ds-sf-container { position: relative; margin: 8px 0; color: #1f2329; }
+    .ds-sf-status-line { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 13px; line-height: 1.5; color: #646a73; }
+    .ds-sf-status-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #8f959e; }
+    .ds-sf-container[data-phase="running"] .ds-sf-status-dot { background: #3370ff; animation: ds-sf-pulse 1.1s ease-in-out infinite; }
+    .ds-sf-container[data-phase="complete"] .ds-sf-status-dot { background: #34a853; }
+    .ds-sf-container[data-phase="error"] .ds-sf-status-dot { background: #e5484d; }
+    @keyframes ds-sf-pulse { 0%,100% { opacity:1; } 50% { opacity:.3; } }
+    .ds-sf-status-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ds-sf-container[data-phase="error"] .ds-sf-status-text { color: #e5484d; }
+    .ds-sf-stop-btn { flex: none; padding: 2px 9px; font-size: 12px; border: 1px solid #e5484d; border-radius: 6px; background: transparent; color: #e5484d; cursor: pointer; }
+    .ds-sf-stop-btn:hover { background: #fef0f0; }
+
+    /* \u63A8\u7406\u7B14\u8BB0\uFF08\u6298\u53E0\uFF09 */
+    .ds-sf-reasoning-note { margin: 4px 0; }
+    .ds-sf-reasoning-note-toggle { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 13px; color: #646a73; background: none; border: none; cursor: pointer; width: 100%; text-align: left; }
+    .ds-sf-reasoning-note-icon { flex: none; width: 14px; height: 14px; background: currentColor; opacity: .6; mask-image: ${ICON_CHEVRON_RIGHT}; mask-size: contain; -webkit-mask-image: ${ICON_CHEVRON_RIGHT}; -webkit-mask-size: contain; transition: transform .15s; }
+    .ds-sf-reasoning-note-toggle[aria-expanded="true"] .ds-sf-reasoning-note-icon { transform: rotate(90deg); }
+    .ds-sf-reasoning-note-title { flex: 1; }
+    .ds-sf-reasoning-note-body { padding: 4px 0 4px 20px; font-size: 13px; line-height: 1.6; color: #646a73; white-space: pre-wrap; word-break: break-word; }
+
+    /* \u6B65\u9AA4\u53D9\u8FF0\u6587\u672C */
+    .ds-sf-step { margin: 4px 0; }
+    .ds-sf-step-body { font-size: 14px; line-height: 1.7; color: #1f2329; word-break: break-word; }
+    .ds-sf-step-body:empty { display: none; }
+
+    /* \u5DE5\u5177\u5206\u7EC4 */
+    .ds-sf-tool-group { margin: 4px 0; }
+    .ds-sf-tool-group-toggle { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 13px; color: #646a73; background: none; border: none; cursor: pointer; width: 100%; text-align: left; }
+    .ds-sf-tool-group-icon { flex: none; width: 14px; height: 14px; background: currentColor; mask-image: ${ICON_GEAR}; mask-size: contain; -webkit-mask-image: ${ICON_GEAR}; -webkit-mask-size: contain; }
+    .ds-sf-tool-group-title { flex: 1; }
+    .ds-sf-tool-group-chevron { flex: none; width: 14px; height: 14px; background: currentColor; opacity: .6; mask-image: ${ICON_CHEVRON_DOWN}; mask-size: contain; -webkit-mask-image: ${ICON_CHEVRON_DOWN}; -webkit-mask-size: contain; transition: transform .15s; }
+    .ds-sf-tool-group[data-collapsed="true"] .ds-sf-tool-group-chevron { transform: rotate(-90deg); }
+    .ds-sf-tool-group-items { padding-left: 20px; }
+    .ds-sf-tool-group[data-collapsed="true"] .ds-sf-tool-group-items { display: none; }
+
+    /* \u5DE5\u5177\u6761\u76EE */
+    .ds-sf-tool-item { margin: 2px 0; }
+    .ds-sf-tool-toggle { display: flex; align-items: center; gap: 6px; padding: 1px 0; font-size: 13px; color: #1f2329; background: none; border: none; cursor: pointer; width: 100%; text-align: left; }
+    .ds-sf-tool-state-icon { flex: none; width: 12px; height: 12px; border-radius: 50%; background: #8f959e; }
+    .ds-sf-tool-item[data-tool-status="pending"] .ds-sf-tool-state-icon { background: #3370ff; animation: ds-sf-pulse 1.1s ease-in-out infinite; }
+    .ds-sf-tool-item[data-tool-status="ok"] .ds-sf-tool-state-icon { background: #34a853; }
+    .ds-sf-tool-item[data-tool-status="err"] .ds-sf-tool-state-icon { background: #e5484d; }
+    .ds-sf-tool-name { flex: none; font-weight: 500; }
+    .ds-sf-tool-param { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8f959e; }
+    .ds-sf-tool-state { flex: none; font-size: 12px; color: #8f959e; }
+    .ds-sf-tool-item[data-tool-status="ok"] .ds-sf-tool-state { color: #34a853; }
+    .ds-sf-tool-item[data-tool-status="err"] .ds-sf-tool-state { color: #e5484d; }
+    .ds-sf-tool-chevron { flex: none; width: 12px; height: 12px; background: currentColor; opacity: .4; mask-image: ${ICON_CHEVRON_RIGHT}; mask-size: contain; -webkit-mask-image: ${ICON_CHEVRON_RIGHT}; -webkit-mask-size: contain; transition: transform .15s; }
+    .ds-sf-tool-toggle[aria-expanded="true"] .ds-sf-tool-chevron { transform: rotate(90deg); }
+    .ds-sf-tool-summary { padding: 4px 0 4px 24px; font-size: 12px; line-height: 1.5; color: #646a73; white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; }
+  `;
+    document.head.appendChild(style);
+  }
+  function summarizeParams2(params) {
+    if (!params) return null;
+    const keys = Object.keys(params);
+    if (keys.length === 0) return null;
+    const firstKey = keys[0];
+    const firstVal = String(params[firstKey]).slice(0, 40);
+    return `${firstKey}=${firstVal}`;
+  }
+  function createStepFlowContainer(onStop) {
+    injectStepFlowStyles();
+    const container = document.createElement("div");
+    container.className = "ds-sf-container";
+    container.setAttribute("data-phase", "starting");
+    const statusLine = document.createElement("div");
+    statusLine.className = "ds-sf-status-line";
+    const dot = document.createElement("span");
+    dot.className = "ds-sf-status-dot";
+    const status = document.createElement("span");
+    status.className = "ds-sf-status-text";
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    status.textContent = "\u6B63\u5728\u542F\u52A8\u2026";
+    statusLine.appendChild(dot);
+    statusLine.appendChild(status);
+    if (onStop) {
+      const stopBtn = document.createElement("button");
+      stopBtn.type = "button";
+      stopBtn.className = "ds-sf-stop-btn";
+      stopBtn.textContent = "\u505C\u6B62";
+      stopBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        onStop();
+      });
+      statusLine.appendChild(stopBtn);
+    }
+    const stream = document.createElement("div");
+    stream.className = "ds-sf-stream";
+    container.appendChild(statusLine);
+    container.appendChild(stream);
+    const state = {
+      currentToolGroup: null,
+      pendingRows: [],
+      narrationMap: /* @__PURE__ */ new Map(),
+      reasoningMap: /* @__PURE__ */ new Map(),
+      stepCount: 0,
+      toolCount: 0,
+      startTime: Date.now()
+    };
+    function setPhase(phase, step, toolCount, elapsed) {
+      container.setAttribute("data-phase", phase);
+      if (phase === "running") {
+        const s = step ?? state.stepCount;
+        const tc = toolCount ?? state.toolCount;
+        const el2 = elapsed ?? Math.round((Date.now() - state.startTime) / 1e3);
+        status.textContent = `\u6B63\u5728\u8FD0\u884C \xB7 \u7B2C${s + 1}\u6B65 \xB7 \u5DF2\u8C03\u7528${tc}\u6B21\u5DE5\u5177 \xB7 ${el2}s`;
+      } else if (phase === "complete") {
+        status.textContent = `\u5B8C\u6210 \xB7 ${state.stepCount}\u6B65 \xB7 ${state.toolCount}\u6B21\u5DE5\u5177 \xB7 ${Math.round((Date.now() - state.startTime) / 1e3)}s`;
+      } else if (phase === "error") {
+        status.textContent = `\u51FA\u9519 \xB7 ${state.stepCount}\u6B65 \xB7 ${state.toolCount}\u6B21\u5DE5\u5177`;
+      } else if (phase === "paused") {
+        status.textContent = `\u6682\u505C \xB7 ${state.stepCount}\u6B65 \xB7 ${state.toolCount}\u6B21\u5DE5\u5177`;
+      } else {
+        status.textContent = "\u6B63\u5728\u542F\u52A8\u2026";
+      }
+    }
+    function followScroll() {
+      let el2 = container.parentElement;
+      while (el2 && el2 !== document.documentElement) {
+        if (el2.scrollHeight > el2.clientHeight + 1) {
+          const style = getComputedStyle(el2);
+          if (/(auto|scroll)/.test(style.overflowY)) {
+            el2.scrollTop = el2.scrollHeight;
+            return;
+          }
+        }
+        el2 = el2.parentElement;
+      }
+    }
+    function createToolGroup(stepIndex) {
+      const group = document.createElement("div");
+      group.className = "ds-sf-tool-group";
+      group.setAttribute("data-step-index", String(stepIndex));
+      group.setAttribute("data-collapsed", "false");
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "ds-sf-tool-group-toggle";
+      toggle.setAttribute("aria-expanded", "true");
+      toggle.addEventListener("click", () => {
+        group.setAttribute("data-user-toggled", "true");
+        const collapsed = group.getAttribute("data-collapsed") === "true";
+        group.setAttribute("data-collapsed", collapsed ? "false" : "true");
+      });
+      const icon2 = document.createElement("span");
+      icon2.className = "ds-sf-tool-group-icon";
+      const title = document.createElement("span");
+      title.className = "ds-sf-tool-group-title";
+      const chevron = document.createElement("span");
+      chevron.className = "ds-sf-tool-group-chevron";
+      toggle.appendChild(icon2);
+      toggle.appendChild(title);
+      toggle.appendChild(chevron);
+      const items = document.createElement("div");
+      items.className = "ds-sf-tool-group-items";
+      group.appendChild(toggle);
+      group.appendChild(items);
+      return group;
+    }
+    function updateGroupCount(group) {
+      const title = group.querySelector(".ds-sf-tool-group-title");
+      if (!title) return;
+      const count = group.querySelectorAll(".ds-sf-tool-item").length;
+      title.textContent = `\u5DF2\u8C03\u7528${count}\u6B21\u5DE5\u5177`;
+    }
+    function addToolEntry(stepIndex, toolName, params) {
+      const item = document.createElement("div");
+      item.className = "ds-sf-tool-item";
+      item.setAttribute("data-tool-status", "pending");
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "ds-sf-tool-toggle";
+      toggle.setAttribute("aria-expanded", "false");
+      const stateIcon = document.createElement("span");
+      stateIcon.className = "ds-sf-tool-state-icon";
+      const name = document.createElement("span");
+      name.className = "ds-sf-tool-name";
+      name.textContent = toolName;
+      const param = document.createElement("span");
+      param.className = "ds-sf-tool-param";
+      const summary = summarizeParams2(params);
+      param.textContent = summary ? `\xB7 ${summary}` : "";
+      const stateLabel = document.createElement("span");
+      stateLabel.className = "ds-sf-tool-state";
+      stateLabel.textContent = "";
+      const chevron = document.createElement("span");
+      chevron.className = "ds-sf-tool-chevron";
+      toggle.appendChild(stateIcon);
+      toggle.appendChild(name);
+      toggle.appendChild(param);
+      toggle.appendChild(stateLabel);
+      toggle.appendChild(chevron);
+      const detail = document.createElement("div");
+      detail.className = "ds-sf-tool-summary";
+      detail.hidden = true;
+      toggle.addEventListener("click", () => {
+        const expanded = toggle.getAttribute("aria-expanded") === "true";
+        toggle.setAttribute("aria-expanded", expanded ? "false" : "true");
+        detail.hidden = expanded;
+      });
+      item.appendChild(toggle);
+      item.appendChild(detail);
+      let group = state.currentToolGroup;
+      const groupStep = group?.getAttribute("data-step-index");
+      if (!group || group.parentElement !== stream || groupStep !== String(stepIndex)) {
+        group = createToolGroup(stepIndex);
+        stream.appendChild(group);
+        state.currentToolGroup = group;
+      }
+      group.querySelector(".ds-sf-tool-group-items")?.appendChild(item);
+      updateGroupCount(group);
+      state.pendingRows.push(item);
+      state.toolCount++;
+      followScroll();
+      return state.toolCount;
+    }
+    function resolveToolEntry(_stepIndex, ok, detail) {
+      const row = state.pendingRows.shift();
+      if (!row) return;
+      row.setAttribute("data-tool-status", ok ? "ok" : "err");
+      const stateLabel = row.querySelector(".ds-sf-tool-state");
+      if (stateLabel) stateLabel.textContent = ok ? "OK" : "Error";
+      const detailEl = row.querySelector(".ds-sf-tool-summary");
+      if (detailEl && detail) {
+        detailEl.textContent = detail.length > 4e3 ? detail.slice(0, 4e3) + "\n...[\u622A\u65AD]" : detail;
+      }
+      followScroll();
+    }
+    function addReasoningNote(stepIndex, text) {
+      const existing = state.reasoningMap.get(stepIndex);
+      if (existing) {
+        const bodyEl = existing.querySelector(".ds-sf-reasoning-note-body");
+        if (bodyEl && text != null && bodyEl.textContent !== text) {
+          bodyEl.textContent = text;
+          followScroll();
+        }
+        return;
+      }
+      const note = document.createElement("div");
+      note.className = "ds-sf-reasoning-note";
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "ds-sf-reasoning-note-toggle";
+      toggle.setAttribute("aria-expanded", "false");
+      const icon2 = document.createElement("span");
+      icon2.className = "ds-sf-reasoning-note-icon";
+      const title = document.createElement("span");
+      title.className = "ds-sf-reasoning-note-title";
+      title.textContent = `\u5DF2\u601D\u8003 \xB7 \u7B2C${stepIndex + 1}\u6B65`;
+      toggle.appendChild(icon2);
+      toggle.appendChild(title);
+      const body = document.createElement("div");
+      body.className = "ds-sf-reasoning-note-body";
+      body.hidden = true;
+      body.textContent = text ?? "\u8BE5\u6B65\u9AA4\u7684\u601D\u8003\u8FC7\u7A0B\u672A\u4FDD\u7559";
+      toggle.addEventListener("click", () => {
+        const expanded = toggle.getAttribute("aria-expanded") === "true";
+        toggle.setAttribute("aria-expanded", expanded ? "false" : "true");
+        body.hidden = expanded;
+      });
+      note.appendChild(toggle);
+      note.appendChild(body);
+      stream.appendChild(note);
+      state.reasoningMap.set(stepIndex, note);
+      followScroll();
+    }
+    function updateNarration(stepIndex, text) {
+      let narration = state.narrationMap.get(stepIndex);
+      if (!narration) {
+        narration = document.createElement("div");
+        narration.className = "ds-sf-step";
+        narration.setAttribute("data-step-index", String(stepIndex));
+        const body2 = document.createElement("div");
+        body2.className = "ds-sf-step-body";
+        narration.appendChild(body2);
+        stream.appendChild(narration);
+        state.narrationMap.set(stepIndex, narration);
+        state.stepCount = Math.max(state.stepCount, stepIndex + 1);
+      }
+      const body = narration.querySelector(".ds-sf-step-body");
+      if (body && body.textContent !== text) {
+        body.textContent = text;
+        followScroll();
+      }
+    }
+    function finish(totalSteps, totalTools, _elapsed) {
+      state.stepCount = totalSteps;
+      state.toolCount = totalTools;
+      stream.querySelectorAll(".ds-sf-tool-group").forEach((group) => {
+        if (group.getAttribute("data-user-toggled") !== "true") {
+          group.setAttribute("data-collapsed", "true");
+        }
+      });
+      state.currentToolGroup = null;
+      setPhase("complete");
+    }
+    function destroy() {
+      container.remove();
+      document.getElementById(STEP_FLOW_STYLE_ID)?.remove();
+    }
+    return {
+      container,
+      setPhase,
+      addToolEntry,
+      resolveToolEntry,
+      addReasoningNote,
+      updateNarration,
+      finish,
+      destroy
+    };
+  }
+
+  // src/inject/render-code-runner.ts
+  var RUNNABLE_LANGS = /* @__PURE__ */ new Set(["javascript", "js", "typescript", "ts", "python", "py"]);
+  function isRunnableLanguage(lang) {
+    return RUNNABLE_LANGS.has(lang.toLowerCase());
+  }
+  function normalizeLanguage(lang) {
+    const lower = lang.toLowerCase();
+    if (lower === "python" || lower === "py") return "python";
+    if (lower === "typescript" || lower === "ts") return "typescript";
+    return "javascript";
+  }
+  function addRunButtonToCodeBlock(preElement, code, language, runner) {
+    if (!isRunnableLanguage(language)) return;
+    if (preElement.querySelector(".ds-code-run-btn")) return;
+    const btn = document.createElement("button");
+    btn.className = "ds-code-run-btn";
+    btn.textContent = "\u8FD0\u884C";
+    btn.style.cssText = "position:absolute;top:4px;right:8px;padding:2px 8px;font-size:12px;background:#3370ff;color:#fff;border:none;border-radius:4px;cursor:pointer;";
+    btn.addEventListener("click", async () => {
+      btn.textContent = "\u8FD0\u884C\u4E2D...";
+      btn.disabled = true;
+      try {
+        const result = await runner(code, normalizeLanguage(language));
+        const output = document.createElement("div");
+        output.style.cssText = "margin-top:8px;padding:8px;background:#f6f8fa;border-radius:4px;font-size:12px;white-space:pre-wrap;";
+        if (result.ok) {
+          output.textContent = result.stdout || "OK";
+          if (result.stderr) output.textContent += `
+[stderr]
+${result.stderr}`;
+        } else {
+          output.textContent = `\u9519\u8BEF: ${result.error ?? result.stderr ?? "\u672A\u77E5\u9519\u8BEF"}`;
+          output.style.color = "#e5484d";
+        }
+        preElement.parentElement?.appendChild(output);
+      } catch (e) {
+        btn.textContent = "\u5931\u8D25";
+        btn.disabled = false;
+        return;
+      }
+      btn.textContent = "\u5DF2\u8FD0\u884C";
+    });
+    preElement.style.position = "relative";
+    preElement.appendChild(btn);
+  }
+  function hydrateCodeBlocks(container, runner) {
+    const codeBlocks = container.querySelectorAll("pre");
+    codeBlocks.forEach((pre) => {
+      const code = pre.querySelector("code");
+      if (!code) return;
+      const lang = code.className.replace(/^language-/, "");
+      addRunButtonToCodeBlock(pre, code.textContent ?? "", lang, runner);
+    });
   }
 
   // src/ui/studio-ui-core.ts
@@ -2272,7 +2690,7 @@ ${cleanStderr}`);
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 2147483647;
+    z-index: 2147483645;
   }
   .studio-modal {
     background: #fff;
@@ -2895,7 +3313,8 @@ ${cleanStderr}`);
       { id: "policy", label: "\u7B56\u7565" },
       { id: "mcp", label: "MCP" },
       { id: "skills", label: "\u6280\u80FD" },
-      { id: "memory", label: "\u8BB0\u5FC6" }
+      { id: "memory", label: "\u8BB0\u5FC6" },
+      { id: "leverhub", label: "\u6295\u5582" }
     ];
     const tabContents = {};
     for (const tabDef of tabDefs) {
@@ -3065,6 +3484,33 @@ ${cleanStderr}`);
     renderMemories();
     tabContents["memory"] = memoryTab;
     body.appendChild(memoryTab);
+    const leverTab = el("div", { className: "studio-tab-content" });
+    leverTab.innerHTML = `
+    <div class="studio-info-row"><span class="studio-info-label">\u670D\u52A1</span><span class="studio-info-value">http://127.0.0.1:8762</span></div>
+    <div class="studio-info-row"><span class="studio-info-label">\u72B6\u6001</span><span class="studio-info-value" id="lh-status">\u68C0\u6D4B\u4E2D\u2026</span></div>
+  `;
+    const lhAppList = el("div", { className: "studio-memory-list", attrs: { style: "max-height:240px;overflow:auto;margin:12px 0" } });
+    leverTab.appendChild(lhAppList);
+    const lhRefresh = el("button", { className: "studio-btn sm", text: "\u5237\u65B0\u7533\u8BF7\u5355" });
+    leverTab.appendChild(lhRefresh);
+    async function loadLeverHub() {
+      try {
+        const h = await fetch("http://127.0.0.1:8762/healthz").then((r) => r.json());
+        leverTab.querySelector("#lh-status").textContent = h.ok ? "\u8FD0\u884C\u4E2D" : "\u5F02\u5E38";
+        const data = await fetch("http://127.0.0.1:8762/v1/applications").then((r) => r.json());
+        lhAppList.innerHTML = "";
+        for (const app of data.applications.slice(0, 20)) {
+          const row = el("div", { className: "studio-memory-item" });
+          row.innerHTML = `<div class="studio-memory-content"><div class="studio-memory-name">${app.name}</div><div class="studio-memory-text">${Math.round(app.size / 10) / 100} KB</div></div>`;
+          lhAppList.appendChild(row);
+        }
+      } catch {
+        leverTab.querySelector("#lh-status").textContent = "\u672A\u542F\u52A8";
+      }
+    }
+    lhRefresh.addEventListener("click", () => void loadLeverHub());
+    tabContents["leverhub"] = leverTab;
+    body.appendChild(leverTab);
     modal.appendChild(body);
     const footer = el("div", { className: "studio-modal-footer" });
     const doneBtn = el("button", { className: "studio-btn primary", text: "\u5B8C\u6210" });
@@ -3082,6 +3528,7 @@ ${cleanStderr}`);
       renderMcpServers();
       renderSkillsList();
       renderMemories();
+      void loadLeverHub();
     }
     function close() {
       isOpen = false;
@@ -3835,6 +4282,29 @@ ${cleanStderr}`);
     const skillTags = el("div", { className: "studio-skills-tags" });
     skillSection.appendChild(skillTags);
     body.appendChild(skillSection);
+    const auditSection = el("div", { className: "studio-right-section" });
+    const auditTitle = el("div", { className: "studio-right-section-title" });
+    auditTitle.innerHTML = `<span>\u5143\u5B9D\u5BA1\u8BA1</span><span id="audit-state-badge" style="background:#f0f0f0;color:#888;padding:1px 6px;border-radius:8px;font-size:10px">\u2014</span>`;
+    auditSection.appendChild(auditTitle);
+    const auditBodyEl = el("div", { attrs: { style: "padding:0 16px" } });
+    auditBodyEl.innerHTML = `
+    <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+      <span style="color:#888">\u8FDB\u5EA6</span><span id="audit-rounds" style="color:#333">\u2014</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px">
+      <span style="color:#888">\u5DF2\u89C1\u8F6E\u6B21</span><span id="audit-seen" style="color:#666">\u2014</span>
+    </div>
+    <div style="display:flex;gap:4px;flex-wrap:wrap;margin:8px 0">
+      <button class="studio-btn sm" data-cmd="continue">\u7EE7\u7EED</button>
+      <button class="studio-btn sm" data-cmd="pause">\u6682\u505C</button>
+      <button class="studio-btn sm" data-cmd="stop">\u505C\u6B62</button>
+      <button class="studio-btn sm" data-cmd="reset">\u91CD\u7F6E</button>
+    </div>
+    <div id="audit-log-toggle" style="font-size:11px;color:#4D6BFE;cursor:pointer;margin-bottom:4px">\u67E5\u770B\u6700\u8FD1\u65E5\u5FD7</div>
+    <pre id="audit-log-box" style="display:none;max-height:140px;overflow:auto;background:#f7f7f8;border-radius:6px;padding:6px;font-size:10px;color:#646a73;white-space:pre-wrap;word-break:break-all"></pre>
+  `;
+    auditSection.appendChild(auditBodyEl);
+    body.appendChild(auditSection);
     const recentSection = el("div", { className: "studio-right-section" });
     recentSection.appendChild(el("div", { className: "studio-right-section-title", text: "\u6700\u8FD1\u6587\u4EF6" }));
     const recentList = el("div", { className: "studio-recent-list" });
@@ -3908,6 +4378,74 @@ ${cleanStderr}`);
         recentList.appendChild(row);
       }
     }
+    async function renderAudit() {
+      const badge = auditSection.querySelector("#audit-state-badge");
+      const roundsEl = auditSection.querySelector("#audit-rounds");
+      const seenEl = auditSection.querySelector("#audit-seen");
+      try {
+        const st = await fetch("http://127.0.0.1:8761/status").then((r) => {
+          if (!r.ok) throw new Error("status " + r.status);
+          return r.json();
+        });
+        const colors = {
+          running: "#e6f4ea;color:#34a853",
+          paused: "#fef7e0;color:#b06000",
+          stopped: "#fce8e6;color:#e5484d",
+          done: "#e6f4ea;color:#34a853",
+          idle: "#f0f0f0;color:#888"
+        };
+        badge.textContent = st.state;
+        badge.style.cssText = `padding:1px 6px;border-radius:8px;font-size:10px;${colors[st.state] ?? colors.idle}`;
+        roundsEl.textContent = `${st.rounds} / ${st.target}`;
+        const seen = Array.isArray(st.seenRounds) ? st.seenRounds : [];
+        seenEl.textContent = seen.length ? seen.join(", ") : "\u65E0";
+      } catch {
+        badge.textContent = "\u672A\u542F\u52A8";
+        badge.style.cssText = "padding:1px 6px;border-radius:8px;font-size:10px;#f0f0f0;color:#888";
+        roundsEl.textContent = "\u2014";
+        seenEl.textContent = "\u2014";
+      }
+    }
+    auditBodyEl.querySelectorAll("button[data-cmd]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const command = btn.dataset.cmd;
+        try {
+          const r = await fetch("http://127.0.0.1:8761/command", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ command })
+          });
+          if (!r.ok) throw new Error("cmd " + r.status);
+          await renderAudit();
+        } catch {
+        }
+      });
+    });
+    const logToggle = auditBodyEl.querySelector("#audit-log-toggle");
+    const logBox = auditBodyEl.querySelector("#audit-log-box");
+    logToggle.addEventListener("click", async () => {
+      if (logBox.style.display !== "none") {
+        logBox.style.display = "none";
+        logToggle.textContent = "\u67E5\u770B\u6700\u8FD1\u65E5\u5FD7";
+        return;
+      }
+      logBox.style.display = "block";
+      logToggle.textContent = "\u6536\u8D77\u65E5\u5FD7";
+      try {
+        const r = await fetch("http://127.0.0.1:8761/v1/audit-log?lines=15");
+        const data = await r.json();
+        const lines = Array.isArray(data.lines) ? data.lines : [];
+        logBox.textContent = lines.length ? lines.map((l) => {
+          try {
+            return JSON.stringify(JSON.parse(l));
+          } catch {
+            return l;
+          }
+        }).join("\n") : "\u6682\u65E0\u65E5\u5FD7";
+      } catch {
+        logBox.textContent = "\u5BA1\u8BA1\u5185\u6838\u672A\u8FD0\u884C";
+      }
+    });
     function show() {
       isOpen = true;
       sidebar.classList.add("open");
@@ -3917,6 +4455,7 @@ ${cleanStderr}`);
       renderTasks();
       renderSkills();
       renderRecent();
+      void renderAudit();
     }
     function hide() {
       isOpen = false;
@@ -4183,6 +4722,11 @@ ${cleanStderr}`);
   // src/inject/main-world-interceptor.ts
   var currentMemories = [];
   var currentMcpTools = [];
+  var stepFlow = null;
+  var stepFlowStep = 0;
+  var stepFlowToolCount = 0;
+  var stepFlowStartTime = 0;
+  var stepReasoningAccum = "";
   function formatToolResultBlock(results) {
     const lines = results.map((p) => {
       const head = `[tool-result:${p.invocationName}]`;
@@ -4436,11 +4980,21 @@ ${prompt}`;
               if (done) break;
               const rawSse = decoder.decode(value, { stream: true });
               const text = sse.feed(rawSse);
+              const rsn = sse.consumeReasoning();
+              if (rsn) {
+                stepReasoningAccum += rsn;
+                stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
+              }
               const { calls, clean } = parser.feed(text);
               for (const c of calls) forward(c);
               if (clean) controller.enqueue(encoder.encode(clean));
             }
             const sseTail = sse.flush();
+            const rsnTail = sse.consumeReasoning();
+            if (rsnTail) {
+              stepReasoningAccum += rsnTail;
+              stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
+            }
             if (sseTail) {
               const tailParsed = parser.feed(sseTail);
               for (const c of tailParsed.calls) forward(c);
@@ -4549,6 +5103,11 @@ ${prompt}`;
             }
             let visible = sse.feed(part);
             if (xhr.readyState === 4) visible += sse.flush();
+            const rsnX = sse.consumeReasoning();
+            if (rsnX) {
+              stepReasoningAccum += rsnX;
+              stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
+            }
             if (visible) {
               diag(`xhr extracted[${visible.length}]: ${visible.slice(0, 300).replace(/\s+/g, " ")}`);
               if (loopState && loopState.inAutoContinue) {
@@ -4596,6 +5155,30 @@ ${prompt}`;
       } catch (e) {
         d(`forward: createToolCard failed: ${e instanceof Error ? e.message : String(e)}`);
       }
+      if (!stepFlow) {
+        const msgSelectors = [".ds-assistant-message-main-content", '[class*="assistant-message"]', '[class*="message-item"]'];
+        let assistantMsg = null;
+        for (const sel of msgSelectors) {
+          const nodes = document.querySelectorAll(sel);
+          if (nodes.length > 0) {
+            assistantMsg = nodes[nodes.length - 1];
+            break;
+          }
+        }
+        d(`step-flow: assistantMsg found=${!!assistantMsg}`);
+        if (assistantMsg) {
+          stepFlow = createStepFlowContainer();
+          stepFlowStartTime = Date.now();
+          assistantMsg.appendChild(stepFlow.container);
+          stepFlow.setPhase("running", stepFlowStep, stepFlowToolCount);
+          d(`step-flow: container appended`);
+        }
+      }
+      if (stepFlow) {
+        stepFlowToolCount++;
+        stepFlow.addToolEntry(stepFlowStep, call.invocationName, call.params);
+        stepFlow.setPhase("running", stepFlowStep, stepFlowToolCount);
+      }
       const cardData = { toolName: call.invocationName, params: call.params };
       if (call.params && call.params.__invalid_json) {
         d(`forward: invalid JSON for ${call.invocationName}, err=${call.params.__error}`);
@@ -4616,6 +5199,10 @@ ${prompt}`;
       void sender({ callId, invocationName: call.invocationName, params: call.params }).then((r) => {
         d(`forward: done ok=${r.ok} err=${r.error ?? ""}`);
         pending.push({ invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error });
+        if (stepFlow) {
+          const detail = r.error ?? (typeof r.data === "string" ? r.data : JSON.stringify(r.data ?? "").slice(0, 500));
+          stepFlow.resolveToolEntry(stepFlowStep, r.ok, detail);
+        }
         try {
           updateToolCardByCallId(
             callId,
@@ -4639,6 +5226,9 @@ ${prompt}`;
       }).catch((e) => {
         d(`forward: failed ${e instanceof Error ? e.message : String(e)}`);
         pending.push({ invocationName: call.invocationName, ok: false, error: e instanceof Error ? e.message : String(e) });
+        if (stepFlow) {
+          stepFlow.resolveToolEntry(stepFlowStep, false, e instanceof Error ? e.message : String(e));
+        }
         try {
           updateToolCardByCallId(callId, cardData, { ok: false, error: e instanceof Error ? e.message : String(e) }, Date.now() - startedAt);
         } catch {
@@ -4663,11 +5253,18 @@ ${prompt}`;
     loopState.onStreamEnd = () => {
       if (pending.length > 0 && loopState.lastChatBody && loopDepth < MAX_LOOP) {
         scheduleAutoContinue();
+      } else if (stepFlow) {
+        stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1e3));
+        stepFlow = null;
+        stepFlowStep = 0;
+        stepFlowToolCount = 0;
       }
     };
     async function autoContinueWithPow() {
       if (!loopState.lastChatBody || pending.length === 0 || loopDepth >= MAX_LOOP) return;
       loopDepth += 1;
+      stepFlowStep = loopDepth;
+      stepReasoningAccum = "";
       loopState.streamActive = true;
       try {
         const toolResults = pending.map((p) => {
@@ -4801,6 +5398,46 @@ ${toolResults}
     } catch (e) {
       d(`studio-ui install failed: ${e.message}`);
     }
+    const codeRunner = async (code, language) => {
+      try {
+        if (language === "python") {
+          const r2 = await sender({ callId: crypto.randomUUID(), invocationName: "python_exec", params: { code } });
+          if (!r2.ok) return { ok: false, error: r2.error };
+          const dd2 = r2.data;
+          const text = dd2 ? dd2.stdout ?? dd2.output ?? (dd2.result != null ? String(dd2.result) : JSON.stringify(dd2)) : "";
+          return { ok: true, stdout: text || "(\u65E0\u8F93\u51FA)" };
+        }
+        const ext = language === "typescript" ? "ts" : "mjs";
+        const tmp = `C:/Users/lidicn/AppData/Local/Temp/studio-run-${Date.now()}.${ext}`;
+        const w = await sender({ callId: crypto.randomUUID(), invocationName: "local_file_write", params: { path: tmp, content: code } });
+        if (!w.ok) return { ok: false, error: w.error };
+        const nodeCmd = language === "typescript" ? `node --experimental-strip-types "${tmp}"` : `node "${tmp}"`;
+        const r = await sender({ callId: crypto.randomUUID(), invocationName: "shell_exec", params: { command: nodeCmd } });
+        if (!r.ok) return { ok: false, error: r.error };
+        const dd = r.data;
+        return { ok: true, stdout: dd?.stdout ?? "", stderr: dd?.stderr };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    };
+    let codeObserver = null;
+    let hydrateTimer = null;
+    const setupCodeObserver = () => {
+      if (!document.body || codeObserver) return;
+      codeObserver = new MutationObserver(() => {
+        if (hydrateTimer) clearTimeout(hydrateTimer);
+        hydrateTimer = setTimeout(() => {
+          hydrateTimer = null;
+          const sels = [".ds-assistant-message-main-content", '[class*="assistant-message"]'];
+          for (const sel of sels) {
+            document.querySelectorAll(sel).forEach((m) => hydrateCodeBlocks(m, codeRunner));
+          }
+        }, 400);
+      });
+      codeObserver.observe(document.body, { childList: true, subtree: true });
+    };
+    if (document.body) setupCodeObserver();
+    else document.addEventListener("DOMContentLoaded", setupCodeObserver, { once: true });
     (async () => {
       const maxRetries = 10;
       for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -4831,6 +5468,11 @@ ${toolResults}
         }
         try {
           studioUIHandle?.destroy();
+        } catch {
+        }
+        try {
+          if (hydrateTimer) clearTimeout(hydrateTimer);
+          codeObserver?.disconnect();
         } catch {
         }
       }

@@ -44,7 +44,10 @@ export interface McpCallResult {
   readonly data?: unknown;
   readonly error?: string;
   /** Pi Agent 风格：多模态内容数组（文本+图片） */
-  readonly content?: Array<{ type: string; text?: string; image_url?: { url: string } }>;
+  readonly content?: Array<
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string } }
+  >;
   /** 结构化详情（工具返回的元数据） */
   readonly details?: Record<string, unknown>;
   /** 是否为错误结果 */
@@ -62,7 +65,7 @@ interface McpServerConnection {
   /** 传输类型 */
   readonly transport: 'stdio' | 'http' | 'sse';
   requestId: number;
-  pendingRequests: Map<number, { resolve: (r: unknown) => void; reject: (e: Error) => void }>;
+  pendingRequests: Map<number, { resolve: (r: unknown) => void; reject: (e: Error) => void; timer?: NodeJS.Timeout }>;
   tools: McpTool[];
   initialized: boolean;
 }
@@ -84,10 +87,14 @@ export function loadMcpServers(configPath?: string): Record<string, McpServerCon
       return parsed.servers as Record<string, McpServerConfig>;
     }
     // 兼容历史平铺式：顶层键（除 servers 外）当作服务器配置
+    // 只接受含 command 或 url 的对象，避免把 meta/说明性键误当服务器
     const out: Record<string, McpServerConfig> = {};
     for (const [k, v] of Object.entries(parsed)) {
       if (k !== 'servers' && v && typeof v === 'object') {
-        out[k] = v as McpServerConfig;
+        const cfg = v as Record<string, unknown>;
+        if (typeof cfg.command === 'string' || typeof cfg.url === 'string') {
+          out[k] = v as McpServerConfig;
+        }
       }
     }
     return out;
@@ -176,14 +183,31 @@ export class McpController {
 
   /** stdio 传输连接 */
   private async connectStdio(serverId: string, config: McpServerConfig): Promise<McpServerConnection> {
-    // Windows 上 npx/python 等命令是 .cmd/.exe，spawn 直接调用会 ENOENT；
-    // 用 shell:true 让 cmd 解析命令名（与 deepseek++ 一致）。
     const isWin = process.platform === 'win32';
+    // env 白名单：只透传 MCP server 运行必需的系统环境变量，避免泄露宿主 token
+    const ALLOWED_ENV_KEYS = new Set([
+      'PATH', 'HOME', 'USERPROFILE', 'TEMP', 'TMP', 'SystemRoot', 'SystemDrive',
+      'COMPUTERNAME', 'USERNAME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL',
+      'APPDATA', 'LOCALAPPDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432',
+      'PUBLIC', 'DRIVERDATA', 'OS', 'PATHEXT', 'COMSPEC', 'NUMBER_OF_PROCESSORS',
+      'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'PROCESSOR_LEVEL', 'PROCESSOR_REVISION',
+    ]);
+    const filteredEnv: Record<string, string> = {};
+    for (const key of Object.keys(process.env)) {
+      if (ALLOWED_ENV_KEYS.has(key.toUpperCase()) && process.env[key] !== undefined) {
+        filteredEnv[key] = process.env[key] as string;
+      }
+    }
+    // 用户配置的 env 覆盖（用户明确指定的变量允许透传）
+    const finalEnv = { ...filteredEnv, ...(config.env ?? {}) };
+
+    // Windows 上 .cmd/.bat 需要 shell 解析；其他命令直接 spawn（避免命令注入）
+    const isCmdBatch = isWin && /\.(cmd|bat)$/i.test(config.command);
     const proc = spawn(config.command, config.args ?? [], {
-      env: { ...process.env, ...(config.env ?? {}) },
+      env: finalEnv,
       cwd: config.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: isWin,
+      shell: isCmdBatch,
     });
 
     const conn: McpServerConnection = {
@@ -210,6 +234,7 @@ export class McpController {
             const pending = conn.pendingRequests.get(msg.id);
             if (pending) {
               conn.pendingRequests.delete(msg.id);
+              if (pending.timer) clearTimeout(pending.timer);
               if (msg.error) pending.reject(new Error(msg.error.message ?? 'MCP error'));
               else pending.resolve(msg.result);
             }
@@ -224,6 +249,14 @@ export class McpController {
 
     proc.on('exit', (code) => {
       console.warn(`[mcp ${serverId}] exited with code ${code}`);
+      // reject 所有在途请求，避免干等 30s 超时
+      for (const [, p] of conn.pendingRequests) {
+        if (p.timer) clearTimeout(p.timer);
+        p.reject(new Error(`MCP server ${serverId} exited with code ${code}`));
+      }
+      conn.pendingRequests.clear();
+      proc.stdout?.removeAllListeners();
+      proc.stderr?.removeAllListeners();
       this.connections.delete(serverId);
     });
 
@@ -277,19 +310,20 @@ export class McpController {
 
     // stdio 传输
     return new Promise((resolve, reject) => {
-      conn.pendingRequests.set(id, { resolve, reject });
-      try {
-        conn.process?.stdin?.write(JSON.stringify(msg) + '\n');
-      } catch (e) {
-        conn.pendingRequests.delete(id);
-        reject(e instanceof Error ? e : new Error(String(e)));
-      }
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (conn.pendingRequests.has(id)) {
           conn.pendingRequests.delete(id);
           reject(new Error(`MCP request ${method} timed out`));
         }
       }, 30000);
+      conn.pendingRequests.set(id, { resolve, reject, timer });
+      try {
+        conn.process?.stdin?.write(JSON.stringify(msg) + '\n');
+      } catch (e) {
+        conn.pendingRequests.delete(id);
+        clearTimeout(timer);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      }
     });
   }
 
@@ -305,6 +339,7 @@ export class McpController {
       method: 'POST',
       headers,
       body: JSON.stringify(msg),
+      signal: AbortSignal.timeout(30000),
     });
     if (!res.ok) {
       throw new Error(`MCP HTTP ${res.status}: ${res.statusText}`);
@@ -335,13 +370,16 @@ export class McpController {
   private sendNotification(conn: McpServerConnection, method: string, params: unknown): void {
     const msg = JSON.stringify({ jsonrpc: '2.0', method, params });
     if (conn.transport === 'http' || conn.transport === 'sse') {
-      // HTTP 通知：fire-and-forget POST
+      // HTTP 通知：fire-and-forget POST（加超时，避免挂起）
       if (conn.httpUrl) {
         fetch(conn.httpUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(conn.httpHeaders ?? {}) },
           body: msg,
-        }).catch(() => { /* ignore notification errors */ });
+          signal: AbortSignal.timeout(10000),
+        }).catch((err) => {
+          console.debug(`[mcp] notification failed for ${conn.id}: ${err instanceof Error ? err.message : String(err)}`);
+        });
       }
       return;
     }
@@ -408,25 +446,37 @@ export class McpController {
       }
 
       // 构建 Pi Agent 风格的 content 数组（文本 + 图片）
-      const content: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+      const content: Array<
+        | { type: 'text'; text: string }
+        | { type: 'image_url'; image_url: { url: string } }
+      > = [];
       if (text) {
         content.push({ type: 'text', text });
       }
 
-      // 处理 MCP 标准 image 类型 content
+      // 处理 MCP 标准 image 类型 content（单张图片上限 5MB，超限截断为文本占位）
+      const MAX_IMAGE_BASE64_LEN = Math.floor((5 * 1024 * 1024 * 4) / 3); // base64 约为原始 4/3
       for (const c of result.content ?? []) {
         if (c.type === 'image' && c.data) {
-          const mime = c.mimeType ?? 'image/png';
-          content.push({ type: 'image_url', image_url: { url: `data:${mime};base64,${c.data}` } });
+          if (c.data.length > MAX_IMAGE_BASE64_LEN) {
+            content.push({ type: 'text', text: `[图片过大已省略：${(c.data.length * 3 / 4 / 1024 / 1024).toFixed(1)}MB，超过 5MB 上限]` });
+          } else {
+            const mime = c.mimeType ?? 'image/png';
+            content.push({ type: 'image_url', image_url: { url: `data:${mime};base64,${c.data}` } });
+          }
         }
       }
 
-      // 处理 TVPilot 风格的 inline_bytes（在 JSON data 里）
+      // 处理 TVPilot 风格的 inline_bytes（在 JSON data 里，同样 5MB 上限）
       if (data && typeof data === 'object' && !Array.isArray(data)) {
         const obj = data as Record<string, unknown>;
         if (typeof obj.inline_bytes === 'string') {
-          const mime = typeof obj.format === 'string' ? `image/${obj.format}` : 'image/png';
-          content.push({ type: 'image_url', image_url: { url: `data:${mime};base64,${obj.inline_bytes}` } });
+          if (obj.inline_bytes.length > MAX_IMAGE_BASE64_LEN) {
+            content.push({ type: 'text', text: `[图片过大已省略：${(obj.inline_bytes.length * 3 / 4 / 1024 / 1024).toFixed(1)}MB，超过 5MB 上限]` });
+          } else {
+            const mime = typeof obj.format === 'string' ? `image/${obj.format}` : 'image/png';
+            content.push({ type: 'image_url', image_url: { url: `data:${mime};base64,${obj.inline_bytes}` } });
+          }
         }
       }
 
@@ -466,10 +516,27 @@ export class McpController {
       return { ok: false, error: 'command is required for stdio transport' };
     }
     try {
+      const isWin = process.platform === 'win32';
+      const isCmdBatch = isWin && /\.(cmd|bat)$/i.test(config.command);
+      // 复用 connectStdio 的 env 白名单逻辑
+      const ALLOWED_ENV_KEYS = new Set([
+        'PATH', 'HOME', 'USERPROFILE', 'TEMP', 'TMP', 'SystemRoot', 'SystemDrive',
+        'COMPUTERNAME', 'USERNAME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL',
+        'APPDATA', 'LOCALAPPDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432',
+        'PUBLIC', 'DRIVERDATA', 'OS', 'PATHEXT', 'COMSPEC', 'NUMBER_OF_PROCESSORS',
+        'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'PROCESSOR_LEVEL', 'PROCESSOR_REVISION',
+      ]);
+      const filteredEnv: Record<string, string> = {};
+      for (const key of Object.keys(process.env)) {
+        if (ALLOWED_ENV_KEYS.has(key.toUpperCase()) && process.env[key] !== undefined) {
+          filteredEnv[key] = process.env[key] as string;
+        }
+      }
       const proc = spawn(config.command, config.args ?? [], {
-        env: { ...process.env, ...(config.env ?? {}) },
+        env: { ...filteredEnv, ...(config.env ?? {}) },
         cwd: config.cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
+        shell: isCmdBatch,
       });
 
       const conn: McpServerConnection = {
@@ -556,16 +623,18 @@ export class McpController {
           jsonrpc: '2.0', id: 1, method: 'initialize',
           params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'studio-test', version: '1.0' } },
         }),
+        signal: AbortSignal.timeout(15000),
       });
       if (!initRes.ok) return { ok: false, error: `HTTP ${initRes.status}: ${initRes.statusText}` };
       const initData = await initRes.json();
       if (initData.error) return { ok: false, error: initData.error.message ?? 'initialize failed' };
 
-      // notifications/initialized
+      // notifications/initialized（fire-and-forget，加超时）
       fetch(config.url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...customHeaders },
         body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+        signal: AbortSignal.timeout(5000),
       }).catch(() => {});
 
       // tools/list
@@ -573,6 +642,7 @@ export class McpController {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', ...customHeaders },
         body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+        signal: AbortSignal.timeout(15000),
       });
       const toolsData = await toolsRes.json();
       const toolNames = (toolsData.result?.tools ?? []).map((t: any) => t.name);

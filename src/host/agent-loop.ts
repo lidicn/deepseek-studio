@@ -89,6 +89,7 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
       try {
         emit({ type: 'status', text: '已发送，等待模型回复…', step: 1 });
         let result: EngineSendResult = await options.engine.send(text);
+        let hitLimit = false;
 
         for (let step = 1; step <= maxSteps; step++) {
           if (options.stopFlag.stopped) {
@@ -110,6 +111,7 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
             emit({ type: 'tool', text: `工具执行完成（${result.toolCalls} 次调用）`, step, toolCalls: result.toolCalls });
             if (step === maxSteps) {
               emit({ type: 'error', text: `已达最大步数（${maxSteps}）上限，自动停止。可发送「继续」让模型接着做`, step });
+              hitLimit = true;
               break;
             }
             // v0.9：页端 POW auto-continue 是唯一续跑权威，宿主只等待结果，不再发 continueNudge
@@ -128,8 +130,8 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
           break;
         }
 
-        if (!result.content || result.content.length === 0) {
-          // 循环走完仍没有可见文本（如首步就被停止/超时且无内容）
+        if ((!result.content || result.content.length === 0) && !hitLimit && !options.stopFlag.stopped) {
+          // 循环走完仍没有可见文本（如首步就被超时且无内容）
           emit({ type: 'error', text: '本轮未取得模型回复（页面未连接或回复为空）' });
         }
         emit({ type: 'done' });

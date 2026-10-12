@@ -107,6 +107,37 @@ describe('SseTextStreamExtractor', () => {
     expect(out).toBe('');
     expect(sse.flush()).toBe('tail');
   });
+
+  it('v0.18：THINK 推理片段进入 consumeReasoning，不污染可见文本', () => {
+    const sse = new SseTextStreamExtractor();
+    const thinkEvent =
+      'data: {"p":"response/fragments","o":"APPEND","v":[{"id":1,"type":"THINK","content":"我需要先分析"}]}';
+    const visible = sse.feed(thinkEvent + '\n\n');
+    expect(visible).toBe('');
+    expect(sse.consumeReasoning()).toBe('我需要先分析');
+    // 取出后缓冲清空
+    expect(sse.consumeReasoning()).toBe('');
+  });
+
+  it('v0.18：THINK 活跃期单字符增量进入推理缓冲，RESPONSE 切换后恢复可见', () => {
+    const sse = new SseTextStreamExtractor();
+    sse.feed(
+      'data: {"p":"response/fragments","o":"APPEND","v":[{"type":"THINK","content":""}]}\n\n',
+    );
+    const thinkDelta = sse.feed(
+      'data: {"p":"response/fragments/-1/content","v":"推"}\n\n',
+    );
+    expect(thinkDelta).toBe('');
+    // 切换到 RESPONSE 片段
+    sse.feed(
+      'data: {"p":"response/fragments","o":"APPEND","v":[{"type":"RESPONSE","content":""}]}\n\n',
+    );
+    const answerDelta = sse.feed(
+      'data: {"p":"response/fragments/-1/content","v":"答"}\n\n',
+    );
+    expect(answerDelta).toBe('答');
+    expect(sse.consumeReasoning()).toBe('推');
+  });
 });
 
 describe('StreamingToolCallParser 逐字符 delta 边界', () => {

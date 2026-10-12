@@ -55,7 +55,7 @@ if (!process.env.STUDIO_TEST) {
     setInterval, clearInterval,
     on: (sig, fn) => { process.on(sig, fn); },
     log: (m) => console.warn(m),
-  });
+  }, 500);
 }
 // ── 孤儿防护结束 ────────────────────────────────────────────────────────
 
@@ -83,8 +83,17 @@ function loadConfig(): ResolvedConfig {
   let stored: StoredConfig = {};
   try {
     stored = JSON.parse(fs.readFileSync(cfgPath, 'utf-8')) as StoredConfig;
-  } catch {
-    stored = {};
+  } catch (err: unknown) {
+    // 区分"文件不存在"（首次运行，生成新配置）和"文件损坏"（应告警，不覆盖）
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== 'ENOENT') {
+      console.error(
+        `[deepseek-studio] 配置文件损坏（${cfgPath}）：${err instanceof Error ? err.message : String(err)}。` +
+        ' 将以内存随机 token 启动，不覆盖磁盘上的损坏文件。',
+      );
+      // 不生成新 token 覆盖，使用内存随机值
+      stored = {};
+    }
   }
 
   const token = process.env.DEEPSEEK_STUDIO_TOKEN ?? stored.token ?? randomToken();
@@ -137,6 +146,16 @@ export async function main(): Promise<void> {
       : '[deepseek-studio] 工作区未配置 → file.* 能力不可用（请设 STUDIO_WORKSPACE_ROOT 或用户配置 workspaceRoot）',
   );
   console.log(`[deepseek-studio] 命令审批档位: ${POLICY_MODE_LABELS[policyMode]} (${policyMode})`);
+
+  // v0.15：同进程启动 Lever-Hub server（端口 8762）
+  try {
+    const { createLeverHubServer } = await import('../lever-hub/lever-hub-server');
+    const leverHub = createLeverHubServer();
+    await leverHub.start();
+    console.log('[deepseek-studio] Lever-Hub API on http://127.0.0.1:8762');
+  } catch (err) {
+    console.warn(`[deepseek-studio] Lever-Hub 未启动（端口可能被占用）: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 // 进程直接运行时自启动。

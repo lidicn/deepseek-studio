@@ -18,6 +18,8 @@ import { shouldSkipAutoContinue } from '../shared/tool-result-format';
 import type { ExecuteResult } from '../capabilities/types';
 import { createPowHeaders } from './pow';
 import { createToolCard, updateToolCardByCallId, stripRawToolTagsFromMessage } from './tool-card-ui';
+import { createStepFlowContainer, type StepFlowHandle } from './step-flow-ui';
+import { hydrateCodeBlocks, type CodeRunner } from './render-code-runner';
 import { installStudioUI } from '../ui/studio-ui-install';
 
 /** 页端 → 宿主 的工具调用投递请求（与 host-client.sendToolCall 入参同构）。 */
@@ -57,6 +59,13 @@ let currentMemories: Array<{ id: string; type: string; name: string; content: st
 
 // v1.0：MCP 工具列表缓存（启动时从宿主拉取，用于动态注入提示词，让 agent 知道有哪些 MCP 工具可用）
 let currentMcpTools: Array<{ serverId: string; name: string; description: string }> = [];
+
+// v1.3：步骤流 UI 句柄（分布思考状态栏 + 工具分组）
+let stepFlow: StepFlowHandle | null = null;
+let stepFlowStep = 0;
+let stepFlowToolCount = 0;
+let stepFlowStartTime = 0;
+let stepReasoningAccum = '';
 
 /** 诊断回调（临时）：把 hook 拦到的对话请求信息上报宿主日志。 */
 export type InterceptorDiag = (message: string) => void;
@@ -356,12 +365,23 @@ function installFetchHook(
             // v0.7：先把原始 SSE 提取成可见纯文本（跨 chunk 不丢事件），再解析工具标签
             const rawSse = decoder.decode(value, { stream: true });
             const text = sse.feed(rawSse);
+            // v0.18：抽取推理文本到步骤笔记
+            const rsn = sse.consumeReasoning();
+            if (rsn) {
+              stepReasoningAccum += rsn;
+              stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
+            }
             const { calls, clean } = parser.feed(text);
             for (const c of calls) forward(c);
             if (clean) controller.enqueue(encoder.encode(clean));
           }
           // 流结束：先刷出 SSE 缓冲区最后一个事件，再刷工具解析器尾部
           const sseTail = sse.flush();
+          const rsnTail = sse.consumeReasoning();
+          if (rsnTail) {
+            stepReasoningAccum += rsnTail;
+            stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
+          }
           if (sseTail) {
             const tailParsed = parser.feed(sseTail);
             for (const c of tailParsed.calls) forward(c);
@@ -490,6 +510,12 @@ function installXhrHooks(
           let visible = sse.feed(part);
           // readyState===4：流结束，刷出 SSE 缓冲区里最后一个不带换行的残留事件
           if (xhr.readyState === 4) visible += sse.flush();
+          // v0.18：抽取推理文本到步骤笔记
+          const rsnX = sse.consumeReasoning();
+          if (rsnX) {
+            stepReasoningAccum += rsnX;
+            stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
+          }
           if (visible) {
             diag(`xhr extracted[${visible.length}]: ${visible.slice(0, 300).replace(/\s+/g, ' ')}`);
             // v0.9：auto-continue 的 XHR 回复不渲染到 DOM，累积到 autoReplyText
@@ -541,12 +567,36 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     }
     const callId = call.id || crypto.randomUUID();
     const startedAt = Date.now();
+
     // v0.9：在页面上创建工具调用卡片（替代原始 XML 标签展示）
     try {
       stripRawToolTagsFromMessage();
       createToolCard({ toolName: call.invocationName, params: call.params as Record<string, unknown> }, callId);
     } catch (e) {
       d(`forward: createToolCard failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // v1.3：步骤流 UI —— 第一次工具调用时创建状态栏（appendChild 到助手消息末尾，和 tool-card 同方式）
+    if (!stepFlow) {
+      const msgSelectors = ['.ds-assistant-message-main-content', '[class*="assistant-message"]', '[class*="message-item"]'];
+      let assistantMsg: HTMLElement | null = null;
+      for (const sel of msgSelectors) {
+        const nodes = document.querySelectorAll(sel);
+        if (nodes.length > 0) { assistantMsg = nodes[nodes.length - 1] as HTMLElement; break; }
+      }
+      d(`step-flow: assistantMsg found=${!!assistantMsg}`);
+      if (assistantMsg) {
+        stepFlow = createStepFlowContainer();
+        stepFlowStartTime = Date.now();
+        assistantMsg.appendChild(stepFlow.container);
+        stepFlow.setPhase('running', stepFlowStep, stepFlowToolCount);
+        d(`step-flow: container appended`);
+      }
+    }
+    if (stepFlow) {
+      stepFlowToolCount++;
+      stepFlow.addToolEntry(stepFlowStep, call.invocationName, call.params);
+      stepFlow.setPhase('running', stepFlowStep, stepFlowToolCount);
     }
     const cardData = { toolName: call.invocationName, params: call.params as Record<string, unknown> };
     // F3 修复：JSON 解析失败的工具调用，直接回填错误，不投递宿主
@@ -567,6 +617,11 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       .then((r: ExecuteResult) => {
         d(`forward: done ok=${r.ok} err=${r.error ?? ''}`);
         pending.push({ invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error });
+        // v1.3：更新步骤流工具条目
+        if (stepFlow) {
+          const detail = r.error ?? (typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? '').slice(0, 500));
+          stepFlow.resolveToolEntry(stepFlowStep, r.ok, detail);
+        }
         try {
           updateToolCardByCallId(
             callId,
@@ -590,6 +645,10 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       .catch((e: unknown) => {
         d(`forward: failed ${e instanceof Error ? e.message : String(e)}`);
         pending.push({ invocationName: call.invocationName, ok: false, error: e instanceof Error ? e.message : String(e) });
+        // v1.3：更新步骤流工具条目
+        if (stepFlow) {
+          stepFlow.resolveToolEntry(stepFlowStep, false, e instanceof Error ? e.message : String(e));
+        }
         try { updateToolCardByCallId(callId, cardData, { ok: false, error: e instanceof Error ? e.message : String(e) }, Date.now() - startedAt); } catch { /* ignore */ }
         if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
           scheduleAutoContinue();
@@ -616,12 +675,21 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   loopState.onStreamEnd = () => {
     if (pending.length > 0 && loopState.lastChatBody && loopDepth < MAX_LOOP) {
       scheduleAutoContinue();
+    } else if (stepFlow) {
+      // v1.3：代理循环结束，完成步骤流
+      stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1000));
+      stepFlow = null;
+      stepFlowStep = 0;
+      stepFlowToolCount = 0;
     }
   };
 
   async function autoContinueWithPow(): Promise<void> {
     if (!loopState.lastChatBody || pending.length === 0 || loopDepth >= MAX_LOOP) return;
     loopDepth += 1;
+    // v0.18：步骤编号随续跑递增，工具归到对应步骤
+    stepFlowStep = loopDepth;
+    stepReasoningAccum = '';
     loopState.streamActive = true;
     try {
       // 构造续跑 body：parent_message_id = 上一条 assistant ID，prompt = 工具结果
@@ -758,6 +826,52 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     d(`studio-ui install failed: ${(e as Error).message}`);
   }
 
+  // v0.18：代码块运行器（python→python_exec；JS/TS→临时文件 + node）
+  const codeRunner: CodeRunner = async (code, language) => {
+    try {
+      if (language === 'python') {
+        const r = await sender({ callId: crypto.randomUUID(), invocationName: 'python_exec', params: { code } });
+        if (!r.ok) return { ok: false, error: r.error };
+        const dd = r.data as { stdout?: string; output?: string; result?: unknown } | undefined;
+        const text = dd ? (dd.stdout ?? dd.output ?? (dd.result != null ? String(dd.result) : JSON.stringify(dd))) : '';
+        return { ok: true, stdout: text || '(无输出)' };
+      }
+      const ext = language === 'typescript' ? 'ts' : 'mjs';
+      const tmp = `C:/Users/lidicn/AppData/Local/Temp/studio-run-${Date.now()}.${ext}`;
+      const w = await sender({ callId: crypto.randomUUID(), invocationName: 'local_file_write', params: { path: tmp, content: code } });
+      if (!w.ok) return { ok: false, error: w.error };
+      const nodeCmd = language === 'typescript'
+        ? `node --experimental-strip-types "${tmp}"`
+        : `node "${tmp}"`;
+      const r = await sender({ callId: crypto.randomUUID(), invocationName: 'shell_exec', params: { command: nodeCmd } });
+      if (!r.ok) return { ok: false, error: r.error };
+      const dd = r.data as { stdout?: string; stderr?: string } | undefined;
+      return { ok: true, stdout: dd?.stdout ?? '', stderr: dd?.stderr };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  };
+
+  // v0.18：监听 DOM，给助手消息里新增的代码块加“运行”按钮
+  let codeObserver: MutationObserver | null = null;
+  let hydrateTimer: ReturnType<typeof setTimeout> | null = null;
+  const setupCodeObserver = (): void => {
+    if (!document.body || codeObserver) return;
+    codeObserver = new MutationObserver(() => {
+      if (hydrateTimer) clearTimeout(hydrateTimer);
+      hydrateTimer = setTimeout(() => {
+        hydrateTimer = null;
+        const sels = ['.ds-assistant-message-main-content', '[class*="assistant-message"]'];
+        for (const sel of sels) {
+          document.querySelectorAll<HTMLElement>(sel).forEach((m) => hydrateCodeBlocks(m, codeRunner));
+        }
+      }, 400);
+    });
+    codeObserver.observe(document.body, { childList: true, subtree: true });
+  };
+  if (document.body) setupCodeObserver();
+  else document.addEventListener('DOMContentLoaded', setupCodeObserver, { once: true });
+
   // v1.0：启动时异步加载 MCP 工具列表，注入提示词让 agent 知道有哪些 MCP 工具可用
   // 注意：installMainWorldInterceptor 可能在 WebSocket 连接建立前被调用，
   // sender 会立即返回 no-host。需要重试直到成功或达到最大次数。
@@ -794,6 +908,12 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       }
       try {
         studioUIHandle?.destroy();
+      } catch {
+        /* ignore */
+      }
+      try {
+        if (hydrateTimer) clearTimeout(hydrateTimer);
+        codeObserver?.disconnect();
       } catch {
         /* ignore */
       }

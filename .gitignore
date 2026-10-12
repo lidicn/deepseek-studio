@@ -5,10 +5,21 @@ node_modules/
 dist/
 src-tauri/target/
 src-tauri/gen/
+yuanbao-audit/src-tauri-yuanbao/gen/
+yuanbao-audit/src-tauri-yuanbao/target/
 
 # local run logs / scratch
 *-out.txt
+*-err.txt
+*-full.txt
+*-run.txt
+*-output.txt
+*-output2.txt
+*-final.txt
 tsc-out.txt
+*.log
+scripts/*.txt
+src/inject/pow-wasm-base64.txt
 tauri*.log
 vitest.config.ts.timestamp-*.mjs
 

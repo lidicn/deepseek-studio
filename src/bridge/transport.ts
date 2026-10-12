@@ -29,24 +29,52 @@ export interface Transport {
 export function createWindowMessageTransport(
   targetWindow: { postMessage(message: unknown, targetOrigin: string): void },
   channel: string,
-  selfWindow: { addEventListener(type: string, listener: EventListener): void } = globalThis as never,
+  selfWindow: {
+    addEventListener(type: string, listener: EventListener): void;
+    removeEventListener(type: string, listener: EventListener): void;
+  } = globalThis as never,
+  pendingTimeoutMs = 30_000,
 ): Transport {
-  const pending = new Map<string, (value: unknown) => void>();
-  selfWindow.addEventListener('message', ((event: MessageEvent) => {
+  const pending = new Map<string, {
+    resolve: (value: unknown) => void;
+    reject: (reason?: unknown) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+
+  const listener = ((event: MessageEvent) => {
     const data = event.data as { __channel?: string; requestId?: string; response?: unknown } | null;
     if (!data || data.__channel !== channel) return;
-    const resolve = pending.get(data.requestId ?? '');
-    if (resolve) {
-      pending.delete(data.requestId ?? '');
-      resolve(data.response);
+    const id = data.requestId ?? '';
+    const entry = pending.get(id);
+    if (entry) {
+      clearTimeout(entry.timer);
+      pending.delete(id);
+      entry.resolve(data.response);
     }
-  }) as EventListener);
+  }) as EventListener;
+  selfWindow.addEventListener('message', listener);
+
   return {
     post(envelope, _sender) {
-      return new Promise((resolve) => {
-        pending.set(envelope.requestId, resolve);
+      return new Promise((resolve, reject) => {
+        // F-M1：对端未响应时超时 reject 并清理，不永久驻留
+        const timer = setTimeout(() => {
+          if (pending.delete(envelope.requestId)) {
+            reject(new Error(`transport post ${envelope.requestId} timed out after ${pendingTimeoutMs}ms`));
+          }
+        }, pendingTimeoutMs);
+        pending.set(envelope.requestId, { resolve, reject, timer });
         targetWindow.postMessage({ __channel: channel, ...envelope }, '*');
       });
+    },
+    // F-M6：移除 message 监听器并拒绝所有在途请求
+    close() {
+      selfWindow.removeEventListener('message', listener);
+      for (const [id, entry] of pending) {
+        clearTimeout(entry.timer);
+        entry.reject(new Error(`transport closed (${id})`));
+      }
+      pending.clear();
     },
   };
 }

@@ -12,14 +12,14 @@
   "app": {
     "windows": [],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' https: data: blob:; script-src 'self' https: 'unsafe-inline' 'unsafe-eval'; style-src 'self' https: 'unsafe-inline'; connect-src 'self' https: wss: ws: http://127.0.0.1:*; img-src 'self' https: data: blob:; font-src 'self' https: data:; object-src 'none'; base-uri 'self'"
     }
   },
   "plugins": {
     "updater": {
-      "active": true,
+      "active": false,
       "endpoints": [
-        "https://raw.githubusercontent.com/deepseek-studio/updates/main/latest.json"
+        "https://raw.githubusercontent.com/lidicn/deepseek-studio/main/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM3QjkyQTY0ODgzMTEwRkMKUldUOEVER0laQ3E1TndjeXhBVDFNd2pLUER6OWNlRzdRTUVqNnJvKzM2dzRhNW5XVzBsbTBEc2YK"
     }
