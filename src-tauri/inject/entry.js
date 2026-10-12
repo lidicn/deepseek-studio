@@ -1776,6 +1776,63 @@
     }
   };
 
+  // src/inject/deepseek-sse-frame-decoder.ts
+  var DeepSeekSseFrameDecoder = class {
+    constructor() {
+      __publicField(this, "buffer", "");
+      __publicField(this, "scanFrom", 0);
+    }
+    push(text) {
+      this.buffer += text;
+      return this.drain();
+    }
+    finish() {
+      const frames = this.drain();
+      if (this.buffer) {
+        frames.push(this.createFrame(this.buffer, ""));
+        this.buffer = "";
+      }
+      this.scanFrom = 0;
+      return frames;
+    }
+    drain() {
+      const frames = [];
+      const boundaryPattern = /\r?\n\r?\n/g;
+      boundaryPattern.lastIndex = this.scanFrom;
+      let offset = 0;
+      let match;
+      while ((match = boundaryPattern.exec(this.buffer)) !== null) {
+        frames.push(this.createFrame(this.buffer.slice(offset, match.index), match[0]));
+        offset = match.index + match[0].length;
+      }
+      this.buffer = this.buffer.slice(offset);
+      this.scanFrom = Math.max(0, this.buffer.length - 3);
+      return frames;
+    }
+    createFrame(block, _separator) {
+      let eventType = "message";
+      let dataLines = [];
+      for (const line of block.split("\n")) {
+        const colon = line.indexOf(":");
+        if (colon === -1) continue;
+        const key = line.slice(0, colon).trim();
+        const value = line.slice(colon + 1).trimStart();
+        if (key === "event") eventType = value;
+        else if (key === "data") dataLines.push(value);
+      }
+      const data = dataLines.join("\n");
+      const event = data ? { type: eventType, data } : null;
+      let parsed = null;
+      if (data) {
+        try {
+          parsed = JSON.parse(data);
+        } catch {
+        }
+      }
+      return { block, event, parsed };
+    }
+  };
+
   // src/shared/tool-contract.ts
   var UPSTREAM_TO_STUDIO = {
     shell_exec: {
@@ -5310,11 +5367,19 @@ ${prompt}`;
           if (part) {
             let sse = xhr.__dsSse;
             let parser = xhr.__dsParser;
-            if (!sse || !parser) {
+            let frameDec = xhr.__dsFrameDec;
+            if (!sse || !parser || !frameDec) {
               sse = new SseTextStreamExtractor();
               parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
+              frameDec = new DeepSeekSseFrameDecoder();
               xhr.__dsSse = sse;
               xhr.__dsParser = parser;
+              xhr.__dsFrameDec = frameDec;
+            }
+            const frames = frameDec.push(part);
+            let rawDataText = "";
+            for (const frame of frames) {
+              if (frame.event) rawDataText += frame.event.data + "\n";
             }
             let visible = sse.feed(part);
             if (xhr.readyState === 4) visible += sse.flush();
@@ -5328,7 +5393,7 @@ ${prompt}`;
               if (loopState && loopState.inAutoContinue) {
                 loopState.autoReplyText += visible;
               }
-              const { calls } = parser.feed(visible);
+              const { calls } = parser.feed(rawDataText || visible);
               for (const c of calls) forward(c);
             }
           }

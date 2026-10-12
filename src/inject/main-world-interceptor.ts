@@ -13,6 +13,7 @@
 
 import { StreamingToolCallParser, type ParsedToolCall } from './streaming-tool-parser';
 import { SseTextStreamExtractor } from './sse-text-extractor';
+import { DeepSeekSseFrameDecoder } from './deepseek-sse-frame-decoder';
 import { isSupportedUpstreamTool, SUPPORTED_INVOCATION_NAMES } from '../shared/tool-contract';
 import { shouldSkipAutoContinue } from '../shared/tool-result-format';
 import type { ExecuteResult } from '../capabilities/types';
@@ -529,11 +530,20 @@ function installXhrHooks(
           // 避免携带工具标签首字符 `<` 的 fragment APPEND 事件被字节边界切开后整段丢失。
           let sse = xhr.__dsSse as SseTextStreamExtractor | undefined;
           let parser = xhr.__dsParser as StreamingToolCallParser | undefined;
-          if (!sse || !parser) {
+          let frameDec = xhr.__dsFrameDec as DeepSeekSseFrameDecoder | undefined;
+          if (!sse || !parser || !frameDec) {
             sse = new SseTextStreamExtractor();
             parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
+            frameDec = new DeepSeekSseFrameDecoder();
             xhr.__dsSse = sse;
             xhr.__dsParser = parser;
+            xhr.__dsFrameDec = frameDec;
+          }
+          // v1.5：用 frame decoder 从原始 SSE chunk 提取 data 文本（不经过显示用改写）
+          const frames = frameDec.push(part);
+          let rawDataText = '';
+          for (const frame of frames) {
+            if (frame.event) rawDataText += frame.event.data + '\n';
           }
           let visible = sse.feed(part);
           // readyState===4：流结束，刷出 SSE 缓冲区里最后一个不带换行的残留事件
@@ -550,7 +560,8 @@ function installXhrHooks(
             if (loopState && loopState.inAutoContinue) {
               loopState.autoReplyText += visible;
             }
-            const { calls } = parser.feed(visible);
+            // v1.5：工具解析走原始 data 文本（不经过显示用改写），保住转义引号
+            const { calls } = parser.feed(rawDataText || visible);
             for (const c of calls) forward(c);
           }
         }
