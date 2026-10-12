@@ -167,6 +167,8 @@ const TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
 - Windows 路径一律用正斜杠（如 E:/Users/name），不要用反斜杠，不要写四反斜杠
 - 列出文件/目录优先用 PowerShell 的 Get-ChildItem，不要用 cmd 的 dir（dir 对正斜杠路径会报错）
 - 一次只调用一个工具，等结果返回后再决定下一步
+- **思考过程放 THINK 段，最终回答直接给结论，不要在回答开头写英文总结或"user asked... I got... Now output..."这类话**
+- **全程用中文回答，除非用户明确要求其他语言**
 
 ## 禁止
 - 使用 <invoke name="...">、<tool_call> 等包装标签
@@ -235,6 +237,32 @@ function formatMcpToolsBlock(): string {
   }
   lines.push('调用方式：<mcp_call>{"serverId":"服务器名","tool":"工具名","args":{...}}</mcp_call>');
   return lines.join('\n');
+}
+
+/**
+ * v1.4：提取 auto-continue 回复开头的英文思考段落。
+ * 模型有时把思考过程写在 RESPONSE 段开头（不是 THINK 段），比如：
+ *   "user asked what files are in... I got the listing. Now output final conclusion.\n\n目录内容如下：..."
+ * 我们把开头的纯英文段落（到第一个中文字符或空行为止）提取出来作为思考笔记，
+ * 只保留后面的中文回答渲染到 DOM。
+ */
+function extractThinkingPreface(reply: string): { thinking: string; answer: string } {
+  if (!reply) return { thinking: '', answer: reply };
+  // 找到第一个中文字符的位置
+  const firstCjk = reply.search(/[\u4e00-\u9fff]/);
+  if (firstCjk <= 0) return { thinking: '', answer: reply };
+  // 第一个中文字符之前的内容
+  const preface = reply.slice(0, firstCjk).trim();
+  // 如果前缀里已经有换行+空行，说明是完整的思考段落
+  const blankLine = reply.indexOf('\n\n');
+  if (blankLine > 0 && blankLine < firstCjk) {
+    return { thinking: reply.slice(0, blankLine).trim(), answer: reply.slice(blankLine + 2).trim() };
+  }
+  // 前缀全是英文（没有中文），提取为思考
+  if (preface.length > 10 && !/[\u4e00-\u9fff]/.test(preface)) {
+    return { thinking: preface, answer: reply.slice(firstCjk).trim() };
+  }
+  return { thinking: '', answer: reply };
 }
 
 function buildCapabilityPrompt(): string {
@@ -355,7 +383,6 @@ function installFetchHook(
     const sse = new SseTextStreamExtractor();
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-    const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
         try {
@@ -791,12 +818,23 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                 if (last) {
                   // 先保存已有的工具卡片，避免被 textContent 覆盖删除
                   const existingCards = Array.from(last.querySelectorAll('.ds-studio-tool-card'));
-                  last.textContent = reply;
+                  // v1.4：过滤开头的英文思考段落（模型把思考写在 RESPONSE 里，不是 THINK 段）
+                  const { thinking, answer } = extractThinkingPreface(reply);
+                  last.textContent = answer;
+                  // 如果有思考段落，在开头插入"已思考"折叠卡片
+                  if (thinking) {
+                    const tdiv = document.createElement('div');
+                    tdiv.className = 'ds-studio-thinking-preface';
+                    tdiv.style.cssText = 'font-size:12px;color:#888;margin-bottom:8px;padding:6px 10px;background:#f5f5f5;border-radius:6px;cursor:pointer;';
+                    tdiv.textContent = `💭 已思考：${thinking.slice(0, 80)}${thinking.length > 80 ? '...' : ''}`;
+                    tdiv.title = thinking;
+                    last.insertBefore(tdiv, last.firstChild);
+                  }
                   // 重新追加工具卡片到回复后面
                   for (const card of existingCards) {
                     last.appendChild(card);
                   }
-                  d(`auto-continue rendered to DOM, len=${reply.length}, cards preserved=${existingCards.length}`);
+                  d(`auto-continue rendered to DOM, len=${answer.length}, thinking=${thinking.length}, cards preserved=${existingCards.length}`);
                 } else {
                   d('auto-continue render: no .ds-assistant-message-main-content found');
                 }
