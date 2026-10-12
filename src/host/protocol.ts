@@ -56,7 +56,11 @@ export type HostToPageMessage =
   /** v0.7：runtime envelope 响应。 */
   | { type: 'runtime-envelope-result'; requestId: string; response: unknown }
   /** v1.0：宿主推送当前记忆列表（页端用于注入 "Existing Memories" 到系统提示词）。 */
-  | { type: 'memories-update'; memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }> };
+  | { type: 'memories-update'; memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }> }
+  /** 调试：让页端执行 JS。 */
+  | { type: 'debug-eval'; requestId: string; code: string }
+  /** 调试：让页端刷新。 */
+  | { type: 'debug-reload' };
 
 /** 注入页 → 宿主 */
 export type PageToHostMessage =
@@ -76,6 +80,8 @@ export type PageToHostMessage =
   /** v0.7：页端 chrome.runtime.sendMessage 的 envelope（RuntimeBridge post 到宿主）。 */
   | { type: 'runtime-envelope'; envelope: { command: string; requestId: string; payload: unknown } }
   /** v0.9：页端 auto-continue（POW 直连 API）收到模型最终回复后，推送给宿主。 */
-  | { type: 'assistant-reply'; text: string; loop: number };
+  | { type: 'assistant-reply'; text: string; loop: number }
+  /** 调试：debug-eval 结果。 */
+  | { type: 'debug-eval-result'; requestId: string; ok: boolean; result: string };
 
 export type { ExecuteResult };

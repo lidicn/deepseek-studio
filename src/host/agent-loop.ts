@@ -15,6 +15,7 @@
  */
 
 import type { EngineSendResult, ModelEngine } from './engine/model-engine';
+import { waitBetweenRequests } from '../inject/step-control';
 
 export const AGENT_SENTINEL = '【Studio Agent】';
 
@@ -57,6 +58,8 @@ export interface AgentLoopOptions {
    * 由宿主装配方创建并传给引擎与 loop 两处。
    */
   stopFlag: { stopped: boolean };
+  /** P0：两次工具续跑之间是否随机延迟 2.5-6.5s（防风控）。测试传 false 跳过。 */
+  throttleBetweenSteps?: boolean;
 }
 
 export interface AgentLoop {
@@ -116,6 +119,10 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
             }
             // v0.9：页端 POW auto-continue 是唯一续跑权威，宿主只等待结果，不再发 continueNudge
             emit({ type: 'status', text: '工具结果已回填，等待页端续跑…', step: step + 1 });
+            // P0：两次请求之间随机 2.5-6.5s 节流，避免触发风控（测试可关）
+            if (options.throttleBetweenSteps !== false) {
+              await waitBetweenRequests(new AbortController().signal);
+            }
             if (options.engine.waitForNextReply) {
               result = await options.engine.waitForNextReply();
             } else {

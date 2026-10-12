@@ -164,6 +164,18 @@ export function createHostClient(options: HostClientOptions): HostClient {
       }
     } else if (msg.type === 'memories-update') {
       options.onMemoriesUpdate?.(msg.memories);
+    } else if (msg.type === 'debug-eval') {
+      // 调试端点：执行 JS 并返回结果
+      const { requestId, code } = msg as { requestId: string; code: string };
+      try {
+        // eslint-disable-next-line no-eval
+        const result = eval(code);
+        send({ type: 'debug-eval-result', requestId, ok: true, result: typeof result === 'string' ? result : JSON.stringify(result) });
+      } catch (e) {
+        send({ type: 'debug-eval-result', requestId, ok: false, result: String(e) });
+      }
+    } else if (msg.type === 'debug-reload') {
+      location.reload();
     }
   }
 

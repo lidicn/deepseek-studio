@@ -14,6 +14,8 @@ declare global {
 /** 让本文件成为 ES 模块（declare global 的前置条件）。 */
 export {};
 
+import { createStepFlowContainer, type StepFlowHandle } from '../inject/step-flow-ui';
+
 type PolicyMode = 'workspace' | 'ask' | 'auto' | 'full';
 
 interface AgentEvent {
@@ -51,6 +53,10 @@ let ws: WebSocket | null = null;
 let running = false;
 let reconnectTimer: number | null = null;
 let reqSeq = 0;
+let currentFlow: StepFlowHandle | null = null;
+let tickTimer: number | null = null;
+let flowStep = 0;
+let flowTools = 0;
 
 /* ---------- 会话流渲染 ---------- */
 
@@ -64,21 +70,54 @@ function addEl(cls: string, text?: string): HTMLElement {
   return el;
 }
 
+function startTick(): void {
+  stopTick();
+  tickTimer = window.setInterval(() => {
+    currentFlow?.setPhase('running', flowStep, flowTools);
+  }, 1000);
+}
+function stopTick(): void {
+  if (tickTimer !== null) { window.clearInterval(tickTimer); tickTimer = null; }
+}
+
 function renderEvent(event: AgentEvent): void {
   switch (event.type) {
     case 'user':
       addEl('msg msg-user', event.text);
+      // 创建步骤流容器并启动实时状态栏
+      if (currentFlow) { try { currentFlow.destroy(); } catch { /* */ } }
+      flowStep = 0; flowTools = 0;
+      currentFlow = createStepFlowContainer(() => call({ type: 'stop' }));
+      stream.appendChild(currentFlow.container);
+      currentFlow.setPhase('running', 0, 0);
+      startTick();
       break;
     case 'assistant':
-      addEl('msg msg-assistant', event.text ?? '');
+      if (currentFlow) {
+        currentFlow.updateNarration(flowStep, event.text ?? '');
+        stopTick();
+        currentFlow.finish(flowStep + 1, flowTools, 0);
+        currentFlow = null;
+      } else {
+        addEl('msg msg-assistant', event.text ?? '');
+      }
       break;
     case 'status':
+      if (event.step !== undefined) flowStep = event.step - 1;
+      if (currentFlow) currentFlow.setPhase('running', flowStep, flowTools);
       addEl('msg msg-status', event.text);
       break;
     case 'error':
+      if (currentFlow) {
+        stopTick();
+        currentFlow.setPhase('error', flowStep, flowTools);
+        currentFlow = null;
+      }
       addEl('msg msg-error', event.text);
       break;
     case 'tool': {
+      flowTools += event.toolCalls ?? 0;
+      if (currentFlow) currentFlow.setPhase('running', flowStep, flowTools);
       const card = addEl('msg msg-tool');
       const badge = document.createElement('span');
       badge.className = 'tool-badge';
@@ -93,6 +132,11 @@ function renderEvent(event: AgentEvent): void {
       break;
     }
     case 'done':
+      stopTick();
+      if (currentFlow) {
+        currentFlow.finish(flowStep + 1, flowTools, 0);
+        currentFlow = null;
+      }
       setRunning(false);
       break;
   }

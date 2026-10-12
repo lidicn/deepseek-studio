@@ -664,6 +664,12 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     agentPage: options.agentPage,
     agentSender,
     automationManager: automationManager as NonNullable<import('../api/server').ApiServerOptions['automationManager']>,
+    debugEval: (code) => new Promise((resolve) => {
+      const requestId = 'dbg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+      const timer = setTimeout(() => resolve({ ok: false, error: 'timeout 5s' }), 5000);
+      debugEvalPending.set(requestId, { resolve, timer });
+      hub?.broadcastDebugEval(requestId, code);
+    }),
   });
 
   // v0.7：全局 KV 存储（页端 chrome.storage shim 经 ws 读写此 backend，落盘）。
@@ -691,6 +697,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
 
   let epoch = 0;
   let hub: PageRuntimeHub | null = null;
+  const debugEvalPending = new Map<string, { resolve: (r: { ok: boolean; result?: string; error?: string }) => void; timer: ReturnType<typeof setTimeout> }>();
   let agentChannel: AgentChannel | null = null;
   const sessionAllowlist = new Set<string>();
 
@@ -919,6 +926,10 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         },
         // v0.7：页端 storage shim 的 KV 落盘 backend。
         kvStore: { get: kvGet, set: kvSet, remove: kvRemove },
+        onDebugEvalResult: (requestId, ok, result) => {
+          const p = debugEvalPending.get(requestId);
+          if (p) { clearTimeout(p.timer); debugEvalPending.delete(requestId); p.resolve({ ok, result }); }
+        },
       });
       // v1.0：连接建立后立即推送当前记忆列表。
       const pushMemories = () => {

@@ -56,6 +56,8 @@ export interface PageRuntimeHubOptions {
    * 缺省不提供时，tool-call 一律回 { ok:false, error:'no-executor' }（fail-closed）。
    */
   executor?: (tool: string, params: unknown) => Promise<ToolExecutionResult>;
+  /** 调试：页端 debug-eval-result 回调。 */
+  onDebugEvalResult?: (requestId: string, ok: boolean, result: string) => void;
   /**
    * M1：页端发起工具调用的观察钩子（AgentLoop 据此统计每步工具调用次数，
    * 面板据此展示工具卡片）。观察者，不影响执行链路。
@@ -84,6 +86,8 @@ export interface PageRuntimeHub {
   requestConsent(callId: string, tool: string, params: unknown, meta?: ConsentMeta): Promise<ConsentDecision>;
   /** v1.0：向所有已连接页端广播记忆列表更新。 */
   broadcastMemories(memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>): void;
+  /** 调试：向所有页端广播 debug-eval 请求。 */
+  broadcastDebugEval(requestId: string, code: string): void;
   dispose(): void;
 }
 
@@ -241,6 +245,8 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           pendingConsent.delete(msg.callId);
           p.resolve(msg.decision);
         }
+      } else if (msg.type === 'debug-eval-result') {
+        options.onDebugEvalResult?.(msg.requestId, msg.ok, msg.result ?? '');
       } else if (msg.type === 'tool-call') {
         // v0.6：页端拦截到模型发起的工具调用，反向投递给宿主真实执行。
         const mapped = mapUpstreamToolInvocation(msg.invocationName, msg.params);
@@ -332,6 +338,11 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
       const msg: HostToPageMessage = { type: 'memories-update', memories };
       for (const c of clients.values()) {
         if (!c.untrusted) safeSend(c.ws, msg);
+      }
+    },
+    broadcastDebugEval(requestId, code) {
+      for (const c of clients.values()) {
+        if (!c.untrusted) safeSend(c.ws, { type: 'debug-eval', requestId, code });
       }
     },
     dispose() {

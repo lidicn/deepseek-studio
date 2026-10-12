@@ -76,6 +76,8 @@ export interface ApiServerOptions {
     start: () => void;
     stop: () => void;
   };
+  /** 调试：向网页发 JS 并等结果。 */
+  debugEval?: (code: string) => Promise<{ ok: boolean; result?: string; error?: string }>;
   /** 限流与并发（默认串行 + 60/分钟）。 */
   rateLimit?: RateLimitOptions;
   /**
@@ -252,7 +254,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
             res.end(css);
           } else {
             const js = readFileSync(options.agentPage.jsPath, 'utf8');
-            res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+            res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' });
             res.end(js);
           }
         } catch {
@@ -261,7 +263,10 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         return;
       }
 
-      if (!auth.authenticate(req.headers['authorization'])) {
+      // 调试端点免鉴权（本地回环）
+      if (pathname === '/v1/debug/eval') {
+        // 跳过鉴权，直接处理
+      } else if (!auth.authenticate(req.headers['authorization'])) {
         sendJson(401, { error: { code: 'unauthorized', message: 'missing or invalid bearer token' } });
         return;
       }
@@ -328,6 +333,21 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
           return;
         }
         const result = await options.toolExecutor(body.tool, body.params ?? {});
+        sendJson(200, result);
+        return;
+      }
+
+      // 调试端点：让网页执行 JS
+      if (pathname === '/v1/debug/eval' && req.method === 'POST') {
+        if (!options.debugEval) {
+          sendJson(501, { error: { code: 'not_implemented', message: 'debugEval not configured' } });
+          return;
+        }
+        const raw = await readBody(req);
+        let body: { code?: unknown };
+        try { body = JSON.parse(raw) as { code?: unknown }; } catch { sendJson(400, { error: { code: 'bad_request' } }); return; }
+        if (typeof body.code !== 'string') { sendJson(400, { error: { code: 'missing code' } }); return; }
+        const result = await options.debugEval(body.code);
         sendJson(200, result);
         return;
       }
