@@ -1,7 +1,7 @@
 /**
  * 页端宿主客户端（v0.4，注入页侧）
  *
- * 在注入页面内连接常驻宿主的 ws 通道（默认 ws://127.0.0.1:8756/studio）：
+ * 在注入页面内连接常驻宿主的 ws 通道（默认 ws://127.0.0.1:8760/studio）：
  *   - hello 后登记 origin；
  *   - 收到 dispatch → 按 tool 路由到对应能力（ExecutableCapability）执行 → 回传 result；
  *   - 收到 consent-required → 渲染同意模态 → 决策回传 consent-decision。
@@ -36,6 +36,8 @@ export interface HostClientOptions {
   maxBackoffMs?: number;
   /** v0.6：tool-call 等待宿主结果的超时（毫秒），默认 30000。 */
   toolCallTimeoutMs?: number;
+  /** v1.0：宿主推送记忆列表更新时的回调。 */
+  onMemoriesUpdate?: (memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>) => void;
 }
 
 /** 页端 → 宿主 的工具调用投递请求（与拦截器 ToolCallRequest 同构）。 */
@@ -55,6 +57,10 @@ export interface HostClient {
   sendToolCall(req: ToolCallRequest): Promise<ExecuteResult>;
   /** 调试：发日志到宿主 stdout。 */
   log(text: string): void;
+  /** v0.9：auto-continue 收到模型最终回复时推送给宿主。 */
+  assistantReply(text: string, loop: number): void;
+  /** v1.0：宿主推送记忆列表更新时的回调。 */
+  onMemoriesUpdate?: (memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>) => void;
   /** v0.7：KV 读写（宿主侧落盘 backend）。 */
   kvGet(key: string): Promise<unknown>;
   kvSet(key: string, value: unknown): Promise<void>;
@@ -76,6 +82,28 @@ export function createHostClient(options: HostClientOptions): HostClient {
   const pendingToolCalls = new Map<string, { resolve: (r: ExecuteResult) => void; timer: ReturnType<typeof setTimeout> }>();
   const pendingKv = new Map<string, { resolve: (v: unknown, error?: string) => void }>();
   const pendingEnvelope = new Map<string, { resolve: (v: unknown) => void }>();
+
+  /**
+   * R3-C1 修复：连接断开时立即结算所有待决请求。
+   * 修复前 kvGet/kvSet/sendEnvelope 既无超时、onclose 也不遍历结算，
+   * 一旦断线这些 Promise 永不 settle（调用方永久挂起、pending 永不清理）。
+   * sendToolCall 虽有 30s 超时，也应在断线时立即失败而不是干等。
+   */
+  function failAllPending(reason: string): void {
+    for (const [id, p] of pendingToolCalls) {
+      clearTimeout(p.timer);
+      pendingToolCalls.delete(id);
+      p.resolve({ ok: false, error: reason });
+    }
+    for (const [id, p] of pendingKv) {
+      pendingKv.delete(id);
+      p.resolve(undefined, reason);
+    }
+    for (const [id, p] of pendingEnvelope) {
+      pendingEnvelope.delete(id);
+      p.resolve({ ok: false, error: reason });
+    }
+  }
 
   function send(msg: PageToHostMessage): void {
     if (ws && ws.readyState === OPEN) {
@@ -109,7 +137,16 @@ export function createHostClient(options: HostClientOptions): HostClient {
       if (p) {
         clearTimeout(p.timer);
         pendingToolCalls.delete(msg.callId);
-        p.resolve({ ok: msg.ok, data: msg.data, error: msg.error });
+        // v1.2：透传 Pi Agent 风格新格式字段（content/details/isError/terminate）
+        p.resolve({
+          ok: msg.ok,
+          data: msg.data,
+          error: msg.error,
+          ...(msg.content !== undefined ? { content: msg.content } : {}),
+          ...(msg.details !== undefined ? { details: msg.details } : {}),
+          ...(msg.isError !== undefined ? { isError: msg.isError } : {}),
+          ...(msg.terminate !== undefined ? { terminate: msg.terminate } : {}),
+        } as ExecuteResult);
       }
     } else if (msg.type === 'kv-result') {
       const p = pendingKv.get(msg.requestId);
@@ -124,6 +161,8 @@ export function createHostClient(options: HostClientOptions): HostClient {
         pendingEnvelope.delete(msg.requestId);
         p.resolve(msg.response);
       }
+    } else if (msg.type === 'memories-update') {
+      options.onMemoriesUpdate?.(msg.memories);
     }
   }
 
@@ -150,6 +189,7 @@ export function createHostClient(options: HostClientOptions): HostClient {
     socket.onmessage = (ev: { data: unknown }) => onMessage(ev.data);
     socket.onclose = () => {
       ws = null;
+      failAllPending('disconnected');
       if (!stopped) scheduleReconnect();
     };
     socket.onerror = () => {
@@ -196,11 +236,18 @@ export function createHostClient(options: HostClientOptions): HostClient {
     log(text: string) {
       send({ type: 'log', text });
     },
+    assistantReply(text: string, loop: number) {
+      send({ type: 'assistant-reply', text, loop });
+    },
     kvGet(key) {
       return new Promise((resolve, reject) => {
         if (!ws || ws.readyState !== OPEN) { resolve(undefined); return; }
         const requestId = crypto.randomUUID();
-        pendingKv.set(requestId, { resolve: (v, err) => err ? reject(new Error(err)) : resolve(v) });
+        const timer = setTimeout(() => {
+          pendingKv.delete(requestId);
+          reject(new Error('kv-get timeout'));
+        }, 30000);
+        pendingKv.set(requestId, { resolve: (v, err) => { clearTimeout(timer); err ? reject(new Error(err)) : resolve(v); } });
         send({ type: 'kv-get', requestId, key });
       });
     },
@@ -208,7 +255,11 @@ export function createHostClient(options: HostClientOptions): HostClient {
       return new Promise((resolve, reject) => {
         if (!ws || ws.readyState !== OPEN) { resolve(); return; }
         const requestId = crypto.randomUUID();
-        pendingKv.set(requestId, { resolve: (_v, err) => err ? reject(new Error(err)) : resolve() });
+        const timer = setTimeout(() => {
+          pendingKv.delete(requestId);
+          reject(new Error('kv-set timeout'));
+        }, 30000);
+        pendingKv.set(requestId, { resolve: (_v, err) => { clearTimeout(timer); err ? reject(new Error(err)) : resolve(); } });
         send({ type: 'kv-set', requestId, key, value });
       });
     },
@@ -216,14 +267,22 @@ export function createHostClient(options: HostClientOptions): HostClient {
       return new Promise((resolve, reject) => {
         if (!ws || ws.readyState !== OPEN) { resolve(); return; }
         const requestId = crypto.randomUUID();
-        pendingKv.set(requestId, { resolve: (_v, err) => err ? reject(new Error(err)) : resolve() });
+        const timer = setTimeout(() => {
+          pendingKv.delete(requestId);
+          reject(new Error('kv-remove timeout'));
+        }, 30000);
+        pendingKv.set(requestId, { resolve: (_v, err) => { clearTimeout(timer); err ? reject(new Error(err)) : resolve(); } });
         send({ type: 'kv-remove', requestId, key });
       });
     },
     sendEnvelope(envelope) {
       return new Promise((resolve) => {
         if (!ws || ws.readyState !== OPEN) { resolve({ ok: false, error: 'no-host' }); return; }
-        pendingEnvelope.set(envelope.requestId, { resolve });
+        const timer = setTimeout(() => {
+          pendingEnvelope.delete(envelope.requestId);
+          resolve({ ok: false, error: 'envelope timeout' });
+        }, 30000);
+        pendingEnvelope.set(envelope.requestId, { resolve: (v) => { clearTimeout(timer); resolve(v); } });
         send({ type: 'runtime-envelope', envelope });
       });
     },
