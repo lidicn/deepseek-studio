@@ -129,6 +129,12 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
     } catch (err) {
       options.reportError?.('failed to install main-world interceptor', err);
     }
+    // 工具结果渲染层：把原始工具标签/结果替换成折叠卡片
+    try {
+      import('../inject/tool-card-dom').then(({ startToolCardObserver }) => startToolCardObserver());
+    } catch (err) {
+      options.reportError?.('failed to start tool-card observer', err);
+    }
   }
 
   const target = (globalThis as { window?: unknown }).window ?? globalThis;
