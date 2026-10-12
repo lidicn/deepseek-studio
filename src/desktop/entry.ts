@@ -13,6 +13,7 @@
  */
 
 import { installChromeShims, type StorageKvBackend, type StorageKvWriteBatch, type Transport } from '../bridge';
+import { startToolCardObserver } from '../inject/tool-card-dom';
 import { installDirectBridge, type InstalledBridge } from '../inject/bridge-install';
 import { bootstrapInjection } from '../inject/loader';
 import type { ContentCapabilityController, ReplaceContentDocumentLifecycle } from '../inject/types';
@@ -130,9 +131,7 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
       options.reportError?.('failed to install main-world interceptor', err);
     }
     // 工具结果渲染层：把原始工具标签/结果替换成折叠卡片
-    try {
-      import('../inject/tool-card-dom').then(({ startToolCardObserver }) => startToolCardObserver());
-    } catch (err) {
+    try { startToolCardObserver(); } catch (err) {
       options.reportError?.('failed to start tool-card observer', err);
     }
   }

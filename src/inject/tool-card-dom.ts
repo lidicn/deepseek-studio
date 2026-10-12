@@ -11,6 +11,7 @@ const TOOL_CARD_STYLE_ID = 'ds-studio-tool-card-css';
 
 function injectToolCardStyles(): void {
   if (document.getElementById(TOOL_CARD_STYLE_ID)) return;
+  if (!document.head) { setTimeout(injectToolCardStyles, 50); return; }
   const style = document.createElement('style');
   style.id = TOOL_CARD_STYLE_ID;
   style.textContent = `

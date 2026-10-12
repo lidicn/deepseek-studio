@@ -1,171 +1,8 @@
 "use strict";
 (() => {
   var __defProp = Object.defineProperty;
-  var __getOwnPropNames = Object.getOwnPropertyNames;
   var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
-  var __esm = (fn, res) => function __init() {
-    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-  };
-  var __export = (target, all) => {
-    for (var name in all)
-      __defProp(target, name, { get: all[name], enumerable: true });
-  };
   var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
-
-  // src/inject/tool-card-dom.ts
-  var tool_card_dom_exports = {};
-  __export(tool_card_dom_exports, {
-    startToolCardObserver: () => startToolCardObserver,
-    stopToolCardObserver: () => stopToolCardObserver
-  });
-  function injectToolCardStyles() {
-    if (document.getElementById(TOOL_CARD_STYLE_ID)) return;
-    if (!document.head) {
-      setTimeout(injectToolCardStyles, 50);
-      return;
-    }
-    const style = document.createElement("style");
-    style.id = TOOL_CARD_STYLE_ID;
-    style.textContent = `
-    .ds-tc-card { margin: 6px 0; border: 1px solid #e5e6eb; border-radius: 8px; overflow: hidden; }
-    .ds-tc-toggle { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 13px; background: #f7f8fa; border: none; cursor: pointer; width: 100%; text-align: left; color: #1f2329; }
-    .ds-tc-icon { flex: none; width: 14px; height: 14px; }
-    .ds-tc-name { flex: none; font-weight: 500; }
-    .ds-tc-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8f959e; font-size: 12px; }
-    .ds-tc-chevron { flex: none; width: 12px; height: 12px; color: #8f959e; transition: transform .15s; }
-    .ds-tc-card[data-expanded="true"] .ds-tc-chevron { transform: rotate(90deg); }
-    .ds-tc-detail { display: none; padding: 8px 12px; font-size: 12px; line-height: 1.5; color: #646a73; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; border-top: 1px solid #e5e6eb; }
-    .ds-tc-card[data-expanded="true"] .ds-tc-detail { display: block; }
-  `;
-    document.head.appendChild(style);
-  }
-  function createToolCard2(icon2, name, summary, detail) {
-    const card = document.createElement("div");
-    card.className = "ds-tc-card";
-    card.setAttribute("data-expanded", "false");
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "ds-tc-toggle";
-    const iconEl = document.createElement("span");
-    iconEl.className = "ds-tc-icon";
-    iconEl.textContent = icon2;
-    const nameEl = document.createElement("span");
-    nameEl.className = "ds-tc-name";
-    nameEl.textContent = name;
-    const summaryEl = document.createElement("span");
-    summaryEl.className = "ds-tc-summary";
-    summaryEl.textContent = summary;
-    const chevron = document.createElement("span");
-    chevron.className = "ds-tc-chevron";
-    chevron.textContent = "\u25B8";
-    toggle.appendChild(iconEl);
-    toggle.appendChild(nameEl);
-    toggle.appendChild(summaryEl);
-    toggle.appendChild(chevron);
-    const detailEl = document.createElement("div");
-    detailEl.className = "ds-tc-detail";
-    detailEl.textContent = detail;
-    toggle.addEventListener("click", () => {
-      const expanded = card.getAttribute("data-expanded") === "true";
-      card.setAttribute("data-expanded", expanded ? "false" : "true");
-    });
-    card.appendChild(toggle);
-    card.appendChild(detailEl);
-    return card;
-  }
-  function processTextNode(textNode) {
-    const text = textNode.textContent ?? "";
-    if (!text) return false;
-    const toolCallRe = /<([a-z_][a-z0-9_]*)\s*>\s*(\{[\s\S]*?\})\s*<\/\1>/g;
-    const resultRe = /【工具执行结果】[\s\S]*?(?=<[a-z_]|$|【工具执行结果】)/g;
-    const mcpRe = /<mcp_call>([\s\S]*?)<\/mcp_call>/g;
-    let matched = false;
-    const fragment = document.createDocumentFragment();
-    let lastIndex = 0;
-    toolCallRe.lastIndex = 0;
-    let m;
-    while ((m = toolCallRe.exec(text)) !== null) {
-      if (m.index > lastIndex) fragment.appendChild(document.createTextNode(text.slice(lastIndex, m.index)));
-      const toolName = m[1];
-      const params = m[2];
-      let summary = "";
-      try {
-        const parsed = JSON.parse(params);
-        summary = Object.entries(parsed).map(([k, v]) => `${k}=${String(v).slice(0, 30)}`).join(" ").slice(0, 80);
-      } catch {
-        summary = params.slice(0, 60);
-      }
-      fragment.appendChild(createToolCard2("\u{1F527}", toolName, summary, m[0]));
-      lastIndex = m.index + m[0].length;
-      matched = true;
-    }
-    if (!matched) {
-      mcpRe.lastIndex = 0;
-      while ((m = mcpRe.exec(text)) !== null) {
-        if (m.index > lastIndex) fragment.appendChild(document.createTextNode(text.slice(lastIndex, m.index)));
-        fragment.appendChild(createToolCard2("\u{1F50C}", "mcp_call", "", m[0]));
-        lastIndex = m.index + m[0].length;
-        matched = true;
-      }
-    }
-    if (!matched) {
-      resultRe.lastIndex = 0;
-      while ((m = resultRe.exec(text)) !== null) {
-        if (m.index > lastIndex) fragment.appendChild(document.createTextNode(text.slice(lastIndex, m.index)));
-        fragment.appendChild(createToolCard2("\u{1F4CB}", "\u5DE5\u5177\u7ED3\u679C", m[0].slice(0, 100), m[0]));
-        lastIndex = m.index + m[0].length;
-        matched = true;
-      }
-    }
-    if (!matched) return false;
-    if (lastIndex < text.length) fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
-    textNode.parentNode?.replaceChild(fragment, textNode);
-    return true;
-  }
-  function scanContainer(root) {
-    let count = 0;
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    const toProcess = [];
-    let node;
-    while ((node = walker.nextNode()) !== null) {
-      const t = node;
-      const parent = t.parentElement;
-      if (!parent) continue;
-      if (parent.closest(".ds-tc-card") || parent.closest(".ds-sf-container")) continue;
-      const text = t.textContent ?? "";
-      if (text.includes("<local_file_") || text.includes("<shell_exec") || text.includes("<mcp_call") || text.includes("\u3010\u5DE5\u5177\u6267\u884C\u7ED3\u679C\u3011")) {
-        toProcess.push(t);
-      }
-    }
-    for (const t of toProcess) {
-      if (processTextNode(t)) count++;
-    }
-    return count;
-  }
-  function startToolCardObserver() {
-    injectToolCardStyles();
-    if (observer) return;
-    const scan = () => {
-      const containers = document.querySelectorAll('.ds-markdown, [class*="assistant-message"], [class*="message-content"]');
-      containers.forEach((c) => scanContainer(c));
-    };
-    scan();
-    observer = new MutationObserver(() => scan());
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-    console.log("[tool-card] observer started");
-  }
-  function stopToolCardObserver() {
-    observer?.disconnect();
-    observer = null;
-  }
-  var TOOL_CARD_STYLE_ID, observer;
-  var init_tool_card_dom = __esm({
-    "src/inject/tool-card-dom.ts"() {
-      "use strict";
-      TOOL_CARD_STYLE_ID = "ds-studio-tool-card-css";
-      observer = null;
-    }
-  });
 
   // src/bridge/envelope.ts
   var DEEPSEEK_CONTENT_RUNTIME_COMMANDS = /* @__PURE__ */ new Set([
@@ -623,6 +460,146 @@
       }
     };
     globalThis.chrome = { runtime, storage };
+  }
+
+  // src/inject/tool-card-dom.ts
+  var TOOL_CARD_STYLE_ID = "ds-studio-tool-card-css";
+  function injectToolCardStyles() {
+    if (document.getElementById(TOOL_CARD_STYLE_ID)) return;
+    if (!document.head) {
+      setTimeout(injectToolCardStyles, 50);
+      return;
+    }
+    const style = document.createElement("style");
+    style.id = TOOL_CARD_STYLE_ID;
+    style.textContent = `
+    .ds-tc-card { margin: 6px 0; border: 1px solid #e5e6eb; border-radius: 8px; overflow: hidden; }
+    .ds-tc-toggle { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 13px; background: #f7f8fa; border: none; cursor: pointer; width: 100%; text-align: left; color: #1f2329; }
+    .ds-tc-icon { flex: none; width: 14px; height: 14px; }
+    .ds-tc-name { flex: none; font-weight: 500; }
+    .ds-tc-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8f959e; font-size: 12px; }
+    .ds-tc-chevron { flex: none; width: 12px; height: 12px; color: #8f959e; transition: transform .15s; }
+    .ds-tc-card[data-expanded="true"] .ds-tc-chevron { transform: rotate(90deg); }
+    .ds-tc-detail { display: none; padding: 8px 12px; font-size: 12px; line-height: 1.5; color: #646a73; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; border-top: 1px solid #e5e6eb; }
+    .ds-tc-card[data-expanded="true"] .ds-tc-detail { display: block; }
+  `;
+    document.head.appendChild(style);
+  }
+  function createToolCard(icon2, name, summary, detail) {
+    const card = document.createElement("div");
+    card.className = "ds-tc-card";
+    card.setAttribute("data-expanded", "false");
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "ds-tc-toggle";
+    const iconEl = document.createElement("span");
+    iconEl.className = "ds-tc-icon";
+    iconEl.textContent = icon2;
+    const nameEl = document.createElement("span");
+    nameEl.className = "ds-tc-name";
+    nameEl.textContent = name;
+    const summaryEl = document.createElement("span");
+    summaryEl.className = "ds-tc-summary";
+    summaryEl.textContent = summary;
+    const chevron = document.createElement("span");
+    chevron.className = "ds-tc-chevron";
+    chevron.textContent = "\u25B8";
+    toggle.appendChild(iconEl);
+    toggle.appendChild(nameEl);
+    toggle.appendChild(summaryEl);
+    toggle.appendChild(chevron);
+    const detailEl = document.createElement("div");
+    detailEl.className = "ds-tc-detail";
+    detailEl.textContent = detail;
+    toggle.addEventListener("click", () => {
+      const expanded = card.getAttribute("data-expanded") === "true";
+      card.setAttribute("data-expanded", expanded ? "false" : "true");
+    });
+    card.appendChild(toggle);
+    card.appendChild(detailEl);
+    return card;
+  }
+  function processTextNode(textNode) {
+    const text = textNode.textContent ?? "";
+    if (!text) return false;
+    const toolCallRe = /<([a-z_][a-z0-9_]*)\s*>\s*(\{[\s\S]*?\})\s*<\/\1>/g;
+    const resultRe = /【工具执行结果】[\s\S]*?(?=<[a-z_]|$|【工具执行结果】)/g;
+    const mcpRe = /<mcp_call>([\s\S]*?)<\/mcp_call>/g;
+    let matched = false;
+    const fragment = document.createDocumentFragment();
+    let lastIndex = 0;
+    toolCallRe.lastIndex = 0;
+    let m;
+    while ((m = toolCallRe.exec(text)) !== null) {
+      if (m.index > lastIndex) fragment.appendChild(document.createTextNode(text.slice(lastIndex, m.index)));
+      const toolName = m[1];
+      const params = m[2];
+      let summary = "";
+      try {
+        const parsed = JSON.parse(params);
+        summary = Object.entries(parsed).map(([k, v]) => `${k}=${String(v).slice(0, 30)}`).join(" ").slice(0, 80);
+      } catch {
+        summary = params.slice(0, 60);
+      }
+      fragment.appendChild(createToolCard("\u{1F527}", toolName, summary, m[0]));
+      lastIndex = m.index + m[0].length;
+      matched = true;
+    }
+    if (!matched) {
+      mcpRe.lastIndex = 0;
+      while ((m = mcpRe.exec(text)) !== null) {
+        if (m.index > lastIndex) fragment.appendChild(document.createTextNode(text.slice(lastIndex, m.index)));
+        fragment.appendChild(createToolCard("\u{1F50C}", "mcp_call", "", m[0]));
+        lastIndex = m.index + m[0].length;
+        matched = true;
+      }
+    }
+    if (!matched) {
+      resultRe.lastIndex = 0;
+      while ((m = resultRe.exec(text)) !== null) {
+        if (m.index > lastIndex) fragment.appendChild(document.createTextNode(text.slice(lastIndex, m.index)));
+        fragment.appendChild(createToolCard("\u{1F4CB}", "\u5DE5\u5177\u7ED3\u679C", m[0].slice(0, 100), m[0]));
+        lastIndex = m.index + m[0].length;
+        matched = true;
+      }
+    }
+    if (!matched) return false;
+    if (lastIndex < text.length) fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+    textNode.parentNode?.replaceChild(fragment, textNode);
+    return true;
+  }
+  function scanContainer(root) {
+    let count = 0;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const toProcess = [];
+    let node;
+    while ((node = walker.nextNode()) !== null) {
+      const t = node;
+      const parent = t.parentElement;
+      if (!parent) continue;
+      if (parent.closest(".ds-tc-card") || parent.closest(".ds-sf-container")) continue;
+      const text = t.textContent ?? "";
+      if (text.includes("<local_file_") || text.includes("<shell_exec") || text.includes("<mcp_call") || text.includes("\u3010\u5DE5\u5177\u6267\u884C\u7ED3\u679C\u3011")) {
+        toProcess.push(t);
+      }
+    }
+    for (const t of toProcess) {
+      if (processTextNode(t)) count++;
+    }
+    return count;
+  }
+  var observer = null;
+  function startToolCardObserver() {
+    injectToolCardStyles();
+    if (observer) return;
+    const scan = () => {
+      const containers = document.querySelectorAll('.ds-markdown, [class*="assistant-message"], [class*="message-content"]');
+      containers.forEach((c) => scanContainer(c));
+    };
+    scan();
+    observer = new MutationObserver(() => scan());
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    console.log("[tool-card] observer started");
   }
 
   // src/inject/direct-target.ts
@@ -2251,7 +2228,7 @@ ${cleanStderr}`);
     </div>
   `;
   }
-  function createToolCard(data, callId) {
+  function createToolCard2(data, callId) {
     ensureStyle();
     const toolsContainer = getOrCreateToolsContainer();
     if (!toolsContainer) return null;
@@ -5326,7 +5303,7 @@ ${prompt}`;
       const startedAt = Date.now();
       try {
         stripRawToolTagsFromMessage();
-        createToolCard({ toolName: call.invocationName, params: call.params }, callId);
+        createToolCard2({ toolName: call.invocationName, params: call.params }, callId);
       } catch (e) {
         d(`forward: createToolCard failed: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -5828,7 +5805,7 @@ ${toolResults}
         options2.reportError?.("failed to install main-world interceptor", err);
       }
       try {
-        Promise.resolve().then(() => (init_tool_card_dom(), tool_card_dom_exports)).then(({ startToolCardObserver: startToolCardObserver2 }) => startToolCardObserver2());
+        startToolCardObserver();
       } catch (err) {
         options2.reportError?.("failed to start tool-card observer", err);
       }
