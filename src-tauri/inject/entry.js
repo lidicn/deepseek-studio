@@ -5379,7 +5379,16 @@ ${prompt}`;
             const frames = frameDec.push(part);
             let rawDataText = "";
             for (const frame of frames) {
-              if (frame.event) rawDataText += frame.event.data + "\n";
+              if (frame.parsed && typeof frame.parsed === "object") {
+                const obj = frame.parsed;
+                if (Array.isArray(obj.v)) {
+                  for (const frag of obj.v) {
+                    if (typeof frag.content === "string") {
+                      rawDataText += frag.content;
+                    }
+                  }
+                }
+              }
             }
             let visible = sse.feed(part);
             if (xhr.readyState === 4) visible += sse.flush();

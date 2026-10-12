@@ -543,7 +543,17 @@ function installXhrHooks(
           const frames = frameDec.push(part);
           let rawDataText = '';
           for (const frame of frames) {
-            if (frame.event) rawDataText += frame.event.data + '\n';
+            // 从 frame.parsed 里提取原始 content（未 JSON 转义的文本）
+            if (frame.parsed && typeof frame.parsed === 'object') {
+              const obj = frame.parsed as { v?: Array<{ type?: string; content?: string }> };
+              if (Array.isArray(obj.v)) {
+                for (const frag of obj.v) {
+                  if (typeof frag.content === 'string') {
+                    rawDataText += frag.content;
+                  }
+                }
+              }
+            }
           }
           let visible = sse.feed(part);
           // readyState===4：流结束，刷出 SSE 缓冲区里最后一个不带换行的残留事件
