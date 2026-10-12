@@ -20,6 +20,10 @@
   });
   function injectToolCardStyles() {
     if (document.getElementById(TOOL_CARD_STYLE_ID)) return;
+    if (!document.head) {
+      setTimeout(injectToolCardStyles, 50);
+      return;
+    }
     const style = document.createElement("style");
     style.id = TOOL_CARD_STYLE_ID;
     style.textContent = `
