@@ -17,7 +17,7 @@ export const STUDIO_CHAT_CSS = `
   top: 0;
   left: 0;
   right: 0;
-  bottom: 280px;          /* 底部留 280px 给 DeepSeek 输入框区域，实测后微调 */
+  bottom: 280px;          /* 默认值，measureComposerTop 会动态覆盖为精确值 */
   z-index: 2147483000;
   background: #ffffff;
   display: flex;
@@ -25,6 +25,20 @@ export const STUDIO_CHAT_CSS = `
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   font-size: 15px;
   color: #1a1a2e;
+  transition: opacity 0.15s ease;
+}
+
+/* ctrl+shift+h 切换隐藏态（参考 cuckoo-code 切换式叠加布局）：
+ * 隐藏时完全移出视口，原网页全可见、可交互。 */
+.ds-studio-chat-container.ds-studio-chat-hidden {
+  display: none !important;
+}
+
+/* 揭示门控：overlay 初始不可见，等 composer 测量稳定（落在视口下半区）再淡入。
+ * 避免"先矮后涨"的闪烁——初次加载 SPA 未渲染时 textarea 浮在高位，
+ * overlay 会先按错误测量渲染成矮面板，渲染完成后再跳高，视觉闪烁。 */
+.ds-studio-chat-container.ds-studio-chat-pending {
+  opacity: 0 !important;
 }
 
 /* ===== 消息列表（滚动容器）===== */

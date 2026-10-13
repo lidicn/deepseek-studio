@@ -25,6 +25,8 @@ export interface StudioChatUIHandle {
   finishAssistantMessage(): void;
   /** 设置状态栏忙碌/完成状态 */
   setBusy(busy: boolean): void;
+  /** 切换 overlay 显隐（ctrl+shift+h），返回切换后是否可见 */
+  toggle(): boolean;
   /** 销毁 overlay */
   destroy(): void;
 }
@@ -62,42 +64,79 @@ function injectChatStyles(): void {
 }
 
 /**
- * 动态测量 DeepSeek 输入框（composer）的顶部位置，调整 overlay 的 bottom，
- * 使 overlay 精确停在输入框上方、不盖住输入框。
+ * 动态测量 DeepSeek 输入框（composer）卡片的顶部位置，调整 overlay 的 bottom，
+ * 使 overlay 精确停在输入框卡片上方、不盖住输入框（含推荐按钮区）。
  *
- * 锚点：页面唯一可见 textarea 或 contenteditable 元素（DeepSeek 的输入框）。
+ * 锚点：先定位 textarea/contenteditable，再往上爬找输入框卡片根容器
+ * （高度>120 且靠近底部），测它的 top——这是卡片上沿（含推荐按钮区），
+ * 比单测 textarea.top 更准（textarea 只是卡片内的子元素）。
  * 不用混淆 class 选择器（随版本变化），输入框元素是稳定锚点。
  *
- * 返回测得的 composer top（px），测不到时返回 null（调用方用 CSS 默认值兜底）。
+ * 返回测得的 composer 卡片 top（px），测不到时返回 null（调用方用 CSS 默认值兜底）。
  */
 function measureComposerTop(): number | null {
+  // 先找 textarea/contenteditable 作为种子
+  let seed: Element | null = null;
   const tas = document.querySelectorAll('textarea');
   for (const ta of tas) {
-    // 只取可见、有尺寸的 textarea（排除隐藏的）
     if (ta.offsetWidth === 0 || ta.offsetHeight === 0) continue;
     const rect = ta.getBoundingClientRect();
     if (rect.width > 50 && rect.height > 10) {
-      return Math.round(rect.top);
+      seed = ta;
+      break;
     }
   }
-  // 兜底：DeepSeek 若改用 contenteditable 输入框
-  const editables = document.querySelectorAll('[contenteditable="true"]');
-  for (const ed of editables) {
-    const el = ed as HTMLElement;
-    if (el.offsetWidth === 0 || el.offsetHeight === 0) continue;
-    const rect = el.getBoundingClientRect();
-    if (rect.width > 50 && rect.height > 10) {
-      return Math.round(rect.top);
+  if (!seed) {
+    const editables = document.querySelectorAll('[contenteditable="true"]');
+    for (const ed of editables) {
+      const el = ed as HTMLElement;
+      if (el.offsetWidth === 0 || el.offsetHeight === 0) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 50 && rect.height > 10) {
+        seed = ed;
+        break;
+      }
     }
   }
-  return null;
+  if (!seed) return null;
+
+  // 从 textarea 往上爬，找输入框卡片根容器：
+  // 高度在 120~400px 之间，且底部贴近视口底部（bottom > vh-50）。取它 top 作为 overlay 底边。
+  // 这覆盖了"卡片含推荐按钮"的情况——卡片比 textarea 高，top 更靠上。
+  // 上限 400 排除 body/#root 等大容器：初次加载 SPA 未渲染时 textarea 浮在高位（如 y=445），
+  // 其祖先 body/#root 也会满足 height>120 && bottom>vh-50，误攀到它们会返回 top≈0，
+  // 导致 overlay 几乎不可见。加高度上限后爬不到卡片就回退到 seed（textarea）top。
+  let p: Element | null = seed;
+  for (let i = 0; i < 10 && p; i++) {
+    const r = p.getBoundingClientRect();
+    if (r.height > 120 && r.height < 400 && r.bottom > window.innerHeight - 50) {
+      return Math.round(r.top);
+    }
+    p = p.parentElement;
+  }
+  // 兜底：爬不到合适的根容器，直接用 seed 的 top
+  return Math.round(seed.getBoundingClientRect().top);
 }
 
-/** 把 overlay bottom 设成「视口高 - composer top - padding」，精确留出输入框空间。 */
+/** 把 overlay bottom 设成「视口高 - composer top - padding」，精确留出输入框空间。
+ *  同时做揭示门控：只有当 composer 落到视口下半区（top > vh*0.4）时才认为 SPA 已渲染稳定，
+ *  移除 pending 态让 overlay 淡入。初次加载 textarea 浮在高位（如 y=445）时不算稳定。 */
 function adjustOverlayBottom(container: HTMLElement): void {
   const composerTop = measureComposerTop();
   if (composerTop === null || composerTop <= 0) return; // 测不到，保持 CSS 默认 bottom:280px
   const vh = window.innerHeight;
+  // 揭示门控：composer 顶部落到视口下半区才算 SPA 渲染完成。
+  // 初次加载 textarea 浮在 y≈445（vh=1009 时 445/1009≈0.44），rendered 后落到底部 y≈857。
+  // 用 vh*0.4 作阈值（≈403px），rendered 态稳过线，initial 态压线偏低。
+  // 一旦揭示就不再回 pending（SPA 已就绪，后续布局变化由 observer 跟踪即可）。
+  if (container.classList.contains('ds-studio-chat-pending')) {
+    if (composerTop > vh * 0.4) {
+      container.classList.remove('ds-studio-chat-pending');
+      console.log('[studio-chat-ui] composer settled at', composerTop, 'px, reveal overlay');
+    } else {
+      console.log('[studio-chat-ui] composer at', composerTop, 'px (< vh*0.4=', Math.round(vh * 0.4), '), stay pending');
+    }
+  }
   // 留出 composer 高度 + 一点呼吸空间（8px），避免紧贴
   const bottom = vh - composerTop + 8;
   // 安全下限：至少留 120px，防止异常测量把 overlay 撑满全屏
@@ -111,7 +150,7 @@ export function createStudioChatUI(): StudioChatUIHandle {
   injectChatStyles();
 
   const container = document.createElement('div');
-  container.className = 'ds-studio-chat-container';
+  container.className = 'ds-studio-chat-container ds-studio-chat-pending';
   console.log('[studio-chat-ui] createStudioChatUI start, injecting styles=', !styleInjected);
 
   // 消息列表（滚动容器）
@@ -140,7 +179,8 @@ export function createStudioChatUI(): StudioChatUIHandle {
   const welcome = document.createElement('div');
   welcome.style.cssText = 'margin:auto;text-align:center;padding:40px 20px;color:#999;';
   welcome.innerHTML = '<div style="font-size:20px;font-weight:600;margin-bottom:8px;">DeepSeek Studio</div>'
-    + '<div style="font-size:13px;line-height:1.8;">在下方输入框发送消息<br>工具调用与回复将显示在此处</div>';
+    + '<div style="font-size:13px;line-height:1.8;">在下方输入框发送消息<br>工具调用与回复将显示在此处</div>'
+    + '<div style="font-size:12px;line-height:1.8;margin-top:12px;color:#aaa;">Ctrl+Shift+H 切换显示/隐藏</div>';
   messageList.appendChild(welcome);
 
   function scrollToBottom(): void {
@@ -212,18 +252,51 @@ export function createStudioChatUI(): StudioChatUIHandle {
   function destroy(): void {
     bottomObserver.disconnect();
     window.removeEventListener('resize', tryAdjust);
+    window.removeEventListener('scroll', tryAdjust, { capture: true } as EventListenerOptions);
+    window.removeEventListener('keydown', onToggleKey);
     container.remove();
     currentAssistant = null;
     currentRawText = '';
   }
 
+  // ctrl+shift+h 在原网页和 Studio chat UI 间切换（参考 cuckoo-code 切换式叠加布局）。
+  // 隐藏时整个 overlay display:none，原网页全可见、可交互。
+  let visible = true;
+  function toggle(): boolean {
+    visible = !visible;
+    if (visible) {
+      container.classList.remove('ds-studio-chat-hidden');
+    } else {
+      container.classList.add('ds-studio-chat-hidden');
+    }
+    console.log('[studio-chat-ui] overlay', visible ? 'shown' : 'hidden');
+    return visible;
+  }
+  function onToggleKey(e: KeyboardEvent): void {
+    if (e.ctrlKey && e.shiftKey && (e.key === 'h' || e.key === 'H' || e.code === 'KeyH')) {
+      e.preventDefault();
+      toggle();
+    }
+  }
+  window.addEventListener('keydown', onToggleKey);
+
   // 动态测量 composer 位置，调整 overlay bottom（不盖住输入框）。
-  // textarea 可能延迟渲染（DeepSeek SPA 异步挂载），用 MutationObserver 等；
-  // 测到后停止观察，避免持续开销。窗口 resize 时也需重测。
+  // DeepSeek 是 SPA：textarea 随异步渲染、侧栏折叠、模型切换、窗口 resize 而移动，
+  // top 会持续变化。因此保持 MutationObserver 常驻（开销极小，仅 DOM 变化时触发），
+  // 不要定时断开——之前 10 秒 disconnect 导致布局变化后不再重测，bottom 锁死旧值。
   // 注意：createStudioChatUI 在 document_start 执行，document.body 可能尚为 null，
   // MutationObserver.observe(null) 会抛 TypeError 导致整个函数中断、overlay 不挂载。
   // 因此 observer 必须延迟到 body 可用后再启动。
-  function tryAdjust(): void { adjustOverlayBottom(container); }
+  let rafPending = false;
+  function tryAdjust(): void {
+    // 用 rAF 防抖：连续 DOM mutation 合并到一帧测量，避免高频 getBoundingClientRect
+    if (rafPending) return;
+    rafPending = true;
+    requestAnimationFrame(() => {
+      rafPending = false;
+      adjustOverlayBottom(container);
+    });
+  }
   const bottomObserver = new MutationObserver(() => { tryAdjust(); });
   function startObserver(): void {
     try {
@@ -243,9 +316,9 @@ export function createStudioChatUI(): StudioChatUIHandle {
   setTimeout(tryAdjust, 500);
   setTimeout(tryAdjust, 1500);
   setTimeout(tryAdjust, 3000);
-  // 测到 composer 后降频：10 秒后停止 MutationObserver（已稳定）
-  setTimeout(() => bottomObserver.disconnect(), 10000);
+  // observer 常驻，不再定时断开（SPA 布局会持续变化）
   window.addEventListener('resize', tryAdjust);
+  window.addEventListener('scroll', tryAdjust, { passive: true, capture: true });
 
   return {
     container,
@@ -254,6 +327,7 @@ export function createStudioChatUI(): StudioChatUIHandle {
     appendToAssistantMessage,
     finishAssistantMessage,
     setBusy,
+    toggle,
     destroy,
   };
 }

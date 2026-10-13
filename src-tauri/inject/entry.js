@@ -3932,7 +3932,7 @@ ${prompt}`;
   top: 0;
   left: 0;
   right: 0;
-  bottom: 280px;          /* \u5E95\u90E8\u7559 280px \u7ED9 DeepSeek \u8F93\u5165\u6846\u533A\u57DF\uFF0C\u5B9E\u6D4B\u540E\u5FAE\u8C03 */
+  bottom: 280px;          /* \u9ED8\u8BA4\u503C\uFF0CmeasureComposerTop \u4F1A\u52A8\u6001\u8986\u76D6\u4E3A\u7CBE\u786E\u503C */
   z-index: 2147483000;
   background: #ffffff;
   display: flex;
@@ -3940,6 +3940,20 @@ ${prompt}`;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   font-size: 15px;
   color: #1a1a2e;
+  transition: opacity 0.15s ease;
+}
+
+/* ctrl+shift+h \u5207\u6362\u9690\u85CF\u6001\uFF08\u53C2\u8003 cuckoo-code \u5207\u6362\u5F0F\u53E0\u52A0\u5E03\u5C40\uFF09\uFF1A
+ * \u9690\u85CF\u65F6\u5B8C\u5168\u79FB\u51FA\u89C6\u53E3\uFF0C\u539F\u7F51\u9875\u5168\u53EF\u89C1\u3001\u53EF\u4EA4\u4E92\u3002 */
+.ds-studio-chat-container.ds-studio-chat-hidden {
+  display: none !important;
+}
+
+/* \u63ED\u793A\u95E8\u63A7\uFF1Aoverlay \u521D\u59CB\u4E0D\u53EF\u89C1\uFF0C\u7B49 composer \u6D4B\u91CF\u7A33\u5B9A\uFF08\u843D\u5728\u89C6\u53E3\u4E0B\u534A\u533A\uFF09\u518D\u6DE1\u5165\u3002
+ * \u907F\u514D"\u5148\u77EE\u540E\u6DA8"\u7684\u95EA\u70C1\u2014\u2014\u521D\u6B21\u52A0\u8F7D SPA \u672A\u6E32\u67D3\u65F6 textarea \u6D6E\u5728\u9AD8\u4F4D\uFF0C
+ * overlay \u4F1A\u5148\u6309\u9519\u8BEF\u6D4B\u91CF\u6E32\u67D3\u6210\u77EE\u9762\u677F\uFF0C\u6E32\u67D3\u5B8C\u6210\u540E\u518D\u8DF3\u9AD8\uFF0C\u89C6\u89C9\u95EA\u70C1\u3002 */
+.ds-studio-chat-container.ds-studio-chat-pending {
+  opacity: 0 !important;
 }
 
 /* ===== \u6D88\u606F\u5217\u8868\uFF08\u6EDA\u52A8\u5BB9\u5668\uFF09===== */
@@ -4119,29 +4133,51 @@ ${prompt}`;
     }
   }
   function measureComposerTop() {
+    let seed = null;
     const tas = document.querySelectorAll("textarea");
     for (const ta of tas) {
       if (ta.offsetWidth === 0 || ta.offsetHeight === 0) continue;
       const rect = ta.getBoundingClientRect();
       if (rect.width > 50 && rect.height > 10) {
-        return Math.round(rect.top);
+        seed = ta;
+        break;
       }
     }
-    const editables = document.querySelectorAll('[contenteditable="true"]');
-    for (const ed of editables) {
-      const el2 = ed;
-      if (el2.offsetWidth === 0 || el2.offsetHeight === 0) continue;
-      const rect = el2.getBoundingClientRect();
-      if (rect.width > 50 && rect.height > 10) {
-        return Math.round(rect.top);
+    if (!seed) {
+      const editables = document.querySelectorAll('[contenteditable="true"]');
+      for (const ed of editables) {
+        const el2 = ed;
+        if (el2.offsetWidth === 0 || el2.offsetHeight === 0) continue;
+        const rect = el2.getBoundingClientRect();
+        if (rect.width > 50 && rect.height > 10) {
+          seed = ed;
+          break;
+        }
       }
     }
-    return null;
+    if (!seed) return null;
+    let p = seed;
+    for (let i = 0; i < 10 && p; i++) {
+      const r = p.getBoundingClientRect();
+      if (r.height > 120 && r.height < 400 && r.bottom > window.innerHeight - 50) {
+        return Math.round(r.top);
+      }
+      p = p.parentElement;
+    }
+    return Math.round(seed.getBoundingClientRect().top);
   }
   function adjustOverlayBottom(container) {
     const composerTop = measureComposerTop();
     if (composerTop === null || composerTop <= 0) return;
     const vh = window.innerHeight;
+    if (container.classList.contains("ds-studio-chat-pending")) {
+      if (composerTop > vh * 0.4) {
+        container.classList.remove("ds-studio-chat-pending");
+        console.log("[studio-chat-ui] composer settled at", composerTop, "px, reveal overlay");
+      } else {
+        console.log("[studio-chat-ui] composer at", composerTop, "px (< vh*0.4=", Math.round(vh * 0.4), "), stay pending");
+      }
+    }
     const bottom = vh - composerTop + 8;
     const safeBottom = Math.max(120, Math.min(bottom, vh - 120));
     container.style.bottom = safeBottom + "px";
@@ -4150,7 +4186,7 @@ ${prompt}`;
   function createStudioChatUI() {
     injectChatStyles();
     const container = document.createElement("div");
-    container.className = "ds-studio-chat-container";
+    container.className = "ds-studio-chat-container ds-studio-chat-pending";
     console.log("[studio-chat-ui] createStudioChatUI start, injecting styles=", !styleInjected2);
     const messageList = document.createElement("div");
     messageList.className = "ds-sc-message-list";
@@ -4169,7 +4205,7 @@ ${prompt}`;
     let currentRawText = "";
     const welcome = document.createElement("div");
     welcome.style.cssText = "margin:auto;text-align:center;padding:40px 20px;color:#999;";
-    welcome.innerHTML = '<div style="font-size:20px;font-weight:600;margin-bottom:8px;">DeepSeek Studio</div><div style="font-size:13px;line-height:1.8;">\u5728\u4E0B\u65B9\u8F93\u5165\u6846\u53D1\u9001\u6D88\u606F<br>\u5DE5\u5177\u8C03\u7528\u4E0E\u56DE\u590D\u5C06\u663E\u793A\u5728\u6B64\u5904</div>';
+    welcome.innerHTML = '<div style="font-size:20px;font-weight:600;margin-bottom:8px;">DeepSeek Studio</div><div style="font-size:13px;line-height:1.8;">\u5728\u4E0B\u65B9\u8F93\u5165\u6846\u53D1\u9001\u6D88\u606F<br>\u5DE5\u5177\u8C03\u7528\u4E0E\u56DE\u590D\u5C06\u663E\u793A\u5728\u6B64\u5904</div><div style="font-size:12px;line-height:1.8;margin-top:12px;color:#aaa;">Ctrl+Shift+H \u5207\u6362\u663E\u793A/\u9690\u85CF</div>';
     messageList.appendChild(welcome);
     function scrollToBottom() {
       messageList.scrollTop = messageList.scrollHeight;
@@ -4225,12 +4261,38 @@ ${prompt}`;
     function destroy() {
       bottomObserver.disconnect();
       window.removeEventListener("resize", tryAdjust);
+      window.removeEventListener("scroll", tryAdjust, { capture: true });
+      window.removeEventListener("keydown", onToggleKey);
       container.remove();
       currentAssistant = null;
       currentRawText = "";
     }
+    let visible = true;
+    function toggle() {
+      visible = !visible;
+      if (visible) {
+        container.classList.remove("ds-studio-chat-hidden");
+      } else {
+        container.classList.add("ds-studio-chat-hidden");
+      }
+      console.log("[studio-chat-ui] overlay", visible ? "shown" : "hidden");
+      return visible;
+    }
+    function onToggleKey(e) {
+      if (e.ctrlKey && e.shiftKey && (e.key === "h" || e.key === "H" || e.code === "KeyH")) {
+        e.preventDefault();
+        toggle();
+      }
+    }
+    window.addEventListener("keydown", onToggleKey);
+    let rafPending = false;
     function tryAdjust() {
-      adjustOverlayBottom(container);
+      if (rafPending) return;
+      rafPending = true;
+      requestAnimationFrame(() => {
+        rafPending = false;
+        adjustOverlayBottom(container);
+      });
     }
     const bottomObserver = new MutationObserver(() => {
       tryAdjust();
@@ -4252,8 +4314,8 @@ ${prompt}`;
     setTimeout(tryAdjust, 500);
     setTimeout(tryAdjust, 1500);
     setTimeout(tryAdjust, 3e3);
-    setTimeout(() => bottomObserver.disconnect(), 1e4);
     window.addEventListener("resize", tryAdjust);
+    window.addEventListener("scroll", tryAdjust, { passive: true, capture: true });
     return {
       container,
       addUserMessage,
@@ -4261,6 +4323,7 @@ ${prompt}`;
       appendToAssistantMessage,
       finishAssistantMessage,
       setBusy,
+      toggle,
       destroy
     };
   }
