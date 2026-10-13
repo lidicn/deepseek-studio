@@ -4166,7 +4166,33 @@ ${prompt}`;
     }
     return Math.round(seed.getBoundingClientRect().top);
   }
-  function adjustOverlayBottom(container) {
+  function measureSidebarRight() {
+    const vh = window.innerHeight;
+    let best = 0;
+    const candidates = document.querySelectorAll('aside, nav, [class*="sidebar"], [class*="aside"], [class*="history"]');
+    for (const el2 of candidates) {
+      const r = el2.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      if (r.height > vh * 0.5 && r.left <= 20 && r.width <= 360) {
+        if (r.right > best) best = r.right;
+      }
+    }
+    if (best === 0) {
+      const root = document.querySelector("#root");
+      if (root) {
+        for (const ch of root.children) {
+          const r = ch.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) continue;
+          if (r.height > vh * 0.5 && r.left <= 20 && r.width <= 360) {
+            if (r.right > best) best = r.right;
+            break;
+          }
+        }
+      }
+    }
+    return Math.round(best);
+  }
+  function adjustOverlayLayout(container) {
     const composerTop = measureComposerTop();
     if (composerTop === null || composerTop <= 0) return;
     const vh = window.innerHeight;
@@ -4181,7 +4207,10 @@ ${prompt}`;
     const bottom = vh - composerTop + 8;
     const safeBottom = Math.max(120, Math.min(bottom, vh - 120));
     container.style.bottom = safeBottom + "px";
-    console.log("[studio-chat-ui] overlay bottom adjusted to", safeBottom, "px (composerTop=", composerTop, ", vh=", vh, ")");
+    const sidebarRight = measureSidebarRight();
+    const safeLeft = sidebarRight > 0 ? sidebarRight + 8 : 0;
+    container.style.left = safeLeft + "px";
+    console.log("[studio-chat-ui] overlay layout: bottom=", safeBottom, "px (composerTop=", composerTop, "), left=", safeLeft, "px (sidebarRight=", sidebarRight, ")");
   }
   function createStudioChatUI() {
     injectChatStyles();
@@ -4291,7 +4320,7 @@ ${prompt}`;
       rafPending = true;
       requestAnimationFrame(() => {
         rafPending = false;
-        adjustOverlayBottom(container);
+        adjustOverlayLayout(container);
       });
     }
     const bottomObserver = new MutationObserver(() => {

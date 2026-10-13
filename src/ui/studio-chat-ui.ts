@@ -118,12 +118,49 @@ function measureComposerTop(): number | null {
   return Math.round(seed.getBoundingClientRect().top);
 }
 
-/** 把 overlay bottom 设成「视口高 - composer top - padding」，精确留出输入框空间。
- *  同时做揭示门控：只有当 composer 落到视口下半区（top > vh*0.4）时才认为 SPA 已渲染稳定，
- *  移除 pending 态让 overlay 淡入。初次加载 textarea 浮在高位（如 y=445）时不算稳定。 */
-function adjustOverlayBottom(container: HTMLElement): void {
+/**
+ * 动态测量 DeepSeek 左侧栏（会话历史）的右沿，调整 overlay 的 left，
+ * 使 overlay 不盖住左侧栏——只盖消息列表区域。
+ *
+ * 锚点：找"高（>50% vh）、窄（≤360px）、靠左（left≤20）"的 fixed/sticky 元素，
+ * 典型是 aside/nav 或 #root 第一个子元素。返回它的 right（左沿+宽），测不到返回 0。
+ * 不用混淆 class 选择器（随版本变化），几何特征是稳定锚点。
+ */
+function measureSidebarRight(): number {
+  const vh = window.innerHeight;
+  let best = 0;
+  const candidates = document.querySelectorAll('aside, nav, [class*="sidebar"], [class*="aside"], [class*="history"]');
+  for (const el of candidates) {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue;
+    if (r.height > vh * 0.5 && r.left <= 20 && r.width <= 360) {
+      if (r.right > best) best = r.right;
+    }
+  }
+  // 兜底：看 #root 第一个子元素（DeepSeek 常把侧栏作为首个子节点）
+  if (best === 0) {
+    const root = document.querySelector('#root');
+    if (root) {
+      for (const ch of root.children) {
+        const r = ch.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) continue;
+        if (r.height > vh * 0.5 && r.left <= 20 && r.width <= 360) {
+          if (r.right > best) best = r.right;
+          break;
+        }
+      }
+    }
+  }
+  return Math.round(best);
+}
+
+/** 调整 overlay 的 bottom（不盖输入框）和 left（不盖左侧栏），并做揭示门控。
+ *  bottom = vh - composerTop + 8（留出输入框卡片空间）。
+ *  left = sidebarRight + 8（留出左侧栏空间，测不到侧栏时 left=0 全宽）。
+ *  揭示门控：只有 composer 落到视口下半区（top > vh*0.4）才认为 SPA 渲染稳定，淡入。 */
+function adjustOverlayLayout(container: HTMLElement): void {
   const composerTop = measureComposerTop();
-  if (composerTop === null || composerTop <= 0) return; // 测不到，保持 CSS 默认 bottom:280px
+  if (composerTop === null || composerTop <= 0) return; // 测不到，保持 CSS 默认值
   const vh = window.innerHeight;
   // 揭示门控：composer 顶部落到视口下半区才算 SPA 渲染完成。
   // 初次加载 textarea 浮在 y≈445（vh=1009 时 445/1009≈0.44），rendered 后落到底部 y≈857。
@@ -142,7 +179,11 @@ function adjustOverlayBottom(container: HTMLElement): void {
   // 安全下限：至少留 120px，防止异常测量把 overlay 撑满全屏
   const safeBottom = Math.max(120, Math.min(bottom, vh - 120));
   container.style.bottom = safeBottom + 'px';
-  console.log('[studio-chat-ui] overlay bottom adjusted to', safeBottom, 'px (composerTop=', composerTop, ', vh=', vh, ')');
+  // 留出左侧栏空间：left = 侧栏右沿 + 8px 呼吸空间。测不到侧栏则 left=0（全宽）。
+  const sidebarRight = measureSidebarRight();
+  const safeLeft = sidebarRight > 0 ? sidebarRight + 8 : 0;
+  container.style.left = safeLeft + 'px';
+  console.log('[studio-chat-ui] overlay layout: bottom=', safeBottom, 'px (composerTop=', composerTop, '), left=', safeLeft, 'px (sidebarRight=', sidebarRight, ')');
 }
 
 export function createStudioChatUI(): StudioChatUIHandle {
@@ -280,7 +321,7 @@ export function createStudioChatUI(): StudioChatUIHandle {
   }
   window.addEventListener('keydown', onToggleKey);
 
-  // 动态测量 composer 位置，调整 overlay bottom（不盖住输入框）。
+  // 动态测量 composer 位置和侧栏右沿，调整 overlay bottom 和 left（不盖输入框、不盖左侧栏）。
   // DeepSeek 是 SPA：textarea 随异步渲染、侧栏折叠、模型切换、窗口 resize 而移动，
   // top 会持续变化。因此保持 MutationObserver 常驻（开销极小，仅 DOM 变化时触发），
   // 不要定时断开——之前 10 秒 disconnect 导致布局变化后不再重测，bottom 锁死旧值。
@@ -294,7 +335,7 @@ export function createStudioChatUI(): StudioChatUIHandle {
     rafPending = true;
     requestAnimationFrame(() => {
       rafPending = false;
-      adjustOverlayBottom(container);
+      adjustOverlayLayout(container);
     });
   }
   const bottomObserver = new MutationObserver(() => { tryAdjust(); });
