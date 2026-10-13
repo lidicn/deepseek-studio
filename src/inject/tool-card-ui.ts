@@ -215,6 +215,10 @@ function ensureStyle(): void {
 }
 
 function findLastAssistantMessage(): HTMLElement | null {
+  // v0.19：优先查询 Studio 自建聊天 UI 的最后一个助手消息元素。
+  // 回退到 DeepSeek DOM 选择器（过渡期兼容，DeepSeek 输入框仍在页面里）。
+  const studioNodes = document.querySelectorAll('.ds-sc-msg-assistant');
+  if (studioNodes.length > 0) return studioNodes[studioNodes.length - 1] as HTMLElement;
   const selectors = [
     '.ds-assistant-message-main-content',
     '[class*="assistant-message"]',
@@ -273,7 +277,9 @@ function getOrCreateToolsContainer(): HTMLElement | null {
   header.addEventListener('click', () => {
     toolsContainer!.classList.toggle('collapsed');
   });
-  container.appendChild(toolsContainer);
+  // v0.19：插入到消息元素最前面（工具在上、结论在下）。
+  // 之前 appendChild 把工具放到末尾（结论下方），顺序反了。
+  container.insertBefore(toolsContainer, container.firstChild);
   return toolsContainer;
 }
 

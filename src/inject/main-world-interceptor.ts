@@ -25,13 +25,13 @@ import {
   MAX_NUDGES,
   type PendingResult,
 } from '../shared/continuation-prompt';
-import { renderMarkdown } from './markdown';
 import type { ExecuteResult } from '../capabilities/types';
 import { createPowHeaders } from './pow';
 import { createToolCard, updateToolCardByCallId, stripRawToolTagsFromMessage } from './tool-card-ui';
 import { createStepFlowContainer, type StepFlowHandle } from './step-flow-ui';
 import { hydrateCodeBlocks, type CodeRunner } from './render-code-runner';
 import { installStudioUI } from '../ui/studio-ui-install';
+import type { StudioChatUIHandle } from '../ui/studio-chat-ui';
 
 /** 页端 → 宿主 的工具调用投递请求（与 host-client.sendToolCall 入参同构）。 */
 export interface ToolCallRequest {
@@ -52,6 +52,8 @@ export interface MainWorldInterceptorOptions {
   onAssistantReply?: (text: string, loop: number) => void;
   /** v1.0：宿主推送记忆列表更新时的回调。 */
   onMemoriesUpdate?: (memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>) => void;
+  /** v0.19：自建聊天 UI overlay。SSE 文本推送到此 UI，不再写入 DeepSeek DOM。 */
+  chatUI?: StudioChatUIHandle;
 }
 
 export interface MainWorldInterceptorHandle {
@@ -95,6 +97,10 @@ interface LoopState {
   /** v1.6：用户原始任务（首轮请求 prompt 字段，augmentation 前）。XHR/fetch hook 在首条消息时写入，
    *  autoContinueWithPow / autoContinueNudge 读它拼续跑 prompt。 */
   originalTask: string;
+  /** v0.19：检测到新用户消息时，把用户原始 prompt 传回给闭包（用于推送给 chat UI）。 */
+  newUserPrompt?: string;
+  /** v0.19：自建聊天 UI（由 installMainWorldInterceptor 传入，fetch/XHR hook 共用）。 */
+  chatUI?: StudioChatUIHandle;
   /** v1.6：检测到新用户消息（parent_message_id === null）时触发，让 installMainWorldInterceptor
    *  重置 collectedExecutions/nudgeCount/loopDepth（闭包状态，hook 函数访问不到）。 */
   onNewUserMessage?: () => void;
@@ -257,30 +263,11 @@ function formatMcpToolsBlock(): string {
 }
 
 /**
- * v1.4：提取 auto-continue 回复开头的英文思考段落。
- * 模型有时把思考过程写在 RESPONSE 段开头（不是 THINK 段），比如：
- *   "user asked what files are in... I got the listing. Now output final conclusion.\n\n目录内容如下：..."
- * 我们把开头的纯英文段落（到第一个中文字符或空行为止）提取出来作为思考笔记，
- * 只保留后面的中文回答渲染到 DOM。
+ * v0.19：extractThinkingPreface 已删除——auto-continue 的 DeepSeek DOM 渲染分支已改为 chat UI。
+ * 若后续 chat UI 需要"已思考"折叠卡片，可从 git 历史恢复。
  */
-function extractThinkingPreface(reply: string): { thinking: string; answer: string } {
-  if (!reply) return { thinking: '', answer: reply };
-  // 找到第一个中文字符的位置
-  const firstCjk = reply.search(/[\u4e00-\u9fff]/);
-  if (firstCjk <= 0) return { thinking: '', answer: reply };
-  // 第一个中文字符之前的内容
-  const preface = reply.slice(0, firstCjk).trim();
-  // 如果前缀里已经有换行+空行，说明是完整的思考段落
-  const blankLine = reply.indexOf('\n\n');
-  if (blankLine > 0 && blankLine < firstCjk) {
-    return { thinking: reply.slice(0, blankLine).trim(), answer: reply.slice(blankLine + 2).trim() };
-  }
-  // 前缀全是英文（没有中文），提取为思考
-  if (preface.length > 10 && !/[\u4e00-\u9fff]/.test(preface)) {
-    return { thinking: preface, answer: reply.slice(firstCjk).trim() };
-  }
-  return { thinking: '', answer: reply };
-}
+/* function extractThinkingPreface(reply: string): { thinking: string; answer: string } {
+   -- v0.19 deleted, see comment above */
 
 function buildCapabilityPrompt(): string {
   const mcpBlock = formatMcpToolsBlock();
@@ -412,6 +399,8 @@ function installFetchHook(
             // v0.7：先把原始 SSE 提取成可见纯文本（跨 chunk 不丢事件），再解析工具标签
             const rawSse = decoder.decode(value, { stream: true });
             const text = sse.feed(rawSse);
+            // v0.19：推送可见文本给自建聊天 UI（终端式追加，流结束后由 chat UI 格式化）
+            if (loopState?.chatUI && text) loopState.chatUI.appendToAssistantMessage(text);
             // v0.18：抽取推理文本到步骤笔记
             const rsn = sse.consumeReasoning();
             if (rsn) {
@@ -431,6 +420,8 @@ function installFetchHook(
             stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
           }
           if (sseTail) {
+            // v0.19：尾部可见文本也推送给 chat UI
+            if (loopState?.chatUI) loopState.chatUI.appendToAssistantMessage(sseTail);
             const tailParsed = parser.feed(sseTail);
             for (const c of tailParsed.calls) forward(c);
             // 尾部也原样转发
@@ -525,6 +516,8 @@ function installXhrHooks(
               && !parsedBody.prompt.includes('<tool_results')
               && !parsedBody.prompt.includes('[TOOL_RESULTS]')) {
             loopState.originalTask = parsedBody.prompt;
+            // v0.19：把用户原始 prompt 传回闭包，onNewUserMessage 会推送给 chat UI
+            loopState.newUserPrompt = parsedBody.prompt;
             diag(`originalTask captured len=${loopState.originalTask.length}`);
             if (typeof loopState.onNewUserMessage === 'function') {
               try { loopState.onNewUserMessage(); } catch { /* ignore */ }
@@ -624,6 +617,10 @@ function installXhrHooks(
             if (loopState && loopState.inAutoContinue) {
               loopState.autoReplyText += visible;
             }
+            // v0.19：推送可见文本给自建聊天 UI（原始请求和 auto-continue 两条路径都推送）
+            if (loopState?.chatUI) {
+              loopState.chatUI.appendToAssistantMessage(visible);
+            }
             // v1.5：工具解析走原始 data 文本（不经过显示用改写），保住转义引号
             const { calls } = parser.feed(rawDataText || visible);
             for (const c of calls) forward(c);
@@ -647,7 +644,7 @@ function installXhrHooks(
  */
 export function installMainWorldInterceptor(options: MainWorldInterceptorOptions): MainWorldInterceptorHandle {
   console.log('[interceptor] installed, fetch hook + XHR hook ready');
-  const { sender, diag, onAssistantReply, onMemoriesUpdate } = options;
+  const { sender, diag, onAssistantReply, onMemoriesUpdate, chatUI } = options;
   const pending: PendingResult[] = [];
   const d: InterceptorDiag = diag ?? (() => {});
   // v1.0：从全局变量读取初始记忆（entry.ts 在连接建立时设置）
@@ -656,7 +653,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     if (g.__studioMemories) currentMemories = g.__studioMemories;
   }
   // v0.8：自动工具循环——记住最近一次 chat 请求的 body 模板 + 当前流是否结束。
-  const loopState: LoopState = { lastChatBody: null as string | null, streamActive: false, lastResponseMsgId: null as number | null, autoReplyText: '', inAutoContinue: false, autoReplyHadTools: false, originalTask: '' };
+  const loopState: LoopState = { lastChatBody: null as string | null, streamActive: false, lastResponseMsgId: null as number | null, autoReplyText: '', inAutoContinue: false, autoReplyHadTools: false, originalTask: '', chatUI };
   let autoContinueTimer: ReturnType<typeof setTimeout> | null = null;
   let loopDepth = 0;
   // v1.6：跨整个循环累积的工具执行结果（对标 deepseek-pp collectedExecutions）。
@@ -693,34 +690,16 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     if (!stepFlow) {
       // 清掉残留的旧状态栏
       document.querySelectorAll('.ds-sf-container').forEach((n) => n.remove());
-      // 找输入框容器（composer），把状态栏挂在它里面，避免 fixed 被祖先 transform 破坏
-      const composerSelectors = [
-        '#root > div > div.c3ecdb44 > div._7780f2e > div > div.ds-virtual-list > div.ds-virtual-list-items > div > div._4f9bf79.d7dc56a8._43c05b5 > div.ds-flex._0a3d93b',
-        'div._4f9bf79.d7dc56a8._43c05b5 > div.ds-flex._0a3d93b',
-        'div.ec4f5d61',
-        'div[class*="editor"]',
-        'footer',
-      ];
-      let composer: HTMLElement | null = null;
-      for (const sel of composerSelectors) {
-        const nodes = document.querySelectorAll(sel);
-        if (nodes.length > 0) { composer = nodes[nodes.length - 1] as HTMLElement; break; }
-      }
-      console.log('[step-flow] composer found=', !!composer, 'selector hit=', composerSelectors.find(sel => document.querySelectorAll(sel).length > 0));
-      if (composer) {
-        stepFlow = createStepFlowContainer();
-        stepFlowStartTime = Date.now();
-        document.body.appendChild(stepFlow.container);
-        stepFlow.setPhase('running', stepFlowStep, stepFlowToolCount);
-        // 对齐输入框实际位置
-        const cr = composer.getBoundingClientRect();
-        const sf = stepFlow.container;
-        sf.style.left = cr.left + 'px';
-        sf.style.width = cr.width + 'px';
-        sf.style.transform = 'none';
-        const r = sf.getBoundingClientRect();
-        console.log('[step-flow] DIAG rect=', JSON.stringify({top:Math.round(r.top),bottom:Math.round(r.bottom),left:Math.round(r.left),w:Math.round(r.width)}), 'composerRect=', JSON.stringify({left:Math.round(cr.left),w:Math.round(cr.width)}));
-      }
+      // v0.19：不再搜索 DeepSeek composer 选择器（obfuscated class 名太脆弱）。
+      // step-flow 是 position:fixed 悬浮容器，直接挂到 body，居中底部定位。
+      stepFlow = createStepFlowContainer();
+      stepFlowStartTime = Date.now();
+      document.body.appendChild(stepFlow.container);
+      stepFlow.setPhase('running', stepFlowStep, stepFlowToolCount);
+      const sf = stepFlow.container;
+      sf.style.left = '50%';
+      sf.style.transform = 'translateX(-50%)';
+      sf.style.bottom = '210px'; // 在 DeepSeek 输入框上方（overlay 底部 200px 之上）
     }
     if (stepFlow) {
       stepFlowToolCount++;
@@ -826,12 +805,20 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   };
 
   // v1.6：新用户消息到达 → 重置循环累积状态（hook 函数在闭包外，只能经此回调通知）。
+  // v0.19：同时把用户消息推送给 chat UI，并创建新的助手回复流式容器。
   loopState.onNewUserMessage = () => {
     collectedExecutions.length = 0;
     nudgeCount = 0;
     loopDepth = 0;
     loopState.autoReplyHadTools = false;
     d('new user message: reset collectedExecutions/nudgeCount/loopDepth');
+    if (chatUI) {
+      if (loopState.newUserPrompt) {
+        chatUI.addUserMessage(loopState.newUserPrompt);
+      }
+      chatUI.startAssistantMessage();
+      chatUI.setBusy(true);
+    }
   };
 
   async function autoContinueWithPow(): Promise<void> {
@@ -904,48 +891,15 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
             d(`auto-continue reply len=${reply.length} hasCallback=${typeof onAssistantReply}`);
             if (reply) {
               try { onAssistantReply?.(reply, loopDepth); } catch (e) { d(`auto-continue push failed: ${(e as Error).message}`); }
-              // v0.9：把 auto-continue 回复渲染到页面 DOM（不覆盖工具卡片）
-              try {
-                const nodes = document.querySelectorAll('.ds-assistant-message-main-content');
-                const last = nodes[nodes.length - 1] as HTMLElement | undefined;
-                if (last) {
-                  // v1.8：保存整个工具容器（含可折叠外壳），而非裸卡片。
-                  // 之前只存 .ds-studio-tool-card，innerHTML 覆盖后把卡片 appendChild
-                  // 到结论后面（下方），既丢了可折叠容器，又导致顺序反了（工具先执行
-                  // 却显示在结论下方）。正确顺序：工具在上、结论在下。
-                  const toolsContainer = last.querySelector('.ds-studio-tools-container') as HTMLElement | null;
-                  // v1.4：过滤开头的英文思考段落（模型把思考写在 RESPONSE 里，不是 THINK 段）
-                  // v1.6：用 renderMarkdown 渲染（XSS 安全，保留代码块/粗体/列表，而非退化成纯文本）。
-                  // v1.8：用 .ds-markdown 容器包裹，复用 DeepSeek 自己的 markdown 样式
-                  // （字体/间距/代码块）。之前裸写 <p>/<pre> 到 .ds-assistant-message-main-content，
-                  // 没有 DeepSeek 的 markdown 样式 class，显示成无样式纯文本。
-                  const { thinking, answer } = extractThinkingPreface(reply);
-                  last.innerHTML = `<div class="ds-markdown">${renderMarkdown(answer)}</div>`;
-                  // 如果有思考段落，在开头插入"已思考"折叠卡片
-                  if (thinking) {
-                    const tdiv = document.createElement('div');
-                    tdiv.className = 'ds-studio-thinking-preface';
-                    tdiv.style.cssText = 'font-size:12px;color:#888;margin-bottom:8px;padding:6px 10px;background:#f5f5f5;border-radius:6px;cursor:pointer;';
-                    tdiv.textContent = `💭 已思考：${thinking.slice(0, 80)}${thinking.length > 80 ? '...' : ''}`;
-                    tdiv.title = thinking;
-                    last.insertBefore(tdiv, last.firstChild);
-                  }
-                  // v1.8：工具容器插回结论前面（last 最前面），保持「工具在上、结论在下」
-                  // 的自然时间顺序 —— 工具先执行、结论后产生，显示顺序应与之对应。
-                  if (toolsContainer) {
-                    last.insertBefore(toolsContainer, last.firstChild);
-                  }
-                  // v1.7：渲染完最终答案后自动滚动到该消息可见，避免悬浮步骤流挡住结果
-                  // （用户反馈：最终结果在上方对话流，需要手动滚回去看）。
-                  try {
-                    last.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                  } catch { /* ignore */ }
-                  d(`auto-continue rendered to DOM, len=${answer.length}, thinking=${thinking.length}, toolsContainerPreserved=${toolsContainer ? 1 : 0}`);
-                } else {
-                  d('auto-continue render: no .ds-assistant-message-main-content found');
+              // v0.19：auto-continue 回复已通过 SSE 拦截推送给了 chat UI（appendToAssistantMessage）。
+              // 流结束，通知 chat UI 格式化渲染。不再操作 DeepSeek DOM。
+              if (chatUI) {
+                try {
+                  chatUI.finishAssistantMessage();
+                  d(`auto-continue chat UI finished, len=${reply.length}`);
+                } catch (e) {
+                  d(`auto-continue chat UI finish failed: ${(e as Error).message}`);
                 }
-              } catch (e) {
-                d(`auto-continue render failed: ${(e as Error).message}`);
               }
             }
             if (xhr.status === 429 && loopDepth < MAX_LOOP) {
@@ -982,6 +936,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                   stepFlowToolCount = 0;
                   setTimeout(() => sf.destroy(), 3000);
                 }
+                // v0.19：循环结束，chat UI 切换到完成状态
+                chatUI?.setBusy(false);
                 // 循环结束：重置 loopDepth，让下次用户消息的 onStreamEnd 能正常销毁
                 loopDepth = 0;
               }

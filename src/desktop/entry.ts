@@ -13,7 +13,6 @@
  */
 
 import { installChromeShims, type StorageKvBackend, type StorageKvWriteBatch, type Transport } from '../bridge';
-import { startToolCardObserver } from '../inject/tool-card-dom';
 import { installDirectBridge, type InstalledBridge } from '../inject/bridge-install';
 import { bootstrapInjection } from '../inject/loader';
 import type { ContentCapabilityController, ReplaceContentDocumentLifecycle } from '../inject/types';
@@ -25,6 +24,7 @@ import { createHostClient, type HostClient } from './host-client';
 import { installMainWorldInterceptor } from '../inject/main-world-interceptor';
 import { freezeStudioObject, startIntegrityProbe } from './integrity';
 import type { ExecutableCapability } from '../capabilities/types';
+import { createStudioChatUI } from '../ui/studio-chat-ui';
 
 const DEFAULT_HOST_URL = 'ws://127.0.0.1:8760/studio';
 
@@ -118,6 +118,15 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
   // 即便宿主未连接，拦截器也照常安装（tool-call 会在无连接时由 host-client fail-closed 处理），
   // 避免「没连上宿主就不拦截」导致页面直接把原始 XML 工具标签暴露给用户。
   if (typeof globalThis.document !== 'undefined') {
+    // v0.19：创建自建聊天 UI overlay，在拦截器之前挂载到 DOM。
+    // SSE 文本由拦截器推送到此 UI，不再写入 DeepSeek DOM。
+    let chatUI;
+    try {
+      chatUI = createStudioChatUI();
+      document.body.appendChild(chatUI.container);
+    } catch (err) {
+      options.reportError?.('failed to create studio chat UI', err);
+    }
     try {
       installMainWorldInterceptor({
         sender: (req) => host.sendToolCall(req),
@@ -126,14 +135,13 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
         onMemoriesUpdate: (memories) => {
           (globalThis as { __studioMemories?: unknown }).__studioMemories = memories;
         },
+        chatUI,
       });
     } catch (err) {
       options.reportError?.('failed to install main-world interceptor', err);
     }
-    // 工具结果渲染层：把原始工具标签/结果替换成折叠卡片
-    try { startToolCardObserver(); } catch (err) {
-      options.reportError?.('failed to start tool-card observer', err);
-    }
+    // v0.19：不再启动 startToolCardObserver——工具标签不再写入 DeepSeek DOM，
+    // 由 chat UI 直接渲染。tool-card-ui 的 createToolCard 已挂载到 chat UI 消息元素。
   }
 
   const target = (globalThis as { window?: unknown }).window ?? globalThis;
