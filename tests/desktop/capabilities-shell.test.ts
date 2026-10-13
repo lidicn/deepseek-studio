@@ -20,18 +20,41 @@ describe('shell.exec —— argv 执行与安全红线', () => {
   it('命令串按引号规则切分，带空格的引号路径不被拆坏', () => {
     expect(tokenizeCommand('npm run build')).toEqual(['npm', 'run', 'build']);
     expect(tokenizeCommand('node "C:/my dir/app.js" --flag')).toEqual(['node', 'C:/my dir/app.js', '--flag']);
-    expect(tokenizeCommand("echo 'a b c'")).toEqual(['echo', 'a b c']);
+    // v1.8：单引号不再是引号（shell:false 下），是普通字符
+    expect(tokenizeCommand("echo 'a b c'")).toEqual(['echo', "'a", 'b', "c'"]);
   });
 
   it('含管道/重定向等 shell 语法 → 显式拒绝，而不是当成普通参数执行', async () => {
     expect(hasShellSyntax('cat a.txt | grep x')).toBe(true);
     expect(hasShellSyntax('echo hi > out.txt')).toBe(true);
     expect(hasShellSyntax('npm run build')).toBe(false);
-    // 引号内的同类字符不算语法
+    // 双引号内的同类字符不算语法
     expect(hasShellSyntax('git commit -m "a|b"')).toBe(false);
 
     const cap = createShellCapability();
     const r = await cap.execute({ command: 'echo hi > out.txt' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('shell-syntax-unsupported');
+  });
+
+  // v1.8：命令注入回归测试。单引号不再是引号，'&|<> 被检测为 shell 语法并拒绝。
+  // 之前单引号被当引号 → hasShellSyntax 跳过检查 → tokenizeCommand 剥离引号 →
+  // 裸元字符进 argv → Windows cmd /c 二次解释 → 命令注入。
+  it('单引号内的元字符被检测为 shell 语法（命令注入修复）', () => {
+    expect(hasShellSyntax("echo 'x&calc'")).toBe(true);
+    expect(hasShellSyntax("echo 'x|more'")).toBe(true);
+    expect(hasShellSyntax("echo 'x>out.txt'")).toBe(true);
+    expect(hasShellSyntax("echo 'x;whoami'")).toBe(true);
+
+    // 这些命令现在应被拒绝（而非注入）
+    const cap = createShellCapability();
+    const r1 = cap.execute({ command: "echo 'x&calc'" });
+    void r1;
+  });
+
+  it('单引号包裹的元字符命令被 shell-syntax-unsupported 拒绝', async () => {
+    const cap = createShellCapability();
+    const r = await cap.execute({ command: "echo 'x&calc'" });
     expect(r.ok).toBe(false);
     expect(r.error).toBe('shell-syntax-unsupported');
   });

@@ -26,22 +26,28 @@ export interface ShellCapabilityOptions {
 }
 
 /**
- * 按引号规则切分命令串为 argv（双引号/单引号内的空格不当分隔符）。
- * 不做转义处理——Windows 下反斜杠是路径分隔符，当成转义会破坏路径。
+ * 按引号规则切分命令串为 argv。
+ *
+ * v1.8 安全修复：只认双引号 " 为引号，单引号 ' 是普通字符。
+ * 之前把 ' 也当引号，与 hasShellSyntax 配合产生命令注入：
+ * hasShellSyntax 把 ' 内的 &|<> 当引号内字符跳过检查，tokenizeCommand
+ * 又把 ' 剥离，裸元字符进入 argv，Windows cmd /c 二次解释 → 注入成立
+ * （如 echo 'x&calc' → argv ["cmd","/c","echo","x&calc"] → & 被 cmd 执行）。
+ * shell:false 下单引号不是引号（Windows cmd 也不认单引号），应视为普通字符。
  */
 export function tokenizeCommand(command: string): string[] {
   const tokens: string[] = [];
   let cur = '';
-  let quote: '"' | "'" | null = null;
+  let inQuote = false;
 
   for (const ch of command) {
-    if (quote) {
-      if (ch === quote) quote = null;
+    if (inQuote) {
+      if (ch === '"') inQuote = false;
       else cur += ch;
       continue;
     }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
+    if (ch === '"') {
+      inQuote = true;
       continue;
     }
     if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
@@ -57,17 +63,24 @@ export function tokenizeCommand(command: string): string[] {
   return tokens;
 }
 
-/** 检测未被引号包裹的 shell 语法（管道/重定向/命令串联/命令替换）。 */
+/**
+ * 检测未被引号包裹的 shell 语法（管道/重定向/命令串联/命令替换）。
+ *
+ * v1.8 安全修复：只认双引号 " 为引号。之前单引号 ' 内的 &|<> 被跳过
+ * 检查（当作引号内字符），但 tokenizeCommand 会剥离 '，导致裸元字符
+ * 进入 argv → Windows cmd /c 注入。单引号在 shell:false 下不是引号，
+ * 其内的 &|<> 必须被检测为 shell 语法并拒绝。
+ */
 export function hasShellSyntax(command: string): boolean {
-  let quote: '"' | "'" | null = null;
+  let inQuote = false;
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
-    if (quote) {
-      if (ch === quote) quote = null;
+    if (inQuote) {
+      if (ch === '"') inQuote = false;
       continue;
     }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
+    if (ch === '"') {
+      inQuote = true;
       continue;
     }
     if (ch === '|' || ch === '>' || ch === '<' || ch === '&' || ch === ';' || ch === '`' || ch === '$') {
