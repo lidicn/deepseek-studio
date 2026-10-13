@@ -103,9 +103,17 @@ export function resolveWorkspaceRoot(options: {
 /**
  * 大小写归一化：Windows 文件系统大小写不敏感，
  * 若按大小写敏感比较，`ws/foo` 与 `WS/FOO` 会被判成两个不同位置而绕过包含判定。
+ *
+ * v0.19 修复：path.normalize('/') 去尾分隔符后变空串、C:\ 变裸盘符 C:，
+ * 会让根目录作为工作区时包含判定失真。归一化时若结果为空串或裸盘符（如 C:），
+ * 保留根自身（补回分隔符），否则正常削尾。
  */
 function normalizeForCompare(p: string, caseSensitive: boolean): string {
-  const normalized = path.normalize(p).replace(/[\\/]+$/, '');
+  let normalized = path.normalize(p).replace(/[\\/]+$/, '');
+  // 归一化后为空串（输入是 / 或 /）或裸盘符（Windows C:\ → C:）→ 补回分隔符
+  if (normalized === '' || /^[A-Za-z]:$/.test(normalized)) {
+    normalized = normalized + path.sep;
+  }
   return caseSensitive ? normalized : normalized.toLowerCase();
 }
 
@@ -114,8 +122,12 @@ function lexicallyInside(rootNorm: string, childNorm: string): boolean {
   if (childNorm === rootNorm) return true;
   const rel = path.relative(rootNorm, childNorm);
   if (rel === '') return true;
-  // rel 以 '..' 开头或本身是绝对路径 → 逃逸
-  if (rel.startsWith('..')) return false;
+  // rel 是 '..' 或以 '../' 开头 → 逃逸。
+  // 之前用 rel.startsWith('..') 会把工作区内合法的「双点前缀」条目
+  //（如 ..foo、..cache、..env）误判为越界——这些文件/目录名确实以两个点开头，
+  // 但不是父目录引用。末尾的 split(sep).includes('..') 本就是正确写法，
+  // 但被前面那行 startsWith 抢先 return false，永远走不到。
+  if (rel === '..' || rel.startsWith('..' + path.sep)) return false;
   if (path.isAbsolute(rel)) return false;
   // Windows 盘符不同（如 C: vs D:）时 relative 会给出绝对路径，已在上一步拦截
   return !rel.split(path.sep).includes('..');

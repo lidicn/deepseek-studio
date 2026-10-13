@@ -120,10 +120,17 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
   if (typeof globalThis.document !== 'undefined') {
     // v0.19：创建自建聊天 UI overlay，在拦截器之前挂载到 DOM。
     // SSE 文本由拦截器推送到此 UI，不再写入 DeepSeek DOM。
+    // 注意：initialization_script 在 document_start 执行，此时 document.body 尚不存在，
+    // 必须延迟到 DOMContentLoaded 再 append，否则 body=null 会静默失败导致 UI 不显示。
     let chatUI;
     try {
       chatUI = createStudioChatUI();
-      document.body.appendChild(chatUI.container);
+      const mount = () => document.body.appendChild(chatUI!.container);
+      if (document.body) {
+        mount();
+      } else {
+        document.addEventListener('DOMContentLoaded', mount, { once: true });
+      }
     } catch (err) {
       options.reportError?.('failed to create studio chat UI', err);
     }

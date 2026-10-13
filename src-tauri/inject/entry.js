@@ -6463,7 +6463,12 @@ ${prompt}`;
       let chatUI;
       try {
         chatUI = createStudioChatUI();
-        document.body.appendChild(chatUI.container);
+        const mount = () => document.body.appendChild(chatUI.container);
+        if (document.body) {
+          mount();
+        } else {
+          document.addEventListener("DOMContentLoaded", mount, { once: true });
+        }
       } catch (err) {
         options2.reportError?.("failed to create studio chat UI", err);
       }

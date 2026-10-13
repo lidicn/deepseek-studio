@@ -93,3 +93,41 @@ describe('persistConfigPatch —— 配置持久化', () => {
     expect(r.error).toContain('EACCES');
   });
 });
+
+describe('lexicallyInside —— 路径逃逸判定（v0.19 双点前缀修复）', () => {
+  // 用依赖注入构造 Windows 路径场景，避免真机文件系统依赖
+  const winDeps = {
+    realpath: (p: string) => p, // 不做 realpath，纯词法测试
+    statSync: () => undefined,  // 目标不存在 → 走纯词法判定
+    resolve: (p: string) => path.win32.resolve(p),
+  };
+
+  it('双点前缀的合法条目（..foo、..cache、..env）不被误判为越界', () => {
+    const ws = createWorkspace('C:\\proj', winDeps);
+    expect(ws.contains('C:\\proj\\..foo')).toBe(true);
+    expect(ws.contains('C:\\proj\\..cache')).toBe(true);
+    expect(ws.contains('C:\\proj\\sub\\..env')).toBe(true);
+    expect(ws.contains('C:\\proj\\..foo\\bar')).toBe(true);
+  });
+
+  it('真正的父目录引用（..\\、..\\secret）仍被正确拒绝', () => {
+    const ws = createWorkspace('C:\\proj', winDeps);
+    expect(ws.contains('C:\\proj\\..')).toBe(false);
+    expect(ws.contains('C:\\proj\\..\\secret')).toBe(false);
+    expect(ws.contains('C:\\proj\\sub\\..\\..\\escape')).toBe(false);
+  });
+
+  it('工作区根自身始终包含', () => {
+    const ws = createWorkspace('C:\\proj', winDeps);
+    expect(ws.contains('C:\\proj')).toBe(true);
+  });
+
+  it('根目录作为工作区时不失真（normalize 不变空串/裸盘符）', () => {
+    // Windows C:\ 作为工作区根
+    const wsRoot = createWorkspace('C:\\', winDeps);
+    expect(wsRoot.contains('C:\\Users')).toBe(true);
+    expect(wsRoot.contains('C:\\')).toBe(true);
+    // D 盘不在 C 盘工作区内
+    expect(wsRoot.contains('D:\\foo')).toBe(false);
+  });
+});
