@@ -249,7 +249,18 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         options.onDebugEvalResult?.(msg.requestId, msg.ok, msg.result ?? '');
       } else if (msg.type === 'tool-call') {
         // v0.6：页端拦截到模型发起的工具调用，反向投递给宿主真实执行。
-        const mapped = mapUpstreamToolInvocation(msg.invocationName, msg.params);
+        // v1.8：整个分支包 try/catch。invocationName 来自 WebSocket 报文属外部可控
+        // 输入，映射层（mapUpstreamToolInvocation）若因任何原因抛异常（原型链穿透、
+        // 适配函数内部错误等），必须回执 tool-call-result 而非让异常逃逸成未处理
+        // Promise rejection，否则页端 pending 请求永久悬挂，违反 fail-closed 契约。
+        // 与同模块 safeSend / failAllPending 的防御标准一致。
+        let mapped;
+        try {
+          mapped = mapUpstreamToolInvocation(msg.invocationName, msg.params);
+        } catch (e) {
+          safeSend(ws, { type: 'tool-call-result', callId: msg.callId, ok: false, error: `bad-invocation: ${e instanceof Error ? e.message : String(e)}` });
+          return;
+        }
         if (!mapped) {
           safeSend(ws, { type: 'tool-call-result', callId: msg.callId, ok: false, error: 'unknown-tool' });
           return;

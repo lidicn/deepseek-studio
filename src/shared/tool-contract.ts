@@ -25,9 +25,18 @@ interface UpstreamToolMapping {
 /**
  * 上游 invocationName → Studio 工具 映射表。
  * 新增上游工具时只改这里；页端与宿主通过同一张表保持一致。
+ *
+ * v1.8：用 Object.create(null) 切断原型链。之前是普通对象字面量，原型为
+ * Object.prototype，直接索引 UPSTREAM_TO_STUDIO[invocationName] 会对
+ * 'constructor' / '__proto__' / 'toString' 等原型属性名命中 truthy 的继承
+ * 成员，绕过 mapUpstreamToolInvocation 的 null 兜底，随后 mapping.adapt
+ * 为 undefined 抛 TypeError。create(null) 从根上消除穿透，对 Object.keys
+ * 与直接索引都安全，与同文件 isSupportedUpstreamTool 的 hasOwnProperty 语义一致。
  */
-const UPSTREAM_TO_STUDIO: Record<string, UpstreamToolMapping> = {
-  shell_exec: {
+const UPSTREAM_TO_STUDIO: Record<string, UpstreamToolMapping> = Object.assign(
+  Object.create(null) as Record<string, UpstreamToolMapping>,
+  ({
+    shell_exec: {
     id: 'shell.exec',
     adapt: (p) => ({
       command: typeof p.command === 'string' ? p.command : typeof p.cmd === 'string' ? p.cmd : '',
@@ -125,8 +134,9 @@ const UPSTREAM_TO_STUDIO: Record<string, UpstreamToolMapping> = {
   'shell.exec': { id: 'shell.exec', adapt: (p) => p },
   'file.read': { id: 'file.read', adapt: (p) => p },
   'file.write': { id: 'file.write', adapt: (p) => p },
-  'file.stat': { id: 'file.stat', adapt: (p) => p },
-};
+    'file.stat': { id: 'file.stat', adapt: (p) => p },
+  }) as Record<string, UpstreamToolMapping>,
+);
 
 /** 受支持的下游 invocationName 列表（用于喂给上游流式解析器的 toolDescriptors）。 */
 export const SUPPORTED_INVOCATION_NAMES: readonly string[] = Object.keys(UPSTREAM_TO_STUDIO);

@@ -1839,107 +1839,110 @@
   };
 
   // src/shared/tool-contract.ts
-  var UPSTREAM_TO_STUDIO = {
-    shell_exec: {
-      id: "shell.exec",
-      adapt: (p) => ({
-        command: typeof p.command === "string" ? p.command : typeof p.cmd === "string" ? p.cmd : "",
-        ...typeof p.timeout_ms === "number" ? { timeoutMs: p.timeout_ms } : {},
-        ...typeof p.cwd === "string" ? { cwd: p.cwd } : {}
-      })
-    },
-    local_file_read: {
-      id: "file.read",
-      adapt: (p) => ({
-        path: typeof p.path === "string" ? p.path : "",
-        ...typeof p.start === "number" ? { offset: p.start } : typeof p.offset === "number" ? { offset: p.offset } : {},
-        ...typeof p.max_chars === "number" ? { limit: p.max_chars } : typeof p.limit === "number" ? { limit: p.limit } : {}
-      })
-    },
-    local_file_write: {
-      id: "file.write",
-      adapt: (p) => ({
-        path: typeof p.path === "string" ? p.path : "",
-        content: typeof p.content === "string" ? p.content : ""
-      })
-    },
-    local_file_stat: {
-      id: "file.stat",
-      adapt: (p) => ({ path: typeof p.path === "string" ? p.path : "" })
-    },
-    // v1.0：长期记忆保存（移植自 deepseek++ memory_save）。
-    memory_save: {
-      id: "memory.save",
-      adapt: (p) => ({
-        type: typeof p.type === "string" ? p.type : "user",
-        name: typeof p.name === "string" ? p.name : "",
-        content: typeof p.content === "string" ? p.content : "",
-        tags: Array.isArray(p.tags) ? p.tags : []
-      })
-    },
-    // v1.0：Python 代码执行（移植自 deepseek++ python_exec）。
-    python_exec: {
-      id: "python.exec",
-      adapt: (p) => ({
-        code: typeof p.code === "string" ? p.code : ""
-      })
-    },
-    // v1.0：列出 MCP 工具。
-    mcp_list: {
-      id: "mcp.list",
-      adapt: () => ({})
-    },
-    // v1.0：调用 MCP 工具。
-    mcp_call: {
-      id: "mcp.call",
-      adapt: (p) => ({
-        serverId: typeof p.serverId === "string" ? p.serverId : "",
-        tool: typeof p.tool === "string" ? p.tool : typeof p.name === "string" ? p.name : "",
-        args: p.args && typeof p.args === "object" ? p.args : p.arguments && typeof p.arguments === "object" ? p.arguments : {}
-      })
-    },
-    // v1.1：测试 MCP 连接（UI 直接调用时用点号，模型 XML 标签用下划线）。
-    mcp_test: {
-      id: "mcp.test",
-      adapt: (p) => ({ config: p.config && typeof p.config === "object" ? p.config : {} })
-    },
-    "mcp.test": {
-      id: "mcp.test",
-      adapt: (p) => ({ config: p.config && typeof p.config === "object" ? p.config : {} })
-    },
-    // v1.1：保存 MCP 配置。
-    mcp_save: {
-      id: "mcp.save",
-      adapt: (p) => ({
-        serverId: typeof p.serverId === "string" ? p.serverId : typeof p.id === "string" ? p.id : "",
-        config: p.config && typeof p.config === "object" ? p.config : {}
-      })
-    },
-    "mcp.save": {
-      id: "mcp.save",
-      adapt: (p) => ({
-        serverId: typeof p.serverId === "string" ? p.serverId : typeof p.id === "string" ? p.id : "",
-        config: p.config && typeof p.config === "object" ? p.config : {}
-      })
-    },
-    // v1.1：UI 点号直调（无需适配，透传参数）。
-    "mcp.remove": { id: "mcp.remove", adapt: (p) => p },
-    "memory.delete": { id: "memory.delete", adapt: (p) => p },
-    "workspace.set": { id: "workspace.set", adapt: (p) => p },
-    "policy.set": { id: "policy.set", adapt: (p) => p },
-    "project.list": { id: "project.list", adapt: (p) => p },
-    "project.create": { id: "project.create", adapt: (p) => p },
-    "folder.pick": { id: "folder.pick", adapt: (p) => p },
-    "skill.list": { id: "skill.list", adapt: (p) => p },
-    "memory.save": { id: "memory.save", adapt: (p) => p },
-    "python.exec": { id: "python.exec", adapt: (p) => p },
-    "mcp.list": { id: "mcp.list", adapt: (p) => p },
-    "mcp.call": { id: "mcp.call", adapt: (p) => p },
-    "shell.exec": { id: "shell.exec", adapt: (p) => p },
-    "file.read": { id: "file.read", adapt: (p) => p },
-    "file.write": { id: "file.write", adapt: (p) => p },
-    "file.stat": { id: "file.stat", adapt: (p) => p }
-  };
+  var UPSTREAM_TO_STUDIO = Object.assign(
+    /* @__PURE__ */ Object.create(null),
+    {
+      shell_exec: {
+        id: "shell.exec",
+        adapt: (p) => ({
+          command: typeof p.command === "string" ? p.command : typeof p.cmd === "string" ? p.cmd : "",
+          ...typeof p.timeout_ms === "number" ? { timeoutMs: p.timeout_ms } : {},
+          ...typeof p.cwd === "string" ? { cwd: p.cwd } : {}
+        })
+      },
+      local_file_read: {
+        id: "file.read",
+        adapt: (p) => ({
+          path: typeof p.path === "string" ? p.path : "",
+          ...typeof p.start === "number" ? { offset: p.start } : typeof p.offset === "number" ? { offset: p.offset } : {},
+          ...typeof p.max_chars === "number" ? { limit: p.max_chars } : typeof p.limit === "number" ? { limit: p.limit } : {}
+        })
+      },
+      local_file_write: {
+        id: "file.write",
+        adapt: (p) => ({
+          path: typeof p.path === "string" ? p.path : "",
+          content: typeof p.content === "string" ? p.content : ""
+        })
+      },
+      local_file_stat: {
+        id: "file.stat",
+        adapt: (p) => ({ path: typeof p.path === "string" ? p.path : "" })
+      },
+      // v1.0：长期记忆保存（移植自 deepseek++ memory_save）。
+      memory_save: {
+        id: "memory.save",
+        adapt: (p) => ({
+          type: typeof p.type === "string" ? p.type : "user",
+          name: typeof p.name === "string" ? p.name : "",
+          content: typeof p.content === "string" ? p.content : "",
+          tags: Array.isArray(p.tags) ? p.tags : []
+        })
+      },
+      // v1.0：Python 代码执行（移植自 deepseek++ python_exec）。
+      python_exec: {
+        id: "python.exec",
+        adapt: (p) => ({
+          code: typeof p.code === "string" ? p.code : ""
+        })
+      },
+      // v1.0：列出 MCP 工具。
+      mcp_list: {
+        id: "mcp.list",
+        adapt: () => ({})
+      },
+      // v1.0：调用 MCP 工具。
+      mcp_call: {
+        id: "mcp.call",
+        adapt: (p) => ({
+          serverId: typeof p.serverId === "string" ? p.serverId : "",
+          tool: typeof p.tool === "string" ? p.tool : typeof p.name === "string" ? p.name : "",
+          args: p.args && typeof p.args === "object" ? p.args : p.arguments && typeof p.arguments === "object" ? p.arguments : {}
+        })
+      },
+      // v1.1：测试 MCP 连接（UI 直接调用时用点号，模型 XML 标签用下划线）。
+      mcp_test: {
+        id: "mcp.test",
+        adapt: (p) => ({ config: p.config && typeof p.config === "object" ? p.config : {} })
+      },
+      "mcp.test": {
+        id: "mcp.test",
+        adapt: (p) => ({ config: p.config && typeof p.config === "object" ? p.config : {} })
+      },
+      // v1.1：保存 MCP 配置。
+      mcp_save: {
+        id: "mcp.save",
+        adapt: (p) => ({
+          serverId: typeof p.serverId === "string" ? p.serverId : typeof p.id === "string" ? p.id : "",
+          config: p.config && typeof p.config === "object" ? p.config : {}
+        })
+      },
+      "mcp.save": {
+        id: "mcp.save",
+        adapt: (p) => ({
+          serverId: typeof p.serverId === "string" ? p.serverId : typeof p.id === "string" ? p.id : "",
+          config: p.config && typeof p.config === "object" ? p.config : {}
+        })
+      },
+      // v1.1：UI 点号直调（无需适配，透传参数）。
+      "mcp.remove": { id: "mcp.remove", adapt: (p) => p },
+      "memory.delete": { id: "memory.delete", adapt: (p) => p },
+      "workspace.set": { id: "workspace.set", adapt: (p) => p },
+      "policy.set": { id: "policy.set", adapt: (p) => p },
+      "project.list": { id: "project.list", adapt: (p) => p },
+      "project.create": { id: "project.create", adapt: (p) => p },
+      "folder.pick": { id: "folder.pick", adapt: (p) => p },
+      "skill.list": { id: "skill.list", adapt: (p) => p },
+      "memory.save": { id: "memory.save", adapt: (p) => p },
+      "python.exec": { id: "python.exec", adapt: (p) => p },
+      "mcp.list": { id: "mcp.list", adapt: (p) => p },
+      "mcp.call": { id: "mcp.call", adapt: (p) => p },
+      "shell.exec": { id: "shell.exec", adapt: (p) => p },
+      "file.read": { id: "file.read", adapt: (p) => p },
+      "file.write": { id: "file.write", adapt: (p) => p },
+      "file.stat": { id: "file.stat", adapt: (p) => p }
+    }
+  );
   var SUPPORTED_INVOCATION_NAMES = Object.keys(UPSTREAM_TO_STUDIO);
   function isSupportedUpstreamTool(invocationName) {
     return Object.prototype.hasOwnProperty.call(UPSTREAM_TO_STUDIO, invocationName);
@@ -5973,7 +5976,7 @@ ${prompt}`;
                   const nodes = document.querySelectorAll(".ds-assistant-message-main-content");
                   const last = nodes[nodes.length - 1];
                   if (last) {
-                    const existingCards = Array.from(last.querySelectorAll(".ds-studio-tool-card"));
+                    const toolsContainer = last.querySelector(".ds-studio-tools-container");
                     const { thinking, answer } = extractThinkingPreface(reply);
                     last.innerHTML = renderMarkdown(answer);
                     if (thinking) {
@@ -5984,14 +5987,14 @@ ${prompt}`;
                       tdiv.title = thinking;
                       last.insertBefore(tdiv, last.firstChild);
                     }
-                    for (const card of existingCards) {
-                      last.appendChild(card);
+                    if (toolsContainer) {
+                      last.insertBefore(toolsContainer, last.firstChild);
                     }
                     try {
                       last.scrollIntoView({ behavior: "smooth", block: "start" });
                     } catch {
                     }
-                    d(`auto-continue rendered to DOM, len=${answer.length}, thinking=${thinking.length}, cards preserved=${existingCards.length}`);
+                    d(`auto-continue rendered to DOM, len=${answer.length}, thinking=${thinking.length}, toolsContainerPreserved=${toolsContainer ? 1 : 0}`);
                   } else {
                     d("auto-continue render: no .ds-assistant-message-main-content found");
                   }

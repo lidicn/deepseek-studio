@@ -905,8 +905,11 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                 const nodes = document.querySelectorAll('.ds-assistant-message-main-content');
                 const last = nodes[nodes.length - 1] as HTMLElement | undefined;
                 if (last) {
-                  // 先保存已有的工具卡片，避免被 innerHTML 覆盖删除
-                  const existingCards = Array.from(last.querySelectorAll('.ds-studio-tool-card'));
+                  // v1.8：保存整个工具容器（含可折叠外壳），而非裸卡片。
+                  // 之前只存 .ds-studio-tool-card，innerHTML 覆盖后把卡片 appendChild
+                  // 到结论后面（下方），既丢了可折叠容器，又导致顺序反了（工具先执行
+                  // 却显示在结论下方）。正确顺序：工具在上、结论在下。
+                  const toolsContainer = last.querySelector('.ds-studio-tools-container') as HTMLElement | null;
                   // v1.4：过滤开头的英文思考段落（模型把思考写在 RESPONSE 里，不是 THINK 段）
                   // v1.6：用 renderMarkdown 渲染（XSS 安全，保留代码块/粗体/列表，而非退化成纯文本）。
                   const { thinking, answer } = extractThinkingPreface(reply);
@@ -920,16 +923,17 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                     tdiv.title = thinking;
                     last.insertBefore(tdiv, last.firstChild);
                   }
-                  // 重新追加工具卡片到回复后面
-                  for (const card of existingCards) {
-                    last.appendChild(card);
+                  // v1.8：工具容器插回结论前面（last 最前面），保持「工具在上、结论在下」
+                  // 的自然时间顺序 —— 工具先执行、结论后产生，显示顺序应与之对应。
+                  if (toolsContainer) {
+                    last.insertBefore(toolsContainer, last.firstChild);
                   }
                   // v1.7：渲染完最终答案后自动滚动到该消息可见，避免悬浮步骤流挡住结果
                   // （用户反馈：最终结果在上方对话流，需要手动滚回去看）。
                   try {
                     last.scrollIntoView({ behavior: 'smooth', block: 'start' });
                   } catch { /* ignore */ }
-                  d(`auto-continue rendered to DOM, len=${answer.length}, thinking=${thinking.length}, cards preserved=${existingCards.length}`);
+                  d(`auto-continue rendered to DOM, len=${answer.length}, thinking=${thinking.length}, toolsContainerPreserved=${toolsContainer ? 1 : 0}`);
                 } else {
                   d('auto-continue render: no .ds-assistant-message-main-content found');
                 }

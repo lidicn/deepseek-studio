@@ -65,6 +65,20 @@ describe('tool-contract mapping', () => {
     expect(mapUpstreamToolInvocation('artifact_create', {})).toBeNull();
   });
 
+  // v1.8：原型链穿透回归。UPSTREAM_TO_STUDIO 用 Object.create(null) 建表后，
+  // 'constructor' / '__proto__' / 'toString' 等原型属性名不应命中 truthy 成员。
+  // 修复前是普通字面量，这些名会取到 Object.prototype 的成员，绕过 null 兜底，
+  // 随后 mapping.adapt 为 undefined 抛 TypeError。
+  it('rejects Object.prototype property names (prototype-chain piercing fix)', () => {
+    expect(mapUpstreamToolInvocation('constructor', {})).toBeNull();
+    expect(mapUpstreamToolInvocation('__proto__', {})).toBeNull();
+    expect(mapUpstreamToolInvocation('toString', {})).toBeNull();
+    expect(mapUpstreamToolInvocation('valueOf', {})).toBeNull();
+    expect(mapUpstreamToolInvocation('hasOwnProperty', {})).toBeNull();
+    expect(isSupportedUpstreamTool('constructor')).toBe(false);
+    expect(isSupportedUpstreamTool('__proto__')).toBe(false);
+  });
+
   it('exposes a non-empty supported invocation list', () => {
     expect(SUPPORTED_INVOCATION_NAMES.length).toBeGreaterThan(0);
     expect(SUPPORTED_INVOCATION_NAMES).toContain('shell_exec');
