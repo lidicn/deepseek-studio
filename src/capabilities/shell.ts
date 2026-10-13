@@ -153,6 +153,25 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
       // F4 修复：排除 set/path/whoami/systeminfo 等会泄漏环境/系统信息的命令
       const CMD_BUILTINS = new Set(['dir', 'copy', 'del', 'erase', 'type', 'findstr', 'find', 'ren', 'rename', 'move', 'md', 'mkdir', 'rd', 'rmdir', 'cls', 'echo', 'ver', 'vol', 'date', 'time', 'cd', 'chdir', 'sort', 'more', 'tree', 'xcopy', 'robocopy', 'where', 'tasklist', 'ipconfig', 'ping', 'netstat', 'nslookup']);
       if (process.platform === 'win32' && CMD_BUILTINS.has(argv[0].toLowerCase())) {
+        // v1.9 安全修复（审计补丁）：双引号内元字符命令注入。
+        // hasShellSyntax 把双引号内的 &|<> 视为引号内字符跳过检查（对非内建命令安全，
+        // 因为 shell:false），但 tokenizeCommand 会剥离双引号 → 裸元字符进 argv →
+        // cmd /c 二次解释 → 命令注入（如 echo "x&calc" → cmd /c echo x&calc → & 执行 calc）。
+        // v1.8 只堵了单引号路径，双引号路径漏了。此处补：走 cmd /c 的内建命令，
+        // 其参数 argv 元素若含 cmd 元字符（&|<>^），一律拒绝，要求改用 argv 数组。
+        const CMD_METACHARS = /[&|<>^]/;
+        for (let i = 1; i < argv.length; i++) {
+          if (CMD_METACHARS.test(argv[i])) {
+            return {
+              ok: false,
+              error: 'shell-metachar-in-cmd-builtin',
+              data: {
+                hint: `内建命令 ${argv[0]} 的参数含 cmd 元字符（& | < > ^），` +
+                  '会被 cmd /c 二次解释导致命令注入。请改用 argv 数组显式传递参数。',
+              },
+            };
+          }
+        }
         argv = ['cmd', '/c', ...argv];
       }
 

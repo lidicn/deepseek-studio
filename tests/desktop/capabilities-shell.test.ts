@@ -59,6 +59,49 @@ describe('shell.exec —— argv 执行与安全红线', () => {
     expect(r.error).toBe('shell-syntax-unsupported');
   });
 
+  // v1.9：双引号内元字符命令注入修复（审计补丁）。
+  // 漏洞链：echo "x&calc" → hasShellSyntax 判安全（双引号内跳过 &）→
+  // tokenizeCommand 剥离双引号 → argv=['echo','x&calc'] → cmd /c echo x&calc →
+  // cmd 二次解释 & → 先 echo x 再执行 calc → 命令注入成立。
+  // v1.8 只堵了单引号路径（单引号在 shell:false 下不是引号），双引号路径漏了。
+  it('双引号包裹的元字符在内建命令中被拒绝（命令注入修复）', async () => {
+    const cap = createShellCapability();
+    // echo 是 CMD_BUILTINS，走 cmd /c 路径，双引号内 & 会被 cmd 二次解释
+    const r1 = await cap.execute({ command: 'echo "hello & whoami"' });
+    expect(r1.ok).toBe(false);
+    expect(r1.error).toBe('shell-metachar-in-cmd-builtin');
+
+    const r2 = await cap.execute({ command: 'dir "C:/x & calc"' });
+    expect(r2.ok).toBe(false);
+    expect(r2.error).toBe('shell-metachar-in-cmd-builtin');
+
+    // 管道符
+    const r3 = await cap.execute({ command: 'echo "a|b"' });
+    expect(r3.ok).toBe(false);
+    expect(r3.error).toBe('shell-metachar-in-cmd-builtin');
+
+    // 重定向符
+    const r4 = await cap.execute({ command: 'echo "a>out.txt"' });
+    expect(r4.ok).toBe(false);
+    expect(r4.error).toBe('shell-metachar-in-cmd-builtin');
+  });
+
+  // v1.9：无元字符的双引号内建命令正常执行（不误杀合法用例）
+  it('双引号内建命令无元字符时正常执行', async () => {
+    const cap = createShellCapability();
+    const r = await cap.execute({ command: 'echo "hello world"' });
+    expect(r.ok).toBe(true);
+    expect((r.data as { stdout: string }).stdout).toContain('hello world');
+  });
+
+  // v1.9：非内建命令（如 git）双引号参数含 | 不被拒绝（git 不走 cmd /c）
+  it('非内建命令双引号内元字符不被误杀', () => {
+    // git commit -m "a|b" 的 | 在双引号内，hasShellSyntax 返回 false，
+    // git 不在 CMD_BUILTINS，不走 cmd /c，shell:false 下 argv 元素含 | 不被解释
+    expect(hasShellSyntax('git commit -m "a|b"')).toBe(false);
+    expect(hasShellSyntax('node -e "console.log(1|2)"')).toBe(false);
+  });
+
   it('缺失命令 → missing-command，不产生任何子进程', async () => {
     const cap = createShellCapability();
     expect((await cap.execute({})).error).toBe('missing-command');
