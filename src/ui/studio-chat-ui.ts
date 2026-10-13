@@ -122,31 +122,51 @@ function measureComposerTop(): number | null {
  * 动态测量 DeepSeek 左侧栏（会话历史）的右沿，调整 overlay 的 left，
  * 使 overlay 不盖住左侧栏——只盖消息列表区域。
  *
- * 锚点：找"高（>50% vh）、窄（≤360px）、靠左（left≤20）"的 fixed/sticky 元素，
- * 典型是 aside/nav 或 #root 第一个子元素。返回它的 right（左沿+宽），测不到返回 0。
- * 不用混淆 class 选择器（随版本变化），几何特征是稳定锚点。
+ * 锚点策略：DeepSeek 侧栏 class 是混淆的（如 dc04ec1d），不含 "sidebar" 等关键词，
+ * 用关键词选择器（aside/nav/[class*="sidebar"]）选不到。改用几何遍历：
+ * 遍历 body 下所有元素，找「贴左（left≤20）、高（>50% vh）、窄（≤视口宽的 25%）」的元素，
+ * 取其中 right 最大者。侧栏通常 250-280px，满足 ≤25%vw（2560 视口时 ≤640px）。
+ *
+ * 关键排除：Studio 自己注入的元素（class 以 "studio-" 开头，如 studio-sidebar /
+ * studio-right-sidebar）不是 DeepSeek 原页面元素，必须跳过，否则会把被移出视口的
+ * studio-sidebar（left=-260）误当成侧栏。
+ *
+ * 返回侧栏右沿 px，测不到返回 0（调用方用 left:0 全宽兜底）。
  */
 function measureSidebarRight(): number {
   const vh = window.innerHeight;
+  const vw = window.innerWidth;
   let best = 0;
-  const candidates = document.querySelectorAll('aside, nav, [class*="sidebar"], [class*="aside"], [class*="history"]');
-  for (const el of candidates) {
+  // 遍历限制：只看 body 下的元素，跳过 Studio overlay 自身子树（避免误选）
+  const all = document.body ? document.body.querySelectorAll(':scope > *') : [];
+  for (const el of all) {
+    // 跳过 Studio 自注入元素（studio-sidebar 等）
+    const cls = typeof el.className === 'string' ? el.className : '';
+    if (cls.includes('studio-') || cls.includes('ds-studio') || cls.includes('ds-sc')) continue;
+    // 跳过 overlay 容器自身及后代
+    if (el.closest('.ds-studio-chat-container')) continue;
     const r = el.getBoundingClientRect();
     if (r.width === 0 || r.height === 0) continue;
-    if (r.height > vh * 0.5 && r.left <= 20 && r.width <= 360) {
+    if (r.left <= 20 && r.height > vh * 0.5 && r.width <= vw * 0.25) {
       if (r.right > best) best = r.right;
     }
   }
-  // 兜底：看 #root 第一个子元素（DeepSeek 常把侧栏作为首个子节点）
+  // 如果直接子元素没命中（侧栏可能嵌套在 #root > div 下），往里探一层：
+  // 找左半区内最宽的「贴左+高」块。遍历 #root 后代，同样排除 studio- 前缀。
   if (best === 0) {
     const root = document.querySelector('#root');
     if (root) {
-      for (const ch of root.children) {
-        const r = ch.getBoundingClientRect();
+      // 用 querySelectorAll 扫描 #root 下所有元素（限 2000 个防卡）
+      const descendants = root.querySelectorAll('*');
+      let scanned = 0;
+      for (const el of descendants) {
+        if (scanned++ > 2000) break;
+        const cls = typeof el.className === 'string' ? el.className : '';
+        if (cls.includes('studio-') || cls.includes('ds-studio') || cls.includes('ds-sc')) continue;
+        const r = el.getBoundingClientRect();
         if (r.width === 0 || r.height === 0) continue;
-        if (r.height > vh * 0.5 && r.left <= 20 && r.width <= 360) {
+        if (r.left <= 20 && r.height > vh * 0.5 && r.width <= vw * 0.25 && r.width > 0) {
           if (r.right > best) best = r.right;
-          break;
         }
       }
     }

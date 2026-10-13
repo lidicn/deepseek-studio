@@ -4168,24 +4168,32 @@ ${prompt}`;
   }
   function measureSidebarRight() {
     const vh = window.innerHeight;
+    const vw = window.innerWidth;
     let best = 0;
-    const candidates = document.querySelectorAll('aside, nav, [class*="sidebar"], [class*="aside"], [class*="history"]');
-    for (const el2 of candidates) {
+    const all = document.body ? document.body.querySelectorAll(":scope > *") : [];
+    for (const el2 of all) {
+      const cls = typeof el2.className === "string" ? el2.className : "";
+      if (cls.includes("studio-") || cls.includes("ds-studio") || cls.includes("ds-sc")) continue;
+      if (el2.closest(".ds-studio-chat-container")) continue;
       const r = el2.getBoundingClientRect();
       if (r.width === 0 || r.height === 0) continue;
-      if (r.height > vh * 0.5 && r.left <= 20 && r.width <= 360) {
+      if (r.left <= 20 && r.height > vh * 0.5 && r.width <= vw * 0.25) {
         if (r.right > best) best = r.right;
       }
     }
     if (best === 0) {
       const root = document.querySelector("#root");
       if (root) {
-        for (const ch of root.children) {
-          const r = ch.getBoundingClientRect();
+        const descendants = root.querySelectorAll("*");
+        let scanned = 0;
+        for (const el2 of descendants) {
+          if (scanned++ > 2e3) break;
+          const cls = typeof el2.className === "string" ? el2.className : "";
+          if (cls.includes("studio-") || cls.includes("ds-studio") || cls.includes("ds-sc")) continue;
+          const r = el2.getBoundingClientRect();
           if (r.width === 0 || r.height === 0) continue;
-          if (r.height > vh * 0.5 && r.left <= 20 && r.width <= 360) {
+          if (r.left <= 20 && r.height > vh * 0.5 && r.width <= vw * 0.25 && r.width > 0) {
             if (r.right > best) best = r.right;
-            break;
           }
         }
       }
