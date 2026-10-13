@@ -119,7 +119,11 @@ export function createFileCapability(id: FileToolId, options: FileCapabilityOpti
           let read = 0;
           let curPos = offset;
           for (;;) {
-            const { bytesRead } = await handle.read(buf, 0, buf.length, curPos);
+            // v1.7：本次最多读「剩余配额」字节，防止越过 limit（修复 limit 突破 bug）。
+            // 之前先 read+=bytesRead 再判 read>=limit，会多读一整块（最多 4095 字节）。
+            const toRead = Math.min(buf.length, limit - read);
+            if (toRead <= 0) break;
+            const { bytesRead } = await handle.read(buf, 0, toRead, curPos);
             if (bytesRead === 0) break;
             chunks.push(Buffer.from(buf.subarray(0, bytesRead)));
             read += bytesRead;

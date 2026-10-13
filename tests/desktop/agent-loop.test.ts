@@ -35,7 +35,7 @@ describe('agent-loop —— 状态机', () => {
   it('无工具调用：一步结束并输出最终回答', async () => {
     const { engine, sends } = fakeEngine([{ content: '答案是 42', toolCalls: 0 }]);
     const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false } });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false }, throttleBetweenSteps: false });
 
     await loop.send('你好');
 
@@ -51,7 +51,7 @@ describe('agent-loop —— 状态机', () => {
       { content: '任务完成', toolCalls: 0 },
     ]);
     const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false } });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false }, throttleBetweenSteps: false });
 
     await loop.send('读取 a.txt 并总结');
 
@@ -63,7 +63,7 @@ describe('agent-loop —— 状态机', () => {
   it('max_steps 上限：超出后报错并停止续跑', async () => {
     const { engine, sends } = fakeEngine([{ content: '继续调工具', toolCalls: 1 }]);
     const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, maxSteps: 3, stopFlag: { stopped: false } });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, maxSteps: 3, stopFlag: { stopped: false }, throttleBetweenSteps: false });
 
     await loop.send('做事');
 
@@ -78,7 +78,7 @@ describe('agent-loop —— 状态机', () => {
       { content: '完成', toolCalls: 0 },
     ]);
     const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false } });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false }, throttleBetweenSteps: false });
 
     await loop.send('读文件');
 
@@ -93,7 +93,7 @@ describe('agent-loop —— 状态机', () => {
     ]);
     const c = collector();
     const stopFlag = { stopped: false };
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag, throttleBetweenSteps: false });
 
     const p = loop.send('长任务');
     // 引擎在第二次 send 后由测试侧模拟用户停止
@@ -121,7 +121,7 @@ describe('agent-loop —— 状态机', () => {
       },
     };
     const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false } });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false }, throttleBetweenSteps: false });
 
     await expect(loop.send('x')).resolves.toBeUndefined();
     expect(c.events.some((e) => e.type === 'error' && e.text?.includes('page-not-connected'))).toBe(true);
@@ -131,7 +131,7 @@ describe('agent-loop —— 状态机', () => {
   it('并发 send 拒绝（agent-busy）', async () => {
     const { engine } = fakeEngine([{ content: 'ok', toolCalls: 0 }]);
     const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false } });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false }, throttleBetweenSteps: false });
 
     const first = loop.send('第一条');
     await expect(loop.send('第二条')).rejects.toThrow('agent-busy');
@@ -150,7 +150,7 @@ describe('agent-loop —— 事件序列（面板渲染依据）', () => {
       { content: '结论：一切正常', toolCalls: 0 },
     ]);
     const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false } });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false }, throttleBetweenSteps: false });
 
     await loop.send('体检');
 
@@ -168,7 +168,7 @@ describe('agent-loop —— 引擎健康', () => {
   it('health 透传引擎探测结果', async () => {
     const { engine } = fakeEngine([]);
     const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false } });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false }, throttleBetweenSteps: false });
     expect(await engine.health()).toEqual({ ok: true });
     void loop;
     void vi;

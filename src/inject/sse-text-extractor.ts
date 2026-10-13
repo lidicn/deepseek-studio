@@ -128,9 +128,14 @@ export class SseTextStreamExtractor {
     }
     // 单字符增量：只在活跃 fragment 是 RESPONSE（或未知）时保留
     // 过滤 response/status、response/fragments/-1/elapsed_secs 等控制事件
+    // v1.6：放宽 path 匹配——DeepSeek 可能用具体 fragment 索引（如
+    // response/fragments/0/content）下发内容 delta，不只 -1。只硬编码 -1 会导致
+    // 工具标签字符走非 -1 路径时被整体丢弃（标签留在 DOM 不被解析）。
+    // 对齐 deepseek-pp stream-codec.ts isResponseTextPatchPath：接受任意
+    // response/fragments/<index>/content，拒绝 status/elapsed_secs 等控制字段。
     if (typeof obj.v === 'string') {
       const p = String(obj.p ?? '');
-      if (p && p !== 'response/fragments/-1/content') return '';
+      if (p && !isResponseContentPatchPath(p)) return '';
       if (this.activeFragmentType === 'THINK') {
         this.reasoningBuffer += obj.v;
         return '';
@@ -154,6 +159,19 @@ export class SseTextStreamExtractor {
     }
     return '';
   }
+}
+
+/**
+ * v1.6：判断 SSE patch path 是否是 response 内容 delta（接受任意 fragment 索引）。
+ * 接受：response/content、response/fragments/-1/content、response/fragments/0/content 等
+ * 拒绝：response/status、response/fragments/-1/elapsed_secs、response/vote_status 等控制字段
+ * 对齐 deepseek-pp stream-codec.ts isResponseTextPatchPath 的宽松匹配。
+ */
+function isResponseContentPatchPath(path: string): boolean {
+  if (!path.startsWith('response')) return false;
+  const lastSegment = path.split('/').pop();
+  // 只认内容字段，拒绝 status/elapsed_secs/vote_status 等控制字段
+  return lastSegment === 'content' || lastSegment === 'text' || lastSegment === 'markdown' || lastSegment === 'delta';
 }
 
 /**

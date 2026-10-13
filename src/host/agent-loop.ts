@@ -50,8 +50,10 @@ export interface AgentLoopOptions {
   engine: ModelEngine;
   /** 事件出口（面板经 WS 订阅）。 */
   onEvent(event: AgentLoopEvent): void;
-  /** 单个用户消息的最大续跑步数（默认 15）。 */
+  /** 单个用户消息的最大续跑步数（默认 25）。 */
   maxSteps?: number;
+  /** v1.6：单个用户消息的全局看门狗（默认 15 分钟），超时强制结束 send，防永久卡死。 */
+  watchdogMs?: number;
   continueNudge?: string;
   /**
    * 共享停止旗标：WebEngine.isStopped 读它实现等待中断；
@@ -70,7 +72,8 @@ export interface AgentLoop {
 }
 
 export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
-  const maxSteps = options.maxSteps ?? 15;
+  const maxSteps = options.maxSteps ?? 25;
+  const watchdogMs = options.watchdogMs ?? 15 * 60 * 1000;
   const continueNudge = options.continueNudge ?? DEFAULT_CONTINUE_NUDGE;
   let active = false;
 
@@ -87,7 +90,21 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
       if (active) throw new Error('agent-busy');
       active = true;
       options.stopFlag.stopped = false;
+      // v1.6：全局看门狗——任意 send 挂起超过 watchdogMs 强制复位 active，防永久 agent-busy
+      const watchdog = setTimeout(() => {
+        if (active) {
+          options.stopFlag.stopped = true;
+          emit({ type: 'error', text: `全局看门狗触发（${Math.round(watchdogMs / 60000)} 分钟），强制结束本次循环` });
+          emit({ type: 'done' });
+          active = false;
+          options.stopFlag.stopped = false;
+        }
+      }, watchdogMs);
       emit({ type: 'user', text });
+
+      // v1.6：纠偏次数计数 —— 连续纠偏仍见原始工具标签说明页端解析失效，停止避免死循环
+      let correctionAttempts = 0;
+      const MAX_CORRECTION_ATTEMPTS = 3;
 
       try {
         emit({ type: 'status', text: '已发送，等待模型回复…', step: 1 });
@@ -105,7 +122,13 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
 
           // 原始工具标签泄漏 → JSON 解析失败，纠偏一次（计一步）
           if (result.toolCalls === 0 && RAW_TOOL_TAG_RE.test(result.content)) {
-            emit({ type: 'status', text: '检测到未解析的工具调用，发送格式纠偏…', step });
+            correctionAttempts += 1;
+            if (correctionAttempts > MAX_CORRECTION_ATTEMPTS) {
+              // 连续纠偏失败：页端拦截器未解析工具标签，继续纠偏只会死循环
+              emit({ type: 'error', text: `连续 ${MAX_CORRECTION_ATTEMPTS} 次纠偏后模型仍输出未解析工具标签。页端拦截器可能未正确加载（尝试刷新 DeepSeek 页面）。停止循环。`, step });
+              break;
+            }
+            emit({ type: 'status', text: `检测到未解析的工具调用，发送格式纠偏（第 ${correctionAttempts} 次）…`, step });
             result = await options.engine.send(FORMAT_CORRECTION_NUDGE);
             continue;
           }
@@ -146,6 +169,7 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
         emit({ type: 'error', text: err instanceof Error ? err.message : String(err) });
         emit({ type: 'done' });
       } finally {
+        clearTimeout(watchdog);
         active = false;
         options.stopFlag.stopped = false;
       }

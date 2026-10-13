@@ -58,7 +58,7 @@ describe('v0.8: 工具循环闭环（页端 auto-continue 模式）', () => {
       { content: '任务完成', toolCalls: 0 },
     ]);
     const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false } });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false }, throttleBetweenSteps: false });
 
     await loop.send('读取并总结');
 
@@ -88,7 +88,7 @@ describe('v0.8: 工具循环闭环（页端 auto-continue 模式）', () => {
       // 不实现 waitForNextReply
     };
     const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false } });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false }, throttleBetweenSteps: false });
 
     await loop.send('做事');
 
@@ -103,7 +103,7 @@ describe('v0.8: 工具循环闭环（页端 auto-continue 模式）', () => {
       { content: '最终回答', toolCalls: 0 },
     ]);
     const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false } });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false }, throttleBetweenSteps: false });
 
     await loop.send('复杂任务');
 
@@ -118,7 +118,7 @@ describe('v0.8: 工具循环闭环（页端 auto-continue 模式）', () => {
       { content: '继续调', toolCalls: 1 },
     ]);
     const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, maxSteps: 5, stopFlag: { stopped: false } });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, maxSteps: 5, stopFlag: { stopped: false }, throttleBetweenSteps: false });
 
     await loop.send('无限循环');
 
@@ -134,7 +134,7 @@ describe('v0.8: 长任务不断流', () => {
       { content: '长任务完成', toolCalls: 0 },
     ]);
     const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false } });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false }, throttleBetweenSteps: false });
 
     await loop.send('跑长命令');
 
@@ -150,7 +150,7 @@ describe('v0.8: 长任务不断流', () => {
       { content: '完成', toolCalls: 0 },
     ]);
     const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false } });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false }, throttleBetweenSteps: false });
 
     await loop.send('测试');
 
@@ -167,7 +167,7 @@ describe('v0.8: 格式纠偏（JSON 解析失败）', () => {
       { content: '完成', toolCalls: 0 },
     ]);
     const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false } });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false }, throttleBetweenSteps: false });
 
     await loop.send('执行命令');
 
@@ -183,7 +183,7 @@ describe('v0.8: 格式纠偏（JSON 解析失败）', () => {
       { content: '<shell_exec>bad</shell_exec>', toolCalls: 0 },
     ]);
     const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, maxSteps: 3, stopFlag: { stopped: false } });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, maxSteps: 3, stopFlag: { stopped: false }, throttleBetweenSteps: false });
 
     await loop.send('测试');
 
@@ -221,7 +221,7 @@ describe('v0.8: 停止与恢复', () => {
       },
     };
     const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag });
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag, throttleBetweenSteps: false });
 
     await loop.send('任务A');
 
@@ -229,7 +229,7 @@ describe('v0.8: 停止与恢复', () => {
 
     // 再次发送应正常工作（active 已复位）
     const c2 = collector();
-    const loop2 = createAgentLoop({ engine, onEvent: c2.onEvent, stopFlag: { stopped: false } });
+    const loop2 = createAgentLoop({ engine, onEvent: c2.onEvent, stopFlag: { stopped: false }, throttleBetweenSteps: false });
     await expect(loop2.send('继续')).resolves.toBeUndefined();
   });
 

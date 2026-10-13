@@ -16,6 +16,16 @@ import { SseTextStreamExtractor } from './sse-text-extractor';
 import { DeepSeekSseFrameDecoder } from './deepseek-sse-frame-decoder';
 import { isSupportedUpstreamTool, SUPPORTED_INVOCATION_NAMES } from '../shared/tool-contract';
 import { shouldSkipAutoContinue } from '../shared/tool-result-format';
+import {
+  buildContinuationPrompt,
+  buildNudgePrompt,
+  shouldNudge,
+  extractTaskCompleteSignal,
+  MAX_LOOP,
+  MAX_NUDGES,
+  type PendingResult,
+} from '../shared/continuation-prompt';
+import { renderMarkdown } from './markdown';
 import type { ExecuteResult } from '../capabilities/types';
 import { createPowHeaders } from './pow';
 import { createToolCard, updateToolCardByCallId, stripRawToolTagsFromMessage } from './tool-card-ui';
@@ -48,12 +58,8 @@ export interface MainWorldInterceptorHandle {
   stop(): void;
 }
 
-interface PendingResult {
-  invocationName: string;
-  ok: boolean;
-  result?: unknown;
-  error?: string;
-}
+// PendingResult 类型已提升到 src/shared/continuation-prompt.ts（单一真相源），
+// 本模块 import 它，消除重复声明。
 
 // v1.0：记忆列表缓存（由宿主推送，用于注入系统提示词的 "Existing Memories" 部分）
 let currentMemories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }> = [];
@@ -83,6 +89,15 @@ interface LoopState {
   autoReplyText: string;
   /** v0.9：当前是否在处理 auto-continue 的 XHR 响应。 */
   inAutoContinue: boolean;
+  /** v1.6：本轮 auto-continue 回复里是否出现了工具调用（由 forward 在 inAutoContinue 时置位）。
+   *  readyState===4 时据此判断「模型没调工具」→ 走 nudge 判定，避免 pending 异步未到位的误判。 */
+  autoReplyHadTools: boolean;
+  /** v1.6：用户原始任务（首轮请求 prompt 字段，augmentation 前）。XHR/fetch hook 在首条消息时写入，
+   *  autoContinueWithPow / autoContinueNudge 读它拼续跑 prompt。 */
+  originalTask: string;
+  /** v1.6：检测到新用户消息（parent_message_id === null）时触发，让 installMainWorldInterceptor
+   *  重置 collectedExecutions/nudgeCount/loopDepth（闭包状态，hook 函数访问不到）。 */
+  onNewUserMessage?: () => void;
   /** 竞态修复：流结束时回调，检查 pending 并触发续跑（由 installMainWorldInterceptor 设置） */
   onStreamEnd?: () => void;
 }
@@ -203,24 +218,25 @@ const TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
 
 系统会真实执行并把结果返回给你，据此继续。不要臆造路径，不要编造工具结果。`;
 
-function hasToolIntent(text: string): boolean {
-  if (!text) return false;
-  // 「Studio Agent」是 AgentLoop 发消息的固定哨兵前缀（面板消息与续跑/纠偏指令都带），
-  // 必须无条件触发工具能力注入；「工作区」覆盖面板场景里的常规说法。
-  // MCP/电视/TV/设备 等关键词也触发，因为用户可能用 MCP 工具控制设备。
-  return /(Studio Agent|工作区|智能体|读|写|读取|写入|查看|列出|打开|文件|目录|文件夹|执行|运行|命令|路径|mcp|电视|tv|设备|遥控|换台|频道|音量|关机|开机|app|应用|file|read|write|list|cat|ls|dir|command|shell|run|execute|path)/i.test(text);
-}
+/**
+ * v1.6：续跑 prompt 引用的工具目录（静态文本，摘自 TOOL_CAPABILITY_PROMPT 的「## 可用工具」段）。
+ * studio 工具集固定，无需 deepseek-pp 的 dynamic provider schema。
+ */
+const TOOL_CATALOG_TEXT = `## 可用工具
+- local_file_read — 读取文件内容，参数：path（绝对路径，正斜杠）
+- local_file_write — 写入文件，参数：path、content
+- local_file_stat — 查看文件/目录信息，参数：path
+- shell_exec — 执行命令行，参数：command（优先用 PowerShell，路径用正斜杠）
+- memory_save — 保存长期记忆，参数：type（user/project）、name、content、tags（可选）
+- python_exec — 执行 Python 代码，参数：code（Python 源代码字符串）
+- mcp_list — 列出已配置的 MCP 服务器及其工具（无参数）
+- mcp_call — 调用 MCP 工具，参数：serverId、tool、args（参数对象）
 
-function computeIntent(parsed: Record<string, unknown>): boolean {
-  if (typeof parsed.prompt === 'string') return hasToolIntent(parsed.prompt);
-  if (Array.isArray(parsed.messages)) {
-    for (let i = parsed.messages.length - 1; i >= 0; i--) {
-      const m = parsed.messages[i] as { role?: string; content?: unknown };
-      if (m.role === 'user' && typeof m.content === 'string') return hasToolIntent(m.content);
-    }
-  }
-  return false;
-}
+调用方式：直接输出 XML 标签，标签体内为合法 JSON，如 <shell_exec>{"command":"..."}</shell_exec>`;
+
+// v1.7：hasToolIntent / computeIntent 已删除。之前用正则猜「要不要用工具」会漏掉
+// 「审计」「bug」「代码」等关键词，导致模型不知道有工具而只聊天。修复：无条件注入
+// 工具能力提示词，由模型自己判断。判重由 injectInstructionIntoMessages 的 MARKER 负责。
 
 function formatMcpToolsBlock(): string {
   if (currentMcpTools.length === 0) return '';
@@ -315,16 +331,19 @@ function prepareOutgoingBody(rawBody: string, pending: PendingResult[]): string 
   } catch {
     return null;
   }
-  const intent = computeIntent(parsed);
+  // v1.7：无条件注入工具能力提示词。要不要用工具由模型自己判断，前提是模型
+  // 始终知道有工具可用。之前用正则猜意图（hasToolIntent）会漏掉「审计」「bug」
+  // 「代码」等关键词，导致模型不知道有工具而只聊天。修复：不再猜，直接注入。
+  // hasToolIntent 仅用于避免重复注入（已注入则跳过），不再用于决定「是否注入」。
   const hasResults = pending.length > 0;
-  if (!intent && !hasResults) return null;
   const block = hasResults ? formatToolResultBlock(pending.slice()) : '';
   const memoriesBlock = formatMemoriesBlock();
   if (Array.isArray(parsed.messages)) {
     let msgs: unknown[] = parsed.messages as unknown[];
-    if (intent) msgs = injectInstructionIntoMessages(msgs);
-    // v1.0：在系统提示词后追加已有记忆
-    if (intent && memoriesBlock) {
+    // 无条件注入：injectInstructionIntoMessages 内部已判重（含 MARKER 则跳过）
+    msgs = injectInstructionIntoMessages(msgs);
+    // 系统提示词后追加已有记忆
+    if (memoriesBlock) {
       const first = msgs[0] as { role?: string; content?: unknown };
       if (first && first.role === 'system' && typeof first.content === 'string') {
         first.content = first.content + memoriesBlock;
@@ -334,7 +353,7 @@ function prepareOutgoingBody(rawBody: string, pending: PendingResult[]): string 
     parsed.messages = msgs;
   } else if (typeof parsed.prompt === 'string') {
     let prompt: string = parsed.prompt;
-    if (intent && !prompt.includes(TOOL_CAPABILITY_MARKER)) {
+    if (!prompt.includes(TOOL_CAPABILITY_MARKER)) {
       prompt = `${buildCapabilityPrompt()}${memoriesBlock}\n\n${prompt}`;
     }
     if (hasResults) prompt = reinjectIntoPrompt(prompt, pending.slice());
@@ -493,6 +512,26 @@ function installXhrHooks(
     // 请求侧：无论 pending 是否为空，命中对话端点就尝试注入工具提示/回填结果。
     if (isChat && typeof body === 'string') {
       diag(`xhr chat body len=${body.length} head=${body.slice(0, 200)}`);
+      // v1.6：捕获原始任务、重置循环累积状态。
+      // 判定「新用户消息」的信号：prompt 不含续跑标签（<original_task> / <tool_results>）。
+      // 只靠 parent_message_id===null 不够 —— 同一会话连续发任务时它永远非 null，导致 originalTask
+      // 跨任务泄漏（上个任务的上下文污染当前任务）。续跑/nudge prompt 都带这些标签，用户消息不带。
+      // 必须在 prepareOutgoingBody 之前抓原始 prompt（augmentation 会改写它）。
+      if (loopState) {
+        try {
+          const parsedBody = JSON.parse(body) as { prompt?: unknown };
+          if (typeof parsedBody.prompt === 'string' && parsedBody.prompt.trim()
+              && !parsedBody.prompt.includes('<original_task>')
+              && !parsedBody.prompt.includes('<tool_results')
+              && !parsedBody.prompt.includes('[TOOL_RESULTS]')) {
+            loopState.originalTask = parsedBody.prompt;
+            diag(`originalTask captured len=${loopState.originalTask.length}`);
+            if (typeof loopState.onNewUserMessage === 'function') {
+              try { loopState.onNewUserMessage(); } catch { /* ignore */ }
+            }
+          }
+        } catch { /* not json, ignore */ }
+      }
       const next = prepareOutgoingBody(body, pending);
       if (next !== null) {
         body = next;
@@ -545,12 +584,27 @@ function installXhrHooks(
           for (const frame of frames) {
             // 从 frame.parsed 里提取原始 content（未 JSON 转义的文本）
             if (frame.parsed && typeof frame.parsed === 'object') {
-              const obj = frame.parsed as { v?: Array<{ type?: string; content?: string }> };
+              const obj = frame.parsed as {
+                p?: string;
+                v?: Array<{ type?: string; content?: string }> | string;
+              };
+              // v1.6：同时提取 fragment APPEND 的 content 数组 + 单字符 delta（v 是字符串）。
+              // 单字符 delta 是 DeepSeek 逐 token 下发工具标签字符的主要形式，漏掉它会导致
+              // 工具标签（<local_file_read> 等）的字符丢失，解析器收不到完整标签。
               if (Array.isArray(obj.v)) {
                 for (const frag of obj.v) {
                   if (typeof frag.content === 'string') {
                     rawDataText += frag.content;
                   }
+                }
+              } else if (typeof obj.v === 'string') {
+                // 只取 RESPONSE 内容路径的 delta（过滤 status/elapsed_secs 等控制字段、
+                // 以及 THINK 段的逐字 delta —— 后者由 activeFragmentType 判断，但
+                // rawDataText 是给工具解析用的原始流，THINK 段不含工具标签，可全收，
+                // 因为 parser 只认工具标签名，THINK 文本不会误匹配）。
+                const p = String(obj.p ?? '');
+                if (!p || /^response(\/|$)/.test(p)) {
+                  rawDataText += obj.v;
                 }
               }
             }
@@ -602,10 +656,16 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     if (g.__studioMemories) currentMemories = g.__studioMemories;
   }
   // v0.8：自动工具循环——记住最近一次 chat 请求的 body 模板 + 当前流是否结束。
-  const loopState: LoopState = { lastChatBody: null as string | null, streamActive: false, lastResponseMsgId: null as number | null, autoReplyText: '', inAutoContinue: false };
+  const loopState: LoopState = { lastChatBody: null as string | null, streamActive: false, lastResponseMsgId: null as number | null, autoReplyText: '', inAutoContinue: false, autoReplyHadTools: false, originalTask: '' };
   let autoContinueTimer: ReturnType<typeof setTimeout> | null = null;
   let loopDepth = 0;
-  const MAX_LOOP = 8;
+  // v1.6：跨整个循环累积的工具执行结果（对标 deepseek-pp collectedExecutions）。
+  // pending 每轮清空（防 XHR hook 重复注入），collectedExecutions 保留到循环结束，
+  // 让续跑 prompt 带完整历史，模型不会从第 2 步起忘了之前做了什么。
+  // originalTask 存在 loopState.originalTask（XHR/fetch hook 要写入，在闭包外访问）。
+  const collectedExecutions: PendingResult[] = [];
+  // v1.6：nudge 计数（无工具断流纠偏次数上限 MAX_NUDGES）。
+  let nudgeCount = 0;
   // v0.9 POW：捕获页面正常请求的 headers（Authorization / X-App-Version 等）
   const capturedHeaders: Record<string, string> = {};
 
@@ -618,6 +678,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     }
     const callId = call.id || crypto.randomUUID();
     const startedAt = Date.now();
+    // v1.6：auto-continue 期间检测到工具调用 → 标记，readyState===4 时据此走续跑而非 nudge。
+    if (loopState.inAutoContinue) loopState.autoReplyHadTools = true;
 
     // v0.9：在页面上创建工具调用卡片（替代原始 XML 标签展示）
     try {
@@ -669,11 +731,13 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     // F3 修复：JSON 解析失败的工具调用，直接回填错误，不投递宿主
     if (call.params && call.params.__invalid_json) {
       d(`forward: invalid JSON for ${call.invocationName}, err=${call.params.__error}`);
-      pending.push({
+      const r: PendingResult = {
         invocationName: call.invocationName,
         ok: false,
         error: `invalid-tool-json: ${call.params.__error}. Raw body: ${String(call.params.__raw ?? '').slice(0, 300)}`,
-      });
+      };
+      pending.push(r);
+      collectedExecutions.push(r);
       try { updateToolCardByCallId(callId, cardData, { ok: false, error: `invalid-tool-json: ${call.params.__error}` }, Date.now() - startedAt); } catch { /* ignore */ }
       if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
         scheduleAutoContinue();
@@ -683,7 +747,9 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     void sender({ callId, invocationName: call.invocationName, params: call.params })
       .then((r: ExecuteResult) => {
         d(`forward: done ok=${r.ok} err=${r.error ?? ''}`);
-        pending.push({ invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error });
+        const pr: PendingResult = { invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error };
+        pending.push(pr);
+        collectedExecutions.push(pr);
         // v1.3：更新步骤流工具条目
         if (stepFlow) {
           const detail = r.error ?? (typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? '').slice(0, 500));
@@ -711,7 +777,9 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       })
       .catch((e: unknown) => {
         d(`forward: failed ${e instanceof Error ? e.message : String(e)}`);
-        pending.push({ invocationName: call.invocationName, ok: false, error: e instanceof Error ? e.message : String(e) });
+        const pr: PendingResult = { invocationName: call.invocationName, ok: false, error: e instanceof Error ? e.message : String(e) };
+        pending.push(pr);
+        collectedExecutions.push(pr);
         // v1.3：更新步骤流工具条目
         if (stepFlow) {
           stepFlow.resolveToolEntry(stepFlowStep, false, e instanceof Error ? e.message : String(e));
@@ -753,6 +821,15 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     }
   };
 
+  // v1.6：新用户消息到达 → 重置循环累积状态（hook 函数在闭包外，只能经此回调通知）。
+  loopState.onNewUserMessage = () => {
+    collectedExecutions.length = 0;
+    nudgeCount = 0;
+    loopDepth = 0;
+    loopState.autoReplyHadTools = false;
+    d('new user message: reset collectedExecutions/nudgeCount/loopDepth');
+  };
+
   async function autoContinueWithPow(): Promise<void> {
     if (!loopState.lastChatBody || pending.length === 0 || loopDepth >= MAX_LOOP) return;
     loopDepth += 1;
@@ -760,24 +837,15 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     stepFlowStep = loopDepth;
     stepReasoningAccum = '';
     loopState.streamActive = true;
+    loopState.autoReplyHadTools = false;
     try {
-      // 构造续跑 body：parent_message_id = 上一条 assistant ID，prompt = 工具结果
-      const toolResults = pending.map((p) => {
-        // shell.exec 类结果：直接输出 stdout，避免 JSON.stringify 转义换行符
-        if (p.ok && p.result && typeof p.result === 'object' && 'stdout' in p.result) {
-          const r = p.result as Record<string, unknown>;
-          const stdout = typeof r.stdout === 'string' ? r.stdout : '';
-          const stderr = typeof r.stderr === 'string' ? r.stderr : '';
-          let text = stdout.trimEnd();
-          if (stderr.trim()) text += `\n\n<stderr>\n${stderr.trimEnd()}\n</stderr>`;
-          return `## ${p.invocationName}\n${text || '(empty output)'}`;
-        }
-        const result = p.ok ? (typeof p.result === 'string' ? p.result : JSON.stringify(p.result, null, 2)) : `ERROR: ${p.error}`;
-        return `## ${p.invocationName}\n${result}`;
-      }).join('\n\n');
-      const continuationPrompt = `[TOOL_RESULTS]\n${toolResults}\n[/TOOL_RESULTS]\n\n如果结果已经足够，请输出最终结论。只有当确实需要更多信息、验证或文件修改时，才继续调用工具。`;
+      // v1.6：续跑 prompt 带原始任务 + 窗口化全部历史 + 工具目录（移植自 deepseek-pp
+      // buildContinuationPrompt）。collectedExecutions 跨循环累积，pending 只是本轮回填缓冲。
+      // 模型从此知道：用户要什么（originalTask）、之前做了什么（collectedExecutions）、还能用什么工具。
+      const continuationPrompt = buildContinuationPrompt(loopState.originalTask, collectedExecutions, TOOL_CATALOG_TEXT);
 
-      // F8 修复：清空 pending，避免 XHR hook 的 prepareOutgoingBody 再追加一份 [TOOL_RESULTS]
+      // F8 修复：清空 pending，避免 XHR hook 的 prepareOutgoingBody 再追加一份工具结果。
+      // collectedExecutions 不清，续跑 prompt 要用完整历史。
       pending.length = 0;
 
       let bodyStr = loopState.lastChatBody;
@@ -837,11 +905,12 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                 const nodes = document.querySelectorAll('.ds-assistant-message-main-content');
                 const last = nodes[nodes.length - 1] as HTMLElement | undefined;
                 if (last) {
-                  // 先保存已有的工具卡片，避免被 textContent 覆盖删除
+                  // 先保存已有的工具卡片，避免被 innerHTML 覆盖删除
                   const existingCards = Array.from(last.querySelectorAll('.ds-studio-tool-card'));
                   // v1.4：过滤开头的英文思考段落（模型把思考写在 RESPONSE 里，不是 THINK 段）
+                  // v1.6：用 renderMarkdown 渲染（XSS 安全，保留代码块/粗体/列表，而非退化成纯文本）。
                   const { thinking, answer } = extractThinkingPreface(reply);
-                  last.textContent = answer;
+                  last.innerHTML = renderMarkdown(answer);
                   // 如果有思考段落，在开头插入"已思考"折叠卡片
                   if (thinking) {
                     const tdiv = document.createElement('div');
@@ -855,6 +924,11 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                   for (const card of existingCards) {
                     last.appendChild(card);
                   }
+                  // v1.7：渲染完最终答案后自动滚动到该消息可见，避免悬浮步骤流挡住结果
+                  // （用户反馈：最终结果在上方对话流，需要手动滚回去看）。
+                  try {
+                    last.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  } catch { /* ignore */ }
                   d(`auto-continue rendered to DOM, len=${answer.length}, thinking=${thinking.length}, cards preserved=${existingCards.length}`);
                 } else {
                   d('auto-continue render: no .ds-assistant-message-main-content found');
@@ -868,6 +942,25 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               loopState.streamActive = false;
               if (autoContinueTimer) clearTimeout(autoContinueTimer);
               autoContinueTimer = setTimeout(() => { autoContinueTimer = null; autoContinueWithPow(); }, 8000);
+            } else {
+              // v1.6：nudge 机制（移植自 deepseek-pp shouldNudge + buildNudgePrompt）。
+              // autoReplyHadTools = forward 在本轮 SSE 里检测到工具调用 → 有工具，走 scheduleAutoContinue
+              //   （由工具结果异步回调触发）。无工具且未 task_complete → 看 shouldNudge 决定是否 nudge。
+              const replyForNudge = loopState.autoReplyText.trim();
+              const hasTaskComplete = !!extractTaskCompleteSignal(replyForNudge);
+              const hadTools = loopState.autoReplyHadTools;
+              if (hadTools) {
+                // 本轮有工具调用：续跑结果回来后 scheduleAutoContinue 接管，nudge 预算复位。
+                nudgeCount = 0;
+              } else if (!hasTaskComplete && replyForNudge
+                  && shouldNudge(replyForNudge)
+                  && nudgeCount < MAX_NUDGES && loopDepth < MAX_LOOP) {
+                nudgeCount += 1;
+                d(`auto-continue nudge count=${nudgeCount} loop=${loopDepth}, sending nudge...`);
+                autoContinueNudge(replyForNudge);
+              } else {
+                d(`auto-continue loop end: hadTools=${hadTools} taskComplete=${hasTaskComplete} shouldNudge=${replyForNudge ? shouldNudge(replyForNudge) : false} nudgeCount=${nudgeCount}/${MAX_NUDGES}`);
+              }
             }
             resolve();
           }
@@ -876,6 +969,98 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       });
     } catch (e) {
       d(`auto-continue failed: ${(e as Error).message}`);
+      loopState.streamActive = false;
+    }
+  }
+
+  /**
+   * v1.6：nudge 续跑（移植自 deepseek-pp getSteeringMessages + buildNudgePrompt）。
+   * 模型本轮没调工具、也没 task_complete，但 shouldNudge 判定它"该继续"时触发。
+   * 复用与 autoContinueWithPow 相同的 POW + XHR 链路，只是 prompt 换成 buildNudgePrompt。
+   * 与 autoContinueWithPow 的区分：nudge 是「逼模型在『再调一个工具』和『输出 task_complete』之间二选一」，
+   * 正常续跑是「工具已执行完毕，基于结果继续」。
+   */
+  async function autoContinueNudge(previousReplyText: string): Promise<void> {
+    if (!loopState.lastChatBody || loopDepth >= MAX_LOOP) return;
+    loopDepth += 1;
+    loopState.streamActive = true;
+    loopState.autoReplyHadTools = false;
+    try {
+      const nudgePrompt = buildNudgePrompt(loopState.originalTask, previousReplyText, collectedExecutions, nudgeCount);
+
+      let bodyStr = loopState.lastChatBody;
+      try {
+        const parsed = JSON.parse(bodyStr) as Record<string, unknown>;
+        parsed.prompt = nudgePrompt;
+        if (loopState.lastResponseMsgId != null) {
+          parsed.parent_message_id = loopState.lastResponseMsgId;
+        }
+        bodyStr = JSON.stringify(parsed);
+      } catch { /* keep original */ }
+
+      d(`auto-continue nudge loop=${loopDepth} count=${nudgeCount} computing PoW...`);
+      const filteredHeaders: Record<string, string> = {};
+      for (const [k, v] of Object.entries(capturedHeaders)) {
+        const lower = k.toLowerCase();
+        if (lower === 'content-type' || lower === 'content-length' || lower === 'x-ds-pow-response') continue;
+        filteredHeaders[k] = v;
+      }
+      const powHeaders = await createPowHeaders(filteredHeaders);
+
+      loopState.inAutoContinue = true;
+      loopState.autoReplyText = '';
+      await new Promise<void>((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/v0/chat/completion', true);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        for (const [k, v] of Object.entries(filteredHeaders)) {
+          try { xhr.setRequestHeader(k, v); } catch { /* ignore */ }
+        }
+        for (const [k, v] of Object.entries(powHeaders)) {
+          try { xhr.setRequestHeader(k, v); } catch { /* ignore */ }
+        }
+        xhr.onreadystatechange = () => {
+          if (xhr.readyState === 4) {
+            d(`auto-continue nudge loop=${loopDepth} status=${xhr.status} autoReplyLen=${loopState.autoReplyText.length}`);
+            loopState.inAutoContinue = false;
+            loopState.streamActive = false;
+            const reply = loopState.autoReplyText.trim();
+            if (reply) {
+              try { onAssistantReply?.(reply, loopDepth); } catch (e) { d(`nudge push failed: ${(e as Error).message}`); }
+              // nudge 回复不重复渲染到 DOM（autoContinueWithPow 的渲染分支只在正常续跑触发，
+              // nudge 走同一 .ds-assistant-message-main-content 覆盖会混淆；面板经 onAssistantReply 已收到）。
+            }
+            if (xhr.status === 429 && loopDepth < MAX_LOOP) {
+              d('auto-continue nudge 429, retrying in 8s');
+              loopState.streamActive = false;
+              if (autoContinueTimer) clearTimeout(autoContinueTimer);
+              autoContinueTimer = setTimeout(() => { autoContinueTimer = null; autoContinueNudge(previousReplyText); }, 8000);
+            } else {
+              // nudge 回复后再次判定：有工具调用 → 走正常续跑；无工具 + 无 task_complete → 再 nudge（受 MAX_NUDGES 限）
+              const replyForNudge = loopState.autoReplyText.trim();
+              const hasTaskComplete = !!extractTaskCompleteSignal(replyForNudge);
+              const hadTools = loopState.autoReplyHadTools;
+              if (hadTools) {
+                // nudge 后模型终于调了工具：续跑结果回来后 scheduleAutoContinue 接管，nudge 预算复位。
+                nudgeCount = 0;
+                d('auto-continue nudge end: tools detected, handing to scheduleAutoContinue');
+              } else if (!hasTaskComplete && replyForNudge
+                  && shouldNudge(replyForNudge)
+                  && nudgeCount < MAX_NUDGES && loopDepth < MAX_LOOP) {
+                nudgeCount += 1;
+                d(`auto-continue nudge again count=${nudgeCount} loop=${loopDepth}`);
+                autoContinueNudge(replyForNudge);
+              } else {
+                d(`auto-continue nudge end: hadTools=${hadTools} taskComplete=${hasTaskComplete} shouldNudge=${replyForNudge ? shouldNudge(replyForNudge) : false} nudgeCount=${nudgeCount}/${MAX_NUDGES}`);
+              }
+            }
+            resolve();
+          }
+        };
+        xhr.send(bodyStr);
+      });
+    } catch (e) {
+      d(`auto-continue nudge failed: ${(e as Error).message}`);
       loopState.streamActive = false;
     }
   }
