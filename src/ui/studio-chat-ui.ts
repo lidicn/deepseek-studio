@@ -61,6 +61,51 @@ function injectChatStyles(): void {
   }
 }
 
+/**
+ * 动态测量 DeepSeek 输入框（composer）的顶部位置，调整 overlay 的 bottom，
+ * 使 overlay 精确停在输入框上方、不盖住输入框。
+ *
+ * 锚点：页面唯一可见 textarea 或 contenteditable 元素（DeepSeek 的输入框）。
+ * 不用混淆 class 选择器（随版本变化），输入框元素是稳定锚点。
+ *
+ * 返回测得的 composer top（px），测不到时返回 null（调用方用 CSS 默认值兜底）。
+ */
+function measureComposerTop(): number | null {
+  const tas = document.querySelectorAll('textarea');
+  for (const ta of tas) {
+    // 只取可见、有尺寸的 textarea（排除隐藏的）
+    if (ta.offsetWidth === 0 || ta.offsetHeight === 0) continue;
+    const rect = ta.getBoundingClientRect();
+    if (rect.width > 50 && rect.height > 10) {
+      return Math.round(rect.top);
+    }
+  }
+  // 兜底：DeepSeek 若改用 contenteditable 输入框
+  const editables = document.querySelectorAll('[contenteditable="true"]');
+  for (const ed of editables) {
+    const el = ed as HTMLElement;
+    if (el.offsetWidth === 0 || el.offsetHeight === 0) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width > 50 && rect.height > 10) {
+      return Math.round(rect.top);
+    }
+  }
+  return null;
+}
+
+/** 把 overlay bottom 设成「视口高 - composer top - padding」，精确留出输入框空间。 */
+function adjustOverlayBottom(container: HTMLElement): void {
+  const composerTop = measureComposerTop();
+  if (composerTop === null || composerTop <= 0) return; // 测不到，保持 CSS 默认 bottom:280px
+  const vh = window.innerHeight;
+  // 留出 composer 高度 + 一点呼吸空间（8px），避免紧贴
+  const bottom = vh - composerTop + 8;
+  // 安全下限：至少留 120px，防止异常测量把 overlay 撑满全屏
+  const safeBottom = Math.max(120, Math.min(bottom, vh - 120));
+  container.style.bottom = safeBottom + 'px';
+  console.log('[studio-chat-ui] overlay bottom adjusted to', safeBottom, 'px (composerTop=', composerTop, ', vh=', vh, ')');
+}
+
 export function createStudioChatUI(): StudioChatUIHandle {
   // 样式注入安全地延迟（见上方 injectChatStyles 的兜底逻辑）。
   injectChatStyles();
@@ -165,10 +210,27 @@ export function createStudioChatUI(): StudioChatUIHandle {
   }
 
   function destroy(): void {
+    bottomObserver.disconnect();
+    window.removeEventListener('resize', tryAdjust);
     container.remove();
     currentAssistant = null;
     currentRawText = '';
   }
+
+  // 动态测量 composer 位置，调整 overlay bottom（不盖住输入框）。
+  // textarea 可能延迟渲染（DeepSeek SPA 异步挂载），用 MutationObserver 等；
+  // 测到后停止观察，避免持续开销。窗口 resize 时也需重测。
+  function tryAdjust(): void { adjustOverlayBottom(container); }
+  const bottomObserver = new MutationObserver(() => { tryAdjust(); });
+  bottomObserver.observe(document.body, { childList: true, subtree: true });
+  // textarea 出现后立即测，并在几个时间点兜底（SPA 渲染慢时）
+  tryAdjust();
+  setTimeout(tryAdjust, 500);
+  setTimeout(tryAdjust, 1500);
+  setTimeout(tryAdjust, 3000);
+  // 测到 composer 后降频：10 秒后停止 MutationObserver（已稳定）
+  setTimeout(() => bottomObserver.disconnect(), 10000);
+  window.addEventListener('resize', tryAdjust);
 
   return {
     container,

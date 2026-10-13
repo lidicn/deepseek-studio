@@ -4118,6 +4118,35 @@ ${prompt}`;
       obs.observe(document, { childList: true, subtree: true });
     }
   }
+  function measureComposerTop() {
+    const tas = document.querySelectorAll("textarea");
+    for (const ta of tas) {
+      if (ta.offsetWidth === 0 || ta.offsetHeight === 0) continue;
+      const rect = ta.getBoundingClientRect();
+      if (rect.width > 50 && rect.height > 10) {
+        return Math.round(rect.top);
+      }
+    }
+    const editables = document.querySelectorAll('[contenteditable="true"]');
+    for (const ed of editables) {
+      const el2 = ed;
+      if (el2.offsetWidth === 0 || el2.offsetHeight === 0) continue;
+      const rect = el2.getBoundingClientRect();
+      if (rect.width > 50 && rect.height > 10) {
+        return Math.round(rect.top);
+      }
+    }
+    return null;
+  }
+  function adjustOverlayBottom(container) {
+    const composerTop = measureComposerTop();
+    if (composerTop === null || composerTop <= 0) return;
+    const vh = window.innerHeight;
+    const bottom = vh - composerTop + 8;
+    const safeBottom = Math.max(120, Math.min(bottom, vh - 120));
+    container.style.bottom = safeBottom + "px";
+    console.log("[studio-chat-ui] overlay bottom adjusted to", safeBottom, "px (composerTop=", composerTop, ", vh=", vh, ")");
+  }
   function createStudioChatUI() {
     injectChatStyles();
     const container = document.createElement("div");
@@ -4194,10 +4223,25 @@ ${prompt}`;
       statusText.textContent = busy ? "\u6267\u884C\u4E2D\u2026" : "\u5B8C\u6210";
     }
     function destroy() {
+      bottomObserver.disconnect();
+      window.removeEventListener("resize", tryAdjust);
       container.remove();
       currentAssistant = null;
       currentRawText = "";
     }
+    function tryAdjust() {
+      adjustOverlayBottom(container);
+    }
+    const bottomObserver = new MutationObserver(() => {
+      tryAdjust();
+    });
+    bottomObserver.observe(document.body, { childList: true, subtree: true });
+    tryAdjust();
+    setTimeout(tryAdjust, 500);
+    setTimeout(tryAdjust, 1500);
+    setTimeout(tryAdjust, 3e3);
+    setTimeout(() => bottomObserver.disconnect(), 1e4);
+    window.addEventListener("resize", tryAdjust);
     return {
       container,
       addUserMessage,
