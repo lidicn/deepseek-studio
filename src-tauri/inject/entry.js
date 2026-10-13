@@ -2290,7 +2290,8 @@ ${stderr.trimEnd()}
     if (styleInjected) return;
     const style = document.createElement("style");
     style.textContent = CARD_STYLE;
-    document.head.appendChild(style);
+    const head = document.head ?? document.documentElement;
+    head.appendChild(style);
     styleInjected = true;
   }
   function findLastAssistantMessage() {
@@ -2814,6 +2815,1398 @@ ${result2.stderr}`;
       const lang = code2.className.replace(/^language-/, "");
       addRunButtonToCodeBlock(pre, code2.textContent ?? "", lang, runner);
     });
+  }
+
+  // src/inject/main-world-interceptor.ts
+  var currentMemories = [];
+  var currentMcpTools = [];
+  var stepFlow = null;
+  var stepFlowStep = 0;
+  var stepFlowToolCount = 0;
+  var stepFlowStartTime = 0;
+  var stepReasoningAccum = "";
+  function formatToolResultBlock(results) {
+    const lines = results.map((p) => {
+      const head = `[tool-result:${p.invocationName}]`;
+      if (!p.ok) return `${head}
+<error>${p.error ?? "unknown"}</error>`;
+      if (p.result && typeof p.result === "object" && "stdout" in p.result) {
+        const r = p.result;
+        const stdout = typeof r.stdout === "string" ? r.stdout : "";
+        const stderr = typeof r.stderr === "string" ? r.stderr : "";
+        const exitCode = r.exitCode ?? "";
+        const parts = [];
+        if (stdout.trim()) parts.push(stdout.trimEnd());
+        if (stderr.trim()) parts.push(`<stderr>
+${stderr.trimEnd()}
+</stderr>`);
+        if (exitCode !== "" && exitCode !== 0) parts.push(`<exit-code>${exitCode}</exit-code>`);
+        return `${head}
+${parts.join("\n\n") || "(empty output)"}`;
+      }
+      const data = typeof p.result === "string" ? p.result : JSON.stringify(p.result ?? null);
+      return `${head}
+${data}`;
+    });
+    return `\u3010\u5DE5\u5177\u6267\u884C\u7ED3\u679C\u3011
+${lines.join("\n\n")}`;
+  }
+  function reinjectIntoPrompt(prompt, results) {
+    if (results.length === 0) return prompt;
+    return `${prompt}
+
+${formatToolResultBlock(results)}`;
+  }
+  function isDeepSeekChatEndpoint(url, method) {
+    try {
+      const base = globalThis.location?.href;
+      const u = base ? new URL(url, base) : new URL(url);
+      return u.hostname.endsWith("deepseek.com") && method.toUpperCase() === "POST" && u.pathname === "/api/v0/chat/completion";
+    } catch {
+      return false;
+    }
+  }
+  function resolveUrl(input) {
+    if (typeof input === "string") return input;
+    if (input instanceof URL) return input.href;
+    return input.url;
+  }
+  function methodOf(input, init) {
+    if (init?.method) return String(init.method);
+    if (typeof input !== "string" && !(input instanceof URL) && input.method) return input.method;
+    return "GET";
+  }
+  var TOOL_CAPABILITY_MARKER = "[studio-tool-capability]";
+  var TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
+## \u89D2\u8272
+\u4F60\u662F DeepSeek Studio \u7684\u672C\u5730\u5DE5\u5177\u4EE3\u7406\uFF0C\u53EF\u4EE5\u64CD\u4F5C\u7528\u6237\u7535\u8111\u4E0A\u7684\u6587\u4EF6\u3001\u6267\u884C\u547D\u4EE4\u3001\u4FDD\u5B58\u957F\u671F\u8BB0\u5FC6\u3002
+
+## \u5DE5\u5177\u8C03\u7528
+\u4F60\u53EF\u4EE5\u901A\u8FC7\u8F93\u51FA\u76F4\u63A5 XML \u6807\u7B7E\u6765\u8C03\u7528\u5DE5\u5177\uFF0C\u6807\u7B7E\u4F53\u5185\u5FC5\u987B\u662F\u5408\u6CD5 JSON\uFF1A
+
+<local_file_read>{"path":"E:/Users/name/file.txt"}</local_file_read>
+<local_file_write>{"path":"E:/Users/name/file.txt","content":"\u8981\u5199\u5165\u7684\u6587\u672C"}</local_file_write>
+<local_file_stat>{"path":"E:/Users/name"}</local_file_stat>
+<shell_exec>{"command":"powershell -NoProfile -Command "Get-ChildItem -LiteralPath 'E:/Users/name' -File | Sort-Object LastWriteTime -Descending | Select-Object -First 10""}</shell_exec>
+<memory_save>{"type":"user","name":"\u7528\u6237\u89D2\u8272","content":"\u524D\u7AEF\u5F00\u53D1\u8005\uFF0C\u4E3B\u8981\u4F7F\u7528 React \u548C TypeScript","tags":["frontend","React"]}</memory_save>
+<python_exec>{"code":"print('hello')"}</python_exec>
+
+## \u89C4\u5219
+- \u6807\u7B7E\u540D\u5FC5\u987B\u5339\u914D\u53EF\u7528\u5DE5\u5177\uFF1BJSON body \u5FC5\u987B\u662F\u5408\u6CD5 JSON\uFF08\u5B57\u7B26\u4E32\u7528\u53CC\u5F15\u53F7\uFF0C\u4E0D\u8981\u6709\u591A\u4F59\u9017\u53F7\u6216\u6CE8\u91CA\uFF09
+- \u5DE5\u5177\u8C03\u7528\u653E\u5728\u6700\u7EC8\u56DE\u7B54\u6B63\u6587\u91CC\uFF0C\u4E0D\u8981\u653E\u5728\u601D\u8003/\u63A8\u7406\u533A\u57DF\uFF0C\u4E0D\u8981\u653E\u5728 Markdown \u4EE3\u7801\u5757\u91CC
+- \u5DE5\u5177\u6807\u7B7E\u5FC5\u987B\u72EC\u7ACB\u6210\u884C\uFF0C\u6807\u7B7E\u524D\u540E\u4E0D\u8981\u6709\u4EFB\u4F55\u989D\u5916\u6587\u5B57\uFF08\u4E0D\u8981\u5728\u6807\u7B7E\u540E\u5199"\u3002\u4E0D\u8981 Markdown"\u4E4B\u7C7B\u7684\u8BDD\uFF09
+- Windows \u8DEF\u5F84\u4E00\u5F8B\u7528\u6B63\u659C\u6760\uFF08\u5982 E:/Users/name\uFF09\uFF0C\u4E0D\u8981\u7528\u53CD\u659C\u6760\uFF0C\u4E0D\u8981\u5199\u56DB\u53CD\u659C\u6760
+- \u5217\u51FA\u6587\u4EF6/\u76EE\u5F55\u4F18\u5148\u7528 PowerShell \u7684 Get-ChildItem\uFF0C\u4E0D\u8981\u7528 cmd \u7684 dir\uFF08dir \u5BF9\u6B63\u659C\u6760\u8DEF\u5F84\u4F1A\u62A5\u9519\uFF09
+- \u4E00\u6B21\u53EA\u8C03\u7528\u4E00\u4E2A\u5DE5\u5177\uFF0C\u7B49\u7ED3\u679C\u8FD4\u56DE\u540E\u518D\u51B3\u5B9A\u4E0B\u4E00\u6B65
+- **\u601D\u8003\u8FC7\u7A0B\u653E THINK \u6BB5\uFF0C\u6700\u7EC8\u56DE\u7B54\u76F4\u63A5\u7ED9\u7ED3\u8BBA\uFF0C\u4E0D\u8981\u5728\u56DE\u7B54\u5F00\u5934\u5199\u82F1\u6587\u603B\u7ED3\u6216"user asked... I got... Now output..."\u8FD9\u7C7B\u8BDD**
+- **\u5168\u7A0B\u7528\u4E2D\u6587\u56DE\u7B54\uFF0C\u9664\u975E\u7528\u6237\u660E\u786E\u8981\u6C42\u5176\u4ED6\u8BED\u8A00**
+
+## \u7981\u6B62
+- \u4F7F\u7528 <invoke name="...">\u3001<tool_call> \u7B49\u5305\u88C5\u6807\u7B7E
+- \u8F93\u51FA {"tool":"...","arguments":{...}} \u8FD9\u79CD JSON \u683C\u5F0F
+- \u58F0\u79F0\u81EA\u5DF1\u65E0\u6CD5\u8C03\u7528\u8FD9\u4E9B\u5DE5\u5177
+- \u5728\u5DE5\u5177\u6807\u7B7E\u524D\u540E\u6DFB\u52A0\u89E3\u91CA\u6027\u6587\u5B57
+
+## \u6269\u5C55\u80FD\u529B
+\u4EE5\u4E0B\u80FD\u529B\u5DF2\u542F\u7528\uFF0C\u4F60\u53EF\u4EE5\u4E3B\u52A8\u4F7F\u7528\u6765\u5B8C\u6210\u7528\u6237\u4EFB\u52A1\uFF0C\u65E0\u9700\u5148\u8BE2\u95EE\uFF1A
+- \u672C\u5730\u547D\u4EE4\u6267\u884C\uFF08\u8FD0\u884C CLI \u5DE5\u5177\u3001\u811A\u672C\u3001\u6587\u4EF6\u64CD\u4F5C\uFF09
+- \u672C\u5730\u6587\u4EF6\u8BFB\u5199\uFF08\u8BFB\u53D6\u3001\u5199\u5165\u3001\u67E5\u770B\u6587\u4EF6\u4FE1\u606F\uFF09
+- \u957F\u671F\u8BB0\u5FC6\uFF08\u4FDD\u5B58\u7528\u6237\u8EAB\u4EFD\u3001\u504F\u597D\u3001\u6280\u672F\u6808\u3001\u9879\u76EE\u51B3\u7B56\u7B49\u8DE8\u4F1A\u8BDD\u4FE1\u606F\uFF09
+
+## \u8BB0\u5FC6\u4FDD\u5B58\u89C4\u5219
+\u5F53\u5BF9\u8BDD\u4E2D\u51FA\u73B0\u4EE5\u4E0B\u60C5\u51B5\u65F6\uFF0C\u4F60\u5FC5\u987B\u8C03\u7528 memory_save \u5DE5\u5177\uFF1A
+- \u7528\u6237\u63D0\u5230\u81EA\u5DF1\u7684\u8EAB\u4EFD\u3001\u804C\u4E1A\u6216\u89D2\u8272
+- \u7528\u6237\u8868\u8FBE\u504F\u597D\u3001\u4E60\u60EF\u6216\u5DE5\u4F5C\u98CE\u683C
+- \u7528\u6237\u7EA0\u6B63\u4F60\u7684\u56DE\u7B54\u98CE\u683C\u6216\u884C\u4E3A
+- \u51FA\u73B0\u91CD\u8981\u7684\u6280\u672F\u51B3\u7B56\u6216\u67B6\u6784\u9009\u62E9
+- \u7528\u6237\u660E\u786E\u8BF4"\u8BB0\u4F4F"\u3001"\u8BB0\u4E00\u4E0B"\u3001"\u522B\u5FD8\u4E86"\u7B49
+
+## \u53EF\u7528\u5DE5\u5177
+- local_file_read \u2014 \u8BFB\u53D6\u6587\u4EF6\u5185\u5BB9\uFF0C\u53C2\u6570\uFF1Apath\uFF08\u7EDD\u5BF9\u8DEF\u5F84\uFF0C\u6B63\u659C\u6760\uFF09
+- local_file_write \u2014 \u5199\u5165\u6587\u4EF6\uFF0C\u53C2\u6570\uFF1Apath\u3001content
+- local_file_stat \u2014 \u67E5\u770B\u6587\u4EF6/\u76EE\u5F55\u4FE1\u606F\uFF0C\u53C2\u6570\uFF1Apath
+- shell_exec \u2014 \u6267\u884C\u547D\u4EE4\u884C\uFF0C\u53C2\u6570\uFF1Acommand\uFF08\u4F18\u5148\u7528 PowerShell\uFF0C\u8DEF\u5F84\u7528\u6B63\u659C\u6760\uFF09
+- memory_save \u2014 \u4FDD\u5B58\u957F\u671F\u8BB0\u5FC6\uFF0C\u53C2\u6570\uFF1Atype\uFF08user/project\uFF09\u3001name\u3001content\u3001tags\uFF08\u53EF\u9009\uFF09
+- python_exec \u2014 \u6267\u884C Python \u4EE3\u7801\uFF0C\u53C2\u6570\uFF1Acode\uFF08Python \u6E90\u4EE3\u7801\u5B57\u7B26\u4E32\uFF09
+- mcp_list \u2014 \u5217\u51FA\u5DF2\u914D\u7F6E\u7684 MCP \u670D\u52A1\u5668\u53CA\u5176\u5DE5\u5177\uFF08\u65E0\u53C2\u6570\uFF09
+- mcp_call \u2014 \u8C03\u7528 MCP \u5DE5\u5177\uFF0C\u53C2\u6570\uFF1AserverId\u3001tool\u3001args\uFF08\u53C2\u6570\u5BF9\u8C61\uFF09
+
+\u7CFB\u7EDF\u4F1A\u771F\u5B9E\u6267\u884C\u5E76\u628A\u7ED3\u679C\u8FD4\u56DE\u7ED9\u4F60\uFF0C\u636E\u6B64\u7EE7\u7EED\u3002\u4E0D\u8981\u81C6\u9020\u8DEF\u5F84\uFF0C\u4E0D\u8981\u7F16\u9020\u5DE5\u5177\u7ED3\u679C\u3002`;
+  var TOOL_CATALOG_TEXT = `## \u53EF\u7528\u5DE5\u5177
+- local_file_read \u2014 \u8BFB\u53D6\u6587\u4EF6\u5185\u5BB9\uFF0C\u53C2\u6570\uFF1Apath\uFF08\u7EDD\u5BF9\u8DEF\u5F84\uFF0C\u6B63\u659C\u6760\uFF09
+- local_file_write \u2014 \u5199\u5165\u6587\u4EF6\uFF0C\u53C2\u6570\uFF1Apath\u3001content
+- local_file_stat \u2014 \u67E5\u770B\u6587\u4EF6/\u76EE\u5F55\u4FE1\u606F\uFF0C\u53C2\u6570\uFF1Apath
+- shell_exec \u2014 \u6267\u884C\u547D\u4EE4\u884C\uFF0C\u53C2\u6570\uFF1Acommand\uFF08\u4F18\u5148\u7528 PowerShell\uFF0C\u8DEF\u5F84\u7528\u6B63\u659C\u6760\uFF09
+- memory_save \u2014 \u4FDD\u5B58\u957F\u671F\u8BB0\u5FC6\uFF0C\u53C2\u6570\uFF1Atype\uFF08user/project\uFF09\u3001name\u3001content\u3001tags\uFF08\u53EF\u9009\uFF09
+- python_exec \u2014 \u6267\u884C Python \u4EE3\u7801\uFF0C\u53C2\u6570\uFF1Acode\uFF08Python \u6E90\u4EE3\u7801\u5B57\u7B26\u4E32\uFF09
+- mcp_list \u2014 \u5217\u51FA\u5DF2\u914D\u7F6E\u7684 MCP \u670D\u52A1\u5668\u53CA\u5176\u5DE5\u5177\uFF08\u65E0\u53C2\u6570\uFF09
+- mcp_call \u2014 \u8C03\u7528 MCP \u5DE5\u5177\uFF0C\u53C2\u6570\uFF1AserverId\u3001tool\u3001args\uFF08\u53C2\u6570\u5BF9\u8C61\uFF09
+
+\u8C03\u7528\u65B9\u5F0F\uFF1A\u76F4\u63A5\u8F93\u51FA XML \u6807\u7B7E\uFF0C\u6807\u7B7E\u4F53\u5185\u4E3A\u5408\u6CD5 JSON\uFF0C\u5982 <shell_exec>{"command":"..."}</shell_exec>`;
+  function formatMcpToolsBlock() {
+    if (currentMcpTools.length === 0) return "";
+    const byServer = /* @__PURE__ */ new Map();
+    for (const t of currentMcpTools) {
+      if (!byServer.has(t.serverId)) byServer.set(t.serverId, []);
+      byServer.get(t.serverId).push({ name: t.name, description: t.description });
+    }
+    const lines = ["## \u5DF2\u914D\u7F6E\u7684 MCP \u5DE5\u5177\uFF08\u53EF\u76F4\u63A5\u901A\u8FC7 mcp_call \u8C03\u7528\uFF09"];
+    for (const [serverId, tools] of byServer) {
+      lines.push(`### \u670D\u52A1\u5668\uFF1A${serverId}`);
+      for (const t of tools) {
+        lines.push(`- ${t.name} \u2014 ${t.description}`);
+      }
+    }
+    lines.push('\u8C03\u7528\u65B9\u5F0F\uFF1A<mcp_call>{"serverId":"\u670D\u52A1\u5668\u540D","tool":"\u5DE5\u5177\u540D","args":{...}}</mcp_call>');
+    return lines.join("\n");
+  }
+  function buildCapabilityPrompt() {
+    const mcpBlock = formatMcpToolsBlock();
+    return mcpBlock ? `${TOOL_CAPABILITY_PROMPT}
+
+${mcpBlock}` : TOOL_CAPABILITY_PROMPT;
+  }
+  function injectInstructionIntoMessages(messages) {
+    const first = messages[0];
+    if (first && first.role === "system" && typeof first.content === "string" && first.content.includes(TOOL_CAPABILITY_MARKER)) {
+      return messages;
+    }
+    return [{ role: "system", content: buildCapabilityPrompt() }, ...messages];
+  }
+  function appendResultsToMessages(messages, block) {
+    let idx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === "user") {
+        idx = i;
+        break;
+      }
+    }
+    if (idx < 0) {
+      messages.push({ role: "user", content: block });
+    } else {
+      const m = messages[idx];
+      m.content = (typeof m.content === "string" ? m.content : "") + "\n\n" + block;
+    }
+    return messages;
+  }
+  function formatMemoriesBlock() {
+    if (currentMemories.length === 0) return "";
+    const lines = currentMemories.slice(0, 50).map((m) => {
+      const scope = m.type === "project" ? "project " : "";
+      return `- #${m.id} [${scope}${m.type}] ${m.name}: ${m.content}`;
+    });
+    return `
+
+## \u5DF2\u6709\u8BB0\u5FC6
+${lines.join("\n")}`;
+  }
+  function prepareOutgoingBody(rawBody, pending) {
+    let parsed;
+    try {
+      parsed = JSON.parse(rawBody);
+    } catch {
+      return null;
+    }
+    const hasResults = pending.length > 0;
+    const block = hasResults ? formatToolResultBlock(pending.slice()) : "";
+    const memoriesBlock = formatMemoriesBlock();
+    if (Array.isArray(parsed.messages)) {
+      let msgs = parsed.messages;
+      msgs = injectInstructionIntoMessages(msgs);
+      if (memoriesBlock) {
+        const first = msgs[0];
+        if (first && first.role === "system" && typeof first.content === "string") {
+          first.content = first.content + memoriesBlock;
+        }
+      }
+      if (hasResults) msgs = appendResultsToMessages(msgs, block);
+      parsed.messages = msgs;
+    } else if (typeof parsed.prompt === "string") {
+      let prompt = parsed.prompt;
+      if (!prompt.includes(TOOL_CAPABILITY_MARKER)) {
+        prompt = `${buildCapabilityPrompt()}${memoriesBlock}
+
+${prompt}`;
+      }
+      if (hasResults) prompt = reinjectIntoPrompt(prompt, pending.slice());
+      parsed.prompt = prompt;
+    } else {
+      return null;
+    }
+    pending.length = 0;
+    return JSON.stringify(parsed);
+  }
+  function augmentInit(init, pending) {
+    if (typeof init?.body !== "string") return init;
+    const newBody = prepareOutgoingBody(init.body, pending);
+    if (newBody === null) return init;
+    return { ...init, body: newBody };
+  }
+  function installFetchHook(origFetch, forward, pending, diag = () => {
+  }, loopState) {
+    window.fetch = async (input, init) => {
+      const url = resolveUrl(input);
+      const method = methodOf(input, init);
+      diag(`fetch ${method} ${url} bodyType=${typeof init?.body}`);
+      if (pending.length > 0 && isDeepSeekChatEndpoint(url, method)) {
+        init = augmentInit(init, pending);
+      }
+      if (!isDeepSeekChatEndpoint(url, method)) {
+        return origFetch(input, init);
+      }
+      diag(`chat-endpoint matched, bodyLen=${typeof init?.body === "string" ? init.body.length : "n/a"}`);
+      if (loopState) {
+        loopState.streamActive = true;
+        if (typeof init?.body === "string") loopState.lastChatBody = init.body;
+      }
+      const response = await origFetch(input, init);
+      if (!response.body) return response;
+      const parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
+      const sse = new SseTextStreamExtractor();
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      const stream = new ReadableStream({
+        async start(controller) {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              const rawSse = decoder.decode(value, { stream: true });
+              const text = sse.feed(rawSse);
+              if (loopState?.chatUI && text) loopState.chatUI.appendToAssistantMessage(text);
+              const rsn = sse.consumeReasoning();
+              if (rsn) {
+                stepReasoningAccum += rsn;
+                stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
+              }
+              const { calls } = parser.feed(text);
+              for (const c of calls) forward(c);
+              controller.enqueue(value);
+            }
+            const sseTail = sse.flush();
+            const rsnTail = sse.consumeReasoning();
+            if (rsnTail) {
+              stepReasoningAccum += rsnTail;
+              stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
+            }
+            if (sseTail) {
+              if (loopState?.chatUI) loopState.chatUI.appendToAssistantMessage(sseTail);
+              const tailParsed = parser.feed(sseTail);
+              for (const c of tailParsed.calls) forward(c);
+            }
+            const fin = parser.flush();
+            for (const c of fin.calls) forward(c);
+          } catch (err) {
+            controller.error(err);
+            return;
+          }
+          controller.close();
+          if (loopState) {
+            loopState.streamActive = false;
+            if (typeof loopState.onStreamEnd === "function") {
+              try {
+                loopState.onStreamEnd();
+              } catch {
+              }
+            }
+          }
+        }
+      });
+      return new Response(stream, {
+        headers: response.headers,
+        status: response.status,
+        statusText: response.statusText
+      });
+    };
+    return () => {
+      window.fetch = origFetch;
+    };
+  }
+  function installXhrHooks(forward, pending, diag = () => {
+  }, loopState, capturedHeaders) {
+    if (typeof XMLHttpRequest === "undefined") return () => {
+    };
+    const proto = XMLHttpRequest.prototype;
+    const origOpen = proto.open;
+    const origSend = proto.send;
+    const origSetRequestHeader = proto.setRequestHeader;
+    proto.setRequestHeader = function(name, value) {
+      const url = String(this.__dsUrl ?? "");
+      if (url.includes("/api/v0/chat/") && capturedHeaders) {
+        capturedHeaders[name] = value;
+      }
+      return origSetRequestHeader.apply(this, [name, value]);
+    };
+    proto.open = function(method, url, ...rest) {
+      this.__dsMethod = method;
+      this.__dsUrl = String(url);
+      return origOpen.apply(this, [method, url, ...rest]);
+    };
+    proto.send = function(body) {
+      const url = String(this.__dsUrl ?? "");
+      const method = String(this.__dsMethod ?? "GET");
+      const isChat = isDeepSeekChatEndpoint(url, method);
+      diag(`xhr ${method} ${url} isChat=${isChat} bodyType=${typeof body}`);
+      if (url.includes("/create_pow_challenge") && typeof body === "string") {
+        diag(`xhr pow_challenge body=${body.slice(0, 500)}`);
+      }
+      if (isChat && typeof body === "string") {
+        diag(`xhr chat body len=${body.length} head=${body.slice(0, 200)}`);
+        if (loopState) {
+          try {
+            const parsedBody = JSON.parse(body);
+            if (typeof parsedBody.prompt === "string" && parsedBody.prompt.trim() && !parsedBody.prompt.includes("<original_task>") && !parsedBody.prompt.includes("<tool_results") && !parsedBody.prompt.includes("[TOOL_RESULTS]")) {
+              loopState.originalTask = parsedBody.prompt;
+              loopState.newUserPrompt = parsedBody.prompt;
+              diag(`originalTask captured len=${loopState.originalTask.length}`);
+              if (typeof loopState.onNewUserMessage === "function") {
+                try {
+                  loopState.onNewUserMessage();
+                } catch {
+                }
+              }
+            }
+          } catch {
+          }
+        }
+        const next = prepareOutgoingBody(body, pending);
+        if (next !== null) {
+          body = next;
+          diag(`xhr chat body injected len=${next.length}`);
+        }
+        if (loopState) {
+          loopState.lastChatBody = body;
+          loopState.streamActive = true;
+        }
+      }
+      const xhr = this;
+      xhr.__dsIsChat = isChat;
+      const prev = xhr.onreadystatechange;
+      xhr.onreadystatechange = (...args) => {
+        if (xhr.readyState === 4 && loopState) {
+          loopState.streamActive = false;
+          if (typeof loopState.onStreamEnd === "function") {
+            try {
+              loopState.onStreamEnd();
+            } catch {
+            }
+          }
+        }
+        if (xhr.readyState >= 3) {
+          const text = xhr.responseText;
+          const scanned = xhr.__dsScanned ?? 0;
+          const part = text.slice(scanned);
+          xhr.__dsScanned = text.length;
+          if (part && xhr.__dsIsChat) {
+            diag(`xhr resp[${part.length}]: ${part.slice(0, 400).replace(/\s+/g, " ")}`);
+            const m = part.match(/"response_message_id"\s*:\s*(\d+)/);
+            if (m && loopState) loopState.lastResponseMsgId = parseInt(m[1], 10);
+          }
+          if (part) {
+            let sse = xhr.__dsSse;
+            let parser = xhr.__dsParser;
+            let frameDec = xhr.__dsFrameDec;
+            if (!sse || !parser || !frameDec) {
+              sse = new SseTextStreamExtractor();
+              parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
+              frameDec = new DeepSeekSseFrameDecoder();
+              xhr.__dsSse = sse;
+              xhr.__dsParser = parser;
+              xhr.__dsFrameDec = frameDec;
+            }
+            const frames = frameDec.push(part);
+            let rawDataText = "";
+            for (const frame of frames) {
+              if (frame.parsed && typeof frame.parsed === "object") {
+                const obj = frame.parsed;
+                if (Array.isArray(obj.v)) {
+                  for (const frag of obj.v) {
+                    if (typeof frag.content === "string") {
+                      rawDataText += frag.content;
+                    }
+                  }
+                } else if (typeof obj.v === "string") {
+                  const p = String(obj.p ?? "");
+                  if (!p || /^response(\/|$)/.test(p)) {
+                    rawDataText += obj.v;
+                  }
+                }
+              }
+            }
+            let visible = sse.feed(part);
+            if (xhr.readyState === 4) visible += sse.flush();
+            const rsnX = sse.consumeReasoning();
+            if (rsnX) {
+              stepReasoningAccum += rsnX;
+              stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
+            }
+            if (visible) {
+              diag(`xhr extracted[${visible.length}]: ${visible.slice(0, 300).replace(/\s+/g, " ")}`);
+              if (loopState && loopState.inAutoContinue) {
+                loopState.autoReplyText += visible;
+              }
+              if (loopState?.chatUI) {
+                loopState.chatUI.appendToAssistantMessage(visible);
+              }
+              const { calls } = parser.feed(rawDataText || visible);
+              for (const c of calls) forward(c);
+            }
+          }
+        }
+        if (typeof prev === "function") prev.apply(xhr, args);
+      };
+      return origSend.call(this, body);
+    };
+    return () => {
+      proto.open = origOpen;
+      proto.send = origSend;
+    };
+  }
+  function installMainWorldInterceptor(options2) {
+    console.log("[interceptor] installed, fetch hook + XHR hook ready");
+    const { sender, diag, onAssistantReply, onMemoriesUpdate, chatUI } = options2;
+    const pending = [];
+    const d = diag ?? (() => {
+    });
+    {
+      const g = globalThis;
+      if (g.__studioMemories) currentMemories = g.__studioMemories;
+    }
+    const loopState = { lastChatBody: null, streamActive: false, lastResponseMsgId: null, autoReplyText: "", inAutoContinue: false, autoReplyHadTools: false, originalTask: "", chatUI };
+    let autoContinueTimer = null;
+    let loopDepth = 0;
+    const collectedExecutions = [];
+    let nudgeCount = 0;
+    const capturedHeaders = {};
+    const forward = (call) => {
+      console.log("[interceptor] forward:", call.invocationName, JSON.stringify(call.params).slice(0, 150));
+      d(`forward: ${call.invocationName} params=${JSON.stringify(call.params).slice(0, 200)}`);
+      if (!isSupportedUpstreamTool(call.invocationName)) {
+        d(`forward: unsupported, skipping`);
+        return;
+      }
+      const callId = call.id || crypto.randomUUID();
+      const startedAt = Date.now();
+      if (loopState.inAutoContinue) loopState.autoReplyHadTools = true;
+      try {
+        stripRawToolTagsFromMessage();
+        createToolCard({ toolName: call.invocationName, params: call.params }, callId);
+      } catch (e) {
+        d(`forward: createToolCard failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      if (!stepFlow) {
+        document.querySelectorAll(".ds-sf-container").forEach((n) => n.remove());
+        stepFlow = createStepFlowContainer();
+        stepFlowStartTime = Date.now();
+        document.body.appendChild(stepFlow.container);
+        stepFlow.setPhase("running", stepFlowStep, stepFlowToolCount);
+        const sf = stepFlow.container;
+        sf.style.left = "50%";
+        sf.style.transform = "translateX(-50%)";
+        sf.style.bottom = "210px";
+      }
+      if (stepFlow) {
+        stepFlowToolCount++;
+        stepFlow.addToolEntry(stepFlowStep, call.invocationName, call.params);
+        stepFlow.setPhase("running", stepFlowStep, stepFlowToolCount);
+      }
+      const cardData = { toolName: call.invocationName, params: call.params };
+      if (call.params && call.params.__invalid_json) {
+        d(`forward: invalid JSON for ${call.invocationName}, err=${call.params.__error}`);
+        const r = {
+          invocationName: call.invocationName,
+          ok: false,
+          error: `invalid-tool-json: ${call.params.__error}. Raw body: ${String(call.params.__raw ?? "").slice(0, 300)}`
+        };
+        pending.push(r);
+        collectedExecutions.push(r);
+        try {
+          updateToolCardByCallId(callId, cardData, { ok: false, error: `invalid-tool-json: ${call.params.__error}` }, Date.now() - startedAt);
+        } catch {
+        }
+        if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
+          scheduleAutoContinue();
+        }
+        return;
+      }
+      void sender({ callId, invocationName: call.invocationName, params: call.params }).then((r) => {
+        d(`forward: done ok=${r.ok} err=${r.error ?? ""}`);
+        const pr = { invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error };
+        pending.push(pr);
+        collectedExecutions.push(pr);
+        if (stepFlow) {
+          const detail = r.error ?? (typeof r.data === "string" ? r.data : JSON.stringify(r.data ?? "").slice(0, 500));
+          stepFlow.resolveToolEntry(stepFlowStep, r.ok, detail);
+        }
+        try {
+          updateToolCardByCallId(
+            callId,
+            cardData,
+            {
+              ok: r.ok,
+              data: r.data,
+              error: r.error,
+              content: r.content,
+              details: r.details,
+              isError: r.isError,
+              terminate: r.terminate
+            },
+            Date.now() - startedAt
+          );
+        } catch {
+        }
+        if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
+          scheduleAutoContinue();
+        }
+      }).catch((e) => {
+        d(`forward: failed ${e instanceof Error ? e.message : String(e)}`);
+        const pr = { invocationName: call.invocationName, ok: false, error: e instanceof Error ? e.message : String(e) };
+        pending.push(pr);
+        collectedExecutions.push(pr);
+        if (stepFlow) {
+          stepFlow.resolveToolEntry(stepFlowStep, false, e instanceof Error ? e.message : String(e));
+        }
+        try {
+          updateToolCardByCallId(callId, cardData, { ok: false, error: e instanceof Error ? e.message : String(e) }, Date.now() - startedAt);
+        } catch {
+        }
+        if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
+          scheduleAutoContinue();
+        }
+      });
+    };
+    function scheduleAutoContinue() {
+      const pendingResults = pending.map((p) => p.result);
+      if (shouldSkipAutoContinue(pendingResults)) {
+        console.log("[autoContinue] skipped by terminate");
+        return;
+      }
+      if (autoContinueTimer) clearTimeout(autoContinueTimer);
+      autoContinueTimer = setTimeout(() => {
+        autoContinueTimer = null;
+        autoContinueWithPow();
+      }, 1e3);
+    }
+    loopState.onStreamEnd = () => {
+      if (pending.length > 0 && loopState.lastChatBody && loopDepth < MAX_LOOP) {
+        scheduleAutoContinue();
+      } else if (stepFlow && loopDepth === 0) {
+        stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1e3));
+        const sf = stepFlow;
+        stepFlow = null;
+        stepFlowStep = 0;
+        stepFlowToolCount = 0;
+        setTimeout(() => sf.destroy(), 3e3);
+      }
+    };
+    loopState.onNewUserMessage = () => {
+      collectedExecutions.length = 0;
+      nudgeCount = 0;
+      loopDepth = 0;
+      loopState.autoReplyHadTools = false;
+      d("new user message: reset collectedExecutions/nudgeCount/loopDepth");
+      if (chatUI) {
+        if (loopState.newUserPrompt) {
+          chatUI.addUserMessage(loopState.newUserPrompt);
+        }
+        chatUI.startAssistantMessage();
+        chatUI.setBusy(true);
+      }
+    };
+    async function autoContinueWithPow() {
+      if (!loopState.lastChatBody || pending.length === 0 || loopDepth >= MAX_LOOP) return;
+      loopDepth += 1;
+      stepFlowStep = loopDepth;
+      stepReasoningAccum = "";
+      loopState.streamActive = true;
+      loopState.autoReplyHadTools = false;
+      try {
+        const continuationPrompt = buildContinuationPrompt(loopState.originalTask, collectedExecutions, TOOL_CATALOG_TEXT);
+        pending.length = 0;
+        let bodyStr = loopState.lastChatBody;
+        try {
+          const parsed = JSON.parse(bodyStr);
+          parsed.prompt = continuationPrompt;
+          if (loopState.lastResponseMsgId != null) {
+            parsed.parent_message_id = loopState.lastResponseMsgId;
+          }
+          bodyStr = JSON.stringify(parsed);
+        } catch {
+        }
+        d(`auto-continue loop=${loopDepth} computing PoW... capturedHeaders=${JSON.stringify(Object.keys(capturedHeaders))}`);
+        const filteredHeaders = {};
+        for (const [k, v] of Object.entries(capturedHeaders)) {
+          const lower = k.toLowerCase();
+          if (lower === "content-type" || lower === "content-length" || lower === "x-ds-pow-response") continue;
+          filteredHeaders[k] = v;
+        }
+        const powHeaders = await createPowHeaders(filteredHeaders);
+        d(`auto-continue loop=${loopDepth} PoW done, sending...`);
+        loopState.inAutoContinue = true;
+        loopState.autoReplyText = "";
+        await new Promise((resolve) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", "/api/v0/chat/completion", true);
+          xhr.setRequestHeader("Content-Type", "application/json");
+          for (const [k, v] of Object.entries(filteredHeaders)) {
+            try {
+              xhr.setRequestHeader(k, v);
+            } catch {
+            }
+          }
+          for (const [k, v] of Object.entries(powHeaders)) {
+            try {
+              xhr.setRequestHeader(k, v);
+            } catch {
+            }
+          }
+          xhr.onreadystatechange = () => {
+            if (xhr.readyState === 4) {
+              d(`auto-continue loop=${loopDepth} status=${xhr.status} autoReplyLen=${loopState.autoReplyText.length} inAuto=${loopState.inAutoContinue}`);
+              loopState.inAutoContinue = false;
+              loopState.streamActive = false;
+              const reply = loopState.autoReplyText.trim();
+              d(`auto-continue reply len=${reply.length} hasCallback=${typeof onAssistantReply}`);
+              if (reply) {
+                try {
+                  onAssistantReply?.(reply, loopDepth);
+                } catch (e) {
+                  d(`auto-continue push failed: ${e.message}`);
+                }
+                if (chatUI) {
+                  try {
+                    chatUI.finishAssistantMessage();
+                    d(`auto-continue chat UI finished, len=${reply.length}`);
+                  } catch (e) {
+                    d(`auto-continue chat UI finish failed: ${e.message}`);
+                  }
+                }
+              }
+              if (xhr.status === 429 && loopDepth < MAX_LOOP) {
+                d("auto-continue 429, retrying in 8s");
+                loopState.streamActive = false;
+                if (autoContinueTimer) clearTimeout(autoContinueTimer);
+                autoContinueTimer = setTimeout(() => {
+                  autoContinueTimer = null;
+                  autoContinueWithPow();
+                }, 8e3);
+              } else {
+                const replyForNudge = loopState.autoReplyText.trim();
+                const hasTaskComplete = !!extractTaskCompleteSignal(replyForNudge);
+                const hadTools = loopState.autoReplyHadTools;
+                if (hadTools) {
+                  nudgeCount = 0;
+                } else if (!hasTaskComplete && replyForNudge && shouldNudge(replyForNudge) && nudgeCount < MAX_NUDGES && loopDepth < MAX_LOOP) {
+                  nudgeCount += 1;
+                  d(`auto-continue nudge count=${nudgeCount} loop=${loopDepth}, sending nudge...`);
+                  autoContinueNudge(replyForNudge);
+                } else {
+                  d(`auto-continue loop end: hadTools=${hadTools} taskComplete=${hasTaskComplete} shouldNudge=${replyForNudge ? shouldNudge(replyForNudge) : false} nudgeCount=${nudgeCount}/${MAX_NUDGES}`);
+                  if (stepFlow) {
+                    stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1e3));
+                    const sf = stepFlow;
+                    stepFlow = null;
+                    stepFlowStep = 0;
+                    stepFlowToolCount = 0;
+                    setTimeout(() => sf.destroy(), 3e3);
+                  }
+                  chatUI?.setBusy(false);
+                  loopDepth = 0;
+                }
+              }
+              resolve();
+            }
+          };
+          xhr.send(bodyStr);
+        });
+      } catch (e) {
+        d(`auto-continue failed: ${e.message}`);
+        loopState.streamActive = false;
+      }
+    }
+    async function autoContinueNudge(previousReplyText) {
+      if (!loopState.lastChatBody || loopDepth >= MAX_LOOP) return;
+      loopDepth += 1;
+      loopState.streamActive = true;
+      loopState.autoReplyHadTools = false;
+      try {
+        const nudgePrompt = buildNudgePrompt(loopState.originalTask, previousReplyText, collectedExecutions, nudgeCount);
+        let bodyStr = loopState.lastChatBody;
+        try {
+          const parsed = JSON.parse(bodyStr);
+          parsed.prompt = nudgePrompt;
+          if (loopState.lastResponseMsgId != null) {
+            parsed.parent_message_id = loopState.lastResponseMsgId;
+          }
+          bodyStr = JSON.stringify(parsed);
+        } catch {
+        }
+        d(`auto-continue nudge loop=${loopDepth} count=${nudgeCount} computing PoW...`);
+        const filteredHeaders = {};
+        for (const [k, v] of Object.entries(capturedHeaders)) {
+          const lower = k.toLowerCase();
+          if (lower === "content-type" || lower === "content-length" || lower === "x-ds-pow-response") continue;
+          filteredHeaders[k] = v;
+        }
+        const powHeaders = await createPowHeaders(filteredHeaders);
+        loopState.inAutoContinue = true;
+        loopState.autoReplyText = "";
+        await new Promise((resolve) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", "/api/v0/chat/completion", true);
+          xhr.setRequestHeader("Content-Type", "application/json");
+          for (const [k, v] of Object.entries(filteredHeaders)) {
+            try {
+              xhr.setRequestHeader(k, v);
+            } catch {
+            }
+          }
+          for (const [k, v] of Object.entries(powHeaders)) {
+            try {
+              xhr.setRequestHeader(k, v);
+            } catch {
+            }
+          }
+          xhr.onreadystatechange = () => {
+            if (xhr.readyState === 4) {
+              d(`auto-continue nudge loop=${loopDepth} status=${xhr.status} autoReplyLen=${loopState.autoReplyText.length}`);
+              loopState.inAutoContinue = false;
+              loopState.streamActive = false;
+              const reply = loopState.autoReplyText.trim();
+              if (reply) {
+                try {
+                  onAssistantReply?.(reply, loopDepth);
+                } catch (e) {
+                  d(`nudge push failed: ${e.message}`);
+                }
+              }
+              if (xhr.status === 429 && loopDepth < MAX_LOOP) {
+                d("auto-continue nudge 429, retrying in 8s");
+                loopState.streamActive = false;
+                if (autoContinueTimer) clearTimeout(autoContinueTimer);
+                autoContinueTimer = setTimeout(() => {
+                  autoContinueTimer = null;
+                  autoContinueNudge(previousReplyText);
+                }, 8e3);
+              } else {
+                const replyForNudge = loopState.autoReplyText.trim();
+                const hasTaskComplete = !!extractTaskCompleteSignal(replyForNudge);
+                const hadTools = loopState.autoReplyHadTools;
+                if (hadTools) {
+                  nudgeCount = 0;
+                  d("auto-continue nudge end: tools detected, handing to scheduleAutoContinue");
+                } else if (!hasTaskComplete && replyForNudge && shouldNudge(replyForNudge) && nudgeCount < MAX_NUDGES && loopDepth < MAX_LOOP) {
+                  nudgeCount += 1;
+                  d(`auto-continue nudge again count=${nudgeCount} loop=${loopDepth}`);
+                  autoContinueNudge(replyForNudge);
+                } else {
+                  d(`auto-continue nudge end: hadTools=${hadTools} taskComplete=${hasTaskComplete} shouldNudge=${replyForNudge ? shouldNudge(replyForNudge) : false} nudgeCount=${nudgeCount}/${MAX_NUDGES}`);
+                }
+              }
+              resolve();
+            }
+          };
+          xhr.send(bodyStr);
+        });
+      } catch (e) {
+        d(`auto-continue nudge failed: ${e.message}`);
+        loopState.streamActive = false;
+      }
+    }
+    const origFetch = window.fetch ? window.fetch.bind(window) : void 0;
+    const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending, d, loopState) : void 0;
+    const stopXhr = installXhrHooks(forward, pending, d, loopState, capturedHeaders);
+    if (onMemoriesUpdate) {
+      const originalCallback = onMemoriesUpdate;
+      options2.onMemoriesUpdate = (memories) => {
+        currentMemories = memories;
+        originalCallback(memories);
+      };
+    }
+    const codeRunner = async (code2, language) => {
+      try {
+        if (language === "python") {
+          const r2 = await sender({ callId: crypto.randomUUID(), invocationName: "python_exec", params: { code: code2 } });
+          if (!r2.ok) return { ok: false, error: r2.error };
+          const dd2 = r2.data;
+          const text = dd2 ? dd2.stdout ?? dd2.output ?? (dd2.result != null ? String(dd2.result) : JSON.stringify(dd2)) : "";
+          return { ok: true, stdout: text || "(\u65E0\u8F93\u51FA)" };
+        }
+        const ext = language === "typescript" ? "ts" : "mjs";
+        const tmp = `C:/Users/lidicn/AppData/Local/Temp/studio-run-${Date.now()}.${ext}`;
+        const w = await sender({ callId: crypto.randomUUID(), invocationName: "local_file_write", params: { path: tmp, content: code2 } });
+        if (!w.ok) return { ok: false, error: w.error };
+        const nodeCmd = language === "typescript" ? `node --experimental-strip-types "${tmp}"` : `node "${tmp}"`;
+        const r = await sender({ callId: crypto.randomUUID(), invocationName: "shell_exec", params: { command: nodeCmd } });
+        if (!r.ok) return { ok: false, error: r.error };
+        const dd = r.data;
+        return { ok: true, stdout: dd?.stdout ?? "", stderr: dd?.stderr };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    };
+    let codeObserver = null;
+    let hydrateTimer = null;
+    const setupCodeObserver = () => {
+      if (!document.body || codeObserver) return;
+      codeObserver = new MutationObserver(() => {
+        if (hydrateTimer) clearTimeout(hydrateTimer);
+        hydrateTimer = setTimeout(() => {
+          hydrateTimer = null;
+          const sels = [".ds-assistant-message-main-content", '[class*="assistant-message"]'];
+          for (const sel of sels) {
+            document.querySelectorAll(sel).forEach((m) => hydrateCodeBlocks(m, codeRunner));
+          }
+        }, 400);
+      });
+      codeObserver.observe(document.body, { childList: true, subtree: true });
+    };
+    if (document.body) setupCodeObserver();
+    else document.addEventListener("DOMContentLoaded", setupCodeObserver, { once: true });
+    (async () => {
+      const maxRetries = 10;
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          const r = await sender({ callId: "mcp-tools-init", invocationName: "mcp.list", params: {} });
+          if (r.ok && r.data && Array.isArray(r.data.tools) && r.data.tools.length > 0) {
+            currentMcpTools = r.data.tools;
+            d(`loaded ${currentMcpTools.length} MCP tools for prompt injection (attempt ${attempt + 1})`);
+            return;
+          }
+          d(`mcp tools load attempt ${attempt + 1} failed: ok=${r.ok} error=${r.error ?? "none"} tools=${r.data ? r.data.tools?.length ?? 0 : 0}`);
+        } catch (e) {
+          d(`mcp tools load attempt ${attempt + 1} error: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1e3));
+      }
+      d(`mcp tools load failed after ${maxRetries} attempts, agent will not see MCP tools in prompt`);
+    })();
+    return {
+      stop() {
+        try {
+          stopFetch?.();
+        } catch {
+        }
+        try {
+          stopXhr?.();
+        } catch {
+        }
+        try {
+          if (hydrateTimer) clearTimeout(hydrateTimer);
+          codeObserver?.disconnect();
+        } catch {
+        }
+      }
+    };
+  }
+
+  // src/desktop/integrity.ts
+  var DEFAULT_MEMBERS = ["bridge", "host", "authority", "sessionId"];
+  var DEFAULT_INTERVAL_MS = 5e3;
+  var STUDIO_KEY = "__deepseekStudio";
+  function defaultRead() {
+    const w = globalThis.window ?? globalThis;
+    return w[STUDIO_KEY];
+  }
+  function freezeStudioObject() {
+    try {
+      const w = globalThis.window ?? globalThis;
+      const target = w;
+      const existing = target[STUDIO_KEY];
+      if (!existing) return false;
+      const desc = Object.getOwnPropertyDescriptor(target, STUDIO_KEY);
+      if (desc && desc.configurable === false) return true;
+      Object.defineProperty(target, STUDIO_KEY, {
+        value: existing,
+        writable: false,
+        configurable: false,
+        enumerable: true
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  function startIntegrityProbe(options2) {
+    const read = options2.read ?? defaultRead;
+    const members = options2.members ?? DEFAULT_MEMBERS;
+    const intervalMs = options2.intervalMs ?? DEFAULT_INTERVAL_MS;
+    const setIntervalFn = options2.setIntervalFn ?? ((fn, ms) => setInterval(fn, ms));
+    const clearIntervalFn = options2.clearIntervalFn ?? ((h) => clearInterval(h));
+    const initial = read();
+    const snapshot = /* @__PURE__ */ new Map();
+    if (initial && typeof initial === "object") {
+      for (const m of members) {
+        snapshot.set(m, initial[m]);
+      }
+    }
+    let initialFrozen = false;
+    try {
+      const w0 = globalThis.window ?? globalThis;
+      const d0 = Object.getOwnPropertyDescriptor(w0, STUDIO_KEY);
+      initialFrozen = !!d0 && d0.configurable === false && d0.writable === false;
+    } catch {
+    }
+    let fired = false;
+    let stopped2 = false;
+    function detect() {
+      const current = read();
+      if (current === void 0 || current === null) return { reason: "removed" };
+      if (current !== initial) return { reason: "replaced" };
+      const bag = current;
+      for (const m of members) {
+        if (!(m in bag)) return { reason: "member-missing", detail: m };
+        if (bag[m] !== snapshot.get(m)) return { reason: "member-replaced", detail: m };
+      }
+      if (initialFrozen) {
+        try {
+          const w = globalThis.window ?? globalThis;
+          const desc = Object.getOwnPropertyDescriptor(w, STUDIO_KEY);
+          if (desc && (desc.configurable !== false || desc.writable !== false)) {
+            return { reason: "descriptor-downgraded" };
+          }
+        } catch {
+        }
+      }
+      return null;
+    }
+    const timer = setIntervalFn(() => {
+      if (stopped2 || fired) return;
+      const alert = detect();
+      if (alert) {
+        fired = true;
+        options2.onViolation(alert);
+      }
+    }, intervalMs);
+    return {
+      check() {
+        const alert = detect();
+        if (alert && !fired) {
+          fired = true;
+          options2.onViolation(alert);
+        }
+        return alert;
+      },
+      stop() {
+        stopped2 = true;
+        clearIntervalFn(timer);
+      }
+    };
+  }
+
+  // src/inject/markdown.ts
+  var SAFE_LINK_PROTOCOLS = /* @__PURE__ */ new Set(["http:", "https:", "mailto:"]);
+  function renderMarkdown(text, options2 = {}) {
+    try {
+      const codeBlocks = [];
+      const normalizedText = text.replace(/\r\n?/g, "\n");
+      let html = extractCodeBlocks(normalizedText, codeBlocks, options2.omitFencedCodeLanguages);
+      html = escapeHtml2(html);
+      html = renderInlineFormatting(html);
+      html = renderBlockLayout(html);
+      html = html.replace(/@@CODE_BLOCK_(\d+)@@/g, (_match, index) => codeBlocks[Number(index)] ?? "");
+      return html;
+    } catch {
+      return escapeHtml2(text);
+    }
+  }
+  function extractCodeBlocks(text, codeBlocks, omitLangs) {
+    return text.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code2) => {
+      const langLower = (lang || "").toLowerCase();
+      if (omitLangs && omitLangs.has(langLower)) {
+        codeBlocks.push(`<pre><code class="language-${lang}">${escapeHtml2(code2.trimEnd())}</code></pre>`);
+      } else {
+        codeBlocks.push(`<pre><code class="language-${lang}">${escapeHtml2(code2.trimEnd())}</code></pre>`);
+      }
+      return `
+@@CODE_BLOCK_${codeBlocks.length - 1}@@
+`;
+    });
+  }
+  function renderInlineFormatting(html) {
+    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
+      const decodedHref = href.trim();
+      if (!isSafeHref(decodedHref)) return `${label} (${href})`;
+      return `<a href="${escapeAttr(decodedHref)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    });
+    return html;
+  }
+  function renderBlockLayout(html) {
+    const lines = html.split("\n");
+    const blocks = [];
+    let inList = null;
+    let paragraph = [];
+    const flushParagraph = () => {
+      if (paragraph.length > 0) {
+        blocks.push(`<p>${paragraph.join("<br>")}</p>`);
+        paragraph = [];
+      }
+    };
+    const closeList = () => {
+      if (inList) {
+        blocks.push(`</${inList}>`);
+        inList = null;
+      }
+    };
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        flushParagraph();
+        closeList();
+        continue;
+      }
+      if (/^#{1,6}\s/.test(trimmed)) {
+        flushParagraph();
+        closeList();
+        const level = trimmed.match(/^(#+)/)?.[1].length ?? 1;
+        const text = trimmed.replace(/^#+\s/, "");
+        blocks.push(`<h${level}>${text}</h${level}>`);
+        continue;
+      }
+      if (/^[-*•]\s/.test(trimmed)) {
+        flushParagraph();
+        if (inList !== "ul") {
+          closeList();
+          blocks.push("<ul>");
+          inList = "ul";
+        }
+        blocks.push(`<li>${trimmed.replace(/^[-*•]\s/, "")}</li>`);
+        continue;
+      }
+      if (/^\d+\.\s/.test(trimmed)) {
+        flushParagraph();
+        if (inList !== "ol") {
+          closeList();
+          blocks.push("<ol>");
+          inList = "ol";
+        }
+        blocks.push(`<li>${trimmed.replace(/^\d+\.\s/, "")}</li>`);
+        continue;
+      }
+      if (/^>\s/.test(trimmed)) {
+        flushParagraph();
+        blocks.push(`<blockquote>${trimmed.replace(/^>\s/, "")}</blockquote>`);
+        continue;
+      }
+      if (/^@@CODE_BLOCK_\d+@@$/.test(trimmed)) {
+        flushParagraph();
+        closeList();
+        blocks.push(trimmed);
+        continue;
+      }
+      paragraph.push(trimmed);
+    }
+    flushParagraph();
+    closeList();
+    return blocks.join("\n");
+  }
+  function escapeHtml2(text) {
+    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  function escapeAttr(text) {
+    return escapeHtml2(text).replace(/'/g, "&#39;");
+  }
+  function isSafeHref(href) {
+    try {
+      const url = new URL(href, window.location.href);
+      return SAFE_LINK_PROTOCOLS.has(url.protocol);
+    } catch {
+      return false;
+    }
+  }
+
+  // src/ui/studio-chat-css.ts
+  var STUDIO_CHAT_CSS = `
+/* ===== overlay \u5BB9\u5668 ===== */
+/* z-index \u5206\u5C42\uFF08v0.20\uFF09\uFF1A
+ *   2147483647  consent \u5F39\u7A97\uFF08\u540C\u610F\u95F8\u95E8\uFF0C\u6700\u9AD8\uFF09
+ *   2147483644-3646  StudioUI sidebar/\u9762\u677F\uFF08\u5DE5\u5177\u5165\u53E3\uFF0C\u53EF\u70B9\u51FB\uFF09
+ *   2147483000  \u672C chat overlay\uFF08\u6D88\u606F\u6E32\u67D3\uFF0C\u53EA\u76D6 DeepSeek #root\uFF09
+ * chat overlay \u4F4E\u4E8E sidebar\uFF0C\u786E\u4FDD\u6D6E\u52A8\u6309\u94AE/\u9762\u677F\u4E0D\u88AB\u767D\u677F\u76D6\u4F4F\u3002 */
+.ds-studio-chat-container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 280px;          /* \u5E95\u90E8\u7559 280px \u7ED9 DeepSeek \u8F93\u5165\u6846\u533A\u57DF\uFF0C\u5B9E\u6D4B\u540E\u5FAE\u8C03 */
+  z-index: 2147483000;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 15px;
+  color: #1a1a2e;
+}
+
+/* ===== \u6D88\u606F\u5217\u8868\uFF08\u6EDA\u52A8\u5BB9\u5668\uFF09===== */
+.ds-sc-message-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  scroll-behavior: smooth;
+}
+
+.ds-sc-message-list::-webkit-scrollbar { width: 8px; }
+.ds-sc-message-list::-webkit-scrollbar-thumb { background: #d0d0d8; border-radius: 4px; }
+.ds-sc-message-list::-webkit-scrollbar-thumb:hover { background: #b0b0bc; }
+
+/* ===== \u6D88\u606F\u6C14\u6CE1 ===== */
+.ds-sc-msg-user {
+  align-self: flex-end;
+  max-width: 78%;
+  background: linear-gradient(135deg, #4D6BFE, #3a55d8);
+  color: #fff;
+  border-radius: 14px 14px 4px 14px;
+  padding: 10px 15px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ds-sc-msg-assistant {
+  align-self: flex-start;
+  max-width: 88%;
+  background: #f6f7f9;
+  border: 1px solid #e8e8ee;
+  border-radius: 14px 14px 14px 4px;
+  padding: 12px 16px;
+  line-height: 1.7;
+  word-break: break-word;
+}
+
+/* \u6D41\u5F0F\u671F\u6587\u672C\u5BB9\u5668\uFF08\u7EC8\u7AEF\u5F0F\u8FFD\u52A0\uFF09 */
+.ds-sc-streaming {
+  white-space: pre-wrap;
+}
+
+/* \u6D41\u7ED3\u675F\u540E\u7684 markdown \u6E32\u67D3\u5BB9\u5668 */
+.ds-sc-markdown {
+  white-space: normal;
+}
+.ds-sc-markdown p { margin: 0 0 8px; }
+.ds-sc-markdown p:last-child { margin-bottom: 0; }
+.ds-sc-markdown h1, .ds-sc-markdown h2, .ds-sc-markdown h3 {
+  margin: 12px 0 6px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.ds-sc-markdown h1 { font-size: 1.4em; }
+.ds-sc-markdown h2 { font-size: 1.25em; }
+.ds-sc-markdown h3 { font-size: 1.1em; }
+.ds-sc-markdown ul, .ds-sc-markdown ol { margin: 6px 0 8px; padding-left: 24px; }
+.ds-sc-markdown li { margin: 2px 0; }
+.ds-sc-markdown pre {
+  background: #f0f0f5;
+  border-radius: 8px;
+  padding: 10px 13px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 8px 0;
+}
+.ds-sc-markdown code {
+  background: #f0f0f5;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.9em;
+  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+}
+.ds-sc-markdown pre code {
+  background: none;
+  padding: 0;
+}
+.ds-sc-markdown blockquote {
+  border-left: 3px solid #4D6BFE;
+  margin: 8px 0;
+  padding: 4px 12px;
+  color: #555;
+}
+.ds-sc-markdown a {
+  color: #4D6BFE;
+  text-decoration: none;
+}
+.ds-sc-markdown a:hover { text-decoration: underline; }
+
+/* \u601D\u8003\u524D\u7F00\u6298\u53E0\u5361\u7247 */
+.ds-sc-thinking-preface {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  background: #f5f5f5;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+/* ===== \u5DE5\u5177\u5361\u7247\u5BB9\u5668\uFF08\u590D\u7528 tool-card-ui \u7684 DOM\uFF09===== */
+.ds-sc-msg-assistant .ds-studio-tools-container {
+  margin-bottom: 8px;
+}
+
+/* ===== \u5E95\u90E8\u72B6\u6001\u680F ===== */
+.ds-sc-status-bar {
+  flex-shrink: 0;
+  padding: 6px 16px;
+  background: #f9f9fc;
+  border-top: 1px solid #e8e8ee;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: #888;
+}
+.ds-sc-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ccc;
+}
+.ds-sc-status-dot.busy {
+  background: #4D6BFE;
+  animation: ds-sc-pulse 1.5s ease-in-out infinite;
+}
+.ds-sc-status-dot.done { background: #22c55e; }
+.ds-sc-status-dot.error { background: #ef4444; }
+@keyframes ds-sc-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* v0.20 removed: hidden virtual-list rule */
+/* \u66F4\u6FC0\u8FDB\uFF1A\u9690\u85CF #root \u4E0B\u6240\u6709\u975E composer \u7684\u76F4\u63A5\u5B50\u5143\u7D20\uFF08\u5907\u7528\uFF0C\u5B9E\u6D4B\u540E\u51B3\u5B9A\u662F\u5426\u542F\u7528\uFF09
+#root > div > div:not(:last-child) {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+*/
+`;
+
+  // src/ui/studio-chat-ui.ts
+  var styleInjected2 = false;
+  function injectChatStyles() {
+    if (styleInjected2) return;
+    const style = document.createElement("style");
+    style.id = "ds-studio-chat-styles";
+    style.textContent = STUDIO_CHAT_CSS;
+    const head = document.head ?? document.documentElement;
+    if (head) {
+      head.appendChild(style);
+      styleInjected2 = true;
+    } else {
+      const tryInject = () => {
+        if (styleInjected2) return;
+        const root = document.documentElement;
+        if (root) {
+          root.appendChild(style);
+          styleInjected2 = true;
+        }
+      };
+      document.addEventListener("DOMContentLoaded", tryInject, { once: true });
+      const obs = new MutationObserver(() => {
+        if (document.documentElement) {
+          tryInject();
+          obs.disconnect();
+        }
+      });
+      obs.observe(document, { childList: true, subtree: true });
+    }
+  }
+  function createStudioChatUI() {
+    injectChatStyles();
+    const container = document.createElement("div");
+    container.className = "ds-studio-chat-container";
+    console.log("[studio-chat-ui] createStudioChatUI start, injecting styles=", !styleInjected2);
+    const messageList = document.createElement("div");
+    messageList.className = "ds-sc-message-list";
+    container.appendChild(messageList);
+    const statusBar = document.createElement("div");
+    statusBar.className = "ds-sc-status-bar";
+    const statusDot = document.createElement("span");
+    statusDot.className = "ds-sc-status-dot";
+    const statusText = document.createElement("span");
+    statusText.className = "ds-sc-status-text";
+    statusText.textContent = "\u5C31\u7EEA";
+    statusBar.appendChild(statusDot);
+    statusBar.appendChild(statusText);
+    container.appendChild(statusBar);
+    let currentAssistant = null;
+    let currentRawText = "";
+    const welcome = document.createElement("div");
+    welcome.style.cssText = "margin:auto;text-align:center;padding:40px 20px;color:#999;";
+    welcome.innerHTML = '<div style="font-size:20px;font-weight:600;margin-bottom:8px;">DeepSeek Studio</div><div style="font-size:13px;line-height:1.8;">\u5728\u4E0B\u65B9\u8F93\u5165\u6846\u53D1\u9001\u6D88\u606F<br>\u5DE5\u5177\u8C03\u7528\u4E0E\u56DE\u590D\u5C06\u663E\u793A\u5728\u6B64\u5904</div>';
+    messageList.appendChild(welcome);
+    function scrollToBottom() {
+      messageList.scrollTop = messageList.scrollHeight;
+    }
+    function addUserMessage(text) {
+      const w = messageList.querySelector(':scope > [style*="margin:auto"]');
+      if (w) w.remove();
+      const msg2 = document.createElement("div");
+      msg2.className = "ds-sc-msg-user";
+      msg2.textContent = text;
+      messageList.appendChild(msg2);
+      scrollToBottom();
+    }
+    function startAssistantMessage() {
+      const w = messageList.querySelector(':scope > [style*="margin:auto"]');
+      if (w) w.remove();
+      const msg2 = document.createElement("div");
+      msg2.className = "ds-sc-msg-assistant";
+      const streaming = document.createElement("div");
+      streaming.className = "ds-sc-streaming";
+      msg2.appendChild(streaming);
+      messageList.appendChild(msg2);
+      currentAssistant = msg2;
+      currentRawText = "";
+      scrollToBottom();
+    }
+    function appendToAssistantMessage(text) {
+      if (!currentAssistant) startAssistantMessage();
+      const streaming = currentAssistant.querySelector(".ds-sc-streaming");
+      if (!streaming) return;
+      currentRawText += text;
+      streaming.textContent = currentRawText;
+      scrollToBottom();
+    }
+    function finishAssistantMessage() {
+      if (!currentAssistant) return;
+      const streaming = currentAssistant.querySelector(".ds-sc-streaming");
+      if (streaming && currentRawText) {
+        const html = renderMarkdown(currentRawText);
+        const markdownDiv = document.createElement("div");
+        markdownDiv.className = "ds-sc-markdown";
+        markdownDiv.innerHTML = html;
+        streaming.replaceWith(markdownDiv);
+      }
+      currentAssistant = null;
+      currentRawText = "";
+      scrollToBottom();
+    }
+    function setBusy(busy) {
+      statusDot.className = busy ? "ds-sc-status-dot busy" : "ds-sc-status-dot done";
+      statusText.textContent = busy ? "\u6267\u884C\u4E2D\u2026" : "\u5B8C\u6210";
+    }
+    function destroy() {
+      container.remove();
+      currentAssistant = null;
+      currentRawText = "";
+    }
+    return {
+      container,
+      addUserMessage,
+      startAssistantMessage,
+      appendToAssistantMessage,
+      finishAssistantMessage,
+      setBusy,
+      destroy
+    };
   }
 
   // src/ui/studio-ui-core.ts
@@ -5020,1394 +6413,6 @@ ${result2.stderr}`;
     return false;
   }
 
-  // src/inject/main-world-interceptor.ts
-  var currentMemories = [];
-  var currentMcpTools = [];
-  var stepFlow = null;
-  var stepFlowStep = 0;
-  var stepFlowToolCount = 0;
-  var stepFlowStartTime = 0;
-  var stepReasoningAccum = "";
-  function formatToolResultBlock(results) {
-    const lines = results.map((p) => {
-      const head = `[tool-result:${p.invocationName}]`;
-      if (!p.ok) return `${head}
-<error>${p.error ?? "unknown"}</error>`;
-      if (p.result && typeof p.result === "object" && "stdout" in p.result) {
-        const r = p.result;
-        const stdout = typeof r.stdout === "string" ? r.stdout : "";
-        const stderr = typeof r.stderr === "string" ? r.stderr : "";
-        const exitCode = r.exitCode ?? "";
-        const parts = [];
-        if (stdout.trim()) parts.push(stdout.trimEnd());
-        if (stderr.trim()) parts.push(`<stderr>
-${stderr.trimEnd()}
-</stderr>`);
-        if (exitCode !== "" && exitCode !== 0) parts.push(`<exit-code>${exitCode}</exit-code>`);
-        return `${head}
-${parts.join("\n\n") || "(empty output)"}`;
-      }
-      const data = typeof p.result === "string" ? p.result : JSON.stringify(p.result ?? null);
-      return `${head}
-${data}`;
-    });
-    return `\u3010\u5DE5\u5177\u6267\u884C\u7ED3\u679C\u3011
-${lines.join("\n\n")}`;
-  }
-  function reinjectIntoPrompt(prompt, results) {
-    if (results.length === 0) return prompt;
-    return `${prompt}
-
-${formatToolResultBlock(results)}`;
-  }
-  function isDeepSeekChatEndpoint(url, method) {
-    try {
-      const base = globalThis.location?.href;
-      const u = base ? new URL(url, base) : new URL(url);
-      return u.hostname.endsWith("deepseek.com") && method.toUpperCase() === "POST" && u.pathname === "/api/v0/chat/completion";
-    } catch {
-      return false;
-    }
-  }
-  function resolveUrl(input) {
-    if (typeof input === "string") return input;
-    if (input instanceof URL) return input.href;
-    return input.url;
-  }
-  function methodOf(input, init) {
-    if (init?.method) return String(init.method);
-    if (typeof input !== "string" && !(input instanceof URL) && input.method) return input.method;
-    return "GET";
-  }
-  var TOOL_CAPABILITY_MARKER = "[studio-tool-capability]";
-  var TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
-## \u89D2\u8272
-\u4F60\u662F DeepSeek Studio \u7684\u672C\u5730\u5DE5\u5177\u4EE3\u7406\uFF0C\u53EF\u4EE5\u64CD\u4F5C\u7528\u6237\u7535\u8111\u4E0A\u7684\u6587\u4EF6\u3001\u6267\u884C\u547D\u4EE4\u3001\u4FDD\u5B58\u957F\u671F\u8BB0\u5FC6\u3002
-
-## \u5DE5\u5177\u8C03\u7528
-\u4F60\u53EF\u4EE5\u901A\u8FC7\u8F93\u51FA\u76F4\u63A5 XML \u6807\u7B7E\u6765\u8C03\u7528\u5DE5\u5177\uFF0C\u6807\u7B7E\u4F53\u5185\u5FC5\u987B\u662F\u5408\u6CD5 JSON\uFF1A
-
-<local_file_read>{"path":"E:/Users/name/file.txt"}</local_file_read>
-<local_file_write>{"path":"E:/Users/name/file.txt","content":"\u8981\u5199\u5165\u7684\u6587\u672C"}</local_file_write>
-<local_file_stat>{"path":"E:/Users/name"}</local_file_stat>
-<shell_exec>{"command":"powershell -NoProfile -Command "Get-ChildItem -LiteralPath 'E:/Users/name' -File | Sort-Object LastWriteTime -Descending | Select-Object -First 10""}</shell_exec>
-<memory_save>{"type":"user","name":"\u7528\u6237\u89D2\u8272","content":"\u524D\u7AEF\u5F00\u53D1\u8005\uFF0C\u4E3B\u8981\u4F7F\u7528 React \u548C TypeScript","tags":["frontend","React"]}</memory_save>
-<python_exec>{"code":"print('hello')"}</python_exec>
-
-## \u89C4\u5219
-- \u6807\u7B7E\u540D\u5FC5\u987B\u5339\u914D\u53EF\u7528\u5DE5\u5177\uFF1BJSON body \u5FC5\u987B\u662F\u5408\u6CD5 JSON\uFF08\u5B57\u7B26\u4E32\u7528\u53CC\u5F15\u53F7\uFF0C\u4E0D\u8981\u6709\u591A\u4F59\u9017\u53F7\u6216\u6CE8\u91CA\uFF09
-- \u5DE5\u5177\u8C03\u7528\u653E\u5728\u6700\u7EC8\u56DE\u7B54\u6B63\u6587\u91CC\uFF0C\u4E0D\u8981\u653E\u5728\u601D\u8003/\u63A8\u7406\u533A\u57DF\uFF0C\u4E0D\u8981\u653E\u5728 Markdown \u4EE3\u7801\u5757\u91CC
-- \u5DE5\u5177\u6807\u7B7E\u5FC5\u987B\u72EC\u7ACB\u6210\u884C\uFF0C\u6807\u7B7E\u524D\u540E\u4E0D\u8981\u6709\u4EFB\u4F55\u989D\u5916\u6587\u5B57\uFF08\u4E0D\u8981\u5728\u6807\u7B7E\u540E\u5199"\u3002\u4E0D\u8981 Markdown"\u4E4B\u7C7B\u7684\u8BDD\uFF09
-- Windows \u8DEF\u5F84\u4E00\u5F8B\u7528\u6B63\u659C\u6760\uFF08\u5982 E:/Users/name\uFF09\uFF0C\u4E0D\u8981\u7528\u53CD\u659C\u6760\uFF0C\u4E0D\u8981\u5199\u56DB\u53CD\u659C\u6760
-- \u5217\u51FA\u6587\u4EF6/\u76EE\u5F55\u4F18\u5148\u7528 PowerShell \u7684 Get-ChildItem\uFF0C\u4E0D\u8981\u7528 cmd \u7684 dir\uFF08dir \u5BF9\u6B63\u659C\u6760\u8DEF\u5F84\u4F1A\u62A5\u9519\uFF09
-- \u4E00\u6B21\u53EA\u8C03\u7528\u4E00\u4E2A\u5DE5\u5177\uFF0C\u7B49\u7ED3\u679C\u8FD4\u56DE\u540E\u518D\u51B3\u5B9A\u4E0B\u4E00\u6B65
-- **\u601D\u8003\u8FC7\u7A0B\u653E THINK \u6BB5\uFF0C\u6700\u7EC8\u56DE\u7B54\u76F4\u63A5\u7ED9\u7ED3\u8BBA\uFF0C\u4E0D\u8981\u5728\u56DE\u7B54\u5F00\u5934\u5199\u82F1\u6587\u603B\u7ED3\u6216"user asked... I got... Now output..."\u8FD9\u7C7B\u8BDD**
-- **\u5168\u7A0B\u7528\u4E2D\u6587\u56DE\u7B54\uFF0C\u9664\u975E\u7528\u6237\u660E\u786E\u8981\u6C42\u5176\u4ED6\u8BED\u8A00**
-
-## \u7981\u6B62
-- \u4F7F\u7528 <invoke name="...">\u3001<tool_call> \u7B49\u5305\u88C5\u6807\u7B7E
-- \u8F93\u51FA {"tool":"...","arguments":{...}} \u8FD9\u79CD JSON \u683C\u5F0F
-- \u58F0\u79F0\u81EA\u5DF1\u65E0\u6CD5\u8C03\u7528\u8FD9\u4E9B\u5DE5\u5177
-- \u5728\u5DE5\u5177\u6807\u7B7E\u524D\u540E\u6DFB\u52A0\u89E3\u91CA\u6027\u6587\u5B57
-
-## \u6269\u5C55\u80FD\u529B
-\u4EE5\u4E0B\u80FD\u529B\u5DF2\u542F\u7528\uFF0C\u4F60\u53EF\u4EE5\u4E3B\u52A8\u4F7F\u7528\u6765\u5B8C\u6210\u7528\u6237\u4EFB\u52A1\uFF0C\u65E0\u9700\u5148\u8BE2\u95EE\uFF1A
-- \u672C\u5730\u547D\u4EE4\u6267\u884C\uFF08\u8FD0\u884C CLI \u5DE5\u5177\u3001\u811A\u672C\u3001\u6587\u4EF6\u64CD\u4F5C\uFF09
-- \u672C\u5730\u6587\u4EF6\u8BFB\u5199\uFF08\u8BFB\u53D6\u3001\u5199\u5165\u3001\u67E5\u770B\u6587\u4EF6\u4FE1\u606F\uFF09
-- \u957F\u671F\u8BB0\u5FC6\uFF08\u4FDD\u5B58\u7528\u6237\u8EAB\u4EFD\u3001\u504F\u597D\u3001\u6280\u672F\u6808\u3001\u9879\u76EE\u51B3\u7B56\u7B49\u8DE8\u4F1A\u8BDD\u4FE1\u606F\uFF09
-
-## \u8BB0\u5FC6\u4FDD\u5B58\u89C4\u5219
-\u5F53\u5BF9\u8BDD\u4E2D\u51FA\u73B0\u4EE5\u4E0B\u60C5\u51B5\u65F6\uFF0C\u4F60\u5FC5\u987B\u8C03\u7528 memory_save \u5DE5\u5177\uFF1A
-- \u7528\u6237\u63D0\u5230\u81EA\u5DF1\u7684\u8EAB\u4EFD\u3001\u804C\u4E1A\u6216\u89D2\u8272
-- \u7528\u6237\u8868\u8FBE\u504F\u597D\u3001\u4E60\u60EF\u6216\u5DE5\u4F5C\u98CE\u683C
-- \u7528\u6237\u7EA0\u6B63\u4F60\u7684\u56DE\u7B54\u98CE\u683C\u6216\u884C\u4E3A
-- \u51FA\u73B0\u91CD\u8981\u7684\u6280\u672F\u51B3\u7B56\u6216\u67B6\u6784\u9009\u62E9
-- \u7528\u6237\u660E\u786E\u8BF4"\u8BB0\u4F4F"\u3001"\u8BB0\u4E00\u4E0B"\u3001"\u522B\u5FD8\u4E86"\u7B49
-
-## \u53EF\u7528\u5DE5\u5177
-- local_file_read \u2014 \u8BFB\u53D6\u6587\u4EF6\u5185\u5BB9\uFF0C\u53C2\u6570\uFF1Apath\uFF08\u7EDD\u5BF9\u8DEF\u5F84\uFF0C\u6B63\u659C\u6760\uFF09
-- local_file_write \u2014 \u5199\u5165\u6587\u4EF6\uFF0C\u53C2\u6570\uFF1Apath\u3001content
-- local_file_stat \u2014 \u67E5\u770B\u6587\u4EF6/\u76EE\u5F55\u4FE1\u606F\uFF0C\u53C2\u6570\uFF1Apath
-- shell_exec \u2014 \u6267\u884C\u547D\u4EE4\u884C\uFF0C\u53C2\u6570\uFF1Acommand\uFF08\u4F18\u5148\u7528 PowerShell\uFF0C\u8DEF\u5F84\u7528\u6B63\u659C\u6760\uFF09
-- memory_save \u2014 \u4FDD\u5B58\u957F\u671F\u8BB0\u5FC6\uFF0C\u53C2\u6570\uFF1Atype\uFF08user/project\uFF09\u3001name\u3001content\u3001tags\uFF08\u53EF\u9009\uFF09
-- python_exec \u2014 \u6267\u884C Python \u4EE3\u7801\uFF0C\u53C2\u6570\uFF1Acode\uFF08Python \u6E90\u4EE3\u7801\u5B57\u7B26\u4E32\uFF09
-- mcp_list \u2014 \u5217\u51FA\u5DF2\u914D\u7F6E\u7684 MCP \u670D\u52A1\u5668\u53CA\u5176\u5DE5\u5177\uFF08\u65E0\u53C2\u6570\uFF09
-- mcp_call \u2014 \u8C03\u7528 MCP \u5DE5\u5177\uFF0C\u53C2\u6570\uFF1AserverId\u3001tool\u3001args\uFF08\u53C2\u6570\u5BF9\u8C61\uFF09
-
-\u7CFB\u7EDF\u4F1A\u771F\u5B9E\u6267\u884C\u5E76\u628A\u7ED3\u679C\u8FD4\u56DE\u7ED9\u4F60\uFF0C\u636E\u6B64\u7EE7\u7EED\u3002\u4E0D\u8981\u81C6\u9020\u8DEF\u5F84\uFF0C\u4E0D\u8981\u7F16\u9020\u5DE5\u5177\u7ED3\u679C\u3002`;
-  var TOOL_CATALOG_TEXT = `## \u53EF\u7528\u5DE5\u5177
-- local_file_read \u2014 \u8BFB\u53D6\u6587\u4EF6\u5185\u5BB9\uFF0C\u53C2\u6570\uFF1Apath\uFF08\u7EDD\u5BF9\u8DEF\u5F84\uFF0C\u6B63\u659C\u6760\uFF09
-- local_file_write \u2014 \u5199\u5165\u6587\u4EF6\uFF0C\u53C2\u6570\uFF1Apath\u3001content
-- local_file_stat \u2014 \u67E5\u770B\u6587\u4EF6/\u76EE\u5F55\u4FE1\u606F\uFF0C\u53C2\u6570\uFF1Apath
-- shell_exec \u2014 \u6267\u884C\u547D\u4EE4\u884C\uFF0C\u53C2\u6570\uFF1Acommand\uFF08\u4F18\u5148\u7528 PowerShell\uFF0C\u8DEF\u5F84\u7528\u6B63\u659C\u6760\uFF09
-- memory_save \u2014 \u4FDD\u5B58\u957F\u671F\u8BB0\u5FC6\uFF0C\u53C2\u6570\uFF1Atype\uFF08user/project\uFF09\u3001name\u3001content\u3001tags\uFF08\u53EF\u9009\uFF09
-- python_exec \u2014 \u6267\u884C Python \u4EE3\u7801\uFF0C\u53C2\u6570\uFF1Acode\uFF08Python \u6E90\u4EE3\u7801\u5B57\u7B26\u4E32\uFF09
-- mcp_list \u2014 \u5217\u51FA\u5DF2\u914D\u7F6E\u7684 MCP \u670D\u52A1\u5668\u53CA\u5176\u5DE5\u5177\uFF08\u65E0\u53C2\u6570\uFF09
-- mcp_call \u2014 \u8C03\u7528 MCP \u5DE5\u5177\uFF0C\u53C2\u6570\uFF1AserverId\u3001tool\u3001args\uFF08\u53C2\u6570\u5BF9\u8C61\uFF09
-
-\u8C03\u7528\u65B9\u5F0F\uFF1A\u76F4\u63A5\u8F93\u51FA XML \u6807\u7B7E\uFF0C\u6807\u7B7E\u4F53\u5185\u4E3A\u5408\u6CD5 JSON\uFF0C\u5982 <shell_exec>{"command":"..."}</shell_exec>`;
-  function formatMcpToolsBlock() {
-    if (currentMcpTools.length === 0) return "";
-    const byServer = /* @__PURE__ */ new Map();
-    for (const t of currentMcpTools) {
-      if (!byServer.has(t.serverId)) byServer.set(t.serverId, []);
-      byServer.get(t.serverId).push({ name: t.name, description: t.description });
-    }
-    const lines = ["## \u5DF2\u914D\u7F6E\u7684 MCP \u5DE5\u5177\uFF08\u53EF\u76F4\u63A5\u901A\u8FC7 mcp_call \u8C03\u7528\uFF09"];
-    for (const [serverId, tools] of byServer) {
-      lines.push(`### \u670D\u52A1\u5668\uFF1A${serverId}`);
-      for (const t of tools) {
-        lines.push(`- ${t.name} \u2014 ${t.description}`);
-      }
-    }
-    lines.push('\u8C03\u7528\u65B9\u5F0F\uFF1A<mcp_call>{"serverId":"\u670D\u52A1\u5668\u540D","tool":"\u5DE5\u5177\u540D","args":{...}}</mcp_call>');
-    return lines.join("\n");
-  }
-  function buildCapabilityPrompt() {
-    const mcpBlock = formatMcpToolsBlock();
-    return mcpBlock ? `${TOOL_CAPABILITY_PROMPT}
-
-${mcpBlock}` : TOOL_CAPABILITY_PROMPT;
-  }
-  function injectInstructionIntoMessages(messages) {
-    const first = messages[0];
-    if (first && first.role === "system" && typeof first.content === "string" && first.content.includes(TOOL_CAPABILITY_MARKER)) {
-      return messages;
-    }
-    return [{ role: "system", content: buildCapabilityPrompt() }, ...messages];
-  }
-  function appendResultsToMessages(messages, block) {
-    let idx = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      if (m.role === "user") {
-        idx = i;
-        break;
-      }
-    }
-    if (idx < 0) {
-      messages.push({ role: "user", content: block });
-    } else {
-      const m = messages[idx];
-      m.content = (typeof m.content === "string" ? m.content : "") + "\n\n" + block;
-    }
-    return messages;
-  }
-  function formatMemoriesBlock() {
-    if (currentMemories.length === 0) return "";
-    const lines = currentMemories.slice(0, 50).map((m) => {
-      const scope = m.type === "project" ? "project " : "";
-      return `- #${m.id} [${scope}${m.type}] ${m.name}: ${m.content}`;
-    });
-    return `
-
-## \u5DF2\u6709\u8BB0\u5FC6
-${lines.join("\n")}`;
-  }
-  function prepareOutgoingBody(rawBody, pending) {
-    let parsed;
-    try {
-      parsed = JSON.parse(rawBody);
-    } catch {
-      return null;
-    }
-    const hasResults = pending.length > 0;
-    const block = hasResults ? formatToolResultBlock(pending.slice()) : "";
-    const memoriesBlock = formatMemoriesBlock();
-    if (Array.isArray(parsed.messages)) {
-      let msgs = parsed.messages;
-      msgs = injectInstructionIntoMessages(msgs);
-      if (memoriesBlock) {
-        const first = msgs[0];
-        if (first && first.role === "system" && typeof first.content === "string") {
-          first.content = first.content + memoriesBlock;
-        }
-      }
-      if (hasResults) msgs = appendResultsToMessages(msgs, block);
-      parsed.messages = msgs;
-    } else if (typeof parsed.prompt === "string") {
-      let prompt = parsed.prompt;
-      if (!prompt.includes(TOOL_CAPABILITY_MARKER)) {
-        prompt = `${buildCapabilityPrompt()}${memoriesBlock}
-
-${prompt}`;
-      }
-      if (hasResults) prompt = reinjectIntoPrompt(prompt, pending.slice());
-      parsed.prompt = prompt;
-    } else {
-      return null;
-    }
-    pending.length = 0;
-    return JSON.stringify(parsed);
-  }
-  function augmentInit(init, pending) {
-    if (typeof init?.body !== "string") return init;
-    const newBody = prepareOutgoingBody(init.body, pending);
-    if (newBody === null) return init;
-    return { ...init, body: newBody };
-  }
-  function installFetchHook(origFetch, forward, pending, diag = () => {
-  }, loopState) {
-    window.fetch = async (input, init) => {
-      const url = resolveUrl(input);
-      const method = methodOf(input, init);
-      diag(`fetch ${method} ${url} bodyType=${typeof init?.body}`);
-      if (pending.length > 0 && isDeepSeekChatEndpoint(url, method)) {
-        init = augmentInit(init, pending);
-      }
-      if (!isDeepSeekChatEndpoint(url, method)) {
-        return origFetch(input, init);
-      }
-      diag(`chat-endpoint matched, bodyLen=${typeof init?.body === "string" ? init.body.length : "n/a"}`);
-      if (loopState) {
-        loopState.streamActive = true;
-        if (typeof init?.body === "string") loopState.lastChatBody = init.body;
-      }
-      const response = await origFetch(input, init);
-      if (!response.body) return response;
-      const parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
-      const sse = new SseTextStreamExtractor();
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      const stream = new ReadableStream({
-        async start(controller) {
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              const rawSse = decoder.decode(value, { stream: true });
-              const text = sse.feed(rawSse);
-              if (loopState?.chatUI && text) loopState.chatUI.appendToAssistantMessage(text);
-              const rsn = sse.consumeReasoning();
-              if (rsn) {
-                stepReasoningAccum += rsn;
-                stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
-              }
-              const { calls } = parser.feed(text);
-              for (const c of calls) forward(c);
-              controller.enqueue(value);
-            }
-            const sseTail = sse.flush();
-            const rsnTail = sse.consumeReasoning();
-            if (rsnTail) {
-              stepReasoningAccum += rsnTail;
-              stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
-            }
-            if (sseTail) {
-              if (loopState?.chatUI) loopState.chatUI.appendToAssistantMessage(sseTail);
-              const tailParsed = parser.feed(sseTail);
-              for (const c of tailParsed.calls) forward(c);
-            }
-            const fin = parser.flush();
-            for (const c of fin.calls) forward(c);
-          } catch (err) {
-            controller.error(err);
-            return;
-          }
-          controller.close();
-          if (loopState) {
-            loopState.streamActive = false;
-            if (typeof loopState.onStreamEnd === "function") {
-              try {
-                loopState.onStreamEnd();
-              } catch {
-              }
-            }
-          }
-        }
-      });
-      return new Response(stream, {
-        headers: response.headers,
-        status: response.status,
-        statusText: response.statusText
-      });
-    };
-    return () => {
-      window.fetch = origFetch;
-    };
-  }
-  function installXhrHooks(forward, pending, diag = () => {
-  }, loopState, capturedHeaders) {
-    if (typeof XMLHttpRequest === "undefined") return () => {
-    };
-    const proto = XMLHttpRequest.prototype;
-    const origOpen = proto.open;
-    const origSend = proto.send;
-    const origSetRequestHeader = proto.setRequestHeader;
-    proto.setRequestHeader = function(name, value) {
-      const url = String(this.__dsUrl ?? "");
-      if (url.includes("/api/v0/chat/") && capturedHeaders) {
-        capturedHeaders[name] = value;
-      }
-      return origSetRequestHeader.apply(this, [name, value]);
-    };
-    proto.open = function(method, url, ...rest) {
-      this.__dsMethod = method;
-      this.__dsUrl = String(url);
-      return origOpen.apply(this, [method, url, ...rest]);
-    };
-    proto.send = function(body) {
-      const url = String(this.__dsUrl ?? "");
-      const method = String(this.__dsMethod ?? "GET");
-      const isChat = isDeepSeekChatEndpoint(url, method);
-      diag(`xhr ${method} ${url} isChat=${isChat} bodyType=${typeof body}`);
-      if (url.includes("/create_pow_challenge") && typeof body === "string") {
-        diag(`xhr pow_challenge body=${body.slice(0, 500)}`);
-      }
-      if (isChat && typeof body === "string") {
-        diag(`xhr chat body len=${body.length} head=${body.slice(0, 200)}`);
-        if (loopState) {
-          try {
-            const parsedBody = JSON.parse(body);
-            if (typeof parsedBody.prompt === "string" && parsedBody.prompt.trim() && !parsedBody.prompt.includes("<original_task>") && !parsedBody.prompt.includes("<tool_results") && !parsedBody.prompt.includes("[TOOL_RESULTS]")) {
-              loopState.originalTask = parsedBody.prompt;
-              loopState.newUserPrompt = parsedBody.prompt;
-              diag(`originalTask captured len=${loopState.originalTask.length}`);
-              if (typeof loopState.onNewUserMessage === "function") {
-                try {
-                  loopState.onNewUserMessage();
-                } catch {
-                }
-              }
-            }
-          } catch {
-          }
-        }
-        const next = prepareOutgoingBody(body, pending);
-        if (next !== null) {
-          body = next;
-          diag(`xhr chat body injected len=${next.length}`);
-        }
-        if (loopState) {
-          loopState.lastChatBody = body;
-          loopState.streamActive = true;
-        }
-      }
-      const xhr = this;
-      xhr.__dsIsChat = isChat;
-      const prev = xhr.onreadystatechange;
-      xhr.onreadystatechange = (...args) => {
-        if (xhr.readyState === 4 && loopState) {
-          loopState.streamActive = false;
-          if (typeof loopState.onStreamEnd === "function") {
-            try {
-              loopState.onStreamEnd();
-            } catch {
-            }
-          }
-        }
-        if (xhr.readyState >= 3) {
-          const text = xhr.responseText;
-          const scanned = xhr.__dsScanned ?? 0;
-          const part = text.slice(scanned);
-          xhr.__dsScanned = text.length;
-          if (part && xhr.__dsIsChat) {
-            diag(`xhr resp[${part.length}]: ${part.slice(0, 400).replace(/\s+/g, " ")}`);
-            const m = part.match(/"response_message_id"\s*:\s*(\d+)/);
-            if (m && loopState) loopState.lastResponseMsgId = parseInt(m[1], 10);
-          }
-          if (part) {
-            let sse = xhr.__dsSse;
-            let parser = xhr.__dsParser;
-            let frameDec = xhr.__dsFrameDec;
-            if (!sse || !parser || !frameDec) {
-              sse = new SseTextStreamExtractor();
-              parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
-              frameDec = new DeepSeekSseFrameDecoder();
-              xhr.__dsSse = sse;
-              xhr.__dsParser = parser;
-              xhr.__dsFrameDec = frameDec;
-            }
-            const frames = frameDec.push(part);
-            let rawDataText = "";
-            for (const frame of frames) {
-              if (frame.parsed && typeof frame.parsed === "object") {
-                const obj = frame.parsed;
-                if (Array.isArray(obj.v)) {
-                  for (const frag of obj.v) {
-                    if (typeof frag.content === "string") {
-                      rawDataText += frag.content;
-                    }
-                  }
-                } else if (typeof obj.v === "string") {
-                  const p = String(obj.p ?? "");
-                  if (!p || /^response(\/|$)/.test(p)) {
-                    rawDataText += obj.v;
-                  }
-                }
-              }
-            }
-            let visible = sse.feed(part);
-            if (xhr.readyState === 4) visible += sse.flush();
-            const rsnX = sse.consumeReasoning();
-            if (rsnX) {
-              stepReasoningAccum += rsnX;
-              stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
-            }
-            if (visible) {
-              diag(`xhr extracted[${visible.length}]: ${visible.slice(0, 300).replace(/\s+/g, " ")}`);
-              if (loopState && loopState.inAutoContinue) {
-                loopState.autoReplyText += visible;
-              }
-              if (loopState?.chatUI) {
-                loopState.chatUI.appendToAssistantMessage(visible);
-              }
-              const { calls } = parser.feed(rawDataText || visible);
-              for (const c of calls) forward(c);
-            }
-          }
-        }
-        if (typeof prev === "function") prev.apply(xhr, args);
-      };
-      return origSend.call(this, body);
-    };
-    return () => {
-      proto.open = origOpen;
-      proto.send = origSend;
-    };
-  }
-  function installMainWorldInterceptor(options2) {
-    console.log("[interceptor] installed, fetch hook + XHR hook ready");
-    const { sender, diag, onAssistantReply, onMemoriesUpdate, chatUI } = options2;
-    const pending = [];
-    const d = diag ?? (() => {
-    });
-    {
-      const g = globalThis;
-      if (g.__studioMemories) currentMemories = g.__studioMemories;
-    }
-    const loopState = { lastChatBody: null, streamActive: false, lastResponseMsgId: null, autoReplyText: "", inAutoContinue: false, autoReplyHadTools: false, originalTask: "", chatUI };
-    let autoContinueTimer = null;
-    let loopDepth = 0;
-    const collectedExecutions = [];
-    let nudgeCount = 0;
-    const capturedHeaders = {};
-    const forward = (call) => {
-      console.log("[interceptor] forward:", call.invocationName, JSON.stringify(call.params).slice(0, 150));
-      d(`forward: ${call.invocationName} params=${JSON.stringify(call.params).slice(0, 200)}`);
-      if (!isSupportedUpstreamTool(call.invocationName)) {
-        d(`forward: unsupported, skipping`);
-        return;
-      }
-      const callId = call.id || crypto.randomUUID();
-      const startedAt = Date.now();
-      if (loopState.inAutoContinue) loopState.autoReplyHadTools = true;
-      try {
-        stripRawToolTagsFromMessage();
-        createToolCard({ toolName: call.invocationName, params: call.params }, callId);
-      } catch (e) {
-        d(`forward: createToolCard failed: ${e instanceof Error ? e.message : String(e)}`);
-      }
-      if (!stepFlow) {
-        document.querySelectorAll(".ds-sf-container").forEach((n) => n.remove());
-        stepFlow = createStepFlowContainer();
-        stepFlowStartTime = Date.now();
-        document.body.appendChild(stepFlow.container);
-        stepFlow.setPhase("running", stepFlowStep, stepFlowToolCount);
-        const sf = stepFlow.container;
-        sf.style.left = "50%";
-        sf.style.transform = "translateX(-50%)";
-        sf.style.bottom = "210px";
-      }
-      if (stepFlow) {
-        stepFlowToolCount++;
-        stepFlow.addToolEntry(stepFlowStep, call.invocationName, call.params);
-        stepFlow.setPhase("running", stepFlowStep, stepFlowToolCount);
-      }
-      const cardData = { toolName: call.invocationName, params: call.params };
-      if (call.params && call.params.__invalid_json) {
-        d(`forward: invalid JSON for ${call.invocationName}, err=${call.params.__error}`);
-        const r = {
-          invocationName: call.invocationName,
-          ok: false,
-          error: `invalid-tool-json: ${call.params.__error}. Raw body: ${String(call.params.__raw ?? "").slice(0, 300)}`
-        };
-        pending.push(r);
-        collectedExecutions.push(r);
-        try {
-          updateToolCardByCallId(callId, cardData, { ok: false, error: `invalid-tool-json: ${call.params.__error}` }, Date.now() - startedAt);
-        } catch {
-        }
-        if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
-          scheduleAutoContinue();
-        }
-        return;
-      }
-      void sender({ callId, invocationName: call.invocationName, params: call.params }).then((r) => {
-        d(`forward: done ok=${r.ok} err=${r.error ?? ""}`);
-        const pr = { invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error };
-        pending.push(pr);
-        collectedExecutions.push(pr);
-        if (stepFlow) {
-          const detail = r.error ?? (typeof r.data === "string" ? r.data : JSON.stringify(r.data ?? "").slice(0, 500));
-          stepFlow.resolveToolEntry(stepFlowStep, r.ok, detail);
-        }
-        try {
-          updateToolCardByCallId(
-            callId,
-            cardData,
-            {
-              ok: r.ok,
-              data: r.data,
-              error: r.error,
-              content: r.content,
-              details: r.details,
-              isError: r.isError,
-              terminate: r.terminate
-            },
-            Date.now() - startedAt
-          );
-        } catch {
-        }
-        if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
-          scheduleAutoContinue();
-        }
-      }).catch((e) => {
-        d(`forward: failed ${e instanceof Error ? e.message : String(e)}`);
-        const pr = { invocationName: call.invocationName, ok: false, error: e instanceof Error ? e.message : String(e) };
-        pending.push(pr);
-        collectedExecutions.push(pr);
-        if (stepFlow) {
-          stepFlow.resolveToolEntry(stepFlowStep, false, e instanceof Error ? e.message : String(e));
-        }
-        try {
-          updateToolCardByCallId(callId, cardData, { ok: false, error: e instanceof Error ? e.message : String(e) }, Date.now() - startedAt);
-        } catch {
-        }
-        if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
-          scheduleAutoContinue();
-        }
-      });
-    };
-    function scheduleAutoContinue() {
-      const pendingResults = pending.map((p) => p.result);
-      if (shouldSkipAutoContinue(pendingResults)) {
-        console.log("[autoContinue] skipped by terminate");
-        return;
-      }
-      if (autoContinueTimer) clearTimeout(autoContinueTimer);
-      autoContinueTimer = setTimeout(() => {
-        autoContinueTimer = null;
-        autoContinueWithPow();
-      }, 1e3);
-    }
-    loopState.onStreamEnd = () => {
-      if (pending.length > 0 && loopState.lastChatBody && loopDepth < MAX_LOOP) {
-        scheduleAutoContinue();
-      } else if (stepFlow && loopDepth === 0) {
-        stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1e3));
-        const sf = stepFlow;
-        stepFlow = null;
-        stepFlowStep = 0;
-        stepFlowToolCount = 0;
-        setTimeout(() => sf.destroy(), 3e3);
-      }
-    };
-    loopState.onNewUserMessage = () => {
-      collectedExecutions.length = 0;
-      nudgeCount = 0;
-      loopDepth = 0;
-      loopState.autoReplyHadTools = false;
-      d("new user message: reset collectedExecutions/nudgeCount/loopDepth");
-      if (chatUI) {
-        if (loopState.newUserPrompt) {
-          chatUI.addUserMessage(loopState.newUserPrompt);
-        }
-        chatUI.startAssistantMessage();
-        chatUI.setBusy(true);
-      }
-    };
-    async function autoContinueWithPow() {
-      if (!loopState.lastChatBody || pending.length === 0 || loopDepth >= MAX_LOOP) return;
-      loopDepth += 1;
-      stepFlowStep = loopDepth;
-      stepReasoningAccum = "";
-      loopState.streamActive = true;
-      loopState.autoReplyHadTools = false;
-      try {
-        const continuationPrompt = buildContinuationPrompt(loopState.originalTask, collectedExecutions, TOOL_CATALOG_TEXT);
-        pending.length = 0;
-        let bodyStr = loopState.lastChatBody;
-        try {
-          const parsed = JSON.parse(bodyStr);
-          parsed.prompt = continuationPrompt;
-          if (loopState.lastResponseMsgId != null) {
-            parsed.parent_message_id = loopState.lastResponseMsgId;
-          }
-          bodyStr = JSON.stringify(parsed);
-        } catch {
-        }
-        d(`auto-continue loop=${loopDepth} computing PoW... capturedHeaders=${JSON.stringify(Object.keys(capturedHeaders))}`);
-        const filteredHeaders = {};
-        for (const [k, v] of Object.entries(capturedHeaders)) {
-          const lower = k.toLowerCase();
-          if (lower === "content-type" || lower === "content-length" || lower === "x-ds-pow-response") continue;
-          filteredHeaders[k] = v;
-        }
-        const powHeaders = await createPowHeaders(filteredHeaders);
-        d(`auto-continue loop=${loopDepth} PoW done, sending...`);
-        loopState.inAutoContinue = true;
-        loopState.autoReplyText = "";
-        await new Promise((resolve) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open("POST", "/api/v0/chat/completion", true);
-          xhr.setRequestHeader("Content-Type", "application/json");
-          for (const [k, v] of Object.entries(filteredHeaders)) {
-            try {
-              xhr.setRequestHeader(k, v);
-            } catch {
-            }
-          }
-          for (const [k, v] of Object.entries(powHeaders)) {
-            try {
-              xhr.setRequestHeader(k, v);
-            } catch {
-            }
-          }
-          xhr.onreadystatechange = () => {
-            if (xhr.readyState === 4) {
-              d(`auto-continue loop=${loopDepth} status=${xhr.status} autoReplyLen=${loopState.autoReplyText.length} inAuto=${loopState.inAutoContinue}`);
-              loopState.inAutoContinue = false;
-              loopState.streamActive = false;
-              const reply = loopState.autoReplyText.trim();
-              d(`auto-continue reply len=${reply.length} hasCallback=${typeof onAssistantReply}`);
-              if (reply) {
-                try {
-                  onAssistantReply?.(reply, loopDepth);
-                } catch (e) {
-                  d(`auto-continue push failed: ${e.message}`);
-                }
-                if (chatUI) {
-                  try {
-                    chatUI.finishAssistantMessage();
-                    d(`auto-continue chat UI finished, len=${reply.length}`);
-                  } catch (e) {
-                    d(`auto-continue chat UI finish failed: ${e.message}`);
-                  }
-                }
-              }
-              if (xhr.status === 429 && loopDepth < MAX_LOOP) {
-                d("auto-continue 429, retrying in 8s");
-                loopState.streamActive = false;
-                if (autoContinueTimer) clearTimeout(autoContinueTimer);
-                autoContinueTimer = setTimeout(() => {
-                  autoContinueTimer = null;
-                  autoContinueWithPow();
-                }, 8e3);
-              } else {
-                const replyForNudge = loopState.autoReplyText.trim();
-                const hasTaskComplete = !!extractTaskCompleteSignal(replyForNudge);
-                const hadTools = loopState.autoReplyHadTools;
-                if (hadTools) {
-                  nudgeCount = 0;
-                } else if (!hasTaskComplete && replyForNudge && shouldNudge(replyForNudge) && nudgeCount < MAX_NUDGES && loopDepth < MAX_LOOP) {
-                  nudgeCount += 1;
-                  d(`auto-continue nudge count=${nudgeCount} loop=${loopDepth}, sending nudge...`);
-                  autoContinueNudge(replyForNudge);
-                } else {
-                  d(`auto-continue loop end: hadTools=${hadTools} taskComplete=${hasTaskComplete} shouldNudge=${replyForNudge ? shouldNudge(replyForNudge) : false} nudgeCount=${nudgeCount}/${MAX_NUDGES}`);
-                  if (stepFlow) {
-                    stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1e3));
-                    const sf = stepFlow;
-                    stepFlow = null;
-                    stepFlowStep = 0;
-                    stepFlowToolCount = 0;
-                    setTimeout(() => sf.destroy(), 3e3);
-                  }
-                  chatUI?.setBusy(false);
-                  loopDepth = 0;
-                }
-              }
-              resolve();
-            }
-          };
-          xhr.send(bodyStr);
-        });
-      } catch (e) {
-        d(`auto-continue failed: ${e.message}`);
-        loopState.streamActive = false;
-      }
-    }
-    async function autoContinueNudge(previousReplyText) {
-      if (!loopState.lastChatBody || loopDepth >= MAX_LOOP) return;
-      loopDepth += 1;
-      loopState.streamActive = true;
-      loopState.autoReplyHadTools = false;
-      try {
-        const nudgePrompt = buildNudgePrompt(loopState.originalTask, previousReplyText, collectedExecutions, nudgeCount);
-        let bodyStr = loopState.lastChatBody;
-        try {
-          const parsed = JSON.parse(bodyStr);
-          parsed.prompt = nudgePrompt;
-          if (loopState.lastResponseMsgId != null) {
-            parsed.parent_message_id = loopState.lastResponseMsgId;
-          }
-          bodyStr = JSON.stringify(parsed);
-        } catch {
-        }
-        d(`auto-continue nudge loop=${loopDepth} count=${nudgeCount} computing PoW...`);
-        const filteredHeaders = {};
-        for (const [k, v] of Object.entries(capturedHeaders)) {
-          const lower = k.toLowerCase();
-          if (lower === "content-type" || lower === "content-length" || lower === "x-ds-pow-response") continue;
-          filteredHeaders[k] = v;
-        }
-        const powHeaders = await createPowHeaders(filteredHeaders);
-        loopState.inAutoContinue = true;
-        loopState.autoReplyText = "";
-        await new Promise((resolve) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open("POST", "/api/v0/chat/completion", true);
-          xhr.setRequestHeader("Content-Type", "application/json");
-          for (const [k, v] of Object.entries(filteredHeaders)) {
-            try {
-              xhr.setRequestHeader(k, v);
-            } catch {
-            }
-          }
-          for (const [k, v] of Object.entries(powHeaders)) {
-            try {
-              xhr.setRequestHeader(k, v);
-            } catch {
-            }
-          }
-          xhr.onreadystatechange = () => {
-            if (xhr.readyState === 4) {
-              d(`auto-continue nudge loop=${loopDepth} status=${xhr.status} autoReplyLen=${loopState.autoReplyText.length}`);
-              loopState.inAutoContinue = false;
-              loopState.streamActive = false;
-              const reply = loopState.autoReplyText.trim();
-              if (reply) {
-                try {
-                  onAssistantReply?.(reply, loopDepth);
-                } catch (e) {
-                  d(`nudge push failed: ${e.message}`);
-                }
-              }
-              if (xhr.status === 429 && loopDepth < MAX_LOOP) {
-                d("auto-continue nudge 429, retrying in 8s");
-                loopState.streamActive = false;
-                if (autoContinueTimer) clearTimeout(autoContinueTimer);
-                autoContinueTimer = setTimeout(() => {
-                  autoContinueTimer = null;
-                  autoContinueNudge(previousReplyText);
-                }, 8e3);
-              } else {
-                const replyForNudge = loopState.autoReplyText.trim();
-                const hasTaskComplete = !!extractTaskCompleteSignal(replyForNudge);
-                const hadTools = loopState.autoReplyHadTools;
-                if (hadTools) {
-                  nudgeCount = 0;
-                  d("auto-continue nudge end: tools detected, handing to scheduleAutoContinue");
-                } else if (!hasTaskComplete && replyForNudge && shouldNudge(replyForNudge) && nudgeCount < MAX_NUDGES && loopDepth < MAX_LOOP) {
-                  nudgeCount += 1;
-                  d(`auto-continue nudge again count=${nudgeCount} loop=${loopDepth}`);
-                  autoContinueNudge(replyForNudge);
-                } else {
-                  d(`auto-continue nudge end: hadTools=${hadTools} taskComplete=${hasTaskComplete} shouldNudge=${replyForNudge ? shouldNudge(replyForNudge) : false} nudgeCount=${nudgeCount}/${MAX_NUDGES}`);
-                }
-              }
-              resolve();
-            }
-          };
-          xhr.send(bodyStr);
-        });
-      } catch (e) {
-        d(`auto-continue nudge failed: ${e.message}`);
-        loopState.streamActive = false;
-      }
-    }
-    const origFetch = window.fetch ? window.fetch.bind(window) : void 0;
-    const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending, d, loopState) : void 0;
-    const stopXhr = installXhrHooks(forward, pending, d, loopState, capturedHeaders);
-    if (onMemoriesUpdate) {
-      const originalCallback = onMemoriesUpdate;
-      options2.onMemoriesUpdate = (memories) => {
-        currentMemories = memories;
-        originalCallback(memories);
-      };
-    }
-    let studioUIHandle = null;
-    try {
-      studioUIHandle = installStudioUI({
-        host: {
-          sendToolCall: (req) => sender(req),
-          log: (text) => d(`[ui] ${text}`)
-        }
-      });
-    } catch (e) {
-      d(`studio-ui install failed: ${e.message}`);
-    }
-    const codeRunner = async (code2, language) => {
-      try {
-        if (language === "python") {
-          const r2 = await sender({ callId: crypto.randomUUID(), invocationName: "python_exec", params: { code: code2 } });
-          if (!r2.ok) return { ok: false, error: r2.error };
-          const dd2 = r2.data;
-          const text = dd2 ? dd2.stdout ?? dd2.output ?? (dd2.result != null ? String(dd2.result) : JSON.stringify(dd2)) : "";
-          return { ok: true, stdout: text || "(\u65E0\u8F93\u51FA)" };
-        }
-        const ext = language === "typescript" ? "ts" : "mjs";
-        const tmp = `C:/Users/lidicn/AppData/Local/Temp/studio-run-${Date.now()}.${ext}`;
-        const w = await sender({ callId: crypto.randomUUID(), invocationName: "local_file_write", params: { path: tmp, content: code2 } });
-        if (!w.ok) return { ok: false, error: w.error };
-        const nodeCmd = language === "typescript" ? `node --experimental-strip-types "${tmp}"` : `node "${tmp}"`;
-        const r = await sender({ callId: crypto.randomUUID(), invocationName: "shell_exec", params: { command: nodeCmd } });
-        if (!r.ok) return { ok: false, error: r.error };
-        const dd = r.data;
-        return { ok: true, stdout: dd?.stdout ?? "", stderr: dd?.stderr };
-      } catch (e) {
-        return { ok: false, error: e instanceof Error ? e.message : String(e) };
-      }
-    };
-    let codeObserver = null;
-    let hydrateTimer = null;
-    const setupCodeObserver = () => {
-      if (!document.body || codeObserver) return;
-      codeObserver = new MutationObserver(() => {
-        if (hydrateTimer) clearTimeout(hydrateTimer);
-        hydrateTimer = setTimeout(() => {
-          hydrateTimer = null;
-          const sels = [".ds-assistant-message-main-content", '[class*="assistant-message"]'];
-          for (const sel of sels) {
-            document.querySelectorAll(sel).forEach((m) => hydrateCodeBlocks(m, codeRunner));
-          }
-        }, 400);
-      });
-      codeObserver.observe(document.body, { childList: true, subtree: true });
-    };
-    if (document.body) setupCodeObserver();
-    else document.addEventListener("DOMContentLoaded", setupCodeObserver, { once: true });
-    (async () => {
-      const maxRetries = 10;
-      for (let attempt = 0; attempt < maxRetries; attempt++) {
-        try {
-          const r = await sender({ callId: "mcp-tools-init", invocationName: "mcp.list", params: {} });
-          if (r.ok && r.data && Array.isArray(r.data.tools) && r.data.tools.length > 0) {
-            currentMcpTools = r.data.tools;
-            d(`loaded ${currentMcpTools.length} MCP tools for prompt injection (attempt ${attempt + 1})`);
-            return;
-          }
-          d(`mcp tools load attempt ${attempt + 1} failed: ok=${r.ok} error=${r.error ?? "none"} tools=${r.data ? r.data.tools?.length ?? 0 : 0}`);
-        } catch (e) {
-          d(`mcp tools load attempt ${attempt + 1} error: ${e instanceof Error ? e.message : String(e)}`);
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1e3));
-      }
-      d(`mcp tools load failed after ${maxRetries} attempts, agent will not see MCP tools in prompt`);
-    })();
-    return {
-      stop() {
-        try {
-          stopFetch?.();
-        } catch {
-        }
-        try {
-          stopXhr?.();
-        } catch {
-        }
-        try {
-          studioUIHandle?.destroy();
-        } catch {
-        }
-        try {
-          if (hydrateTimer) clearTimeout(hydrateTimer);
-          codeObserver?.disconnect();
-        } catch {
-        }
-      }
-    };
-  }
-
-  // src/desktop/integrity.ts
-  var DEFAULT_MEMBERS = ["bridge", "host", "authority", "sessionId"];
-  var DEFAULT_INTERVAL_MS = 5e3;
-  var STUDIO_KEY = "__deepseekStudio";
-  function defaultRead() {
-    const w = globalThis.window ?? globalThis;
-    return w[STUDIO_KEY];
-  }
-  function freezeStudioObject() {
-    try {
-      const w = globalThis.window ?? globalThis;
-      const target = w;
-      const existing = target[STUDIO_KEY];
-      if (!existing) return false;
-      const desc = Object.getOwnPropertyDescriptor(target, STUDIO_KEY);
-      if (desc && desc.configurable === false) return true;
-      Object.defineProperty(target, STUDIO_KEY, {
-        value: existing,
-        writable: false,
-        configurable: false,
-        enumerable: true
-      });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  function startIntegrityProbe(options2) {
-    const read = options2.read ?? defaultRead;
-    const members = options2.members ?? DEFAULT_MEMBERS;
-    const intervalMs = options2.intervalMs ?? DEFAULT_INTERVAL_MS;
-    const setIntervalFn = options2.setIntervalFn ?? ((fn, ms) => setInterval(fn, ms));
-    const clearIntervalFn = options2.clearIntervalFn ?? ((h) => clearInterval(h));
-    const initial = read();
-    const snapshot = /* @__PURE__ */ new Map();
-    if (initial && typeof initial === "object") {
-      for (const m of members) {
-        snapshot.set(m, initial[m]);
-      }
-    }
-    let initialFrozen = false;
-    try {
-      const w0 = globalThis.window ?? globalThis;
-      const d0 = Object.getOwnPropertyDescriptor(w0, STUDIO_KEY);
-      initialFrozen = !!d0 && d0.configurable === false && d0.writable === false;
-    } catch {
-    }
-    let fired = false;
-    let stopped2 = false;
-    function detect() {
-      const current = read();
-      if (current === void 0 || current === null) return { reason: "removed" };
-      if (current !== initial) return { reason: "replaced" };
-      const bag = current;
-      for (const m of members) {
-        if (!(m in bag)) return { reason: "member-missing", detail: m };
-        if (bag[m] !== snapshot.get(m)) return { reason: "member-replaced", detail: m };
-      }
-      if (initialFrozen) {
-        try {
-          const w = globalThis.window ?? globalThis;
-          const desc = Object.getOwnPropertyDescriptor(w, STUDIO_KEY);
-          if (desc && (desc.configurable !== false || desc.writable !== false)) {
-            return { reason: "descriptor-downgraded" };
-          }
-        } catch {
-        }
-      }
-      return null;
-    }
-    const timer = setIntervalFn(() => {
-      if (stopped2 || fired) return;
-      const alert = detect();
-      if (alert) {
-        fired = true;
-        options2.onViolation(alert);
-      }
-    }, intervalMs);
-    return {
-      check() {
-        const alert = detect();
-        if (alert && !fired) {
-          fired = true;
-          options2.onViolation(alert);
-        }
-        return alert;
-      },
-      stop() {
-        stopped2 = true;
-        clearIntervalFn(timer);
-      }
-    };
-  }
-
-  // src/inject/markdown.ts
-  var SAFE_LINK_PROTOCOLS = /* @__PURE__ */ new Set(["http:", "https:", "mailto:"]);
-  function renderMarkdown(text, options2 = {}) {
-    try {
-      const codeBlocks = [];
-      const normalizedText = text.replace(/\r\n?/g, "\n");
-      let html = extractCodeBlocks(normalizedText, codeBlocks, options2.omitFencedCodeLanguages);
-      html = escapeHtml2(html);
-      html = renderInlineFormatting(html);
-      html = renderBlockLayout(html);
-      html = html.replace(/@@CODE_BLOCK_(\d+)@@/g, (_match, index) => codeBlocks[Number(index)] ?? "");
-      return html;
-    } catch {
-      return escapeHtml2(text);
-    }
-  }
-  function extractCodeBlocks(text, codeBlocks, omitLangs) {
-    return text.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code2) => {
-      const langLower = (lang || "").toLowerCase();
-      if (omitLangs && omitLangs.has(langLower)) {
-        codeBlocks.push(`<pre><code class="language-${lang}">${escapeHtml2(code2.trimEnd())}</code></pre>`);
-      } else {
-        codeBlocks.push(`<pre><code class="language-${lang}">${escapeHtml2(code2.trimEnd())}</code></pre>`);
-      }
-      return `
-@@CODE_BLOCK_${codeBlocks.length - 1}@@
-`;
-    });
-  }
-  function renderInlineFormatting(html) {
-    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
-      const decodedHref = href.trim();
-      if (!isSafeHref(decodedHref)) return `${label} (${href})`;
-      return `<a href="${escapeAttr(decodedHref)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
-    });
-    return html;
-  }
-  function renderBlockLayout(html) {
-    const lines = html.split("\n");
-    const blocks = [];
-    let inList = null;
-    let paragraph = [];
-    const flushParagraph = () => {
-      if (paragraph.length > 0) {
-        blocks.push(`<p>${paragraph.join("<br>")}</p>`);
-        paragraph = [];
-      }
-    };
-    const closeList = () => {
-      if (inList) {
-        blocks.push(`</${inList}>`);
-        inList = null;
-      }
-    };
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        flushParagraph();
-        closeList();
-        continue;
-      }
-      if (/^#{1,6}\s/.test(trimmed)) {
-        flushParagraph();
-        closeList();
-        const level = trimmed.match(/^(#+)/)?.[1].length ?? 1;
-        const text = trimmed.replace(/^#+\s/, "");
-        blocks.push(`<h${level}>${text}</h${level}>`);
-        continue;
-      }
-      if (/^[-*•]\s/.test(trimmed)) {
-        flushParagraph();
-        if (inList !== "ul") {
-          closeList();
-          blocks.push("<ul>");
-          inList = "ul";
-        }
-        blocks.push(`<li>${trimmed.replace(/^[-*•]\s/, "")}</li>`);
-        continue;
-      }
-      if (/^\d+\.\s/.test(trimmed)) {
-        flushParagraph();
-        if (inList !== "ol") {
-          closeList();
-          blocks.push("<ol>");
-          inList = "ol";
-        }
-        blocks.push(`<li>${trimmed.replace(/^\d+\.\s/, "")}</li>`);
-        continue;
-      }
-      if (/^>\s/.test(trimmed)) {
-        flushParagraph();
-        blocks.push(`<blockquote>${trimmed.replace(/^>\s/, "")}</blockquote>`);
-        continue;
-      }
-      if (/^@@CODE_BLOCK_\d+@@$/.test(trimmed)) {
-        flushParagraph();
-        closeList();
-        blocks.push(trimmed);
-        continue;
-      }
-      paragraph.push(trimmed);
-    }
-    flushParagraph();
-    closeList();
-    return blocks.join("\n");
-  }
-  function escapeHtml2(text) {
-    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  }
-  function escapeAttr(text) {
-    return escapeHtml2(text).replace(/'/g, "&#39;");
-  }
-  function isSafeHref(href) {
-    try {
-      const url = new URL(href, window.location.href);
-      return SAFE_LINK_PROTOCOLS.has(url.protocol);
-    } catch {
-      return false;
-    }
-  }
-
-  // src/ui/studio-chat-css.ts
-  var STUDIO_CHAT_CSS = `
-/* ===== overlay \u5BB9\u5668 ===== */
-.ds-studio-chat-container {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 200px;          /* \u5E95\u90E8\u7559 200px \u7ED9 DeepSeek \u8F93\u5165\u6846\uFF0C\u5B9E\u6D4B\u540E\u5FAE\u8C03 */
-  z-index: 2147483646;
-  background: #ffffff;
-  display: flex;
-  flex-direction: column;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  font-size: 15px;
-  color: #1a1a2e;
-}
-
-/* ===== \u6D88\u606F\u5217\u8868\uFF08\u6EDA\u52A8\u5BB9\u5668\uFF09===== */
-.ds-sc-message-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 24px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  scroll-behavior: smooth;
-}
-
-.ds-sc-message-list::-webkit-scrollbar { width: 8px; }
-.ds-sc-message-list::-webkit-scrollbar-thumb { background: #d0d0d8; border-radius: 4px; }
-.ds-sc-message-list::-webkit-scrollbar-thumb:hover { background: #b0b0bc; }
-
-/* ===== \u6D88\u606F\u6C14\u6CE1 ===== */
-.ds-sc-msg-user {
-  align-self: flex-end;
-  max-width: 78%;
-  background: linear-gradient(135deg, #4D6BFE, #3a55d8);
-  color: #fff;
-  border-radius: 14px 14px 4px 14px;
-  padding: 10px 15px;
-  line-height: 1.65;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.ds-sc-msg-assistant {
-  align-self: flex-start;
-  max-width: 88%;
-  background: #f6f7f9;
-  border: 1px solid #e8e8ee;
-  border-radius: 14px 14px 14px 4px;
-  padding: 12px 16px;
-  line-height: 1.7;
-  word-break: break-word;
-}
-
-/* \u6D41\u5F0F\u671F\u6587\u672C\u5BB9\u5668\uFF08\u7EC8\u7AEF\u5F0F\u8FFD\u52A0\uFF09 */
-.ds-sc-streaming {
-  white-space: pre-wrap;
-}
-
-/* \u6D41\u7ED3\u675F\u540E\u7684 markdown \u6E32\u67D3\u5BB9\u5668 */
-.ds-sc-markdown {
-  white-space: normal;
-}
-.ds-sc-markdown p { margin: 0 0 8px; }
-.ds-sc-markdown p:last-child { margin-bottom: 0; }
-.ds-sc-markdown h1, .ds-sc-markdown h2, .ds-sc-markdown h3 {
-  margin: 12px 0 6px;
-  font-weight: 600;
-  line-height: 1.4;
-}
-.ds-sc-markdown h1 { font-size: 1.4em; }
-.ds-sc-markdown h2 { font-size: 1.25em; }
-.ds-sc-markdown h3 { font-size: 1.1em; }
-.ds-sc-markdown ul, .ds-sc-markdown ol { margin: 6px 0 8px; padding-left: 24px; }
-.ds-sc-markdown li { margin: 2px 0; }
-.ds-sc-markdown pre {
-  background: #f0f0f5;
-  border-radius: 8px;
-  padding: 10px 13px;
-  overflow-x: auto;
-  font-size: 13px;
-  line-height: 1.5;
-  margin: 8px 0;
-}
-.ds-sc-markdown code {
-  background: #f0f0f5;
-  padding: 1px 5px;
-  border-radius: 4px;
-  font-size: 0.9em;
-  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
-}
-.ds-sc-markdown pre code {
-  background: none;
-  padding: 0;
-}
-.ds-sc-markdown blockquote {
-  border-left: 3px solid #4D6BFE;
-  margin: 8px 0;
-  padding: 4px 12px;
-  color: #555;
-}
-.ds-sc-markdown a {
-  color: #4D6BFE;
-  text-decoration: none;
-}
-.ds-sc-markdown a:hover { text-decoration: underline; }
-
-/* \u601D\u8003\u524D\u7F00\u6298\u53E0\u5361\u7247 */
-.ds-sc-thinking-preface {
-  font-size: 12px;
-  color: #888;
-  margin-bottom: 8px;
-  padding: 6px 10px;
-  background: #f5f5f5;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-/* ===== \u5DE5\u5177\u5361\u7247\u5BB9\u5668\uFF08\u590D\u7528 tool-card-ui \u7684 DOM\uFF09===== */
-.ds-sc-msg-assistant .ds-studio-tools-container {
-  margin-bottom: 8px;
-}
-
-/* ===== \u5E95\u90E8\u72B6\u6001\u680F ===== */
-.ds-sc-status-bar {
-  flex-shrink: 0;
-  padding: 6px 16px;
-  background: #f9f9fc;
-  border-top: 1px solid #e8e8ee;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
-  color: #888;
-}
-.ds-sc-status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #ccc;
-}
-.ds-sc-status-dot.busy {
-  background: #4D6BFE;
-  animation: ds-sc-pulse 1.5s ease-in-out infinite;
-}
-.ds-sc-status-dot.done { background: #22c55e; }
-.ds-sc-status-dot.error { background: #ef4444; }
-@keyframes ds-sc-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
-
-/* ===== \u9690\u85CF DeepSeek \u6D88\u606F\u5217\u8868\uFF08\u4FDD\u7559\u8F93\u5165\u6846\uFF09===== */
-/* DeepSeek \u7528 obfuscated class \u540D\uFF0C\u7528\u901A\u7528\u9009\u62E9\u5668\u515C\u5E95\u3002
-   \u8986\u76D6 #root \u4E0B\u7684\u865A\u62DF\u5217\u8868\u533A\u57DF\uFF0C\u4E0D\u5F71\u54CD\u5E95\u90E8 composer\u3002 */
-.ds-studio-chat-container ~ .ds-virtual-list,
-#root .ds-virtual-list {
-  visibility: hidden !important;
-  pointer-events: none !important;
-}
-/* \u66F4\u6FC0\u8FDB\uFF1A\u9690\u85CF #root \u4E0B\u6240\u6709\u975E composer \u7684\u76F4\u63A5\u5B50\u5143\u7D20\uFF08\u5907\u7528\uFF0C\u5B9E\u6D4B\u540E\u51B3\u5B9A\u662F\u5426\u542F\u7528\uFF09
-#root > div > div:not(:last-child) {
-  visibility: hidden !important;
-  pointer-events: none !important;
-}
-*/
-`;
-
-  // src/ui/studio-chat-ui.ts
-  var styleInjected2 = false;
-  function injectChatStyles() {
-    if (styleInjected2) return;
-    const style = document.createElement("style");
-    style.id = "ds-studio-chat-styles";
-    style.textContent = STUDIO_CHAT_CSS;
-    document.head.appendChild(style);
-    styleInjected2 = true;
-  }
-  function createStudioChatUI() {
-    injectChatStyles();
-    const container = document.createElement("div");
-    container.className = "ds-studio-chat-container";
-    const messageList = document.createElement("div");
-    messageList.className = "ds-sc-message-list";
-    container.appendChild(messageList);
-    const statusBar = document.createElement("div");
-    statusBar.className = "ds-sc-status-bar";
-    const statusDot = document.createElement("span");
-    statusDot.className = "ds-sc-status-dot";
-    const statusText = document.createElement("span");
-    statusText.className = "ds-sc-status-text";
-    statusText.textContent = "\u5C31\u7EEA";
-    statusBar.appendChild(statusDot);
-    statusBar.appendChild(statusText);
-    container.appendChild(statusBar);
-    let currentAssistant = null;
-    let currentRawText = "";
-    const welcome = document.createElement("div");
-    welcome.style.cssText = "margin:auto;text-align:center;padding:40px 20px;color:#999;";
-    welcome.innerHTML = '<div style="font-size:20px;font-weight:600;margin-bottom:8px;">DeepSeek Studio</div><div style="font-size:13px;line-height:1.8;">\u5728\u4E0B\u65B9\u8F93\u5165\u6846\u53D1\u9001\u6D88\u606F<br>\u5DE5\u5177\u8C03\u7528\u4E0E\u56DE\u590D\u5C06\u663E\u793A\u5728\u6B64\u5904</div>';
-    messageList.appendChild(welcome);
-    function scrollToBottom() {
-      messageList.scrollTop = messageList.scrollHeight;
-    }
-    function addUserMessage(text) {
-      const w = messageList.querySelector(':scope > [style*="margin:auto"]');
-      if (w) w.remove();
-      const msg2 = document.createElement("div");
-      msg2.className = "ds-sc-msg-user";
-      msg2.textContent = text;
-      messageList.appendChild(msg2);
-      scrollToBottom();
-    }
-    function startAssistantMessage() {
-      const w = messageList.querySelector(':scope > [style*="margin:auto"]');
-      if (w) w.remove();
-      const msg2 = document.createElement("div");
-      msg2.className = "ds-sc-msg-assistant";
-      const streaming = document.createElement("div");
-      streaming.className = "ds-sc-streaming";
-      msg2.appendChild(streaming);
-      messageList.appendChild(msg2);
-      currentAssistant = msg2;
-      currentRawText = "";
-      scrollToBottom();
-    }
-    function appendToAssistantMessage(text) {
-      if (!currentAssistant) startAssistantMessage();
-      const streaming = currentAssistant.querySelector(".ds-sc-streaming");
-      if (!streaming) return;
-      currentRawText += text;
-      streaming.textContent = currentRawText;
-      scrollToBottom();
-    }
-    function finishAssistantMessage() {
-      if (!currentAssistant) return;
-      const streaming = currentAssistant.querySelector(".ds-sc-streaming");
-      if (streaming && currentRawText) {
-        const html = renderMarkdown(currentRawText);
-        const markdownDiv = document.createElement("div");
-        markdownDiv.className = "ds-sc-markdown";
-        markdownDiv.innerHTML = html;
-        streaming.replaceWith(markdownDiv);
-      }
-      currentAssistant = null;
-      currentRawText = "";
-      scrollToBottom();
-    }
-    function setBusy(busy) {
-      statusDot.className = busy ? "ds-sc-status-dot busy" : "ds-sc-status-dot done";
-      statusText.textContent = busy ? "\u6267\u884C\u4E2D\u2026" : "\u5B8C\u6210";
-    }
-    function destroy() {
-      container.remove();
-      currentAssistant = null;
-      currentRawText = "";
-    }
-    return {
-      container,
-      addUserMessage,
-      startAssistantMessage,
-      appendToAssistantMessage,
-      finishAssistantMessage,
-      setBusy,
-      destroy
-    };
-  }
-
   // src/desktop/entry.ts
   var DEFAULT_HOST_URL = "ws://127.0.0.1:8760/studio";
   function defaultCapabilities() {
@@ -6463,7 +6468,12 @@ ${prompt}`;
       let chatUI;
       try {
         chatUI = createStudioChatUI();
-        const mount = () => document.body.appendChild(chatUI.container);
+        const mount = () => {
+          try {
+            document.body.appendChild(chatUI.container);
+          } catch {
+          }
+        };
         if (document.body) {
           mount();
         } else {
@@ -6503,6 +6513,26 @@ ${prompt}`;
           host.reportIntegrity(alert);
         }
       });
+    }
+    if (typeof globalThis.document !== "undefined") {
+      const mountStudioUI = () => {
+        try {
+          installStudioUI({
+            host: {
+              sendToolCall: (req) => host.sendToolCall(req),
+              log: (t) => host.log(t)
+            }
+          });
+          console.log("[StudioUI] installed");
+        } catch (err) {
+          console.error("[StudioUI] install failed", err);
+        }
+      };
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", mountStudioUI, { once: true });
+      } else {
+        mountStudioUI();
+      }
     }
     return { bridge, origin: origin2, sessionId, host };
   }

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 注入入口（initialization_script）
  *
  * 在 document_start 按顺序装配：
@@ -25,6 +25,7 @@ import { installMainWorldInterceptor } from '../inject/main-world-interceptor';
 import { freezeStudioObject, startIntegrityProbe } from './integrity';
 import type { ExecutableCapability } from '../capabilities/types';
 import { createStudioChatUI } from '../ui/studio-chat-ui';
+import { installStudioUI } from '../ui/studio-ui-install';
 
 const DEFAULT_HOST_URL = 'ws://127.0.0.1:8760/studio';
 
@@ -120,12 +121,14 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
   if (typeof globalThis.document !== 'undefined') {
     // v0.19：创建自建聊天 UI overlay，在拦截器之前挂载到 DOM。
     // SSE 文本由拦截器推送到此 UI，不再写入 DeepSeek DOM。
-    // 注意：initialization_script 在 document_start 执行，此时 document.body 尚不存在，
-    // 必须延迟到 DOMContentLoaded 再 append，否则 body=null 会静默失败导致 UI 不显示。
+    // initialization_script 在 document_start 执行，document.body 可能尚不存在，
+    // 延迟到 DOMContentLoaded 再 append。
     let chatUI;
     try {
       chatUI = createStudioChatUI();
-      const mount = () => document.body.appendChild(chatUI!.container);
+      const mount = () => {
+        try { document.body.appendChild(chatUI!.container); } catch { /* body 不可用，忽略 */ }
+      };
       if (document.body) {
         mount();
       } else {
@@ -147,8 +150,6 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
     } catch (err) {
       options.reportError?.('failed to install main-world interceptor', err);
     }
-    // v0.19：不再启动 startToolCardObserver——工具标签不再写入 DeepSeek DOM，
-    // 由 chat UI 直接渲染。tool-card-ui 的 createToolCard 已挂载到 chat UI 消息元素。
   }
 
   const target = (globalThis as { window?: unknown }).window ?? globalThis;
@@ -174,6 +175,27 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
     });
   }
 
+  // v0.20 wire StudioUI
+  if (typeof globalThis.document !== 'undefined') {
+    const mountStudioUI = () => {
+      try {
+        installStudioUI({
+          host: {
+            sendToolCall: (req) => host.sendToolCall(req),
+            log: (t) => host.log(t),
+          },
+        });
+        console.log('[StudioUI] installed');
+      } catch (err) {
+        console.error('[StudioUI] install failed', err);
+      }
+    };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', mountStudioUI, { once: true });
+    } else {
+      mountStudioUI();
+    }
+  }
   return { bridge, origin, sessionId, host };
 }
 

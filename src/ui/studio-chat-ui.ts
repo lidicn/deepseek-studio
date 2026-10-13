@@ -36,15 +36,38 @@ function injectChatStyles(): void {
   const style = document.createElement('style');
   style.id = 'ds-studio-chat-styles';
   style.textContent = STUDIO_CHAT_CSS;
-  document.head.appendChild(style);
-  styleInjected = true;
+  // document_start 阶段 document.head 与 document.documentElement 均可能为 null
+  // （Tauri WebView2 极早期触发）。逐级兜底：head → documentElement → 延迟到 DOMContentLoaded。
+  const head = document.head ?? document.documentElement;
+  if (head) {
+    head.appendChild(style);
+    styleInjected = true;
+  } else {
+    // 连 <html> 都没有：监听 documentElement 可用后再注入。
+    const tryInject = (): void => {
+      if (styleInjected) return;
+      const root = document.documentElement;
+      if (root) {
+        root.appendChild(style);
+        styleInjected = true;
+      }
+    };
+    document.addEventListener('DOMContentLoaded', tryInject, { once: true });
+    // 兜底的兜底：MutationObserver 等 <html> 出现
+    const obs = new MutationObserver(() => {
+      if (document.documentElement) { tryInject(); obs.disconnect(); }
+    });
+    obs.observe(document, { childList: true, subtree: true });
+  }
 }
 
 export function createStudioChatUI(): StudioChatUIHandle {
+  // 样式注入安全地延迟（见上方 injectChatStyles 的兜底逻辑）。
   injectChatStyles();
 
   const container = document.createElement('div');
   container.className = 'ds-studio-chat-container';
+  console.log('[studio-chat-ui] createStudioChatUI start, injecting styles=', !styleInjected);
 
   // 消息列表（滚动容器）
   const messageList = document.createElement('div');

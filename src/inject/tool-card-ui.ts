@@ -210,7 +210,8 @@ function ensureStyle(): void {
   if (styleInjected) return;
   const style = document.createElement('style');
   style.textContent = CARD_STYLE;
-  document.head.appendChild(style);
+  const head = document.head ?? document.documentElement;
+  head.appendChild(style);
   styleInjected = true;
 }
 

@@ -7,13 +7,18 @@
 
 export const STUDIO_CHAT_CSS = `
 /* ===== overlay 容器 ===== */
+/* z-index 分层（v0.20）：
+ *   2147483647  consent 弹窗（同意闸门，最高）
+ *   2147483644-3646  StudioUI sidebar/面板（工具入口，可点击）
+ *   2147483000  本 chat overlay（消息渲染，只盖 DeepSeek #root）
+ * chat overlay 低于 sidebar，确保浮动按钮/面板不被白板盖住。 */
 .ds-studio-chat-container {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  bottom: 200px;          /* 底部留 200px 给 DeepSeek 输入框，实测后微调 */
-  z-index: 2147483646;
+  bottom: 280px;          /* 底部留 280px 给 DeepSeek 输入框区域，实测后微调 */
+  z-index: 2147483000;
   background: #ffffff;
   display: flex;
   flex-direction: column;
@@ -159,14 +164,7 @@ export const STUDIO_CHAT_CSS = `
   50% { opacity: 0.4; }
 }
 
-/* ===== 隐藏 DeepSeek 消息列表（保留输入框）===== */
-/* DeepSeek 用 obfuscated class 名，用通用选择器兜底。
-   覆盖 #root 下的虚拟列表区域，不影响底部 composer。 */
-.ds-studio-chat-container ~ .ds-virtual-list,
-#root .ds-virtual-list {
-  visibility: hidden !important;
-  pointer-events: none !important;
-}
+/* v0.20 removed: hidden virtual-list rule */
 /* 更激进：隐藏 #root 下所有非 composer 的直接子元素（备用，实测后决定是否启用）
 #root > div > div:not(:last-child) {
   visibility: hidden !important;

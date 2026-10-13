@@ -30,7 +30,6 @@ import { createPowHeaders } from './pow';
 import { createToolCard, updateToolCardByCallId, stripRawToolTagsFromMessage } from './tool-card-ui';
 import { createStepFlowContainer, type StepFlowHandle } from './step-flow-ui';
 import { hydrateCodeBlocks, type CodeRunner } from './render-code-runner';
-import { installStudioUI } from '../ui/studio-ui-install';
 import type { StudioChatUIHandle } from '../ui/studio-chat-ui';
 
 /** 页端 → 宿主 的工具调用投递请求（与 host-client.sendToolCall 入参同构）。 */
@@ -1058,19 +1057,6 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     };
   }
 
-  // v1.0：安装 StudioUI（左侧边栏、输入框增强、设置面板）
-  let studioUIHandle: { destroy: () => void } | null = null;
-  try {
-    studioUIHandle = installStudioUI({
-      host: {
-        sendToolCall: (req) => sender(req),
-        log: (text) => d(`[ui] ${text}`),
-      },
-    });
-  } catch (e) {
-    d(`studio-ui install failed: ${(e as Error).message}`);
-  }
-
   // v0.18：代码块运行器（python→python_exec；JS/TS→临时文件 + node）
   const codeRunner: CodeRunner = async (code, language) => {
     try {
@@ -1148,11 +1134,6 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       }
       try {
         stopXhr?.();
-      } catch {
-        /* ignore */
-      }
-      try {
-        studioUIHandle?.destroy();
       } catch {
         /* ignore */
       }
