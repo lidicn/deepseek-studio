@@ -810,8 +810,12 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   loopState.onStreamEnd = () => {
     if (pending.length > 0 && loopState.lastChatBody && loopDepth < MAX_LOOP) {
       scheduleAutoContinue();
-    } else if (stepFlow) {
-      // v1.3：代理循环结束，完成步骤流（延迟销毁，让用户看到绿色完成状态）
+    } else if (stepFlow && loopDepth === 0) {
+      // v1.8：只有 loopDepth===0（连第一次续跑都没进入）才说明循环真正结束。
+      // 之前无此守卫，fetch+XHR 两条 SSE 路径各触发一次 onStreamEnd，
+      // 第二次触发时 pending 已被 scheduleAutoContinue 清空 → 误判循环结束
+      // → finish+destroy stepFlow → 下次工具结果回来又重建 → 反复创建销毁 = 闪烁。
+      // loopDepth>0 时循环在进行中，stepFlow 的销毁交给 auto-continue 结束逻辑负责。
       stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1000));
       const sf = stepFlow;
       stepFlow = null;
@@ -912,8 +916,11 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                   const toolsContainer = last.querySelector('.ds-studio-tools-container') as HTMLElement | null;
                   // v1.4：过滤开头的英文思考段落（模型把思考写在 RESPONSE 里，不是 THINK 段）
                   // v1.6：用 renderMarkdown 渲染（XSS 安全，保留代码块/粗体/列表，而非退化成纯文本）。
+                  // v1.8：用 .ds-markdown 容器包裹，复用 DeepSeek 自己的 markdown 样式
+                  // （字体/间距/代码块）。之前裸写 <p>/<pre> 到 .ds-assistant-message-main-content，
+                  // 没有 DeepSeek 的 markdown 样式 class，显示成无样式纯文本。
                   const { thinking, answer } = extractThinkingPreface(reply);
-                  last.innerHTML = renderMarkdown(answer);
+                  last.innerHTML = `<div class="ds-markdown">${renderMarkdown(answer)}</div>`;
                   // 如果有思考段落，在开头插入"已思考"折叠卡片
                   if (thinking) {
                     const tdiv = document.createElement('div');
@@ -963,7 +970,20 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                 d(`auto-continue nudge count=${nudgeCount} loop=${loopDepth}, sending nudge...`);
                 autoContinueNudge(replyForNudge);
               } else {
+                // v1.8：循环真正结束（无工具、无 nudge、task_complete 或达上限）。
+                // 这里负责 stepFlow 的 finish+destroy —— onStreamEnd 在 loopDepth>0 时不销毁，
+                // 交给本分支。避免之前 stepFlow 反复创建销毁的闪烁。
                 d(`auto-continue loop end: hadTools=${hadTools} taskComplete=${hasTaskComplete} shouldNudge=${replyForNudge ? shouldNudge(replyForNudge) : false} nudgeCount=${nudgeCount}/${MAX_NUDGES}`);
+                if (stepFlow) {
+                  stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1000));
+                  const sf = stepFlow;
+                  stepFlow = null;
+                  stepFlowStep = 0;
+                  stepFlowToolCount = 0;
+                  setTimeout(() => sf.destroy(), 3000);
+                }
+                // 循环结束：重置 loopDepth，让下次用户消息的 onStreamEnd 能正常销毁
+                loopDepth = 0;
               }
             }
             resolve();

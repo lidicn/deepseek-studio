@@ -2840,17 +2840,6 @@ ${stderr.trimEnd()}
       }
     }
     function followScroll() {
-      let el2 = container.parentElement;
-      while (el2 && el2 !== document.documentElement) {
-        if (el2.scrollHeight > el2.clientHeight + 1) {
-          const style = getComputedStyle(el2);
-          if (/(auto|scroll)/.test(style.overflowY)) {
-            el2.scrollTop = el2.scrollHeight;
-            return;
-          }
-        }
-        el2 = el2.parentElement;
-      }
     }
     function createToolGroup(stepIndex) {
       const group = document.createElement("div");
@@ -5896,7 +5885,7 @@ ${prompt}`;
     loopState.onStreamEnd = () => {
       if (pending.length > 0 && loopState.lastChatBody && loopDepth < MAX_LOOP) {
         scheduleAutoContinue();
-      } else if (stepFlow) {
+      } else if (stepFlow && loopDepth === 0) {
         stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1e3));
         const sf = stepFlow;
         stepFlow = null;
@@ -5978,7 +5967,7 @@ ${prompt}`;
                   if (last) {
                     const toolsContainer = last.querySelector(".ds-studio-tools-container");
                     const { thinking, answer } = extractThinkingPreface(reply);
-                    last.innerHTML = renderMarkdown(answer);
+                    last.innerHTML = `<div class="ds-markdown">${renderMarkdown(answer)}</div>`;
                     if (thinking) {
                       const tdiv = document.createElement("div");
                       tdiv.className = "ds-studio-thinking-preface";
@@ -6022,6 +6011,15 @@ ${prompt}`;
                   autoContinueNudge(replyForNudge);
                 } else {
                   d(`auto-continue loop end: hadTools=${hadTools} taskComplete=${hasTaskComplete} shouldNudge=${replyForNudge ? shouldNudge(replyForNudge) : false} nudgeCount=${nudgeCount}/${MAX_NUDGES}`);
+                  if (stepFlow) {
+                    stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1e3));
+                    const sf = stepFlow;
+                    stepFlow = null;
+                    stepFlowStep = 0;
+                    stepFlowToolCount = 0;
+                    setTimeout(() => sf.destroy(), 3e3);
+                  }
+                  loopDepth = 0;
                 }
               }
               resolve();

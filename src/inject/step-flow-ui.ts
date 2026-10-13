@@ -180,17 +180,11 @@ export function createStepFlowContainer(onStop?: () => void): StepFlowHandle {
   }
 
   function followScroll(): void {
-    let el: HTMLElement | null = container.parentElement;
-    while (el && el !== document.documentElement) {
-      if (el.scrollHeight > el.clientHeight + 1) {
-        const style = getComputedStyle(el);
-        if (/(auto|scroll)/.test(style.overflowY)) {
-          el.scrollTop = el.scrollHeight;
-          return;
-        }
-      }
-      el = el.parentElement;
-    }
+    // v1.8：step-flow 是 position:fixed 悬浮容器，不需要跟随对话滚动。
+    // 之前会爬祖先链找可滚动容器并强制滚到底（el.scrollTop = el.scrollHeight），
+    // 与 auto-continue 渲染结论时的 last.scrollIntoView 冲突 —— 每次工具调用
+    // /结果回填都把对话拉到工具卡片位置，结论被反复顶走。
+    // fixed 容器自身在视口内固定，移除对话滚动跟随即可。
   }
 
   function createToolGroup(stepIndex: number): HTMLElement {
