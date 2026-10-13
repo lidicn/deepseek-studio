@@ -101,15 +101,17 @@ function measureComposerTop(): number | null {
   if (!seed) return null;
 
   // 从 textarea 往上爬，找输入框卡片根容器：
-  // 高度在 120~400px 之间，且底部贴近视口底部（bottom > vh-50）。取它 top 作为 overlay 底边。
-  // 这覆盖了"卡片含推荐按钮"的情况——卡片比 textarea 高，top 更靠上。
-  // 上限 400 排除 body/#root 等大容器：初次加载 SPA 未渲染时 textarea 浮在高位（如 y=445），
-  // 其祖先 body/#root 也会满足 height>120 && bottom>vh-50，误攀到它们会返回 top≈0，
-  // 导致 overlay 几乎不可见。加高度上限后爬不到卡片就回退到 seed（textarea）top。
+  // 第一个高度在 120~400px 之间的祖先元素即为卡片根（含推荐按钮区，比 textarea 高）。
+  // 不要求"靠近底部"——DeepSeek 有两种 composer 布局：
+  //   1. 对话态：composer 在视口底部（top≈857）
+  //   2. 居中欢迎页态：composer 居中显示（top≈445），此时其卡片 _77cefa5 (h=124) 和
+  //      _9a2f8e4 (h=247，含推荐按钮) 都不满足 bottom>vh-50，旧逻辑会回退到 textarea.top，
+  //      漏掉推荐按钮区导致 overlay 盖住卡片上沿。
+  // 上限 400 排除 body/#root 等大容器（height≈vh），避免误攀返回 top≈0。
   let p: Element | null = seed;
   for (let i = 0; i < 10 && p; i++) {
     const r = p.getBoundingClientRect();
-    if (r.height > 120 && r.height < 400 && r.bottom > window.innerHeight - 50) {
+    if (r.height > 120 && r.height < 400) {
       return Math.round(r.top);
     }
     p = p.parentElement;

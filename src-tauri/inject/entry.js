@@ -4159,7 +4159,7 @@ ${prompt}`;
     let p = seed;
     for (let i = 0; i < 10 && p; i++) {
       const r = p.getBoundingClientRect();
-      if (r.height > 120 && r.height < 400 && r.bottom > window.innerHeight - 50) {
+      if (r.height > 120 && r.height < 400) {
         return Math.round(r.top);
       }
       p = p.parentElement;
