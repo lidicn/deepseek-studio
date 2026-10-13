@@ -4235,8 +4235,20 @@ ${prompt}`;
     const bottomObserver = new MutationObserver(() => {
       tryAdjust();
     });
-    bottomObserver.observe(document.body, { childList: true, subtree: true });
+    function startObserver() {
+      try {
+        if (document.body) {
+          bottomObserver.observe(document.body, { childList: true, subtree: true });
+        }
+      } catch {
+      }
+    }
     tryAdjust();
+    if (document.body) {
+      startObserver();
+    } else {
+      document.addEventListener("DOMContentLoaded", startObserver, { once: true });
+    }
     setTimeout(tryAdjust, 500);
     setTimeout(tryAdjust, 1500);
     setTimeout(tryAdjust, 3e3);

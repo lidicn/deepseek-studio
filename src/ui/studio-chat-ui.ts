@@ -220,11 +220,26 @@ export function createStudioChatUI(): StudioChatUIHandle {
   // 动态测量 composer 位置，调整 overlay bottom（不盖住输入框）。
   // textarea 可能延迟渲染（DeepSeek SPA 异步挂载），用 MutationObserver 等；
   // 测到后停止观察，避免持续开销。窗口 resize 时也需重测。
+  // 注意：createStudioChatUI 在 document_start 执行，document.body 可能尚为 null，
+  // MutationObserver.observe(null) 会抛 TypeError 导致整个函数中断、overlay 不挂载。
+  // 因此 observer 必须延迟到 body 可用后再启动。
   function tryAdjust(): void { adjustOverlayBottom(container); }
   const bottomObserver = new MutationObserver(() => { tryAdjust(); });
-  bottomObserver.observe(document.body, { childList: true, subtree: true });
-  // textarea 出现后立即测，并在几个时间点兜底（SPA 渲染慢时）
+  function startObserver(): void {
+    try {
+      if (document.body) {
+        bottomObserver.observe(document.body, { childList: true, subtree: true });
+      }
+    } catch { /* observe 失败不致命，setTimeout 兜底已覆盖 */ }
+  }
+  // 立即测一次（textarea 可能已存在），并在几个时间点兜底（SPA 渲染慢时）
   tryAdjust();
+  // body 可能尚不存在，延迟启动 observer
+  if (document.body) {
+    startObserver();
+  } else {
+    document.addEventListener('DOMContentLoaded', startObserver, { once: true });
+  }
   setTimeout(tryAdjust, 500);
   setTimeout(tryAdjust, 1500);
   setTimeout(tryAdjust, 3000);
