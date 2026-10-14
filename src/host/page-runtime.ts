@@ -40,6 +40,8 @@ export interface PageClient {
   readonly origin: string | null;
   /** v0.5：该页是否被自检判定为不可信（注入对象遭篡改）。 */
   readonly untrusted: boolean;
+  /** v0.24：注入脚本自报的 botId（hello 时登记；旧脚本不上报 → undefined）。 */
+  readonly botId: string | undefined;
   send(msg: HostToPageMessage): void;
 }
 
@@ -55,19 +57,24 @@ export interface PageRuntimeHubOptions {
    * 的 invokeTool，内部走完整授权链 + 同意闸门 + 宿主侧能力执行）。
    * 缺省不提供时，tool-call 一律回 { ok:false, error:'no-executor' }（fail-closed）。
    */
-  executor?: (tool: string, params: unknown) => Promise<ToolExecutionResult>;
+  /**
+   * v0.24：botId 可选，标识发起该工具调用的 bot——宿主据此路由到对应 bot 的
+   * executor / 工具白名单（v0.25）与授权身份；缺省='main'。
+   */
+  executor?: (tool: string, params: unknown, botId?: string) => Promise<ToolExecutionResult>;
   /** 调试：页端 debug-eval-result 回调。 */
   onDebugEvalResult?: (requestId: string, ok: boolean, result: string) => void;
   /**
    * M1：页端发起工具调用的观察钩子（AgentLoop 据此统计每步工具调用次数，
    * 面板据此展示工具卡片）。观察者，不影响执行链路。
+   * v0.24：info 带 botId，宿主据此累加对应 bot 的独立 counter。
    */
-  onToolCall?: (info: { callId: string; invocationName: string; tool: string; params: unknown }) => void;
-  /** v0.9：页端 auto-continue 收到模型最终回复时的回调。 */
-  onAssistantReply?: (text: string, loop: number) => void;
+  onToolCall?: (info: { callId: string; invocationName: string; tool: string; params: unknown; botId?: string }) => void;
+  /** v0.9：页端 auto-continue 收到模型最终回复时的回调。v0.24：带 botId 定位写入哪个 bot 的缓冲。 */
+  onAssistantReply?: (text: string, loop: number, botId?: string) => void;
   /** v1.0：宿主推送记忆列表更新时的回调。 */
   onMemoriesUpdate?: (memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>) => void;
-  onToolResult?: (info: { callId: string; tool: string; ok: boolean; error?: string }) => void;
+  onToolResult?: (info: { callId: string; tool: string; ok: boolean; error?: string; botId?: string }) => void;
   /** v0.7：页端 storage shim 的 KV 后端（宿主侧落盘）。缺省时 kv-* 消息回 no-kv-store。 */
   kvStore?: {
     get(key: string): Promise<unknown>;
@@ -80,16 +87,21 @@ export interface PageRuntimeHub {
   readonly connectedPages: ReadonlyArray<PageClient>;
   /** 仅包含未被判定为篡改的页（派发与征求同意都应以此为准）。 */
   readonly trustedPages: ReadonlyArray<PageClient>;
-  /** 推一个工具调用到页端并等结果；无页/超时 → { ok:false, error }。 */
-  dispatch(tool: string, params: unknown, callId: string): Promise<ExecuteResult>;
-  /** 向页端请求用户同意；无页/超时 → 'deny'（fail-closed）。meta 为可选的呈现信息。 */
-  requestConsent(callId: string, tool: string, params: unknown, meta?: ConsentMeta): Promise<ConsentDecision>;
+  /** 推一个工具调用到页端并等结果；无页/超时 → { ok:false, error }。
+   *  v0.24：botId 可选，按 botId 选页（多窗口按登录态路由）；缺省=main。 */
+  dispatch(tool: string, params: unknown, callId: string, botId?: string): Promise<ExecuteResult>;
+  /** 向页端请求用户同意；无页/超时 → 'deny'（fail-closed）。meta 为可选的呈现信息。
+   *  v0.24：botId 可选，向发起 bot 的窗口征求同意；缺省=main。 */
+  requestConsent(callId: string, tool: string, params: unknown, meta?: ConsentMeta, botId?: string): Promise<ConsentDecision>;
   /** v1.0：向所有已连接页端广播记忆列表更新。 */
   broadcastMemories(memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>): void;
   /** 调试：向所有页端广播 debug-eval 请求。 */
   broadcastDebugEval(requestId: string, code: string): void;
   dispose(): void;
 }
+
+/** v0.24：缺省 botId（向后兼容：旧注入脚本 hello 不上报 botId → 归为 main）。 */
+const MAIN_BOT_ID = 'main';
 
 export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntimeHub {
   const path = options.path ?? '/studio';
@@ -115,7 +127,7 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
     if (pathname !== path) return;
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
   });
-  const clients = new Map<string, { ws: WebSocket; origin: string | null; untrusted: boolean }>();
+  const clients = new Map<string, { ws: WebSocket; origin: string | null; untrusted: boolean; botId: string | undefined }>();
   const pendingDispatch = new Map<string, { resolve: (r: ExecuteResult) => void; timer: ReturnType<typeof setTimeout> }>();
   const pendingConsent = new Map<string, { resolve: (d: ConsentDecision) => void; timer: ReturnType<typeof setTimeout> }>();
 
@@ -145,18 +157,22 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
     }
   }
 
-  function pickClient(): { ws: WebSocket } | null {
-    // 当前单页场景：返回任一「可信」的已连接客户端。多页扩展时可按 origin 选择。
+  function pickClient(botId?: string): { ws: WebSocket } | null {
+    // v0.24：调用方给了 botId 才按 botId 路由到对应窗口的页（每窗口一个独立登录态）。
+    // 兼容规则：调用方不传 botId → 完全沿用改造前的「任一可信页」行为，不做 botId 过滤。
+    // 这样单窗口 / 旧脚本 / 遗留调用路径行为不变；而多 bot 引擎各自带 botId 调用即精确寻址。
     // 关键：被自检判定为篡改的页必须被跳过，否则工具就派发给了敌意页面。
     for (const c of clients.values()) {
-      if (!c.untrusted) return c;
+      if (c.untrusted) continue;
+      if (botId !== undefined && (c.botId ?? MAIN_BOT_ID) !== botId) continue;
+      return c;
     }
     return null;
   }
 
   wss.on('connection', (ws: WebSocket) => {
     const id = crypto.randomUUID();
-    const rec: { ws: WebSocket; origin: string | null; untrusted: boolean } = { ws, origin: null, untrusted: false };
+    const rec: { ws: WebSocket; origin: string | null; untrusted: boolean; botId: string | undefined } = { ws, origin: null, untrusted: false, botId: undefined };
     clients.set(id, rec);
     ws.on('message', async (raw) => {
       let msg: PageToHostMessage;
@@ -167,6 +183,8 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
       }
       if (msg.type === 'hello') {
         rec.origin = msg.origin ?? null;
+        // v0.24：登记自报 botId（旧脚本不上报 → undefined，pickClient 按 main 处理）。
+        rec.botId = typeof msg.botId === 'string' && msg.botId.length > 0 ? msg.botId : undefined;
         safeSend(ws, { type: 'hello-ack', sessionId: id });
       } else if (msg.type === 'result') {
         const p = pendingDispatch.get(msg.callId);
@@ -182,7 +200,8 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
       } else if (msg.type === 'log') {
         console.log(`[page ${id}] ${msg.text}`);
       } else if (msg.type === 'assistant-reply') {
-        options.onAssistantReply?.(msg.text, msg.loop);
+        // v0.24：以 hello 登记的 rec.botId 为准定位是哪个 bot 的 auto-continue 回复。
+        options.onAssistantReply?.(msg.text, msg.loop, rec.botId);
       } else if (msg.type === 'kv-get') {
         const store = options.kvStore;
         if (!store) { safeSend(ws, { type: 'kv-result', requestId: msg.requestId, ok: false, error: 'no-kv-store' }); return; }
@@ -270,10 +289,13 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           safeSend(ws, { type: 'tool-call-result', callId: msg.callId, ok: false, error: 'no-executor' });
           return;
         }
-        options.onToolCall?.({ callId: msg.callId, invocationName: msg.invocationName, tool: mapped.id, params: mapped.params });
-        void exec(mapped.id, mapped.params)
+        // v0.24：调用方身份以 hello 登记的 rec.botId 为准（连接级身份），
+        // 报文 msg.botId 仅作兜底。用于路由到对应 bot 的 executor / counter / 白名单。
+        const callBotId = rec.botId ?? msg.botId;
+        options.onToolCall?.({ callId: msg.callId, invocationName: msg.invocationName, tool: mapped.id, params: mapped.params, botId: callBotId });
+        void exec(mapped.id, mapped.params, callBotId)
           .then((r) => {
-            options.onToolResult?.({ callId: msg.callId, tool: mapped.id, ok: r.ok, error: r.reason });
+            options.onToolResult?.({ callId: msg.callId, tool: mapped.id, ok: r.ok, error: r.reason, botId: callBotId });
             safeSend(ws, {
               type: 'tool-call-result',
               callId: msg.callId,
@@ -289,7 +311,7 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           })
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e);
-            options.onToolResult?.({ callId: msg.callId, tool: mapped.id, ok: false, error: message });
+            options.onToolResult?.({ callId: msg.callId, tool: mapped.id, ok: false, error: message, botId: callBotId });
             safeSend(ws, {
               type: 'tool-call-result',
               callId: msg.callId,
@@ -309,15 +331,16 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         id,
         origin: c.origin,
         untrusted: c.untrusted,
+        botId: c.botId,
         send: (m: HostToPageMessage) => safeSend(c.ws, m),
       }));
     },
     get trustedPages(): ReadonlyArray<PageClient> {
       return this.connectedPages.filter((p) => !p.untrusted);
     },
-    dispatch(tool, params, callId) {
+    dispatch(tool, params, callId, botId) {
       return new Promise<ExecuteResult>((resolve) => {
-        const client = pickClient();
+        const client = pickClient(botId);
         if (!client) {
           resolve({ ok: false, error: 'no-page-runtime' });
           return;
@@ -327,12 +350,13 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           resolve({ ok: false, error: 'page-timeout' });
         }, dispatchTimeoutMs);
         pendingDispatch.set(callId, { resolve, timer });
-        safeSend(client.ws, { type: 'dispatch', callId, tool, params });
+        // v0.24：透传 botId，页端可据此区分调用来源（并回执 tool-call 时带回）。
+        safeSend(client.ws, { type: 'dispatch', callId, tool, params, botId });
       });
     },
-    requestConsent(callId, tool, params, meta) {
+    requestConsent(callId, tool, params, meta, botId) {
       return new Promise<ConsentDecision>((resolve) => {
-        const client = pickClient();
+        const client = pickClient(botId);
         if (!client) {
           resolve('deny');
           return;
@@ -342,7 +366,7 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           resolve('deny');
         }, consentTimeoutMs);
         pendingConsent.set(callId, { resolve, timer });
-        safeSend(client.ws, { type: 'consent-required', callId, tool, params, meta });
+        safeSend(client.ws, { type: 'consent-required', callId, tool, params, meta, botId });
       });
     },
     broadcastMemories(memories) {

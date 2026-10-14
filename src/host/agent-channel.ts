@@ -5,6 +5,9 @@
  *   send / stop / set-policy / set-workspace / pick-folder / get-state
  * 宿主 → 面板：AgentLoop 事件流（event）与请求响应（ack）、状态快照（state）。
  *
+ * v0.23：多 bot 化。面板消息可带 botId 路由到指定 bot；缺省='main'（向后兼容）。
+ * 面板不传 botId → 路由到 main bot → 行为与改造前一致。
+ *
  * 鉴权：连接时校验 query 里的 token 与 API 令牌一致，不一致立即关闭（fail-closed）。
  * 页面 HTML 由服务端内嵌令牌下发——威胁模型与 v0.5 一致：本地进程本就能读 config.json。
  */
@@ -15,13 +18,20 @@ import type { AgentLoopEvent } from './agent-loop';
 import type { PolicyMode } from './policy';
 import { PANEL_POLICY_MODES } from './policy';
 
+/** 单个 bot 的面板可调用能力面（与改造前 AgentChannelHost.agent 形状一致）。 */
+export interface BotHandle {
+  sendMessage(text: string): Promise<void>;
+  stop(): void;
+  readonly running: boolean;
+  health(): Promise<{ ok: boolean; reason?: string }>;
+}
+
 /** 宿主侧所需的最小能力面（避免反向依赖 DesktopHost 全量类型）。 */
 export interface AgentChannelHost {
-  readonly agent: {
-    sendMessage(text: string): Promise<void>;
-    stop(): void;
-    readonly running: boolean;
-    health(): Promise<{ ok: boolean; reason?: string }>;
+  /** v0.23：多 bot 访问器。get(botId?) 缺省=main；list() 返回所有 bot 的运行状态。 */
+  readonly bots: {
+    get(botId?: string): BotHandle;
+    list(): { botId: string; running: boolean }[];
   };
   onAgentEvent(cb: (event: AgentLoopEvent) => void): () => void;
   readonly policyMode: PolicyMode;
@@ -40,9 +50,12 @@ export interface AgentChannelOptions {
   onError?: (message: string, error?: unknown) => void;
 }
 
+/** 缺省 botId（向后兼容：面板不传 botId 时路由到 main）。 */
+const MAIN_BOT_ID = 'main';
+
 type ClientMessage =
-  | { type: 'send'; text?: unknown; reqId?: string }
-  | { type: 'stop'; reqId?: string }
+  | { type: 'send'; text?: unknown; botId?: string; reqId?: string }
+  | { type: 'stop'; botId?: string; reqId?: string }
   | { type: 'get-state'; reqId?: string }
   | { type: 'set-policy'; mode?: unknown; reqId?: string }
   | { type: 'set-workspace'; path?: unknown; reqId?: string }
@@ -69,19 +82,28 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
 
   function safeSend(ws: WebSocket, payload: unknown): void {
     try {
-      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
+      // ws.send() 内部已处理队列化（CONNECTING 时自动排队）；
+      // 仅跳过 CLOSED/CLOSING，避免向已关闭连接发送。
+      if (ws.readyState !== WebSocket.CLOSED && ws.readyState !== WebSocket.CLOSING) {
+        ws.send(JSON.stringify(payload));
+      }
     } catch (err) {
       options.onError?.(`agent-channel send failed`, err);
     }
   }
 
   function statePayload(): Record<string, unknown> {
+    const botsList = options.host.bots.list();
+    const mainBot = botsList.find((b) => b.botId === MAIN_BOT_ID);
     return {
       type: 'state',
       policyMode: options.host.policyMode,
       panelModes: PANEL_POLICY_MODES,
       workspaceRoot: options.host.workspaceRoot,
-      running: options.host.agent.running,
+      // v0.23：running 保持指向 main bot（向后兼容现有面板）
+      running: mainBot?.running ?? false,
+      // v0.23：多 bot 状态列表（新面板可读此字段展示所有 bot）
+      bots: botsList,
     };
   }
 
@@ -136,18 +158,22 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
             ack(false, undefined, 'missing-text');
             return;
           }
-          if (options.host.agent.running) {
+          const botId = msg.botId ?? MAIN_BOT_ID;
+          const bot = options.host.bots.get(botId);
+          if (bot.running) {
             ack(false, undefined, 'agent-busy');
             return;
           }
-          ack(true);
-          await options.host.agent.sendMessage(msg.text.trim());
+          ack(true, { botId });
+          await bot.sendMessage(msg.text.trim());
           return;
         }
-        case 'stop':
-          options.host.agent.stop();
-          ack(true);
+        case 'stop': {
+          const botId = msg.botId ?? MAIN_BOT_ID;
+          options.host.bots.get(botId).stop();
+          ack(true, { botId });
           return;
+        }
         case 'set-policy': {
           const mode = msg.mode as PolicyMode;
           if (!(PANEL_POLICY_MODES as readonly string[]).includes(mode)) {

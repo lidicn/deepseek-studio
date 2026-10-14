@@ -44,6 +44,8 @@ export interface AgentLoopEvent {
   step?: number;
   /** 本轮发生的工具调用次数（tool 事件）。 */
   toolCalls?: number;
+  /** v0.23：事件来源 bot 标识。缺省=主 bot（向后兼容现有面板）。 */
+  botId?: string;
 }
 
 export interface AgentLoopOptions {
@@ -62,6 +64,8 @@ export interface AgentLoopOptions {
   stopFlag: { stopped: boolean };
   /** P0：两次工具续跑之间是否随机延迟 2.5-6.5s（防风控）。测试传 false 跳过。 */
   throttleBetweenSteps?: boolean;
+  /** v0.23：本 loop 所属 bot 标识。戳到每条事件的 botId 上，缺省=主 bot。 */
+  botId?: string;
 }
 
 export interface AgentLoop {
@@ -75,9 +79,10 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
   const maxSteps = options.maxSteps ?? 25;
   const watchdogMs = options.watchdogMs ?? 15 * 60 * 1000;
   const continueNudge = options.continueNudge ?? DEFAULT_CONTINUE_NUDGE;
+  const botId = options.botId;
   let active = false;
 
-  const emit = (event: AgentLoopEvent) => options.onEvent(event);
+  const emit = (event: AgentLoopEvent) => options.onEvent(botId ? { ...event, botId } : event);
 
   return {
     get running() {

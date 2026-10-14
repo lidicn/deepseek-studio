@@ -29,6 +29,9 @@ export interface HostClientOptions {
   capabilities: ReadonlyArray<ExecutableCapability>;
   /** 页面 origin（默认 location.origin 或 https://chat.deepseek.com）。 */
   origin?: string;
+  /** v0.24：本页所属 bot 的 id（hello 上报；宿主据此路由工具/同意到本窗口）。
+   *  缺省 undefined → 宿主按 'main' 处理，单窗口/旧脚本行为不变。 */
+  botId?: string;
   reportError?: (message: string, error?: unknown) => void;
   /** ws 工厂（测试注入；默认全局 WebSocket）。 */
   wsFactory?: WebSocketFactory;
@@ -197,7 +200,8 @@ export function createHostClient(options: HostClientOptions): HostClient {
     ws = socket;
     socket.onopen = () => {
       backoff = 500;
-      send({ type: 'hello', origin, sessionId: crypto.randomUUID() });
+      // v0.24：上报本页所属 botId，宿主据此把工具派发/同意闸门路由到本窗口。
+      send({ type: 'hello', origin, sessionId: crypto.randomUUID(), botId: options.botId });
     };
     socket.onmessage = (ev: { data: unknown }) => onMessage(ev.data);
     socket.onclose = () => {
@@ -239,7 +243,7 @@ export function createHostClient(options: HostClientOptions): HostClient {
           resolve({ ok: false, error: 'host-timeout' });
         }, toolCallTimeoutMs);
         pendingToolCalls.set(req.callId, { resolve, timer });
-        send({ type: 'tool-call', callId: req.callId, invocationName: req.invocationName, params: req.params });
+        send({ type: 'tool-call', callId: req.callId, invocationName: req.invocationName, params: req.params, botId: options.botId });
       });
     },
     connect() {

@@ -82,6 +82,99 @@ fn save_window_state(state: &WindowState) {
     }
 }
 
+// ── v0.24：多 bot 窗口 + profile 隔离 ────────────────────────────────────
+// 预配置驱动（不在运行时创建窗口）：~/.config/deepseek-studio/bot-windows.json
+//   [ { "botId": "bot-S1", "visible": false, "dataDir": "profiles/S1" } ]
+// 主窗口（label="main"）总是可见并注入 main 脚本；每个 bot 窗口各自注入
+// 带 __studioBotId 的脚本，并用独立 data_directory 隔离登录态（Cookie/localStorage/IndexedDB）。
+// 缺文件 / 缺字段 / 解析失败一律跳过该条目，绝不阻塞主窗口启动。
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct BotWindowConfig {
+    #[serde(default = "default_bot_id")]
+    bot_id: String,
+    #[serde(default = "default_visible")]
+    visible: bool,
+    #[serde(default)]
+    data_dir: Option<String>,
+}
+
+fn default_bot_id() -> String {
+    String::new()
+}
+
+fn default_visible() -> bool {
+    false
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct BotWindowsConfig {
+    #[serde(default)]
+    bots: Vec<BotWindowConfig>,
+}
+
+fn bot_windows_path() -> std::path::PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("deepseek-studio")
+        .join("bot-windows.json")
+}
+
+fn load_bot_windows_config() -> BotWindowsConfig {
+    let path = bot_windows_path();
+    if let Ok(s) = std::fs::read_to_string(&path) {
+        if let Ok(cfg) = serde_json::from_str::<BotWindowsConfig>(&s) {
+            eprintln!("[studio] bot windows config: {} entries", cfg.bots.len());
+            return cfg;
+        }
+        eprintln!("[studio] WARN: bot-windows.json parse failed, using empty");
+    }
+    BotWindowsConfig::default()
+}
+
+/// 带 botId 的注入脚本：在原脚本最前面声明 window.__studioBotId，
+/// 供 entry.ts 的 createHostClient 读取（缺省 = 'main'）。
+fn inject_with_bot_id(base_script: &str, bot_id: &str) -> String {
+    let declare = format!("window.__studioBotId = {};\n", serde_json::to_string(bot_id).unwrap());
+    declare + base_script
+}
+
+/// 把配置的 dataDir 解析为可用的 profile 目录。
+///  - 绝对路径（Windows `C:\...` 或 Unix `/...`）→ 原样使用
+///  - `~/...` → 展开到系统配置目录
+///  - 其它相对路径 → 拼到 ~/.config/deepseek-studio/ 下
+/// 空串 / 解析不出配置目录 → None（调用方降级为共享 profile）。
+fn resolve_data_dir(raw: &str) -> Option<std::path::PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let base = dirs::config_dir()?;
+    let path = if trimmed.starts_with('/') || (trimmed.len() >= 2 && trimmed.as_bytes()[1] == b':') {
+        std::path::PathBuf::from(trimmed)
+    } else if trimmed == "~" || trimmed.starts_with("~/") {
+        base.join(trimmed.trim_start_matches("~/"))
+    } else {
+        base.join("deepseek-studio").join(trimmed)
+    };
+    Some(path)
+}
+
+/// 窗口 label 只做字母数字 + 短横/下划线/点，避免非法字符导致 Tauri 拒绝创建。
+/// 截断到 32 字符并保证非空（退化为 "bot"）。
+fn sanitize_window_label(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        if out.len() >= 32 {
+            break;
+        }
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+            out.push(c);
+        }
+    }
+    if out.is_empty() { "bot".to_string() } else { out }
+}
+
 fn main() {
     tauri::Builder::default()
         // v0.12 Phase 3：开机自启插件
@@ -156,6 +249,53 @@ fn main() {
                 let _ = win.maximize();
             }
 
+            // v0.24：按预配置创建 bot 窗口（每窗口独立登录态）。
+            // 主窗口已建好；bot 窗口逐个容错创建——单个失败不影响主窗口，也不中断 setup。
+            let base_script = if !disable_inject { load_init_script() } else { String::new() };
+            for entry in load_bot_windows_config().bots {
+                let bot_id = entry.bot_id.trim().to_string();
+                if bot_id.is_empty() {
+                    eprintln!("[studio] bot window skipped: empty botId");
+                    continue;
+                }
+                let label = sanitize_window_label(&bot_id);
+                // 标签必须唯一；重复条目跳过，避免 Tauri 拒绝/panic
+                if app.get_webview_window(&label).is_some() {
+                    eprintln!("[studio] bot window skipped: duplicate label {:?}", label);
+                    continue;
+                }
+                let mut builder = WebviewWindowBuilder::new(
+                    app,
+                    &label,
+                    WebviewUrl::External(Url::parse(CHAT_URL).expect("invalid chat url")),
+                )
+                .title(format!("DeepSeek++ Studio [{}]", bot_id))
+                .visible(entry.visible)
+                .inner_size(1280.0, 800.0);
+
+                // 注入带 botId 的脚本（禁用注入时不注入）
+                if !disable_inject {
+                    let script = inject_with_bot_id(&base_script, &bot_id);
+                    builder = builder.initialization_script(&script);
+                }
+
+                // profile 隔离：独立 WebView2 user data folder → Cookie/localStorage 不串号
+                if let Some(dir) = entry.data_dir.as_ref().and_then(|d| resolve_data_dir(d)) {
+                    let _ = std::fs::create_dir_all(&dir);
+                    builder = builder.data_directory(dir);
+                } else {
+                    eprintln!(
+                        "[studio] bot {:?} has no valid dataDir → shares main profile (cookies WILL cross)",
+                        bot_id
+                    );
+                }
+
+                match builder.build() {
+                    Ok(_) => eprintln!("[studio] bot window created: label={:?} visible={}", label, entry.visible),
+                    Err(e) => eprintln!("[studio] FAILED to create bot window {:?}: {:?}", label, e),
+                }
+            }
+
             // v0.12 Phase 3：系统托盘
             #[cfg(feature = "tray-icon")]
             {
@@ -206,8 +346,15 @@ fn main() {
         })
         // v0.12：优雅关闭钩子 + 窗口状态保存
         .on_window_event(|window, event| {
+            let label = window.label().to_string();
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                eprintln!("[studio] CloseRequested for window: {}", window.label());
+                eprintln!("[studio] CloseRequested for window: {}", label);
+                // v0.24：bot 窗口直接放行原生关闭——不保存几何（避免污染主窗口状态）、
+                // 也不关闭 sidecar（它是全应用共享的常驻宿主进程）。仅主窗口走下方优雅关闭。
+                if label != "main" {
+                    eprintln!("[studio] bot window {:?} closed (state/sidecar untouched)", label);
+                    return;
+                }
                 api.prevent_close();
 
                 // v0.12 Phase 3：保存窗口状态（size 必存，position 尽力）

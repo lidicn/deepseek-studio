@@ -37,6 +37,8 @@ export interface InstallStudioOptions {
   reportError?: (message: string, error?: unknown) => void;
   /** 宿主 ws 地址（默认 ws://127.0.0.1:8756/studio）。 */
   hostUrl?: string;
+  /** v0.24：本页所属 botId。缺省读 window.__studioBotId（Tauri 注入），再缺省 undefined → main。 */
+  botId?: string;
   /**
    * 是否把 window.__deepseekStudio 钉死为不可写不可配置（默认 false）。
    * 默认关闭：同 world 脚本绕得开，而钉死会破坏合法的重新装配与测试清理。
@@ -86,6 +88,8 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
     url: options.hostUrl ?? DEFAULT_HOST_URL,
     capabilities: executable,
     reportError: options.reportError,
+    // v0.24：读 Tauri 注入的 __studioBotId（隐藏窗口各自不同）；缺省 undefined → main。
+    botId: options.botId ?? (globalThis as { __studioBotId?: string }).__studioBotId,
   });
 
   const remoteKv: StorageKvBackend = {

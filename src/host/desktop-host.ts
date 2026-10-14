@@ -29,14 +29,15 @@ import {
 } from './tool-registry';
 import { DEFAULT_TOOL_DEFINITIONS, DEEPSEEK_ORIGIN } from './tool-definitions';
 import { createPageRuntimeHub, type PageRuntimeHub } from './page-runtime';
-import { createAgentLoop, AGENT_SENTINEL, type AgentLoop, type AgentLoopEvent } from './agent-loop';
+import { AGENT_SENTINEL, type AgentLoopEvent } from './agent-loop';
 import { createAgentChannel, type AgentChannel } from './agent-channel';
 import { pickFolderViaDialog } from './folder-picker';
 import { createWebEngine } from './engine/web-engine';
+import { createBotRegistry } from './bot/registry';
+import type { BotInstance } from './bot/types';
 import { createFileStorageKvBackend } from './file-storage-backend';
 import os from 'node:os';
 import path from 'node:path';
-import type { ModelEngine } from './engine/model-engine';
 import type { ConsentMeta } from './protocol';
 import {
   DEFAULT_POLICY_MODE,
@@ -109,6 +110,15 @@ export interface DesktopHostOptions {
    * 并挂载 /agent-ws 通道；缺省则面板路由整体不可用（fail-closed）。
    */
   agentPage?: { htmlPath: string; jsPath: string; cssPath: string };
+  /**
+   * v0.25：SlotRuntime（人设工具白名单）。
+   * hub 收到页端 tool-call 时，先取发起 bot 的 per-persona executor 执行——
+   * 白名单拒绝走 tool-not-allowed-by-persona，命中后仍回到 invokeTool 走完整授权链。
+   * 缺省（或该 bot 未加载人设）→ 直接 invokeTool，与 v0.24 行为完全一致。
+   */
+  slotRuntime?: {
+    executorFor(botId: string | undefined): ((tool: string, params: unknown) => Promise<ToolExecutionResult>) | undefined;
+  };
 }
 
 export interface ToolExecutionResult {
@@ -145,9 +155,10 @@ export interface DesktopHost {
   /** 签发一张一次性 tool grant（常驻宿主侧调用）。 */
   issueGrant(input: IssueGrantInput): Promise<string>;
   /** 持 grant 执行能力：先 consume（失败即拒绝），再 start/stop。 */
-  executeTool(name: string, params: unknown, grantToken: string): Promise<ToolExecutionResult>;
-  /** 便捷入口：已鉴权的 agent 经此发起工具调用（内部签发+消费一次性 grant，再走同意闸门与页端路由）。 */
-  invokeTool(tool: string, params: unknown): Promise<ToolExecutionResult>;
+  executeTool(name: string, params: unknown, grantToken: string, botId?: string): Promise<ToolExecutionResult>;
+  /** 便捷入口：已鉴权的 agent 经此发起工具调用（内部签发+消费一次性 grant，再走同意闸门与页端路由）。
+   *  v0.24：botId 可选——多 bot 下路由到对应窗口的页与同意闸门；缺省='main'。 */
+  invokeTool(tool: string, params: unknown, botId?: string): Promise<ToolExecutionResult>;
   /** 工具执行审计环（HTTP 端点 /v1/tools/audit 的数据源）。 */
   readonly audit: AuditLog;
   /** 当前生效的执行侧Resolver（测试与外部观察者用）。 */
@@ -533,29 +544,14 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   // 审计环：全链路执行留痕（还清 v0.3 遗留 3.2.4）。
   const audit: AuditLog = createAuditLog(options.auditCapacity ?? DEFAULT_AUDIT_CAPACITY);
 
-  // —— M1 智能体：网页模型引擎 + AgentLoop ——
+  // —— M1 智能体：BotRegistry（v0.23 多 bot 化）——
+  // 原单 agent 装配（agentToolCounter/stopFlag/listeners/lastAutoReply/webEngine/agentLoop）
+  // 收敛进 BotRegistry：主 bot（botId='main'）作为第一个 BotInstance 启动时创建，
+  // 其独立 state 由下方 hub 回调（onToolCall/onAssistantReply）驱动——行为与改造前一致。
   // 工具执行不在 loop 内重复实现：引擎把消息灌进聊天页，页端拦截器解析工具标签
   // 反向投递到 invokeTool（完整授权链），结果由拦截器 pending 回填下一次请求。
-  // 这里只维护「每步工具调用计数」与「停止旗标」两个协调状态。
-  const agentToolCounter = { current: 0 };
-  const agentStopFlag = { stopped: false };
   const agentListeners = new Set<(event: AgentLoopEvent) => void>();
-  // v0.9：页端 auto-continue 推送的模型回复（不渲染到 DOM，通过 WebSocket 推送）
-  const lastAutoReply = { text: '', loop: 0, updatedAt: 0, fresh: false };
-  const webEngine: ModelEngine = createWebEngine({
-    dispatch: (tool, params) => invokeTool(tool, params),
-    toolCallCounter: agentToolCounter,
-    isStopped: () => agentStopFlag.stopped,
-    getAutoReply: () => lastAutoReply,
-    consumeAutoReply: () => {
-      const r = { ...lastAutoReply };
-      lastAutoReply.fresh = false;
-      return r;
-    },
-  });
-  const agentLoop: AgentLoop = createAgentLoop({
-    engine: webEngine,
-    stopFlag: agentStopFlag,
+  const botRegistry = createBotRegistry({
     onEvent: (event) => {
       for (const cb of agentListeners) {
         try {
@@ -565,29 +561,59 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         }
       }
     },
+    createEngine: ({ botId, state }) =>
+      createWebEngine({
+        // v0.24：每个 bot 的引擎 dispatch 带上自己的 botId，
+        // 使工具执行路由到该 bot 自己的窗口（多窗口寻址）。
+        dispatch: (tool, params) => invokeTool(tool, params, botId),
+        toolCallCounter: state.toolCallCounter,
+        isStopped: () => state.stopFlag.stopped,
+        getAutoReply: () => state.lastAutoReply,
+        consumeAutoReply: () => {
+          const r = { ...state.lastAutoReply };
+          state.lastAutoReply.fresh = false;
+          return r;
+        },
+      }),
   });
+  // 主 bot：v0.23 全网页路径下共用 main 窗口（v0.24 起 per-window）。
+  // create 是 async（引擎工厂），但 main bot 必须在 stop()/hub 装配前就绪——
+  // 启动时同步等待（createDesktopHost 本身不被 await，start() 才对外暴露）。
+  let mainBot: BotInstance | null = null;
+  const mainBotReady = botRegistry
+    .create({ botId: 'main', slotId: 'main' })
+    .then((b) => {
+      mainBot = b;
+    })
+    .catch((err) => {
+      console.error('[desktop-host] main bot 创建失败', err);
+      throw err;
+    });
+
   const agent: AgentFacade = {
     sendMessage: (text) => {
       // 面板用户发起智能体任务 = 用户已委托宿主驱动聊天页（网页引擎的运作机制）。
       // 否则每一步 chat-insert/send 都要在聊天页弹同意框，AgentLoop 根本跑不起来。
       // 仅限 chat 驱动两项；file/shell 的同意闸门不受影响。审计照常记录。
-      sessionAllowlist.add('chat-insert');
-      sessionAllowlist.add('chat-send');
-      return agentLoop.send(`${AGENT_SENTINEL}${text}`);
+      const state = botRegistry.getState('main');
+      state?.sessionAllowlist.add('chat-insert');
+      state?.sessionAllowlist.add('chat-send');
+      return mainBot?.loop.send(`${AGENT_SENTINEL}${text}`) ?? Promise.reject(new Error('main bot not ready'));
     },
-    stop: () => agentLoop.stop(),
+    stop: () => mainBot?.loop.stop(),
     get running() {
-      return agentLoop.running;
+      return mainBot?.loop.running ?? false;
     },
-    health: () => webEngine.health(),
+    health: () => (mainBot ? mainBot.engine.health() : Promise.resolve({ ok: false, reason: 'bot-not-ready' })),
     pickFolder: () => pickFolderViaDialog(),
   };
 
   // v0.9：外部 agent 控制链——发消息到页面并等待最终回答。
   // 收集 AgentLoop 的 assistant 事件作为最终回答返回。
   async function agentSender(text: string): Promise<string> {
-    sessionAllowlist.add('chat-insert');
-    sessionAllowlist.add('chat-send');
+    const state = botRegistry.getState('main');
+    state?.sessionAllowlist.add('chat-insert');
+    state?.sessionAllowlist.add('chat-send');
     let finalAnswer = '';
     const listener = (event: AgentLoopEvent) => {
       if (event.type === 'assistant' && event.text) {
@@ -596,7 +622,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     };
     agentListeners.add(listener);
     try {
-      await agentLoop.send(`${AGENT_SENTINEL}${text}`);
+      if (!mainBot) await mainBotReady;
+      if (!mainBot) throw new Error('main bot not ready');
+      await mainBot.loop.send(`${AGENT_SENTINEL}${text}`);
       return finalAnswer;
     } finally {
       agentListeners.delete(listener);
@@ -709,7 +737,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     return crypto.randomUUID();
   }
 
-  async function executeTool(name: string, params: unknown, grantToken: string): Promise<ToolExecutionResult> {
+  async function executeTool(name: string, params: unknown, grantToken: string, botId?: string): Promise<ToolExecutionResult> {
     const startedAt = Date.now();
     // 审计上下文随链路推进逐步补全（grantId/origin/risk/side）。
     // 所有拒绝分支一律经由 finish() 出口，确保「没有一条调用走出未被留痕的路径」——
@@ -792,14 +820,14 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     //    `risk === 'insert' || risk === 'send'`：那种写法在新增更高等级时
     //    TS 不报错、测试全绿，却会静默绕过同意闸门。
     if (requiresHumanConsent) {
-      const decision = await ensureConsent(name, params, randomCallId(), consentMeta);
+      const decision = await ensureConsent(name, params, randomCallId(), consentMeta, botId);
       if (decision === 'consent-unavailable') return finish('consent-unavailable', 'consent-unavailable');
       if (decision === 'consent-denied') return finish('consent-denied', 'consent-denied');
       // 用户明确同意了这次越界请求 → 授予能力层越界授权
       if (consentMeta?.outside) outsideApproved = true;
     }
     // 5) 路由：宿主侧能力在宿主进程内执行；页端能力走页 DOM；无页则回退 Node 能力。
-    const result = await routeExecution(def, name, params, outsideApproved);
+    const result = await routeExecution(def, name, params, outsideApproved, botId);
     audit.record({
       ...ctx,
       outcome: result.ok ? 'executed' : 'execution-failed',
@@ -812,14 +840,28 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   /** 同意判定结果：区分「需要却无法征求同意」与「用户明确拒绝」，两者都 fail-closed，但成因不同。 */
   type ConsentGate = 'approved' | 'session-approved' | 'consent-unavailable' | 'consent-denied';
 
-  async function ensureConsent(tool: string, params: unknown, callId: string, meta?: ConsentMeta): Promise<ConsentGate> {
-    if (sessionAllowlist.has(tool)) return 'session-approved';
+  /** v0.24：取指定 bot 的会话级同意放行表（每 bot 独立，互不串）。
+   *  无 botId / bot 未登记 → 回退桌面单例（保持 v0.23 及更早行为，向后兼容）。 */
+  function allowlistFor(botId?: string): Set<string> {
+    return (botId && botRegistry.getState(botId)?.sessionAllowlist) || sessionAllowlist;
+  }
+
+  async function ensureConsent(tool: string, params: unknown, callId: string, meta?: ConsentMeta, botId?: string): Promise<ConsentGate> {
+    const allowlist = allowlistFor(botId);
+    if (allowlist.has(tool)) return 'session-approved';
     if (!hub) return 'consent-unavailable'; // 宿主尚未就绪，无法征求用户同意 → fail-closed
     // 「没有人类在场」与「人类点了拒绝」成因不同，审计必须能区分：
     // 前者是环境问题（窗口关了），后者是用户决策。两者都 fail-closed 拒绝。
-    if (hub.connectedPages.length === 0) return 'consent-unavailable';
-    const decision = await hub.requestConsent(callId, tool, params, meta);
-    if (decision === 'allow-session') sessionAllowlist.add(tool);
+    if (botId) {
+      // v0.24：只认发起 bot 自己的窗口在场；无对应页 = 无人类在场 → fail-closed。
+      if (!hub.connectedPages.some((p) => p.untrusted === false && (p.botId ?? 'main') === (botId ?? 'main'))) {
+        return 'consent-unavailable';
+      }
+    } else if (hub.connectedPages.length === 0) {
+      return 'consent-unavailable';
+    }
+    const decision = await hub.requestConsent(callId, tool, params, meta, botId);
+    if (decision === 'allow-session') allowlist.add(tool);
     return decision !== 'deny' ? 'approved' : 'consent-denied';
   }
 
@@ -828,6 +870,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     name: string,
     params: unknown,
     outsideApproved = false,
+    botId?: string,
   ): Promise<ToolExecutionResult> {
     // 【v0.5 关键】宿主侧能力优先判定：必须放在「有页连接就派发到页面」之前。
     // 若顺序颠倒，shell/file 会被误派发到页端 host-client，页侧未登记该工具 → unknown-tool；
@@ -848,18 +891,25 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       };
     }
     // 派发只看可信页：被自检判定为篡改的页面不得再收到工具调用
-    if (hub && hub.trustedPages.length > 0) {
-      const r = await hub.dispatch(name, params, randomCallId());
-      return {
-        ok: r.ok,
-        reason: r.error,
-        data: r.data,
-        // v1.2：透传新格式字段
-        ...(r.content !== undefined ? { content: r.content } : {}),
-        ...(r.details !== undefined ? { details: r.details } : {}),
-        ...(r.isError !== undefined ? { isError: r.isError } : {}),
-        ...(r.terminate !== undefined ? { terminate: r.terminate } : {}),
-      };
+    // v0.24：无 botId → 沿用「任一可信页在场」；有 botId → 该 bot 自己的可信页在场。
+    //        不满足则走下方 Node 回退（与原语义一致），而不是拿错窗口的回复。
+    if (hub) {
+      const targetPages = botId
+        ? hub.trustedPages.filter((p) => (p.botId ?? 'main') === botId)
+        : hub.trustedPages;
+      if (targetPages.length > 0) {
+        const r = await hub.dispatch(name, params, randomCallId(), botId);
+        return {
+          ok: r.ok,
+          reason: r.error,
+          data: r.data,
+          // v1.2：透传新格式字段
+          ...(r.content !== undefined ? { content: r.content } : {}),
+          ...(r.details !== undefined ? { details: r.details } : {}),
+          ...(r.isError !== undefined ? { isError: r.isError } : {}),
+          ...(r.terminate !== undefined ? { terminate: r.terminate } : {}),
+        };
+      }
     }
     // 回退：Node 宿主内 rehydrate（仅 echo 等无 DOM 依赖能力）。
     const cap = capabilities.get(name);
@@ -874,7 +924,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     return { ok: false, reason: 'no-capability' };
   }
 
-  async function invokeTool(tool: string, params: unknown): Promise<ToolExecutionResult> {
+  async function invokeTool(tool: string, params: unknown, botId?: string): Promise<ToolExecutionResult> {
     const grant = await authority.requestToolExecution({
       documentId: 'host-agent',
       sessionId: 'host-agent',
@@ -882,7 +932,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       scope: tool,
       origin: DEEPSEEK_ORIGIN,
     });
-    return executeTool(tool, params, grant);
+    return executeTool(tool, params, grant, botId);
   }
 
   return {
@@ -894,7 +944,35 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           server: server.rawServer,
           token: options.config.token,
           host: {
-            agent,
+            bots: {
+              get(botId = 'main') {
+                const bot = botRegistry.get(botId);
+                if (!bot) {
+                  // bot 尚未创建 → 返回一个 always-not-running 的占位，
+                  // 调用方 sendMessage 会 reject（agent.send 逻辑已处理）。
+                  return {
+                    sendMessage: () => Promise.reject(new Error(`bot not found: ${botId}`)),
+                    stop: () => {},
+                    get running() { return false; },
+                    health: () => Promise.resolve({ ok: false, reason: `bot not found: ${botId}` }),
+                  };
+                }
+                return {
+                  sendMessage: (text) => {
+                    const state = botRegistry.getState(botId);
+                    state?.sessionAllowlist.add('chat-insert');
+                    state?.sessionAllowlist.add('chat-send');
+                    return bot.loop.send(`${AGENT_SENTINEL}${text}`);
+                  },
+                  stop: () => bot.loop.stop(),
+                  get running() { return bot.loop.running; },
+                  health: () => bot.engine.health(),
+                };
+              },
+              list() {
+                return botRegistry.list().map((b) => ({ botId: b.id, running: b.loop.running }));
+              },
+            },
             onAgentEvent: (cb) => {
               agentListeners.add(cb);
               return () => agentListeners.delete(cb);
@@ -915,18 +993,30 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         server: server.rawServer,
         onError: (m, e) => console.warn(`[page-runtime] ${m}`, e),
         // v0.6：页端 tool-call 的真实执行入口（走完整授权链 + 同意闸门 + 宿主侧能力）。
-        executor: (tool, params) => invokeTool(tool, params),
+        // v0.24：botId 透传，工具按发起 bot 的窗口路由 + 其授权/白名单执行。
+        // v0.25：该 bot 已加载人设时先经其白名单过滤器（SlotRuntime.executorFor）；
+        //        未加载人设 / 未注入 SlotRuntime → 直调 invokeTool（v0.24 行为不变）。
+        // 注意：白名单只是「拒绝」的一层，命中后仍回到 invokeTool——不绕过同意闸门。
+        executor: (tool, params, botId) => {
+          const exec = options.slotRuntime?.executorFor(botId);
+          return exec ? exec(tool, params) : invokeTool(tool, params, botId);
+        },
         // M1：AgentLoop 依据该计数决定「工具执行完毕 → 请求模型续跑」。
-        onToolCall: () => {
-          agentToolCounter.current += 1;
+        // v0.24：按发起 botId 累加对应 bot 的独立 counter（main 缺省保持 v0.23 行为）。
+        onToolCall: ({ botId }) => {
+          const state = botRegistry.getState(botId ?? 'main');
+          if (state) state.toolCallCounter.current += 1;
         },
         // v0.9：页端 auto-continue 推送的模型回复（不渲染到 DOM）。
-        onAssistantReply: (text, loop) => {
-          console.log(`[desktop-host] onAssistantReply loop=${loop} len=${text.length} fresh=true`);
-          lastAutoReply.text = text;
-          lastAutoReply.loop = loop;
-          lastAutoReply.updatedAt = Date.now();
-          lastAutoReply.fresh = true;
+        // v0.24：写入发起 bot 的 lastAutoReply 缓冲。
+        onAssistantReply: (text, loop, botId) => {
+          console.log(`[desktop-host] onAssistantReply loop=${loop} len=${text.length} botId=${botId ?? 'main'}`);
+          const state = botRegistry.getState(botId ?? 'main');
+          if (!state) return;
+          state.lastAutoReply.text = text;
+          state.lastAutoReply.loop = loop;
+          state.lastAutoReply.updatedAt = Date.now();
+          state.lastAutoReply.fresh = true;
         },
         // v0.7：页端 storage shim 的 KV 落盘 backend。
         kvStore: { get: kvGet, set: kvSet, remove: kvRemove },
