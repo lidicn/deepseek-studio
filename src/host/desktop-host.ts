@@ -615,6 +615,10 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       throw err;
     });
 
+  // v0.27：聊天室成员 bot 预创建 promise（有 chatRooms 时才非 null）。
+  // start() 里 await 它，确保 handleUserMessage 被调前成员 bot 就绪。
+  let roomBotsReady: Promise<void> | null = null;
+
   const agent: AgentFacade = {
     sendMessage: (text) => {
       // 面板用户发起智能体任务 = 用户已委托宿主驱动聊天页（网页引擎的运作机制）。
@@ -708,6 +712,31 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         // 后续可在此经 hub/channel 推实时事件到面板（v0.29 长任务状态回报接线时补）。
       },
     });
+
+    // 预创建聊天室成员 bot + 加载人设。
+    // buildParticipants 遍历 room.memberPersonas 查 registry.get(name)——未创建的 bot 不进 participants。
+    // 这里把配置里声明的成员全部预创建，并加载对应 persona（SlotRuntime.loadPersona 幂等）。
+    // 不 await（与 mainBotReady 同模式：start() 里 await）。
+    const memberPersonas = new Set<string>();
+    for (const room of options.chatRooms) {
+      for (const name of room.memberPersonas) {
+        if (name === 'main') continue; // main 已单独创建
+        memberPersonas.add(name);
+      }
+      if (room.hostPersona && room.hostPersona !== 'main') memberPersonas.add(room.hostPersona);
+    }
+    roomBotsReady = Promise.all(
+      [...memberPersonas].map(async (name) => {
+        // 已创建则跳过（避免 main 重入或重复配置）
+        if (botRegistry.get(name)) return;
+        try {
+          await botRegistry.create({ botId: name, slotId: name });
+          await fullSlotRuntime.loadPersona(name, name);
+        } catch (err) {
+          console.warn(`[desktop-host] 聊天室成员 bot ${name} 创建/加载人设失败:`, err);
+        }
+      }),
+    ).then(() => undefined);
   }
 
   /** 切换审批档位并持久化（channel 与 DesktopHost 返回对象共用）。 */
@@ -1018,6 +1047,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     authority,
     async start() {
       await server.start();
+      // v0.27：确保聊天室成员 bot 预创建完成（main bot 由 mainBotReady 保证）。
+      // roomBotsReady 为 null（无 chatRooms）时静默跳过。
+      await Promise.allSettled([mainBotReady, roomBotsReady ?? Promise.resolve()]);
       if (options.agentPage) {
         agentChannel = createAgentChannel({
           server: server.rawServer,

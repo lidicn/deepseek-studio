@@ -15,6 +15,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ApiConfig } from './types';
+import type { RoomConfig } from '../host/bot/types';
+import { FilePersonaRegistry } from '../host/bot/persona-registry';
 
 // ── v0.12 Phase 1：孤儿防护（DCD 修正条件 3）──────────────────────────────
 // 父进程（Tauri 主进程）消失 → self-exit，不留孤儿 Node。
@@ -65,12 +67,18 @@ interface StoredConfig extends Partial<ApiConfig> {
   workspaceRoot?: string;
   /** v0.5：命令审批档位 ask / auto / full（默认 ask）。 */
   policyMode?: string;
+  /** v0.27：聊天室配置。提供后启用聊天室模式（@路由 + 多 bot 编排）。 */
+  chatRooms?: Array<{ roomId: string; roomName: string; hostPersona?: string; memberPersonas: string[] }>;
+  /** v0.27：聊天室编排波数（默认 1）。 */
+  chatRoomMaxDepth?: number;
 }
 interface ResolvedConfig {
   config: ApiConfig;
   secret: string;
   workspaceRoot: string;
   policyMode: PolicyMode;
+  chatRooms: ReadonlyArray<RoomConfig>;
+  chatRoomMaxDepth?: number;
 }
 
 function randomToken(): string {
@@ -106,6 +114,27 @@ function loadConfig(): ResolvedConfig {
   const rawMode = process.env.STUDIO_POLICY_MODE ?? stored.policyMode ?? '';
   const policyMode: PolicyMode = isPolicyMode(rawMode) ? rawMode : DEFAULT_POLICY_MODE;
 
+  // v0.27：聊天室配置。从 config.json 读 chatRooms，校验每条必须有 roomId/roomName/memberPersonas。
+  // 环境变量 STUDIO_CHAT_ROOMS_JSON 可覆盖（dry run / 测试用）。
+  const chatRoomsJson = process.env.STUDIO_CHAT_ROOMS_JSON ?? JSON.stringify(stored.chatRooms ?? []);
+  let chatRooms: RoomConfig[] = [];
+  try {
+    const parsed = JSON.parse(chatRoomsJson) as unknown;
+    if (Array.isArray(parsed)) {
+      chatRooms = parsed.filter(
+        (r): r is RoomConfig =>
+          r != null && typeof r === 'object'
+          && typeof (r as { roomId?: unknown }).roomId === 'string'
+          && typeof (r as { roomName?: unknown }).roomName === 'string'
+          && Array.isArray((r as { memberPersonas?: unknown }).memberPersonas)
+          && (r as { memberPersonas: unknown[] }).memberPersonas.every((p) => typeof p === 'string'),
+      );
+    }
+  } catch (err) {
+    console.warn(`[deepseek-studio] chatRooms 配置解析失败，聊天室模式不启用: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const chatRoomMaxDepth = typeof stored.chatRoomMaxDepth === 'number' ? stored.chatRoomMaxDepth : undefined;
+
   // 缺失则生成并落盘（仅本地文件，0600；不回显 secret）。
   // v0.13 修复：写入时保留 workspaceRoot/policyMode，避免覆盖用户配置。
   if (!stored.token || !stored.secret) {
@@ -123,11 +152,11 @@ function loadConfig(): ResolvedConfig {
     }
   }
 
-  return { config: { host, port, token }, secret, workspaceRoot, policyMode };
+  return { config: { host, port, token }, secret, workspaceRoot, policyMode, chatRooms, chatRoomMaxDepth };
 }
 
 export async function main(): Promise<void> {
-  const { config, secret, workspaceRoot, policyMode } = loadConfig();
+  const { config, secret, workspaceRoot, policyMode, chatRooms, chatRoomMaxDepth } = loadConfig();
   const workspace = workspaceRoot ? createWorkspace(workspaceRoot) : null;
   // M1 智能体面板静态资源（esbuild 产物：src/ui/agent.html + dist/agent-panel.js）
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -136,7 +165,16 @@ export async function main(): Promise<void> {
     jsPath: path.join(repoRoot, 'dist', 'agent-panel.js'),
     cssPath: path.join(repoRoot, 'src', 'ui', 'agent.css'),
   };
-  const host = createDesktopHost({ config, secret, workspace, policyMode, agentPage });
+  const personas = new FilePersonaRegistry();
+  const host = createDesktopHost({
+    config, secret, workspace, policyMode, agentPage,
+    chatRooms: chatRooms.length > 0 ? chatRooms : undefined,
+    chatRoomMaxDepth,
+    personas,
+  });
+  if (chatRooms.length > 0) {
+    console.log(`[deepseek-studio] 聊天室模式启用：${chatRooms.map((r) => r.roomName).join(', ')}`);
+  }
   await host.start();
   console.log(`[deepseek-studio] 本地 HTTP API on ${host.url}`);
   console.log('[deepseek-studio] token 取自 DEEPSEEK_STUDIO_TOKEN 或 ~/.config/deepseek-studio/config.json');
