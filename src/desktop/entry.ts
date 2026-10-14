@@ -80,6 +80,9 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
     (globalThis as { location?: { origin?: string } }).location?.origin ?? 'https://chat.deepseek.com';
   const sessionId = options.sessionId ?? crypto.randomUUID();
 
+  // v0.24：读 Tauri 注入的 __studioBotId（隐藏窗口各自不同）；缺省 undefined → main。
+  const botId = options.botId ?? (globalThis as { __studioBotId?: string }).__studioBotId ?? 'main';
+
   // v0.7：先建 host client（不 connect），用它建 remote KV backend，再装 chrome shim。
   // 顺序不能反：installChromeShims 会把 window.chrome.storage 指向这个 backend。
   const capabilities = dedupeById([...defaultCapabilities(), ...(options.capabilities ?? [])]);
@@ -88,8 +91,7 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
     url: options.hostUrl ?? DEFAULT_HOST_URL,
     capabilities: executable,
     reportError: options.reportError,
-    // v0.24：读 Tauri 注入的 __studioBotId（隐藏窗口各自不同）；缺省 undefined → main。
-    botId: options.botId ?? (globalThis as { __studioBotId?: string }).__studioBotId,
+    botId,
   });
 
   const remoteKv: StorageKvBackend = {
@@ -122,24 +124,30 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
   // v0.6：挂载薄 MAIN-world 拦截器（解析模型工具调用 → 经宿主真实执行 → 结果回注）。
   // 即便宿主未连接，拦截器也照常安装（tool-call 会在无连接时由 host-client fail-closed 处理），
   // 避免「没连上宿主就不拦截」导致页面直接把原始 XML 工具标签暴露给用户。
+  //
+  // v0.27：bot 窗口（botId !== 'main'）是纯 DeepSeek 操作窗口——只保留桥接+拦截器，
+  // 跳过 chat overlay 与 sidebar UI，避免遮挡 DeepSeek 登录框/输入框。
+  const isBotWindow = botId !== 'main';
   if (typeof globalThis.document !== 'undefined') {
     // v0.19：创建自建聊天 UI overlay，在拦截器之前挂载到 DOM。
     // SSE 文本由拦截器推送到此 UI，不再写入 DeepSeek DOM。
     // initialization_script 在 document_start 执行，document.body 可能尚不存在，
     // 延迟到 DOMContentLoaded 再 append。
     let chatUI;
-    try {
-      chatUI = createStudioChatUI();
-      const mount = () => {
-        try { document.body.appendChild(chatUI!.container); } catch { /* body 不可用，忽略 */ }
-      };
-      if (document.body) {
-        mount();
-      } else {
-        document.addEventListener('DOMContentLoaded', mount, { once: true });
+    if (!isBotWindow) {
+      try {
+        chatUI = createStudioChatUI();
+        const mount = () => {
+          try { document.body.appendChild(chatUI!.container); } catch { /* body 不可用，忽略 */ }
+        };
+        if (document.body) {
+          mount();
+        } else {
+          document.addEventListener('DOMContentLoaded', mount, { once: true });
+        }
+      } catch (err) {
+        options.reportError?.('failed to create studio chat UI', err);
       }
-    } catch (err) {
-      options.reportError?.('failed to create studio chat UI', err);
     }
     try {
       installMainWorldInterceptor({
@@ -179,8 +187,8 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
     });
   }
 
-  // v0.20 wire StudioUI
-  if (typeof globalThis.document !== 'undefined') {
+  // v0.20 wire StudioUI（仅主窗口；bot 窗口不需要 sidebar）
+  if (!isBotWindow && typeof globalThis.document !== 'undefined') {
     const mountStudioUI = () => {
       try {
         installStudioUI({

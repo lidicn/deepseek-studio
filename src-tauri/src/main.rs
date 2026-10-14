@@ -90,6 +90,7 @@ fn save_window_state(state: &WindowState) {
 // 缺文件 / 缺字段 / 解析失败一律跳过该条目，绝不阻塞主窗口启动。
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct BotWindowConfig {
     #[serde(default = "default_bot_id")]
     bot_id: String,

@@ -5,7 +5,7 @@
   "identifier": "com.deepseek.studio",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:8756",
+    "devUrl": "https://chat.deepseek.com",
     "beforeDevCommand": "npm run build:inject && npm run start",
     "beforeBuildCommand": "npm run build:inject"
   },
