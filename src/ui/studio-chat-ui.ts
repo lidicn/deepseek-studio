@@ -17,11 +17,16 @@ export interface StudioChatUIHandle {
   container: HTMLElement;
   /** 添加一条用户消息气泡 */
   addUserMessage(text: string): void;
-  /** 创建新的助手回复元素（流式容器），后续 appendToAssistantMessage 往里追加 */
-  startAssistantMessage(): void;
-  /** 流式追加可见文本（终端式 textContent 拼接，高性能无闪烁） */
+  /**
+   * 创建新的助手回复元素（流式容器），后续 appendToAssistantMessage 往里追加。
+   * v0.27：可选 sender 参数标识多参与者（主 bot / 子 bot），渲染头像+名称标签。
+   */
+  startAssistantMessage(sender?: { name?: string; type?: 'user' | 'main-bot' | 'sub-bot' }): void;
+  /** 流式追加可见正文（80ms 节流 + markdown 实时渲染 + 光标） */
   appendToAssistantMessage(text: string): void;
-  /** 流结束：把累积的流式文本用 renderMarkdown 格式化替换 */
+  /** 流式追加思考段（reasoning），渲染到可折叠 think 块 */
+  appendReasoning(text: string): void;
+  /** 流结束：移除光标，最终 renderMarkdown 格式化替换 */
   finishAssistantMessage(): void;
   /** 设置状态栏忙碌/完成状态 */
   setBusy(busy: boolean): void;
@@ -233,10 +238,50 @@ export function createStudioChatUI(): StudioChatUIHandle {
   statusBar.appendChild(statusText);
   container.appendChild(statusBar);
 
+  // 回到底部按钮（用户滚走后显示）
+  const scrollBtn = document.createElement('div');
+  scrollBtn.className = 'ds-sc-scroll-btn';
+  scrollBtn.textContent = '↓';
+  scrollBtn.title = '回到底部';
+  container.appendChild(scrollBtn);
+
+  // 滚动跟随状态（参考 cuckoo pinBottom + suppressPin）
+  let pinBottom = true;
+  let suppressPin = false;
+  function isNearBottom(): boolean {
+    return messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 90;
+  }
+  function updateScrollBtn(): void {
+    if (!pinBottom && !isNearBottom()) scrollBtn.classList.add('show');
+    else scrollBtn.classList.remove('show');
+  }
+  function scrollToBottom(force = false): void {
+    if (force || pinBottom) {
+      suppressPin = true;
+      messageList.scrollTop = messageList.scrollHeight;
+      pinBottom = true;
+      requestAnimationFrame(() => { suppressPin = false; });
+    }
+    updateScrollBtn();
+  }
+  // 用户滚动：改 pinBottom 状态；程序化滚动（suppressPin）不改
+  messageList.addEventListener('scroll', () => {
+    if (!suppressPin) pinBottom = isNearBottom();
+    updateScrollBtn();
+  });
+  scrollBtn.addEventListener('click', () => {
+    pinBottom = true;
+    scrollToBottom(true);
+  });
+
   // 当前流式助手消息的引用
   let currentAssistant: HTMLElement | null = null;
   // 当前流式文本的累积（用于 finishAssistantMessage 时 renderMarkdown）
   let currentRawText = '';
+  // 当前思考段文本累积
+  let currentReasoning = '';
+  // 用户是否手动操作过 think 块（true 后不再自动折叠/展开）
+  let thinkUserToggled = false;
 
   // 欢迎消息
   const welcome = document.createElement('div');
@@ -246,8 +291,51 @@ export function createStudioChatUI(): StudioChatUIHandle {
     + '<div style="font-size:12px;line-height:1.8;margin-top:12px;color:#aaa;">Ctrl+Shift+H 切换显示/隐藏</div>';
   messageList.appendChild(welcome);
 
-  function scrollToBottom(): void {
-    messageList.scrollTop = messageList.scrollHeight;
+  /** 给消息元素挂复制按钮（hover 显示，点击复制 innerText） */
+  function attachCopy(msg: HTMLElement): void {
+    const btn = document.createElement('span');
+    btn.className = 'ds-sc-copy-btn';
+    btn.textContent = '复制';
+    btn.addEventListener('click', () => {
+      const text = msg.innerText.replace(/​/g, '');
+      try {
+        navigator.clipboard?.writeText(text);
+      } catch { /* 剪贴板不可用，忽略 */ }
+      btn.textContent = '已复制';
+      setTimeout(() => { btn.textContent = '复制'; }, 1500);
+    });
+    msg.appendChild(btn);
+  }
+
+  /** 给代码块挂语言标签 + 复制按钮（渲染后调用） */
+  function enhanceCodeBlocks(scope: HTMLElement): void {
+    const pres = scope.querySelectorAll('pre');
+    for (const pre of pres) {
+      if (pre.querySelector('.ds-sc-code-lang') || pre.querySelector('.ds-sc-code-copy')) continue;
+      const code = pre.querySelector('code');
+      if (!code) continue;
+      const cls = code.className || '';
+      const langMatch = cls.match(/language-(\w+)/);
+      const lang = langMatch ? langMatch[1] : '';
+      if (lang) {
+        const tag = document.createElement('span');
+        tag.className = 'ds-sc-code-lang';
+        tag.textContent = lang;
+        pre.appendChild(tag);
+      }
+      const copyBtn = document.createElement('span');
+      copyBtn.className = 'ds-sc-code-copy';
+      copyBtn.textContent = '复制';
+      copyBtn.addEventListener('click', () => {
+        const text = code.textContent || '';
+        try {
+          navigator.clipboard?.writeText(text);
+        } catch { /* ignore */ }
+        copyBtn.textContent = '已复制';
+        setTimeout(() => { copyBtn.textContent = '复制'; }, 1500);
+      });
+      pre.appendChild(copyBtn);
+    }
   }
 
   function addUserMessage(text: string): void {
@@ -258,52 +346,140 @@ export function createStudioChatUI(): StudioChatUIHandle {
     const msg = document.createElement('div');
     msg.className = 'ds-sc-msg-user';
     msg.textContent = text;
+    attachCopy(msg);
     messageList.appendChild(msg);
-    scrollToBottom();
+    scrollToBottom(true);
   }
 
-  function startAssistantMessage(): void {
+  function startAssistantMessage(sender?: { name?: string; type?: 'user' | 'main-bot' | 'sub-bot' }): void {
     // 移除欢迎消息
     const w = messageList.querySelector(':scope > [style*="margin:auto"]');
     if (w) w.remove();
 
     const msg = document.createElement('div');
-    msg.className = 'ds-sc-msg-assistant';
+    // v0.27：按 sender.type 加多参与者样式类（sub-bot 紫色调区分 main-bot 蓝色调）
+    const senderType = sender?.type ?? 'main-bot';
+    msg.className = `ds-sc-msg-assistant ds-sc-msg-${senderType}`;
 
-    // 流式文本容器（工具容器由 tool-card-ui 的 getOrCreateToolsContainer 按需创建，
+    // v0.27：头像 + 名称标签（多参与者区分谁说的）
+    const meta = document.createElement('div');
+    meta.className = 'ds-sc-sender-row';
+    const avatar = document.createElement('span');
+    avatar.className = 'ds-sc-avatar';
+    const senderName = sender?.name ?? '助手';
+    avatar.textContent = senderName.slice(0, 2);
+    const label = document.createElement('span');
+    label.className = 'ds-sc-sender';
+    label.textContent = senderName;
+    meta.appendChild(avatar);
+    meta.appendChild(label);
+    msg.appendChild(meta);
+
+    // 思考块（可折叠，默认不显示——无 reasoning 时不显示）
+    const think = document.createElement('div');
+    think.className = 'ds-sc-think';
+    think.style.display = 'none';
+    const thinkHead = document.createElement('div');
+    thinkHead.className = 'ds-sc-think-head';
+    const thinkCaret = document.createElement('span');
+    thinkCaret.className = 'ds-sc-think-caret';
+    thinkCaret.textContent = '▶';
+    const thinkLabel = document.createElement('span');
+    thinkLabel.textContent = '思考中…';
+    thinkHead.appendChild(thinkCaret);
+    thinkHead.appendChild(thinkLabel);
+    const thinkBody = document.createElement('div');
+    thinkBody.className = 'ds-sc-think-body';
+    think.appendChild(thinkHead);
+    think.appendChild(thinkBody);
+    thinkHead.addEventListener('click', () => {
+      think.classList.toggle('open');
+      thinkUserToggled = true;
+    });
+    msg.appendChild(think);
+
+    // 流式正文容器（工具容器由 tool-card-ui 的 getOrCreateToolsContainer 按需创建，
     // 插入到此元素前面，保持「工具在上、结论在下」的顺序）
     const streaming = document.createElement('div');
     streaming.className = 'ds-sc-streaming';
     msg.appendChild(streaming);
 
+    attachCopy(msg);
+
     messageList.appendChild(msg);
     currentAssistant = msg;
     currentRawText = '';
+    currentReasoning = '';
+    thinkUserToggled = false;
+    streamRenderTimer = null;
+    scrollToBottom(true);
+  }
+
+  // 流式渲染节流（参考 cuckoo 80ms 节流 + 全量 re-parse markdown）
+  let streamRenderTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleStreamRender(): void {
+    if (streamRenderTimer) return;
+    streamRenderTimer = setTimeout(() => {
+      streamRenderTimer = null;
+      renderStreaming();
+    }, 80);
+  }
+  function renderStreaming(): void {
+    if (!currentAssistant) return;
+    const streaming = currentAssistant.querySelector('.ds-sc-streaming') as HTMLElement | null;
+    if (!streaming) return;
+    if (currentRawText) {
+      streaming.innerHTML = renderMarkdown(currentRawText) + '<span class="ds-sc-cursor"></span>';
+      enhanceCodeBlocks(streaming);
+    }
     scrollToBottom();
   }
 
   function appendToAssistantMessage(text: string): void {
     if (!currentAssistant) startAssistantMessage();
-    const streaming = currentAssistant!.querySelector('.ds-sc-streaming') as HTMLElement | null;
-    if (!streaming) return;
     currentRawText += text;
-    streaming.textContent = currentRawText;
+    // 正文出现：自动折叠 think 块（除非用户手动操作过）
+    if (!thinkUserToggled && currentReasoning) {
+      const think = currentAssistant!.querySelector('.ds-sc-think');
+      if (think) think.classList.remove('open');
+    }
+    scheduleStreamRender();
+  }
+
+  function appendReasoning(text: string): void {
+    if (!currentAssistant) startAssistantMessage();
+    currentReasoning = text; // 全量快照（interceptor 传累积值）
+    const think = currentAssistant!.querySelector('.ds-sc-think') as HTMLElement | null;
+    if (!think) return;
+    think.style.display = '';
+    const body = think.querySelector('.ds-sc-think-body') as HTMLElement | null;
+    const label = think.querySelector('.ds-sc-think-head > span:last-child') as HTMLElement | null;
+    if (body) body.textContent = text;
+    // 正文未出现时保持展开；正文出现后折叠（由 appendToAssistantMessage 处理）
+    if (!currentRawText && !thinkUserToggled) {
+      think.classList.add('open');
+    }
+    if (label) label.textContent = '已思考（' + text.length + ' 字）';
     scrollToBottom();
   }
 
   function finishAssistantMessage(): void {
     if (!currentAssistant) return;
+    // 刷出节流里未渲染的尾部
+    if (streamRenderTimer) { clearTimeout(streamRenderTimer); streamRenderTimer = null; }
     const streaming = currentAssistant.querySelector('.ds-sc-streaming') as HTMLElement | null;
     if (streaming && currentRawText) {
-      // renderMarkdown 格式化，替换流式纯文本
       const html = renderMarkdown(currentRawText);
       const markdownDiv = document.createElement('div');
       markdownDiv.className = 'ds-sc-markdown';
       markdownDiv.innerHTML = html;
+      enhanceCodeBlocks(markdownDiv);
       streaming.replaceWith(markdownDiv);
     }
     currentAssistant = null;
     currentRawText = '';
+    currentReasoning = '';
+    thinkUserToggled = false;
     scrollToBottom();
   }
 
@@ -314,12 +490,15 @@ export function createStudioChatUI(): StudioChatUIHandle {
 
   function destroy(): void {
     bottomObserver.disconnect();
+    if (streamRenderTimer) { clearTimeout(streamRenderTimer); streamRenderTimer = null; }
     window.removeEventListener('resize', tryAdjust);
     window.removeEventListener('scroll', tryAdjust, { capture: true } as EventListenerOptions);
     window.removeEventListener('keydown', onToggleKey);
     container.remove();
     currentAssistant = null;
     currentRawText = '';
+    currentReasoning = '';
+    thinkUserToggled = false;
   }
 
   // ctrl+shift+h 在原网页和 Studio chat UI 间切换（参考 cuckoo-code 切换式叠加布局）。
@@ -388,6 +567,7 @@ export function createStudioChatUI(): StudioChatUIHandle {
     addUserMessage,
     startAssistantMessage,
     appendToAssistantMessage,
+    appendReasoning,
     finishAssistantMessage,
     setBusy,
     toggle,

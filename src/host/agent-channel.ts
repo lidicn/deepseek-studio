@@ -39,6 +39,15 @@ export interface AgentChannelHost {
   readonly workspaceRoot: string | null;
   setWorkspaceRoot(path: string | null): { ok: boolean; error?: string };
   pickFolder(): Promise<string | null>;
+  /**
+   * v0.27：聊天室运行时。有此字段时，带 roomId 的 send 走聊天室模式
+   *（@路由 + 多 bot 编排）；无此字段或消息不带 roomId 时走原直发路径（向后兼容）。
+   */
+  readonly chatRoomRuntime?: {
+    handleUserMessage(roomId: string, text: string, userId?: string): Promise<unknown>;
+    getRoomParticipants(roomId: string): unknown[];
+    getMessages(roomId: string): unknown[];
+  };
 }
 
 export interface AgentChannelOptions {
@@ -54,7 +63,7 @@ export interface AgentChannelOptions {
 const MAIN_BOT_ID = 'main';
 
 type ClientMessage =
-  | { type: 'send'; text?: unknown; botId?: string; reqId?: string }
+  | { type: 'send'; text?: unknown; botId?: string; roomId?: string; reqId?: string }
   | { type: 'stop'; botId?: string; reqId?: string }
   | { type: 'get-state'; reqId?: string }
   | { type: 'set-policy'; mode?: unknown; reqId?: string }
@@ -158,6 +167,14 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
             ack(false, undefined, 'missing-text');
             return;
           }
+          const text = msg.text.trim();
+          // v0.27：聊天室模式分流。带 roomId 且 host 有 chatRoomRuntime → @路由 + 多 bot 编排；
+          // 否则走原直发路径（向后兼容：现有面板单 bot 发消息行为不变）。
+          if (msg.roomId && options.host.chatRoomRuntime) {
+            ack(true, { roomId: msg.roomId });
+            await options.host.chatRoomRuntime.handleUserMessage(msg.roomId, text);
+            return;
+          }
           const botId = msg.botId ?? MAIN_BOT_ID;
           const bot = options.host.bots.get(botId);
           if (bot.running) {
@@ -165,7 +182,7 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
             return;
           }
           ack(true, { botId });
-          await bot.sendMessage(msg.text.trim());
+          await bot.sendMessage(text);
           return;
         }
         case 'stop': {

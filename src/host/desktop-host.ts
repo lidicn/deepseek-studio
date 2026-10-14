@@ -34,7 +34,20 @@ import { createAgentChannel, type AgentChannel } from './agent-channel';
 import { pickFolderViaDialog } from './folder-picker';
 import { createWebEngine } from './engine/web-engine';
 import { createBotRegistry } from './bot/registry';
-import type { BotInstance } from './bot/types';
+import type { BotInstance, PersonaRegistry, RoomConfig } from './bot/types';
+import { createSlotRuntime, type SlotRuntime } from './bot/slot-runtime';
+import {
+  createChatRoomRuntime,
+  type ChatRoomRuntime,
+  createModelSummarizer,
+} from './bot/chat-room-runtime';
+import { FilePersonaRegistry } from './bot/persona-registry';
+import { DefaultMentionParser } from './bot/mention-parser';
+import { DefaultHandoffParser } from './bot/handoff-parser';
+import { createAgentInstructionBuilder } from './bot/instructions';
+import { SqliteChatMessageStore } from './bot/chat-room-store';
+import { SqliteContextEngine, SnapshotStore } from './bot/context-engine';
+import { SqliteRoomSummaryService } from './bot/room-summary';
 import { createFileStorageKvBackend } from './file-storage-backend';
 import os from 'node:os';
 import path from 'node:path';
@@ -115,10 +128,22 @@ export interface DesktopHostOptions {
    * hub 收到页端 tool-call 时，先取发起 bot 的 per-persona executor 执行——
    * 白名单拒绝走 tool-not-allowed-by-persona，命中后仍回到 invokeTool 走完整授权链。
    * 缺省（或该 bot 未加载人设）→ 直接 invokeTool，与 v0.24 行为完全一致。
+   * v0.27：可选传完整 SlotRuntime（ChatRoomRuntime 需 loadPersona/loaded/renderPersonaBlock）；
+   * 传窄接口（仅 executorFor）时聊天室不可用，但 hub 工具白名单仍工作。
    */
-  slotRuntime?: {
+  slotRuntime?: SlotRuntime | {
     executorFor(botId: string | undefined): ((tool: string, params: unknown) => Promise<ToolExecutionResult>) | undefined;
   };
+  /**
+   * v0.27：聊天室配置。提供后装配 ChatRoomRuntime——面板带 roomId 的 send 走
+   * @路由 + 多 bot 编排；不带 roomId 仍走原直发路径（向后兼容）。
+   * 缺省（undefined / 空数组）→ 不装配聊天室，行为与 v0.26 完全一致。
+   */
+  chatRooms?: ReadonlyArray<RoomConfig>;
+  /** v0.27：聊天室编排波数（默认 1：只跑路由目标，接力目标进 pendingHandoff）。 */
+  chatRoomMaxDepth?: number;
+  /** v0.27：人设注册表。缺省用 FilePersonaRegistry（~/.config/deepseek-studio/personas/）。 */
+  personas?: PersonaRegistry;
 }
 
 export interface ToolExecutionResult {
@@ -631,6 +656,60 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     }
   }
 
+  // —— v0.27：聊天室运行时装配 ——
+  // 仅当 options.chatRooms 非空时装配；否则 chatRoomRuntime=null，原直发路径不变。
+  // 需要：完整 SlotRuntime（含 loadPersona/loaded/renderPersonaBlock）+ 算法层 + 数据层。
+  let chatRoomRuntime: ChatRoomRuntime | null = null;
+  if (options.chatRooms && options.chatRooms.length > 0) {
+    // 构建（或复用）完整 SlotRuntime
+    const fullSlotRuntime: SlotRuntime =
+      options.slotRuntime && 'loadPersona' in options.slotRuntime
+        ? (options.slotRuntime as SlotRuntime)
+        : createSlotRuntime({
+            registry: botRegistry,
+            personas: options.personas ?? new FilePersonaRegistry(),
+            invokeTool,
+          });
+    const personas = options.personas ?? new FilePersonaRegistry();
+    const memStore = getMemoryStore();
+    const chatMessageStore = new SqliteChatMessageStore(memStore);
+    const snapshots = new SnapshotStore(memStore);
+    const summarizer = createModelSummarizer({
+      registry: botRegistry,
+      onAgentEvent: (cb) => { agentListeners.add(cb); return () => agentListeners.delete(cb); },
+    });
+    const chatContextEngine = new SqliteContextEngine({
+      messageStore: chatMessageStore,
+      memoryStore: memStore,
+      summarizer: summarizer as never,
+    });
+    const chatSummaryService = new SqliteRoomSummaryService({
+      messageStore: chatMessageStore,
+      memoryStore: memStore,
+      summarizer: summarizer as never,
+      snapshots,
+    });
+    const chatMentionParser = new DefaultMentionParser();
+    chatRoomRuntime = createChatRoomRuntime({
+      mentionParser: chatMentionParser,
+      handoffParser: new DefaultHandoffParser(chatMentionParser),
+      instructionBuilder: createAgentInstructionBuilder(),
+      messageStore: chatMessageStore,
+      contextEngine: chatContextEngine,
+      summaryService: chatSummaryService,
+      registry: botRegistry,
+      slotRuntime: fullSlotRuntime,
+      personas,
+      onAgentEvent: (cb) => { agentListeners.add(cb); return () => agentListeners.delete(cb); },
+      rooms: options.chatRooms,
+      maxDepth: options.chatRoomMaxDepth,
+      onBotReply: () => {
+        // v0.27：bot 回复已落盘 messageStore，UI 经 chatRoomRuntime.getMessages() 拉取。
+        // 后续可在此经 hub/channel 推实时事件到面板（v0.29 长任务状态回报接线时补）。
+      },
+    });
+  }
+
   /** 切换审批档位并持久化（channel 与 DesktopHost 返回对象共用）。 */
   function setPolicyMode(mode: PolicyMode): void {
     if (!(POLICY_MODES as readonly string[]).includes(mode)) {
@@ -973,6 +1052,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
                 return botRegistry.list().map((b) => ({ botId: b.id, running: b.loop.running }));
               },
             },
+            // v0.27：聊天室运行时。有 chatRooms 配置时才非 null。
+            chatRoomRuntime: chatRoomRuntime ?? undefined,
             onAgentEvent: (cb) => {
               agentListeners.add(cb);
               return () => agentListeners.delete(cb);
