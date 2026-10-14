@@ -36,9 +36,11 @@ export const STUDIO_CHAT_CSS = `
 
 /* 揭示门控：overlay 初始不可见，等 composer 测量稳定（落在视口下半区）再淡入。
  * 避免"先矮后涨"的闪烁——初次加载 SPA 未渲染时 textarea 浮在高位，
- * overlay 会先按错误测量渲染成矮面板，渲染完成后再跳高，视觉闪烁。 */
+ * overlay 会先按错误测量渲染成矮面板，渲染完成后再跳高，视觉闪烁。
+ * pointer-events:none 防止 pending 透明态拦截 DeepSeek 登录页/输入框点击。 */
 .ds-studio-chat-container.ds-studio-chat-pending {
   opacity: 0 !important;
+  pointer-events: none !important;
 }
 
 /* ===== 消息列表（滚动容器）===== */
