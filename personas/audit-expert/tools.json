@@ -1,0 +1,10 @@
+{
+  "tools": [
+    "file.read",
+    "file.list",
+    "file.stat",
+    "shell.exec",
+    "memory.save",
+    "memory.remove"
+  ]
+}

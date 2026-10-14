@@ -300,12 +300,16 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
               content: String(params.content ?? ''),
               tags: Array.isArray(params.tags) ? params.tags.map(String) : [],
               pinned: Boolean(params.pinned),
+              // v2：治理字段透传（来源/可信度/人设标签，缺省不传）
+              ...(typeof params.source === 'string' ? { source: params.source } : {}),
+              ...(typeof params.confidence === 'number' ? { confidence: params.confidence } : {}),
+              ...(Array.isArray(params.personaTags) ? { personaTags: params.personaTags.map(String) } : {}),
             });
             if (!result.ok) {
               return { ok: false, error: result.error };
             }
             // 保存成功后推送记忆列表更新到页端。
-            const memories = store.list().map((m) => ({
+            const memories = (await store.list()).map((m) => ({
               id: m.id, type: m.type, name: m.name, content: m.content, tags: m.tags,
             }));
             hub?.broadcastMemories(memories);
@@ -932,13 +936,13 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         },
       });
       // v1.0：连接建立后立即推送当前记忆列表。
-      const pushMemories = () => {
-        const memories = getMemoryStore().list().map((m) => ({
+      const pushMemories = async () => {
+        const memories = (await getMemoryStore().list()).map((m) => ({
           id: m.id, type: m.type, name: m.name, content: m.content, tags: m.tags,
         }));
         hub?.broadcastMemories(memories);
       };
-      pushMemories();
+      void pushMemories();
       // v1.0：确保技能目录存在
       ensureSkillsDir();
       // v1.0：确保 MCP 配置文件存在
