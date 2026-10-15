@@ -114,6 +114,75 @@ struct BotWindowsConfig {
     bots: Vec<BotWindowConfig>,
 }
 
+// ── 聊天室配置（v0.28 PoC 聊天室 UI）──────────────────────────────────
+// 读 ~/.config/deepseek-studio/config.json（Node sidecar 的 loadConfig 同路径），
+// 取 token + chatRooms[0]，注入 window.__studioChatConfig 供主窗口聊天室 UI 连 /agent-ws。
+// 注意：config.json 在 home_dir/.config 下（Unix 风格），与 bot-windows.json 在
+// config_dir/AppData\Roaming 下**不是同一目录**——这里用 home_dir。
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct StudioConfig {
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    chat_rooms: Vec<ChatRoomEntry>,
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(default)]
+    host: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ChatRoomEntry {
+    room_id: String,
+    room_name: String,
+    #[serde(default)]
+    member_personas: Vec<String>,
+}
+
+/// 读 config.json → 构造注入脚本片段 `window.__studioChatConfig = {...};`。
+/// 缺文件/无 token/无 chatRooms → 返回空串（聊天室 UI 不挂载，向后兼容）。
+fn load_studio_chat_config_script() -> String {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return String::new(),
+    };
+    let cfg_path = home.join(".config").join("deepseek-studio").join("config.json");
+    let s = match std::fs::read_to_string(&cfg_path) {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+    let cfg: StudioConfig = match serde_json::from_str(&s) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[studio] WARN: config.json parse failed: {}", e);
+            return String::new();
+        }
+    };
+    if cfg.token.is_empty() || cfg.chat_rooms.is_empty() {
+        return String::new();
+    }
+    let room = &cfg.chat_rooms[0];
+    if room.room_id.is_empty() {
+        return String::new();
+    }
+    let host = cfg.host.as_deref().unwrap_or("127.0.0.1");
+    let port = cfg.port.unwrap_or(8760);
+    let ws_url = format!("ws://{}:{}/agent-ws", host, port);
+    let payload = serde_json::json!({
+        "wsUrl": ws_url,
+        "token": cfg.token,
+        "roomId": room.room_id,
+        "roomName": room.room_name,
+        "members": room.member_personas,
+    });
+    format!(
+        "window.__studioChatConfig = {};\n",
+        payload
+    )
+}
+
 fn bot_windows_path() -> std::path::PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -230,7 +299,11 @@ fn main() {
             });
 
             if !disable_inject {
-                main_builder = main_builder.initialization_script(&load_init_script());
+                // v0.28：主窗口注入聊天室配置（token + roomId + members），供聊天室 UI 连 /agent-ws。
+                // 无配置时返回空串，不影响入口脚本。仅主窗口注入（bot 窗口不需要聊天室）。
+                let chat_config_script = load_studio_chat_config_script();
+                let init_script = format!("{}{}", chat_config_script, load_init_script());
+                main_builder = main_builder.initialization_script(&init_script);
             }
 
             // 应用保存的窗口大小和位置

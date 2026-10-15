@@ -18,6 +18,7 @@ import { createProjectPicker } from './studio-project-picker';
 import { createSkillsPanel } from './studio-skills-panel';
 import { createMcpConfigDialog } from './studio-mcp-dialog';
 import { createRightSidebar } from './studio-right-sidebar';
+import { createChatRoom, type ChatRoomRuntimeConfig } from './studio-chat-room';
 
 export interface StudioUIOptions {
   host: StudioHostBridge;
@@ -159,6 +160,24 @@ export function installStudioUI(options: StudioUIOptions): StudioUIHandle {
     console.log('[StudioUI] right sidebar installed');
   } catch (e) {
     console.error('[StudioUI] right sidebar failed:', e);
+  }
+
+  // 8. 聊天室 UI（独立 overlay，经 /agent-ws 多 bot 编排）
+  // v0.28 PoC：主窗口悬浮按钮 → 独立聊天室面板（与日常对话 overlay 隔离）。
+  // Rust initialization_script 注入 window.__studioChatConfig（token + roomId + members）。
+  // 无配置（config.json 无 chatRooms）→ 不挂载，向后兼容。
+  try {
+    const chatCfg = (globalThis as { __studioChatConfig?: ChatRoomRuntimeConfig }).__studioChatConfig;
+    if (chatCfg && chatCfg.token && chatCfg.roomId) {
+      const chatRoom = createChatRoom(chatCfg);
+      document.body.appendChild(chatRoom.container);
+      containers.push(chatRoom.container);
+      console.log('[StudioUI] chat room installed:', chatCfg.roomName);
+    } else {
+      console.warn('[StudioUI] chat room skipped: no __studioChatConfig (config.json missing chatRooms?)');
+    }
+  } catch (e) {
+    console.error('[StudioUI] chat room failed:', e);
   }
 
   // === 事件绑定：侧边栏/快捷键 → 各面板 ===
