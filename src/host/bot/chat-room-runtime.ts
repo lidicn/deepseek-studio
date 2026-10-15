@@ -27,6 +27,8 @@ import type {
   ChatMessage,
   ChatMessageStore,
   ChatSummarizer,
+  ChatRoomBotReplyEvent,
+  ChatRoomSummaryEvent,
   ContextEngine,
   HandoffParser,
   HandoffResolution,
@@ -47,14 +49,11 @@ import { DefaultMentionRouter } from './mention-router';
 /** 事件订阅器形状（接 desktop-host 的 agentListeners）。 */
 export type AgentEventBus = (cb: (event: AgentLoopEvent) => void) => () => void;
 
-/** 发送 bot 回复到 UI 的回调。接线层在每条 bot 回复落盘后调它。 */
-export type BotReplySink = (msg: {
-  roomId: string;
-  persona: string;
-  botId: string;
-  senderType: 'main-bot' | 'sub-bot';
-  content: string;
-}) => void;
+/** 发送 bot 回复到 UI 的回调。接线层在每条 bot 回复落盘后调它（payload 即 ChatRoomBotReplyEvent）。 */
+export type BotReplySink = (event: ChatRoomBotReplyEvent) => void;
+
+/** 房间摘要结构化推送回调。摘要落快照成功后调它（payload 即 ChatRoomSummaryEvent）。 */
+export type SummarySink = (event: ChatRoomSummaryEvent) => void;
 
 /** 未注册 @名上报回调。接线层发现拼错/未注册的人设名时调它打告警。 */
 export type UnresolvedSink = (roomId: string, names: readonly string[]) => void;
@@ -87,6 +86,7 @@ export interface ChatRoomRuntimeOptions {
 
   // 回调
   readonly onBotReply?: BotReplySink;
+  readonly onSummary?: SummarySink;
   readonly onUnresolved?: UnresolvedSink;
   readonly onRoundComplete?: RoundCompleteSink;
 }
@@ -199,7 +199,8 @@ function createGenerateReply(
       state?.sessionAllowlist.add('chat-send');
 
       // 6. 发送 → loop.send resolve 时 assistant 事件已同步 emit
-      await bot.loop.send(`${AGENT_SENTINEL}${message}`);
+      // v0.28：带 roomId，AgentLoop 把它戳到每条事件上供 UI 按 roomId 过滤。
+      await bot.loop.send(`${AGENT_SENTINEL}${message}`, { roomId: room.roomId });
 
       // 7. 记录原始回复供 planRound 后取 unresolved
       rawReplyMap.set(persona, capturedReply);
@@ -266,6 +267,7 @@ export function createChatRoomRuntime(options: ChatRoomRuntimeOptions): ChatRoom
     rooms,
     maxDepth = 1,
     onBotReply,
+    onSummary,
     onUnresolved,
     onRoundComplete,
   } = options;
@@ -320,14 +322,14 @@ export function createChatRoomRuntime(options: ChatRoomRuntimeOptions): ChatRoom
     // 7. planRound
     const round = await orchestrator.planRound({ trigger, room, participants });
 
-    // 8. 逐个回复落盘 + 推 UI
+    // 8. 逐个回复落盘 + 推 UI（结构化 ChatRoomBotReplyEvent）
     for (const persona of round.members) {
       const participant = participants.find((p) => p.name === persona);
       if (!participant) continue;
       const content = round.contents[persona] ?? '';
       const botId = participant.botId;
       const senderType: 'main-bot' | 'sub-bot' = botId === 'main' ? 'main-bot' : 'sub-bot';
-      messageStore.append({
+      const stored = messageStore.append({
         roomId,
         senderId: botId,
         senderType,
@@ -335,7 +337,16 @@ export function createChatRoomRuntime(options: ChatRoomRuntimeOptions): ChatRoom
         timestamp: Date.now(),
         mentions: [],
       });
-      onBotReply?.({ roomId, persona, botId, senderType, content });
+      onBotReply?.({
+        kind: 'chat-bot-reply',
+        roomId,
+        persona,
+        botId,
+        senderType,
+        content,
+        messageId: stored.id,
+        timestamp: stored.timestamp,
+      });
     }
 
     // 9. unresolved 上报：重新 parse 原始回复取未注册 @名
@@ -366,6 +377,23 @@ export function createChatRoomRuntime(options: ChatRoomRuntimeOptions): ChatRoom
       }
     } catch {
       // 摘要失败不影响主流程
+    }
+
+    // 11b. 摘要结构化事件：若房间已有成功快照，推 chat-summary 供 UI 渲染/按 roomId 隔离。
+    // 仅在 status='success' 且有 through id 时推（UI 据 throughMessageId 去重）。
+    try {
+      const snap = summaryService.getSummary(roomId);
+      if (snap && snap.status === 'success' && snap.lastMessageId) {
+        onSummary?.({
+          kind: 'chat-summary',
+          roomId,
+          summary: snap.summary,
+          throughMessageId: snap.lastMessageId,
+          timestamp: snap.updatedAt,
+        });
+      }
+    } catch {
+      // 摘要事件推送失败不影响主流程
     }
 
     onRoundComplete?.(round);

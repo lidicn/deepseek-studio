@@ -174,3 +174,69 @@ describe('agent-loop —— 引擎健康', () => {
     void vi;
   });
 });
+
+describe('agent-loop —— v0.28 roomId 戳事件（多房间隔离）', () => {
+  it('send 带 roomId → 每条事件戳上 roomId', async () => {
+    const { engine } = fakeEngine([{ content: '回复', toolCalls: 0 }]);
+    const c = collector();
+    const loop = createAgentLoop({
+      engine,
+      onEvent: c.onEvent,
+      stopFlag: { stopped: false },
+      throttleBetweenSteps: false,
+    });
+
+    await loop.send('你好', { roomId: 'room-1' });
+
+    // 每条事件都应带 roomId
+    expect(c.events.length).toBeGreaterThan(0);
+    for (const e of c.events) {
+      expect(e.roomId).toBe('room-1');
+    }
+    expect(c.events[0].type).toBe('user');
+    expect(c.events[c.events.length - 1].type).toBe('done');
+  });
+
+  it('send 不带 roomId → 事件无 roomId（日常对话向后兼容）', async () => {
+    const { engine } = fakeEngine([{ content: '回复', toolCalls: 0 }]);
+    const c = collector();
+    const loop = createAgentLoop({
+      engine,
+      onEvent: c.onEvent,
+      stopFlag: { stopped: false },
+      throttleBetweenSteps: false,
+    });
+
+    await loop.send('日常聊天');
+
+    for (const e of c.events) {
+      expect(e.roomId).toBeUndefined();
+    }
+  });
+
+  it('同 loop 先日常后聊天室 → roomId 不串味', async () => {
+    const { engine } = fakeEngine([{ content: '回复1', toolCalls: 0 }, { content: '回复2', toolCalls: 0 }]);
+    const c = collector();
+    const loop = createAgentLoop({
+      engine,
+      onEvent: c.onEvent,
+      stopFlag: { stopped: false },
+      throttleBetweenSteps: false,
+    });
+
+    // 第一次：日常对话（无 roomId）
+    await loop.send('日常');
+    const dailyEvents = [...c.events];
+    for (const e of dailyEvents) {
+      expect(e.roomId).toBeUndefined();
+    }
+
+    // 第二次：聊天室（带 roomId）
+    await loop.send('聊天室任务', { roomId: 'room-2' });
+    const roomEvents = c.events.slice(dailyEvents.length);
+    expect(roomEvents.length).toBeGreaterThan(0);
+    for (const e of roomEvents) {
+      expect(e.roomId).toBe('room-2');
+    }
+  });
+});

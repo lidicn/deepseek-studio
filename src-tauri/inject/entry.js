@@ -8082,6 +8082,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
       }
     }
     function handleEvent(event) {
+      if (event.roomId !== void 0 && event.roomId !== config.roomId) return;
       const botId = event.botId ?? "main";
       switch (event.type) {
         case "user":

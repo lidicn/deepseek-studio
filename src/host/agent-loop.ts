@@ -46,6 +46,9 @@ export interface AgentLoopEvent {
   toolCalls?: number;
   /** v0.23：事件来源 bot 标识。缺省=主 bot（向后兼容现有面板）。 */
   botId?: string;
+  /** v0.28：聊天室房间标识。聊天室驱动的 send 带上；日常对话不带（undefined）。
+   *  供 UI 按 roomId 过滤当前房间事件（多房间隔离）。 */
+  roomId?: string;
 }
 
 export interface AgentLoopOptions {
@@ -69,8 +72,9 @@ export interface AgentLoopOptions {
 }
 
 export interface AgentLoop {
-  /** 处理一条用户消息；完成（或中断）后 resolve。同一时间只允许一个活跃回合。 */
-  send(text: string): Promise<void>;
+  /** 处理一条用户消息；完成（或中断）后 resolve。同一时间只允许一个活跃回合。
+   *  v0.28：opts.roomId 聊天室驱动的 send 带上，戳到每条事件供 UI 按 roomId 过滤。 */
+  send(text: string, opts?: { roomId?: string }): Promise<void>;
   stop(): void;
   readonly running: boolean;
 }
@@ -81,8 +85,15 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
   const continueNudge = options.continueNudge ?? DEFAULT_CONTINUE_NUDGE;
   const botId = options.botId;
   let active = false;
+  // v0.28：本轮 send 的 roomId（聊天室驱动时设置，日常对话为 undefined）。
+  // emit 把它戳到每条事件上，供 UI 按 roomId 过滤（多房间隔离）。
+  let currentRoomId: string | undefined;
 
-  const emit = (event: AgentLoopEvent) => options.onEvent(botId ? { ...event, botId } : event);
+  const emit = (event: AgentLoopEvent): void => {
+    const stamped: AgentLoopEvent = botId ? { ...event, botId } : { ...event };
+    if (currentRoomId !== undefined) stamped.roomId = currentRoomId;
+    options.onEvent(stamped);
+  };
 
   return {
     get running() {
@@ -91,9 +102,10 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
     stop() {
       options.stopFlag.stopped = true;
     },
-    async send(text: string): Promise<void> {
+    async send(text: string, opts?: { roomId?: string }): Promise<void> {
       if (active) throw new Error('agent-busy');
       active = true;
+      currentRoomId = opts?.roomId;
       options.stopFlag.stopped = false;
       // v1.6：全局看门狗——任意 send 挂起超过 watchdogMs 强制复位 active，防永久 agent-busy
       const watchdog = setTimeout(() => {
@@ -176,6 +188,7 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
       } finally {
         clearTimeout(watchdog);
         active = false;
+        currentRoomId = undefined;
         options.stopFlag.stopped = false;
       }
     },

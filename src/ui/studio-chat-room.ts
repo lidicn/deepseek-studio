@@ -50,6 +50,9 @@ interface ChatRoomEvent {
   step?: number;
   toolCalls?: number;
   botId?: string;
+  /** v0.28：聊天室驱动的 send 带上，UI 据此过滤当前房间（多房间隔离）。
+   *  日常对话事件不带 roomId → 聊天室 UI 忽略。 */
+  roomId?: string;
 }
 
 /** v0.28 结构化聊天室事件（CB 定义，agent-channel 经 {type:'chat-room-event'} broadcast）。 */
@@ -222,6 +225,9 @@ export function createChatRoom(config: ChatRoomRuntimeConfig): ChatRoomHandle {
   }
 
   function handleEvent(event: ChatRoomEvent): void {
+    // v0.28：多房间隔离——聊天室驱动的 send 带 roomId，只处理当前房间的事件。
+    // 无 roomId 的原始事件属于日常对话，聊天室 UI 忽略（内容渲染走结构化事件）。
+    if (event.roomId !== undefined && event.roomId !== config.roomId) return;
     const botId = event.botId ?? 'main';
     switch (event.type) {
       case 'user':
