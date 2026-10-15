@@ -55,9 +55,12 @@ interface ChatRoomEvent {
   roomId?: string;
 }
 
-/** v0.28 结构化聊天室事件（CB 定义，agent-channel 经 {type:'chat-room-event'} broadcast）。 */
+/** v0.28 结构化聊天室事件（CB 定义，agent-channel 经 {type:'chat-room-event'} broadcast）。
+ *  v0.29：加 meeting-state 成员（与 types.ts 的 ChatRoomEvent union 同步——
+ *  本 interface 是本地硬编码，未从 types.ts import，必须手动同步，否则 TS 编译不过）。
+ *  v0.29 修复：加 round-complete 成员 —— 给 UI 确定性轮次结束信号（不依赖 main bot done）。 */
 interface StructuredChatRoomEvent {
-  kind: 'chat-bot-reply' | 'chat-summary';
+  kind: 'chat-bot-reply' | 'chat-summary' | 'meeting-state' | 'round-complete';
   roomId: string;
   // chat-bot-reply
   persona?: string;
@@ -69,6 +72,11 @@ interface StructuredChatRoomEvent {
   // chat-summary
   summary?: string;
   throughMessageId?: string;
+  // meeting-state
+  status?: 'idle' | 'active' | 'closed';
+  strategy?: { focusTopics: string[]; minRoundsBeforeAutoSummary: number; summaryStyle?: string } | null;
+  // round-complete
+  memberCount?: number;
 }
 
 export function createChatRoom(config: ChatRoomRuntimeConfig): ChatRoomHandle {
@@ -94,8 +102,11 @@ export function createChatRoom(config: ChatRoomRuntimeConfig): ChatRoomHandle {
   const connDot = el('span', { className: 'studio-chat-conn-dot' });
   const connText = el('span', { className: 'studio-chat-conn-text', text: '连接中…' });
   const connBox = el('div', { className: 'studio-chat-conn' }, [connDot, connText]);
+  // v0.29 会议状态 chip：● 会议中 · 阈值 N 轮 / ○ 未开始 / ○ 已散会
+  const meetingChip = el('span', { className: 'studio-chat-meeting-chip idle', text: '○ 未开始' });
   headerLeft.appendChild(roomTitle);
   headerLeft.appendChild(memberChips);
+  headerLeft.appendChild(meetingChip);
   headerLeft.appendChild(connBox);
   const closeBtn = el('button', { className: 'studio-chat-close', attrs: { title: '关闭' } }, [
     icon(Icons.x, 18),
@@ -288,6 +299,38 @@ export function createChatRoom(config: ChatRoomRuntimeConfig): ChatRoomHandle {
         if (ev.summary) appendSummary(ev.summary);
         break;
       }
+      case 'meeting-state': {
+        // v0.29 会议状态变更（开会/散会时推出）。更新头部 chip。
+        updateMeetingChip(ev.status ?? 'idle', ev.strategy ?? null);
+        break;
+      }
+      case 'round-complete': {
+        // v0.29 修复：确定性轮次结束信号 —— handleUserMessage 走完后推出。
+        // 不依赖 main bot 摘要器的 done 事件（v0.29 无会议时跳过 summarize，done 不发），
+        // 否则 roundInProgress 永久锁死，用户无法发下一条消息。
+        // 与 main bot done 路径并存：两者都调 updateComposerState，幂等。
+        if (roundInProgress) {
+          roundInProgress = false;
+          updateComposerState();
+        }
+        break;
+      }
+    }
+  }
+
+  /** v0.29 更新会议状态 chip 文本/配色。 */
+  function updateMeetingChip(
+    status: 'idle' | 'active' | 'closed',
+    strategy: { focusTopics: string[]; minRoundsBeforeAutoSummary: number; summaryStyle?: string } | null,
+  ): void {
+    meetingChip.className = `studio-chat-meeting-chip ${status}`;
+    if (status === 'active' && strategy) {
+      const topics = strategy.focusTopics.length > 0 ? `· ${strategy.focusTopics.join('、')}` : '';
+      meetingChip.textContent = `● 会议中 · 阈值 ${strategy.minRoundsBeforeAutoSummary} 轮 ${topics}`;
+    } else if (status === 'closed') {
+      meetingChip.textContent = '○ 已散会';
+    } else {
+      meetingChip.textContent = '○ 未开始';
     }
   }
 
@@ -583,6 +626,28 @@ const CHAT_ROOM_CSS = `
 }
 .studio-chat-conn-dot.ok { background: #22c55e; }
 .studio-chat-conn-dot.bad { background: #ef4444; }
+/* v0.29 会议状态 chip */
+.studio-chat-meeting-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 500;
+  background: #f3f4f6;
+  color: #6b7280;
+  white-space: nowrap;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.studio-chat-meeting-chip.active {
+  background: #dcfce7;
+  color: #15803d;
+}
+.studio-chat-meeting-chip.closed {
+  background: #f1f5f9;
+  color: #94a3b8;
+}
 .studio-chat-close {
   flex-shrink: 0;
   width: 28px;

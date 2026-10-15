@@ -142,6 +142,16 @@ export interface StructuredMention {
   readonly participantId?: string;
 }
 
+/** 消息洞察数标签（v0.28 PoC 门槛 #6「多 bot 洞察数 ≥ 单 bot ×1.5」对照用）。评审/脚本给 bot 回复打分后写入。 */
+export interface MessageInsight {
+  /** 该回复被评出的洞察数。 */
+  readonly count: number;
+  /** 评审者标识（人工或评审脚本名）。 */
+  readonly reviewer?: string;
+  /** 打标时间戳（ms）。约定 `Date.now()`。 */
+  readonly taggedAt: number;
+}
+
 /** 聊天室消息。一条聊天室消息。存储在 chat_messages 表。 */
 export interface ChatMessage {
   /** 唯一 id。约定：`msg-<base36时间戳>-<6位随机>`，与 Memory.id 同款生成法。 */
@@ -158,6 +168,8 @@ export interface ChatMessage {
   readonly timestamp: number;
   /** 本消息中解析出的 @提及。无则空数组。 */
   readonly mentions: readonly StructuredMention[];
+  /** v0.28：洞察数标签（PoC 门槛 #6 对照用）。无则 undefined（未打标）。 */
+  readonly insights?: MessageInsight;
 }
 
 /** 房间上下文快照。每个房间一份，记录已摘要的历史。 */
@@ -211,6 +223,8 @@ export interface ChatMessageStore {
   getMessages(roomId: string, opts?: { throughMessageId?: string; limit?: number }): ChatMessage[];
   /** 取房间消息总数。 */
   count(roomId: string): number;
+  /** 给某条消息打「洞察数」标签（v0.28 PoC 门槛 #6 对照用）。返回是否命中并更新。 */
+  tagInsights(roomId: string, messageId: string, insight: { count: number; reviewer?: string }): boolean;
 }
 
 /** 上下文引擎。构建 bot 回复所需的注入上下文。CodeBuddy 实现。 */
@@ -237,6 +251,25 @@ export interface RoomSummaryService {
   summarize(roomId: string): Promise<void>;
   /** 取当前摘要状态。 */
   getSummary(roomId: string): ChatContextSnapshot | null;
+}
+
+/** 房间会议状态（v0.29）。与 chat_snapshots 分离——策略写入不该触碰摘要的 version/CAS/租约。 */
+export interface RoomMeetingState {
+  readonly status: MeetingStatus;
+  readonly strategy: MeetingStrategy | null;
+  /** 自上次摘要以来累计的「有 bot 回复」轮数。用于阈值门控自动总结。 */
+  readonly roundsSinceSummary: number;
+}
+
+/** 房间会议状态存储（v0.29）。Claude 实现。每房间一行，内存降级可用。 */
+export interface ChatRoomStateStore {
+  get(roomId: string): RoomMeetingState | null;
+  startMeeting(roomId: string, strategy: MeetingStrategy, by: string): void;
+  endMeeting(roomId: string, by: string): void;
+  /** 累计一轮讨论。仅在有 bot 回复的轮次调用。 */
+  incrementRounds(roomId: string): void;
+  /** 摘要成功后清零。 */
+  resetRounds(roomId: string): void;
 }
 
 /** @提及解析器。纯算法，不依赖 host 基础设施。CodeBuddy 实现。 */
@@ -371,3 +404,93 @@ export interface RoundOrchestrator {
     readonly participants: readonly Participant[];
   }): Promise<ConversationRound>;
 }
+
+// ===== 聊天室结构化事件（v0.28 收尾，CodeBuddy 定义）=====
+//
+// 为什么需要：现有 AgentLoopEvent（user/assistant/status/done…）是**引擎层原始事件**，
+// 其中 user 事件携带的是内部 sentinel+persona 文本，不适合 UI 直接渲染；且 broadcast 无
+// roomId 过滤，日常对话事件会混进聊天室 UI。ChatRoomEvent 是**面向 UI 的干净、带 roomId
+// 的结构化事件**，是多房间事件隔离 + 干净渲染的唯一事件源。
+//
+// 方案 B（采纳）：新开类型，**不走 AgentLoopEvent**——由接线层（Claude）在 desktop-host 的
+// onBotReply/onSummary 回调里，经 agentListeners/agent-channel 单独 broadcast 成 WS 事件；
+// UI 据此渲染气泡/摘要，并按 roomId 过滤（只渲染当前房间）。
+//
+// CB 侧职责：在 types.ts 定义类型 + 在 chat-room-runtime.ts 把数据（落盘后的 bot 回复、
+// 摘要）准备成这些事件。desktop-host 的 no-op→emit 接线归 Claude。
+// 衔接面见 docs/交接单/v0.28-聊天室事件结构化推送-交接卡-20261015.md。
+
+/** bot 回复结构化事件（onBotReply payload）。一条 bot 回复落盘后推给 UI。 */
+export interface ChatRoomBotReplyEvent {
+  readonly kind: 'chat-bot-reply';
+  readonly roomId: string;
+  /** persona 名（语义身份；UI 头像/名称用）。 */
+  readonly persona: string;
+  /** 运行时 botId（main/sub 判定用）。 */
+  readonly botId: string;
+  readonly senderType: ChatSenderType;
+  /** 净回复内容（已过 HandoffParser，无 @接力标记）。 */
+  readonly content: string;
+  /** 落盘后的消息 id（UI 去重/定位用）。 */
+  readonly messageId: string;
+  readonly timestamp: number;
+}
+
+/** 房间摘要结构化事件（onSummary payload）。摘要落快照成功后推给 UI。 */
+export interface ChatRoomSummaryEvent {
+  readonly kind: 'chat-summary';
+  readonly roomId: string;
+  /** 摘要文本（已累加的历史摘要）。 */
+  readonly summary: string;
+  /** 摘要覆盖到哪条消息为止（through）。UI 可据此去重。 */
+  readonly throughMessageId: string;
+  readonly timestamp: number;
+}
+
+/**
+ * 会议策略（v0.29）。会议开始时由主 bot 判断并生成，持久化后注入各 bot 的人设指令。
+ * 语义：一场「值得总结」的讨论应满足什么条件、大概几轮讨论后值得沉淀一次。
+ */
+export interface MeetingStrategy {
+  /** 本次会议重点跟踪的议题。 */
+  readonly focusTopics: readonly string[];
+  /** 累计多少轮「有 bot 回复」的讨论后自动触发一次摘要。 */
+  readonly minRoundsBeforeAutoSummary: number;
+  /** 摘要风格提示（可选）。 */
+  readonly summaryStyle?: string;
+}
+
+/** 会议生命周期状态。无 meeting → idle；开会 → active；散会 → closed。 */
+export type MeetingStatus = 'idle' | 'active' | 'closed';
+
+/** 会议状态变更结构化事件（onMeetingStateChange payload）。开会/散会时推给 UI 更新状态指示。 */
+export interface ChatRoomMeetingStateEvent {
+  readonly kind: 'meeting-state';
+  readonly roomId: string;
+  readonly status: MeetingStatus;
+  readonly strategy: MeetingStrategy | null;
+  readonly timestamp: number;
+}
+
+/**
+ * 一轮讨论完成事件（onRoundComplete payload）。handleUserMessage 走完 planRound + 落盘 +
+ * 摘要门控后推给 UI，让 UI 解锁输入框（reset roundInProgress）。
+ *
+ * 为什么需要：v0.28 UI 的 roundInProgress 仅靠 main bot 摘要器的 `done` 事件复位——
+ * v0.29 无会议时跳过 summarize()，main bot 不跑，`done` 不发，输入框永久锁死。
+ * 这个事件给 UI 一个**确定性的轮次结束信号**，不依赖摘要是否跑。
+ */
+export interface ChatRoomRoundCompleteEvent {
+  readonly kind: 'round-complete';
+  readonly roomId: string;
+  /** 本轮回复的成员数（0 = 无人回复，UI 仍应解锁）。 */
+  readonly memberCount: number;
+  readonly timestamp: number;
+}
+
+/** 聊天室结构化事件联合。UI + 多房间隔离的唯一事件源。 */
+export type ChatRoomEvent =
+  | ChatRoomBotReplyEvent
+  | ChatRoomSummaryEvent
+  | ChatRoomMeetingStateEvent
+  | ChatRoomRoundCompleteEvent;

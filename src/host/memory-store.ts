@@ -207,6 +207,19 @@ export class MemoryStore implements MemoryStoreV2 {
     }
   }
 
+  /**
+   * 暴露内部 SQLite 连接句柄（v0.26 聊天室数据层复用同一连接，避免两个连接锁同一文件）。
+   * 降级模式（node:sqlite 不可用）返回 null。
+   */
+  getDb(): import('node:sqlite').DatabaseSync | null {
+    return this.db;
+  }
+
+  /** 当前是否处于内存降级模式（getDb() 返回 null 时为真）。 */
+  isInMemoryFallback(): boolean {
+    return this.db === null;
+  }
+
   /** 旧 memories.json 一次性导入（仅在 DB 表为空时，保留原文件作备份）。 */
   private migrateLegacyJson(db: import('node:sqlite').DatabaseSync): void {
     const legacy = legacyJsonPath(this.storePath);

@@ -48,6 +48,8 @@ import { createAgentInstructionBuilder } from './bot/instructions';
 import { SqliteChatMessageStore } from './bot/chat-room-store';
 import { SqliteContextEngine, SnapshotStore } from './bot/context-engine';
 import { SqliteRoomSummaryService } from './bot/room-summary';
+import { SqliteRoomStateStore } from './bot/meeting-state';
+import { createStrategyGenerator } from './bot/strategy-generator';
 import { createFileStorageKvBackend } from './file-storage-backend';
 import os from 'node:os';
 import path from 'node:path';
@@ -710,6 +712,14 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       snapshots,
     });
     const chatMentionParser = new DefaultMentionParser();
+    // v0.29：会议生命周期 —— 独立于 chat_snapshots 的状态表 + 主 bot 策略生成器。
+    // meetingState 复用 memStore 连接（同 chat_messages/chat_snapshots 库，独立表零迁移）。
+    // strategyGenerator 复用 summarizer 同款 agentSender 模式，让主 bot 产结构化策略。
+    const chatRoomStateStore = new SqliteRoomStateStore(memStore);
+    const strategyGenerator = createStrategyGenerator({
+      registry: botRegistry,
+      onAgentEvent: (cb) => { agentListeners.add(cb); return () => agentListeners.delete(cb); },
+    });
     chatRoomRuntime = createChatRoomRuntime({
       mentionParser: chatMentionParser,
       handoffParser: new DefaultHandoffParser(chatMentionParser),
@@ -731,6 +741,31 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       onSummary: (event) => {
         // v0.28：摘要落快照成功后，CB 已构造好 ChatRoomSummaryEvent。同样经结构化通道推 UI。
         emitChatRoomEvent(event);
+      },
+      // v0.29：一轮讨论完成 → 推 round-complete 事件，让 UI 解锁输入框。
+      // 必要性：v0.28 UI 的 roundInProgress 仅靠 main bot 摘要器 done 事件复位；
+      // v0.29 无会议时跳过 summarize()，main bot 不跑，done 不发 → 输入框永久锁死。
+      // 这个事件给 UI 确定性的轮次结束信号，不依赖摘要是否跑。
+      onRoundComplete: (round) => {
+        emitChatRoomEvent({
+          kind: 'round-complete',
+          roomId: round.roomId,
+          memberCount: round.members.length,
+          timestamp: Date.now(),
+        });
+      },
+      // v0.29：会议状态变更 → 同样走 emitChatRoomEvent（非 hub —— 聊天室 UI 连 /agent-ws，
+      // PageRuntimeHub 服务的 /studio 页面 WS 收不到）。复用 onBotReply/onSummary 同条路。
+      meetingState: chatRoomStateStore,
+      strategyGenerator,
+      onMeetingStateChange: (roomId, status, strategy) => {
+        emitChatRoomEvent({
+          kind: 'meeting-state',
+          roomId,
+          status,
+          strategy,
+          timestamp: Date.now(),
+        });
       },
     });
 

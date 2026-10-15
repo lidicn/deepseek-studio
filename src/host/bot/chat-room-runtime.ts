@@ -39,12 +39,19 @@ import type {
   PersonaRegistry,
   RoomConfig,
   RoomSummaryService,
+  ChatRoomStateStore,
+  MeetingStatus,
+  MeetingStrategy,
 } from './types';
 import type { AgentInstructionBuilder, ConversationRound } from './types';
 import type { GenerateReply, GenerateReplyContext } from './round-orchestrator';
 import { DefaultRoundOrchestrator } from './round-orchestrator';
 import { MapParticipantResolver } from './participant-resolver';
 import { DefaultMentionRouter } from './mention-router';
+import { detectMeetingCommand } from './meeting-commands';
+import type { MeetingCommand } from './meeting-commands';
+import type { StrategyGenerator } from './strategy-generator';
+import { defaultMeetingStrategy } from './meeting-state';
 
 /** 事件订阅器形状（接 desktop-host 的 agentListeners）。 */
 export type AgentEventBus = (cb: (event: AgentLoopEvent) => void) => () => void;
@@ -89,6 +96,14 @@ export interface ChatRoomRuntimeOptions {
   readonly onSummary?: SummarySink;
   readonly onUnresolved?: UnresolvedSink;
   readonly onRoundComplete?: RoundCompleteSink;
+
+  // v0.29 会议生命周期
+  /** 房间会议状态存储；缺省时用内存 stub（保证既有测试无 meetingState 也能跑）。 */
+  readonly meetingState?: ChatRoomStateStore;
+  /** 会议策略生成器；缺省时用 defaultMeetingStrategy（不调主 bot，仅取兜底）。 */
+  readonly strategyGenerator?: StrategyGenerator;
+  /** 会议状态变更回调（开会/散会时推 UI）。 */
+  readonly onMeetingStateChange?: (roomId: string, status: MeetingStatus, strategy: MeetingStrategy | null) => void;
 }
 
 export interface ChatRoomRuntime {
@@ -145,15 +160,22 @@ function createGenerateReply(
 ): GenerateReply {
   const { registry, slotRuntime, contextEngine, instructionBuilder, onAgentEvent } = deps;
 
-  // personaInjector：包裹 instructionBuilder.build，ctx 结构匹配，直接透传 .instructions
-  const personaInjector: PersonaInjector = (injCtx) =>
-    instructionBuilder.build({
+  // v0.29：personaInjector 包裹 instructionBuilder.build —— 不改 CB 的 instructions.ts，
+  // 在其返回串后追加「会议策略」文本（会议 active 态时）。无会议/无策略时透传原文。
+  const personaInjector: PersonaInjector = (injCtx) => {
+    const base = instructionBuilder.build({
       agentName: injCtx.agentName,
       roomName: injCtx.roomName,
       agentDescription: injCtx.agentDescription,
       memberNames: injCtx.memberNames,
       summary: injCtx.summary,
     }).instructions;
+    const strat = deps.meetingState?.get(room.roomId)?.strategy ?? null;
+    if (strat) {
+      return `${base}\n\n# 会议策略（主持人设定）\n${renderStrategyText(strat)}`;
+    }
+    return base;
+  };
   return async (persona: string, ctx: GenerateReplyContext): Promise<string> => {
     const participant = participants.find((p) => p.name === persona);
     if (!participant) throw new Error(`generateReply: unknown persona ${persona}`);
@@ -226,9 +248,9 @@ export function createModelSummarizer(deps: {
   const { registry, onAgentEvent } = deps;
   return async (messages: ReadonlyArray<ChatMessage>): Promise<string> => {
     const summarizerBotId = deps.summarizerBotId ?? 'main';
+    if (messages.length === 0) return '';
     const bot = registry.get(summarizerBotId);
     if (!bot) return '[summary: bot unavailable]';
-    if (messages.length === 0) return '';
 
     // 拼摘要 prompt
     const transcript = messages
@@ -248,9 +270,14 @@ export function createModelSummarizer(deps: {
       state?.sessionAllowlist.add('chat-insert');
       state?.sessionAllowlist.add('chat-send');
       await bot.loop.send(`${AGENT_SENTINEL}${prompt}`);
-      return summary || '[summary: empty]';
-    } catch {
-      return '[summary: bot error]';
+      if (!summary) throw new Error('[summary: empty]');
+      return summary;
+    } catch (err) {
+      // 失败即 throw，不返回哨兵串。summarize() 的 catch 走 release()：不写快照、
+      // lastMessageId 不前进 → 不产生脏摘要事件。
+      // 之前返回 '[summary: empty]'/'[summary: bot error]' 这类非空哨兵串会被当成
+      // 真实摘要提交落盘，把上一份摘要原样重推 —— 即「超时后仍推送陈旧内容」。
+      throw err instanceof Error ? err : new Error('[summary: bot error]');
     } finally {
       unsub();
     }
@@ -270,7 +297,21 @@ export function createChatRoomRuntime(options: ChatRoomRuntimeOptions): ChatRoom
     onSummary,
     onUnresolved,
     onRoundComplete,
+    meetingState,
+    strategyGenerator,
+    onMeetingStateChange,
   } = options;
+
+  // v0.29：meetingState 缺省时用内存 stub —— 既有测试不传 meetingState 也能跑、
+  // 且默认「无会议」语义（get 返回 null）使摘要门控跳过，等同旧行为中「不总结」。
+  // 注意：这不是「每轮都总结」，而是「无会议不总结」—— 修复 v0.28 每轮总结缺陷。
+  const stateStore: ChatRoomStateStore =
+    meetingState ??
+    new InMemoryNoMeetingStateStore();
+
+  // 策略生成器缺省：不调主 bot，直接兜底（只取阈值 3）。
+  const genStrategy: StrategyGenerator =
+    strategyGenerator ?? ((topic: string) => Promise.resolve(defaultMeetingStrategy(topic)));
 
   function findRoom(roomId: string): RoomConfig | undefined {
     return rooms.find((r) => r.roomId === roomId);
@@ -282,6 +323,20 @@ export function createChatRoomRuntime(options: ChatRoomRuntimeOptions): ChatRoom
 
     // 动态构建 participants（bot 可运行时增删）
     const participants = buildParticipants(room, registry);
+
+    // v0.29 会议命令路由 —— 必须在 stripMentionTokens 之前对原始 text 判定。
+    // 约束：main 若将来进 memberPersonas，@main 会被 mention-parser 剥掉 → 命令丢失。
+    // 此处先用原始 text 检测命令，命中则走会议控制分支，不进正常聊天流程。
+    const cmd = detectMeetingCommand(text);
+    if (cmd.kind !== 'none') {
+      await handleMeetingCommand(roomId, cmd, room, userId);
+      // 控制指令不参与讨论：合成空 round 返回（caller agent-channel.ts 忽略返回值，
+      // 但 ConversationRound 全字段 mandatory，不可 throw 否则 unhandled rejection）。
+      // v0.29：仍需推 round-complete —— UI submitMessage 对任何消息都置 roundInProgress=true，
+      // 不推 round-complete 会让控制指令后输入框锁死。
+      onRoundComplete?.({ roomId, triggerMessageId: '', members: [], contents: {}, pendingHandoff: [] });
+      return { roomId, triggerMessageId: '', members: [], contents: {}, pendingHandoff: [] };
+    }
 
     // 1. 解析 @提及
     const mentions = mentionParser.resolveMentions(text, participants);
@@ -366,34 +421,22 @@ export function createChatRoomRuntime(options: ChatRoomRuntimeOptions): ChatRoom
     // 10. pendingHandoff 不执行（maxDepth=1 默认）；接线层可据此决定续轮策略
     // （v0.27 阶段：调用方连续调 handleUserMessage 续轮，不在此自动续）
 
-    // 11. 摘要触发
-    try {
-      const should = (summaryService as { shouldSummarize?(roomId: string): boolean }).shouldSummarize;
-      if (typeof should === 'function' && should.call(summaryService, roomId)) {
-        await summaryService.summarize(roomId);
-      } else {
-        // 无 shouldSummarize 方法的实现：每轮后无条件试一次（内部有 CAS/租约防并发）
-        await summaryService.summarize(roomId);
-      }
-    } catch {
-      // 摘要失败不影响主流程
-    }
+    // v0.29：累计讨论轮数。仅当本轮「有 bot 回复」（members 非空）才算一轮讨论 ——
+    // 无人回复的消息（如纯 @未注册名）不计数，不污染阈值门控。
+    const hadReplies = round.members.length > 0;
+    if (hadReplies) stateStore.incrementRounds(roomId);
 
-    // 11b. 摘要结构化事件：若房间已有成功快照，推 chat-summary 供 UI 渲染/按 roomId 隔离。
-    // 仅在 status='success' 且有 through id 时推（UI 据 throughMessageId 去重）。
-    try {
-      const snap = summaryService.getSummary(roomId);
-      if (snap && snap.status === 'success' && snap.lastMessageId) {
-        onSummary?.({
-          kind: 'chat-summary',
-          roomId,
-          summary: snap.summary,
-          throughMessageId: snap.lastMessageId,
-          timestamp: snap.updatedAt,
-        });
-      }
-    } catch {
-      // 摘要事件推送失败不影响主流程
+    // 11. 摘要触发 —— v0.29 改为会议驱动门控（替换原「每轮无条件 summarize」）：
+    //   status === 'active' 且 roundsSinceSummary >= 阈值 → 摘要 + 推送 + 清零计数
+    //   status === 'active' 未达阈值                          → 跳过（等讨论累积）
+    //   status !== 'active'（无会议）                         → 跳过（无会议不总结）
+    // 门控的是「是否调 summarize()」本身 —— CB 的 CAS/租约守卫不受影响。
+    const st = stateStore.get(roomId);
+    if (st?.status === 'active' && st.strategy && st.roundsSinceSummary >= st.strategy.minRoundsBeforeAutoSummary) {
+      // 达阈值才摘要（门控的是「是否调 summarize()」，不是 CB 内部的 CAS/租约）。
+      // 摘要失败不重置轮数 —— 轮数反映「已总结覆盖到的进度」，
+      // 没提交成功就该保留，下一轮继续重试。
+      if (await runSummarize(roomId)) stateStore.resetRounds(roomId);
     }
 
     onRoundComplete?.(round);
@@ -414,5 +457,145 @@ export function createChatRoomRuntime(options: ChatRoomRuntimeOptions): ChatRoom
     await summaryService.summarize(roomId);
   }
 
+  /**
+   * v0.29 会议命令处理（start/end/summarize）—— 在 handleUserMessage 入口被拦截调用。
+   *
+   * 语义：
+   *   'start':     status !== 'active' → 主 bot 生成策略 → startMeeting → 落盘用户消息（会议主题）
+   *                → onMeetingStateChange('active', strategy)
+   *   'end':       status === 'active' → 强制 summarize（最终总结）→ 推 onSummary → endMeeting
+   *                → onMeetingStateChange('closed', null)
+   *   'summarize': 强制 summarize → 推 onSummary
+   *
+   * 落盘规则：start 落盘（会议主题是真实讨论起点，进摘要输入集）；
+   *           end/summarize 不落盘（控制指令不污染讨论记录）。
+   * 重复命令（如 idle 再发"散会"）静默忽略 —— 状态机幂等由 stateStore 保证。
+   */
+  async function handleMeetingCommand(
+    roomId: string,
+    cmd: MeetingCommand,
+    room: RoomConfig,
+    userId: string,
+  ): Promise<void> {
+    const st = stateStore.get(roomId);
+    const status = st?.status ?? 'idle';
+
+    if (cmd.kind === 'start') {
+      if (status === 'active') return; // 已在会中，重复开会忽略
+      const topic = cmd.cleanText;
+      const strategy = await genStrategy(topic, room);
+      stateStore.startMeeting(roomId, strategy, userId);
+      // 落盘会议主题（净文本，进后续摘要输入集）。
+      messageStore.append({
+        roomId,
+        senderId: userId,
+        senderType: 'user',
+        content: topic || `（会议开始：${room.roomName}）`,
+        timestamp: Date.now(),
+        mentions: [],
+      });
+      onMeetingStateChange?.(roomId, 'active', strategy);
+      return;
+    }
+
+    if (cmd.kind === 'end') {
+      if (status !== 'active') return; // 非会中，重复散会忽略
+      // 强制最终总结。失败不阻断散会（runSummarize 吞异常，散会照常散）。
+      await runSummarize(roomId);
+      stateStore.endMeeting(roomId, userId);
+      onMeetingStateChange?.(roomId, 'closed', null);
+      return;
+    }
+
+    if (cmd.kind === 'summarize') {
+      // 手动总结：不要求 active（用户随时可要求总结已有讨论）。
+      // 失败不重置轮数 —— 轮数反映「已总结覆盖到的进度」，总结没成功就该保留，
+      // 下一轮自动总结会把这批消息一起摘要。
+      if (await runSummarize(roomId)) stateStore.resetRounds(roomId);
+      return;
+    }
+  }
+
+  /**
+   * 执行一次摘要 + 推送 chat-summary 结构化事件。end/summarize 命令复用。
+   * 摘要前记录 summarizedTurnCount 基线，据此判断是否真的提交了新摘要。
+   * @returns 是否成功提交了新摘要（供调用方决定是否 resetRounds）。
+   */
+  async function runSummarize(roomId: string): Promise<boolean> {
+    const preTurns = summaryService.getSummary(roomId)?.summarizedTurnCount ?? 0;
+    try {
+      await summaryService.summarize(roomId);
+      return pushSummaryEvent(roomId, preTurns);
+    } catch {
+      // 摘要失败不阻断主流程（散会照常散；summarize 分支不重置轮数）
+      return false;
+    }
+  }
+
+  /**
+   * 推送 chat-summary 结构化事件（summary 落快照后）。
+   * 判据：summarizedTurnCount 前进。只有 commit() 会 +1；claim 只 bump updatedAt、
+   * release/CAS 冲突/摘要器超时全都不动它 —— 所以这个判据精确等价于「本次真的提交了新摘要」。
+   * @returns 是否推了事件（即快照是否真的提交了）。
+   */
+  function pushSummaryEvent(roomId: string, preTurns = 0): boolean {
+    try {
+      const snap = summaryService.getSummary(roomId);
+      if (snap && snap.status === 'success' && snap.lastMessageId && snap.summarizedTurnCount > preTurns) {
+        onSummary?.({
+          kind: 'chat-summary',
+          roomId,
+          summary: snap.summary,
+          throughMessageId: snap.lastMessageId,
+          timestamp: snap.updatedAt,
+        });
+        return true;
+      }
+      return false;
+    } catch {
+      // 推送失败不影响主流程
+      return false;
+    }
+  }
+
   return { handleUserMessage, getRoomParticipants, getMessages, summarizeRoom, getRoom: findRoom };
+}
+
+/**
+ * 渲染 MeetingStrategy 为注入人设指令的文本段。
+ * 给各 bot 一致的「本次会议重点 + 自动总结阈值」预期，使回复聚焦议题。
+ */
+function renderStrategyText(strat: MeetingStrategy): string {
+  const lines: string[] = [];
+  if (strat.focusTopics.length > 0) {
+    lines.push(`重点议题：${strat.focusTopics.join('、')}`);
+  }
+  lines.push(`累计 ${strat.minRoundsBeforeAutoSummary} 轮讨论后自动总结`);
+  if (strat.summaryStyle) {
+    lines.push(`摘要风格：${strat.summaryStyle}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * 缺省 meetingState stub：无会议态。get 恒返回 null → 摘要门控跳过 → 无会议不总结。
+ * 保证既有测试不传 meetingState 时：不触发摘要（修复 v0.28 每轮总结），但其余流程不变。
+ * 所有写方法 no-op（无 meetingState 注入时不会有会议命令到达 —— 命令分支仍执行，只是状态不持久）。
+ */
+class InMemoryNoMeetingStateStore implements ChatRoomStateStore {
+  get(): null {
+    return null;
+  }
+  startMeeting(): void {
+    /* no-op */
+  }
+  endMeeting(): void {
+    /* no-op */
+  }
+  incrementRounds(): void {
+    /* no-op */
+  }
+  resetRounds(): void {
+    /* no-op */
+  }
 }

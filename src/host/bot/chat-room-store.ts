@@ -7,7 +7,7 @@
  */
 
 import * as crypto from 'node:crypto';
-import type { ChatMessage, ChatMessageStore, ChatSenderType, StructuredMention } from './types';
+import type { ChatMessage, ChatMessageStore, ChatSenderType, MessageInsight, StructuredMention } from './types';
 import type { MemoryStore } from '../memory-store';
 
 /** 生成消息 id：msg-<base36 时间戳>-<6 位 base36 随机>，与 Memory.id 同款风格。 */
@@ -31,9 +31,28 @@ interface ChatMessageRow {
   content: string;
   timestamp: number;
   mentions_json: string;
+  insights_json?: string | null;
 }
 
-/** 把存储行还原为 ChatMessage（解析 mentions_json）。 */
+/** 解析 insights_json 为 MessageInsight；非法/空 → undefined。 */
+function parseInsights(raw: string | null | undefined): MessageInsight | undefined {
+  if (typeof raw !== 'string' || raw.length === 0) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as Partial<MessageInsight>;
+    if (parsed && typeof parsed.count === 'number' && typeof parsed.taggedAt === 'number') {
+      return {
+        count: parsed.count,
+        reviewer: typeof parsed.reviewer === 'string' ? parsed.reviewer : undefined,
+        taggedAt: parsed.taggedAt,
+      };
+    }
+  } catch {
+    /* 非法 JSON → 视为未打标 */
+  }
+  return undefined;
+}
+
+/** 把存储行还原为 ChatMessage（解析 mentions_json + insights_json）。 */
 function rowToMessage(row: ChatMessageRow): ChatMessage {
   let mentions: StructuredMention[] = [];
   try {
@@ -47,6 +66,7 @@ function rowToMessage(row: ChatMessageRow): ChatMessage {
   } catch {
     mentions = [];
   }
+  const insights = parseInsights(row.insights_json);
   return {
     id: row.id,
     roomId: row.room_id,
@@ -55,6 +75,7 @@ function rowToMessage(row: ChatMessageRow): ChatMessage {
     content: row.content,
     timestamp: row.timestamp,
     mentions,
+    ...(insights ? { insights } : {}),
   };
 }
 
@@ -78,11 +99,17 @@ export class SqliteChatMessageStore implements ChatMessageStore {
         sender_type TEXT NOT NULL,
         content TEXT NOT NULL,
         timestamp INTEGER NOT NULL,
-        mentions_json TEXT NOT NULL DEFAULT '[]'
+        mentions_json TEXT NOT NULL DEFAULT '[]',
+        insights_json TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_chat_messages_room_ts
         ON chat_messages (room_id, timestamp, id);
     `);
+    // 旧库迁移：v0.26 建的 chat_messages 无 insights_json 列，CREATE IF NOT EXISTS 不会补列。
+    const cols = db.prepare('PRAGMA table_info(chat_messages)').all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'insights_json')) {
+      db.exec('ALTER TABLE chat_messages ADD COLUMN insights_json TEXT');
+    }
   }
 
   append(msg: Omit<ChatMessage, 'id'> & { id?: string }): ChatMessage {
@@ -94,12 +121,13 @@ export class SqliteChatMessageStore implements ChatMessageStore {
       content: msg.content,
       timestamp: msg.timestamp ?? Date.now(),
       mentions: msg.mentions ?? [],
+      ...(msg.insights ? { insights: msg.insights } : {}),
     };
 
     if (this.db) {
       const stmt = this.db.prepare(
-        `INSERT INTO chat_messages (id, room_id, sender_id, sender_type, content, timestamp, mentions_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO chat_messages (id, room_id, sender_id, sender_type, content, timestamp, mentions_json, insights_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       stmt.run(
         full.id,
@@ -109,6 +137,7 @@ export class SqliteChatMessageStore implements ChatMessageStore {
         full.content,
         full.timestamp,
         JSON.stringify(full.mentions),
+        full.insights ? JSON.stringify(full.insights) : null,
       );
     } else {
       const list = this.mem.get(full.roomId) ?? [];
@@ -146,12 +175,37 @@ export class SqliteChatMessageStore implements ChatMessageStore {
     return this.mem.get(roomId)?.length ?? 0;
   }
 
+  /**
+   * 给某条消息打「洞察数」标签（v0.28 PoC 门槛 #6 对照用）。
+   * 覆盖写：同一消息重复打标取最后一次。返回是否命中并更新。
+   */
+  tagInsights(roomId: string, messageId: string, insight: { count: number; reviewer?: string }): boolean {
+    const full: MessageInsight = {
+      count: insight.count,
+      ...(insight.reviewer !== undefined ? { reviewer: insight.reviewer } : {}),
+      taggedAt: Date.now(),
+    };
+    const json = JSON.stringify(full);
+    if (this.db) {
+      const res = this.db
+        .prepare('UPDATE chat_messages SET insights_json = ? WHERE room_id = ? AND id = ?')
+        .run(json, roomId, messageId);
+      return (res.changes ?? 0) > 0;
+    }
+    const list = this.mem.get(roomId);
+    if (!list) return false;
+    const idx = list.findIndex((m) => m.id === messageId);
+    if (idx < 0) return false;
+    list[idx] = { ...list[idx], insights: full };
+    return true;
+  }
+
   /** 读取某房间全部消息，按 (timestamp, id) 升序。 */
   private loadRoom(roomId: string): ChatMessage[] {
     if (this.db) {
       const rows = this.db
         .prepare(
-          'SELECT id, room_id, sender_id, sender_type, content, timestamp, mentions_json FROM chat_messages WHERE room_id = ? ORDER BY timestamp ASC, id ASC',
+          'SELECT id, room_id, sender_id, sender_type, content, timestamp, mentions_json, insights_json FROM chat_messages WHERE room_id = ? ORDER BY timestamp ASC, id ASC',
         )
         .all(roomId) as unknown as ChatMessageRow[];
       return rows.map(rowToMessage);

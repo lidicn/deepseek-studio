@@ -10,464 +10,6 @@
   var __privateAdd = (obj, member, value) => member.has(obj) ? __typeError("Cannot add the same private member more than once") : member instanceof WeakSet ? member.add(obj) : member.set(obj, value);
   var __privateMethod = (obj, member, method) => (__accessCheck(obj, member, "access private method"), method);
 
-  // src/bridge/envelope.ts
-  var DEEPSEEK_CONTENT_RUNTIME_COMMANDS = /* @__PURE__ */ new Set([
-    "bridge_invoke",
-    "kv_get",
-    "kv_set",
-    "kv_remove",
-    "kv_list",
-    "tool_execute",
-    "tool_cancel",
-    "agent_turn",
-    "agent_cancel",
-    "capability_start",
-    "capability_stop",
-    "ping",
-    "pong"
-  ]);
-  function createRuntimeBoundaryErrorResponse(_requestId, code2, message) {
-    return {
-      ok: false,
-      error: { code: code2, message }
-    };
-  }
-  function decodeRuntimeMessageEnvelope(raw) {
-    if (raw === null || typeof raw !== "object") return null;
-    const rec = raw;
-    if (typeof rec.command !== "string") return null;
-    if (typeof rec.requestId !== "string") return null;
-    return {
-      command: rec.command,
-      requestId: rec.requestId,
-      payload: rec.payload === void 0 ? null : rec.payload
-    };
-  }
-  function authorizeRuntimeMessage(envelope) {
-    return DEEPSEEK_CONTENT_RUNTIME_COMMANDS.has(envelope.command);
-  }
-  function isPlainRuntimeRecord(value) {
-    if (value === null || typeof value !== "object") return false;
-    const proto = Object.getPrototypeOf(value);
-    return proto === null || proto === Object.prototype;
-  }
-
-  // src/bridge/runtime.ts
-  var NO_RESPONSE = Symbol("no-response");
-  var DEFAULT_TIMEOUT_MS = 3e4;
-  function createRuntimeLastErrorController() {
-    let current;
-    return {
-      set(error) {
-        current = error;
-      },
-      get() {
-        return current;
-      },
-      clear() {
-        current = void 0;
-      }
-    };
-  }
-  function withTimeout(promise, ms, fallback) {
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => resolve(fallback), ms);
-      promise.then(
-        (v2) => {
-          clearTimeout(timer);
-          resolve(v2);
-        },
-        () => {
-          clearTimeout(timer);
-          resolve(fallback);
-        }
-      );
-    });
-  }
-  function createRuntimeBridge(options2) {
-    const listeners = [...options2.listeners ?? []];
-    const timeoutMs = options2.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const lastError = options2.lastError ?? createRuntimeLastErrorController();
-    async function dispatch(envelope, sender, timeoutMs2) {
-      let responded = false;
-      let settle;
-      const sendResponsePromise = new Promise((res) => {
-        settle = res;
-      });
-      const sendResponse = (value) => {
-        if (!responded) {
-          responded = true;
-          settle(value);
-        }
-      };
-      for (const listener of listeners) {
-        const raw = listener(envelope, sender, sendResponse);
-        if (raw === true) {
-          const value = await withTimeout(sendResponsePromise, timeoutMs2, NO_RESPONSE);
-          if (value !== NO_RESPONSE) return value;
-        } else if (raw instanceof Promise) {
-          const value = await withTimeout(Promise.resolve(raw), timeoutMs2, NO_RESPONSE);
-          if (value !== NO_RESPONSE) return value;
-        }
-      }
-      return NO_RESPONSE;
-    }
-    return {
-      addListener(listener) {
-        if (!listeners.includes(listener)) listeners.push(listener);
-      },
-      removeListener(listener) {
-        const i = listeners.indexOf(listener);
-        if (i >= 0) listeners.splice(i, 1);
-      },
-      async post(envelope, sender = {}) {
-        return options2.transport.post(envelope, sender);
-      },
-      async handle(envelope, sender = {}) {
-        if (!authorizeRuntimeMessage(envelope)) {
-          const code2 = "UNAUTHORIZED";
-          lastError.set({ message: `command not authorized: ${envelope.command}` });
-          return createRuntimeBoundaryErrorResponse(envelope.requestId, code2, lastError.get().message);
-        }
-        const value = await dispatch(envelope, sender, timeoutMs);
-        if (value === NO_RESPONSE) return createRuntimeBoundaryErrorResponse(envelope.requestId, "DISPATCH_TIMEOUT", "no receiver responded");
-        return value;
-      },
-      lastError
-    };
-  }
-
-  // src/bridge/storage.ts
-  var QUOTA_BYTES = 10485760;
-  var StorageBridgeError = class extends Error {
-    constructor(code2, message) {
-      super(message);
-      __publicField(this, "code");
-      this.name = "StorageBridgeError";
-      this.code = code2;
-    }
-  };
-  function utf8ByteLength(value) {
-    return new TextEncoder().encode(value).length;
-  }
-  function cloneStorageValue(value, path = "value") {
-    return cloneValue(value, path, /* @__PURE__ */ new Set());
-  }
-  function cloneValue(value, path, ancestors) {
-    if (value === null) return null;
-    const valueType = typeof value;
-    if (valueType === "boolean" || valueType === "string") return value;
-    if (valueType === "number") {
-      if (!Number.isFinite(value)) {
-        throw new StorageBridgeError("DATA_CLONE", `Storage value at ${path} is not a finite number.`);
-      }
-      return value;
-    }
-    if (valueType === "undefined") {
-      throw new StorageBridgeError("DATA_CLONE", `Storage value at ${path} is undefined.`);
-    }
-    if (valueType === "function" || valueType === "symbol" || valueType === "bigint") {
-      throw new StorageBridgeError(
-        "DATA_CLONE",
-        `Storage value at ${path} is not JSON-serializable (${valueType}).`
-      );
-    }
-    const objectValue = value;
-    if (ancestors.has(objectValue)) {
-      throw new StorageBridgeError("DATA_CLONE", `Storage value at ${path} is circular.`);
-    }
-    ancestors.add(objectValue);
-    try {
-      if (Array.isArray(value)) {
-        return value.map((item, index) => cloneValue(item, `${path}[${index}]`, ancestors));
-      }
-      if (!isPlainRuntimeRecord(value)) {
-        throw new StorageBridgeError(
-          "DATA_CLONE",
-          `Storage value at ${path} must be a plain object or an array.`
-        );
-      }
-      const out = {};
-      for (const key of Object.keys(value)) {
-        out[key] = cloneValue(value[key], `${path}.${key}`, ancestors);
-      }
-      return out;
-    } finally {
-      ancestors.delete(objectValue);
-    }
-  }
-  function createMemoryStorageKvBackend(initial = {}) {
-    const data = { ...initial };
-    return {
-      async readAll() {
-        return { ...data };
-      },
-      async writeBatch(batch) {
-        for (const key of batch.remove) delete data[key];
-        for (const [key, value] of Object.entries(batch.set)) data[key] = value;
-      },
-      snapshot() {
-        return { ...data };
-      }
-    };
-  }
-  function bytesInUseOf(data) {
-    if (Object.keys(data).length === 0) return 0;
-    return utf8ByteLength(JSON.stringify(data));
-  }
-  function sameJsonValue(a2, b) {
-    return JSON.stringify(a2) === JSON.stringify(b);
-  }
-  function normalizeKeyList(keys) {
-    if (typeof keys === "string") return [keys];
-    if (Array.isArray(keys)) {
-      for (const key of keys) {
-        if (typeof key !== "string") {
-          throw new StorageBridgeError("INVALID_KEYS", "Storage keys must be strings.");
-        }
-      }
-      return [...keys];
-    }
-    throw new StorageBridgeError("INVALID_KEYS", "Storage keys must be a string or an array of strings.");
-  }
-  function runOperation(callback, operation, lastError) {
-    if (callback === void 0) return operation();
-    void operation().then(
-      (value) => {
-        callback(value);
-      },
-      (error) => {
-        lastError?.set({ message: error instanceof Error ? error.message : String(error) });
-        callback(void 0);
-      }
-    );
-    return void 0;
-  }
-  function createStorageArea(deps) {
-    const items = /* @__PURE__ */ new Map();
-    let loadPromise = null;
-    function ensureLoaded() {
-      if (deps.backend === null) return Promise.resolve();
-      if (loadPromise === null) {
-        loadPromise = deps.backend.readAll().then((loaded) => {
-          for (const [key, value] of Object.entries(loaded ?? {})) {
-            if (value !== void 0) items.set(key, value);
-          }
-        }).catch((err) => {
-          loadPromise = null;
-          throw err;
-        });
-      }
-      return loadPromise;
-    }
-    async function commit(next, changes, batch) {
-      const bytes = bytesInUseOf(Object.fromEntries(next));
-      if (bytes > deps.quotaBytes) {
-        throw new StorageBridgeError(
-          "QUOTA_BYTES",
-          `Storage area ${deps.name} would exceed QUOTA_BYTES (${deps.quotaBytes}).`
-        );
-      }
-      if (deps.backend !== null && (Object.keys(batch.set).length > 0 || batch.remove.length > 0)) {
-        try {
-          await deps.backend.writeBatch(batch);
-        } catch (error) {
-          throw new StorageBridgeError(
-            "KV_PERSIST_FAILED",
-            `Storage area ${deps.name} failed to persist: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-      }
-      items.clear();
-      for (const [key, value] of next) items.set(key, value);
-      if (Object.keys(changes).length > 0) deps.emit(changes, deps.name);
-    }
-    async function getOperation(keys) {
-      await ensureLoaded();
-      const result2 = {};
-      if (keys === void 0 || keys === null) {
-        for (const [key, value] of items) result2[key] = value;
-        return result2;
-      }
-      if (typeof keys === "string") {
-        if (items.has(keys)) result2[keys] = items.get(keys);
-        return result2;
-      }
-      if (Array.isArray(keys)) {
-        for (const key of normalizeKeyList(keys)) {
-          if (items.has(key)) result2[key] = items.get(key);
-        }
-        return result2;
-      }
-      if (isPlainRuntimeRecord(keys)) {
-        for (const [key, fallback] of Object.entries(keys)) {
-          result2[key] = items.has(key) ? items.get(key) : fallback;
-        }
-        return result2;
-      }
-      throw new StorageBridgeError(
-        "INVALID_KEYS",
-        "storage.get keys must be a string, an array of strings, or a defaults object."
-      );
-    }
-    async function setOperation(entries) {
-      await ensureLoaded();
-      if (!isPlainRuntimeRecord(entries)) {
-        throw new StorageBridgeError("INVALID_KEYS", "storage.set expects a plain object.");
-      }
-      const cloned = {};
-      for (const [key, value] of Object.entries(entries)) {
-        cloned[key] = cloneStorageValue(value, `set.${key}`);
-      }
-      const next = new Map(items);
-      const changes = {};
-      for (const [key, value] of Object.entries(cloned)) {
-        const previous = items.has(key) ? items.get(key) : void 0;
-        next.set(key, value);
-        if (!sameJsonValue(previous, value)) {
-          changes[key] = { oldValue: previous, newValue: value };
-        }
-      }
-      await commit(next, changes, { set: cloned, remove: [] });
-    }
-    async function removeOperation(keys) {
-      await ensureLoaded();
-      const list = normalizeKeyList(keys);
-      const next = new Map(items);
-      const changes = {};
-      const removed = [];
-      for (const key of list) {
-        if (!items.has(key)) continue;
-        const previous = items.get(key);
-        next.delete(key);
-        removed.push(key);
-        changes[key] = { oldValue: previous, newValue: void 0 };
-      }
-      await commit(next, changes, { set: {}, remove: removed });
-    }
-    async function clearOperation() {
-      await ensureLoaded();
-      const changes = {};
-      const removed = [];
-      for (const [key, value] of items) {
-        changes[key] = { oldValue: value, newValue: void 0 };
-        removed.push(key);
-      }
-      await commit(/* @__PURE__ */ new Map(), changes, { set: {}, remove: removed });
-    }
-    async function getBytesInUseOperation(keys) {
-      await ensureLoaded();
-      if (keys === void 0 || keys === null) return bytesInUseOf(Object.fromEntries(items));
-      const data = {};
-      for (const key of normalizeKeyList(keys)) {
-        if (items.has(key)) data[key] = items.get(key);
-      }
-      return bytesInUseOf(data);
-    }
-    let mutationTail = Promise.resolve();
-    function enqueueMutation(op) {
-      const run = mutationTail.then(() => op());
-      mutationTail = run.then(
-        () => void 0,
-        () => void 0
-      );
-      return run;
-    }
-    return {
-      name: deps.name,
-      QUOTA_BYTES: deps.quotaBytes,
-      get: (keys, callback) => runOperation(callback, () => getOperation(keys), deps.lastError),
-      set: (entries, callback) => runOperation(callback, () => enqueueMutation(() => setOperation(entries)), deps.lastError),
-      remove: (keys, callback) => runOperation(callback, () => enqueueMutation(() => removeOperation(keys)), deps.lastError),
-      clear: (callback) => runOperation(callback, () => enqueueMutation(() => clearOperation()), deps.lastError),
-      getBytesInUse: (keys, callback) => runOperation(callback, () => getBytesInUseOperation(keys), deps.lastError)
-    };
-  }
-  function createChromeStorageShim(options2 = {}) {
-    const quotaBytes = options2.quotaBytes ?? QUOTA_BYTES;
-    const listeners = [];
-    const emitter = {
-      addListener(listener) {
-        if (typeof listener !== "function") {
-          throw new TypeError("storage.onChanged listener must be a function.");
-        }
-        if (!listeners.includes(listener)) listeners.push(listener);
-      },
-      removeListener(listener) {
-        const index = listeners.indexOf(listener);
-        if (index >= 0) listeners.splice(index, 1);
-      },
-      hasListener(listener) {
-        return listeners.includes(listener);
-      },
-      emit(changes, areaName) {
-        for (const listener of [...listeners]) {
-          try {
-            listener(changes, areaName);
-          } catch {
-          }
-        }
-      }
-    };
-    const local = createStorageArea({
-      name: "local",
-      backend: options2.localBackend ?? createMemoryStorageKvBackend(),
-      quotaBytes,
-      emit: emitter.emit,
-      lastError: options2.lastError
-    });
-    const session = createStorageArea({
-      name: "session",
-      backend: null,
-      quotaBytes,
-      emit: emitter.emit,
-      lastError: options2.lastError
-    });
-    return {
-      local,
-      session,
-      onChanged: {
-        addListener: emitter.addListener,
-        removeListener: emitter.removeListener,
-        hasListener: emitter.hasListener
-      }
-    };
-  }
-
-  // src/bridge/index.ts
-  var STUDIO_EXTENSION_ID = "deepseek-studio";
-  function noopTransport() {
-    return { post: () => Promise.reject(new Error("chrome.runtime unavailable: no host transport installed")) };
-  }
-  function installChromeShims(options2 = {}) {
-    const transport = options2.transport ?? noopTransport();
-    const bridge = createRuntimeBridge({ transport });
-    const storage = createChromeStorageShim({ localBackend: options2.localBackend });
-    const id = options2.extensionId ?? STUDIO_EXTENSION_ID;
-    const runtime = {
-      id,
-      getURL: (path) => `chrome-extension://${id}/${path.replace(/^\//, "")}`,
-      getManifest: () => ({ manifest_version: 3, name: "DeepSeek++ Studio", version: "0.2.0" }),
-      get lastError() {
-        return bridge.lastError.get();
-      },
-      sendMessage: (message, callback) => {
-        const envelope = decodeRuntimeMessageEnvelope(message) ?? { command: "bridge_invoke", requestId: crypto.randomUUID(), payload: message };
-        const promise = bridge.post(envelope);
-        if (callback) promise.then(callback, () => callback(void 0));
-        return promise;
-      },
-      onMessage: {
-        addListener: (fn) => {
-          bridge.addListener((env, sender, sendResponse) => fn(env.payload, sender, sendResponse));
-        },
-        removeListener: () => {
-        }
-      }
-    };
-    globalThis.chrome = { runtime, storage };
-  }
-
   // src/inject/direct-target.ts
   var buses = /* @__PURE__ */ new Map();
   function busFor(origin2) {
@@ -7958,8 +7500,10 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     const connDot = el("span", { className: "studio-chat-conn-dot" });
     const connText = el("span", { className: "studio-chat-conn-text", text: "\u8FDE\u63A5\u4E2D\u2026" });
     const connBox = el("div", { className: "studio-chat-conn" }, [connDot, connText]);
+    const meetingChip = el("span", { className: "studio-chat-meeting-chip idle", text: "\u25CB \u672A\u5F00\u59CB" });
     headerLeft.appendChild(roomTitle);
     headerLeft.appendChild(memberChips);
+    headerLeft.appendChild(meetingChip);
     headerLeft.appendChild(connBox);
     const closeBtn = el("button", { className: "studio-chat-close", attrs: { title: "\u5173\u95ED" } }, [
       icon(Icons.x, 18)
@@ -8124,6 +7668,28 @@ Please report this to https://github.com/markedjs/marked.`, e) {
           if (ev.summary) appendSummary(ev.summary);
           break;
         }
+        case "meeting-state": {
+          updateMeetingChip(ev.status ?? "idle", ev.strategy ?? null);
+          break;
+        }
+        case "round-complete": {
+          if (roundInProgress) {
+            roundInProgress = false;
+            updateComposerState();
+          }
+          break;
+        }
+      }
+    }
+    function updateMeetingChip(status, strategy) {
+      meetingChip.className = `studio-chat-meeting-chip ${status}`;
+      if (status === "active" && strategy) {
+        const topics = strategy.focusTopics.length > 0 ? `\xB7 ${strategy.focusTopics.join("\u3001")}` : "";
+        meetingChip.textContent = `\u25CF \u4F1A\u8BAE\u4E2D \xB7 \u9608\u503C ${strategy.minRoundsBeforeAutoSummary} \u8F6E ${topics}`;
+      } else if (status === "closed") {
+        meetingChip.textContent = "\u25CB \u5DF2\u6563\u4F1A";
+      } else {
+        meetingChip.textContent = "\u25CB \u672A\u5F00\u59CB";
       }
     }
     function removeWelcome() {
@@ -8414,6 +7980,28 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 }
 .studio-chat-conn-dot.ok { background: #22c55e; }
 .studio-chat-conn-dot.bad { background: #ef4444; }
+/* v0.29 \u4F1A\u8BAE\u72B6\u6001 chip */
+.studio-chat-meeting-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 500;
+  background: #f3f4f6;
+  color: #6b7280;
+  white-space: nowrap;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.studio-chat-meeting-chip.active {
+  background: #dcfce7;
+  color: #15803d;
+}
+.studio-chat-meeting-chip.closed {
+  background: #f1f5f9;
+  color: #94a3b8;
+}
 .studio-chat-close {
   flex-shrink: 0;
   width: 28px;
@@ -8889,19 +8477,6 @@ Please report this to https://github.com/markedjs/marked.`, e) {
       reportError: options2.reportError,
       botId
     });
-    const remoteKv = {
-      async readAll() {
-        return {};
-      },
-      async writeBatch(batch) {
-        for (const [k, v2] of Object.entries(batch.set)) await host.kvSet(k, v2);
-        for (const k of batch.remove) await host.kvRemove(k);
-      }
-    };
-    const runtimeTransport = {
-      post: (envelope) => host.sendEnvelope(envelope)
-    };
-    installChromeShims({ localBackend: remoteKv, transport: runtimeTransport });
     const bridge = installDirectBridge({ origin: origin2, sessionId, reportError: options2.reportError });
     bootstrapInjection({
       capabilities: capabilities2,

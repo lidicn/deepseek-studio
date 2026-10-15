@@ -353,7 +353,29 @@ describe('chat-room-runtime 真摘要器', () => {
     });
     const summarizer = createModelSummarizer({ registry, onAgentEvent: () => () => {}, summarizerBotId: 'ghost' });
 
-    const result = await summarizer([]);
+    const result = await summarizer([
+      { id: 'm1', roomId: 'r1', senderId: 'user', senderType: 'user', content: '问题', timestamp: 1, mentions: [] },
+    ] as never);
     expect(result).toContain('unavailable');
+  });
+
+  it('bot 无回复（超时/空输出）→ 抛错而非返回哨兵串（v0.29 防陈旧摘要落盘）', async () => {
+    // 缺陷回归：超时时返回 '[summary: bot error]' 这类非空哨兵串，会被 summarize()
+    // 当真实摘要提交落盘，把上一份摘要原样重推。失败必须抛错让 summarize() 走 release。
+    const script = makeScriptedEngines();
+    const listeners = new Set<(event: AgentLoopEvent) => void>();
+    const registry = createBotRegistry({
+      createEngine: ({ botId }) => script.ensureEngine(botId),
+      onEvent: (e) => { for (const cb of listeners) cb(e); },
+    });
+    await registry.create({ botId: 'main', slotId: 'main' });
+    script.setReply('main', ''); // 引擎返回空 → 摘要为空
+    const onAgentEvent = (cb: (event: AgentLoopEvent) => void) => { listeners.add(cb); return () => { listeners.delete(cb); }; };
+
+    const summarizer = createModelSummarizer({ registry, onAgentEvent, summarizerBotId: 'main' });
+
+    await expect(summarizer([
+      { id: 'm1', roomId: 'r1', senderId: 'user', senderType: 'user', content: '问题', timestamp: 1, mentions: [] },
+    ] as never)).rejects.toThrow();
   });
 });
