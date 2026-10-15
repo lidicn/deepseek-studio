@@ -121,6 +121,7 @@ struct BotWindowsConfig {
 // config_dir/AppData\Roaming 下**不是同一目录**——这里用 home_dir。
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct StudioConfig {
     #[serde(default)]
     token: String,
