@@ -2,17 +2,15 @@
  * 注入入口（initialization_script）
  *
  * 在 document_start 按顺序装配：
- *   1. installChromeShims()      —— 挂 window.chrome.runtime / chrome.storage
- *   2. installDirectBridge()     —— content↔注入脚本 同域直连桥（消除 postMessage 伪造面）
- *   3. bootstrapInjection()      —— 按白名单启动能力模块，接管资源管理
- *   4. createHostClient()        —— 连接常驻宿主 ws 通道，承接工具派发与同意闸门
+ *   1. installDirectBridge()     —— content↔注入脚本 同域直连桥（消除 postMessage 伪造面）
+ *   2. bootstrapInjection()      —— 按白名单启动能力模块，接管资源管理
+ *   3. createHostClient()        —— 连接常驻宿主 ws 通道，承接工具派发与同意闸门
  * 并把装配结果挂到 window.__deepseekStudio，供宿主/调试读取。
  *
  * v0.4：能力集默认含 echo + chat-read/insert/send；宿主客户端仅在浏览器环境自动连接
  * （node 测试环境无 document，不连接，避免挂起）。
  */
 
-import { installChromeShims, type StorageKvBackend, type StorageKvWriteBatch, type Transport } from '../bridge';
 import { installDirectBridge, type InstalledBridge } from '../inject/bridge-install';
 import { bootstrapInjection } from '../inject/loader';
 import type { ContentCapabilityController, ReplaceContentDocumentLifecycle } from '../inject/types';
@@ -83,8 +81,9 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
   // v0.24：读 Tauri 注入的 __studioBotId（隐藏窗口各自不同）；缺省 undefined → main。
   const botId = options.botId ?? (globalThis as { __studioBotId?: string }).__studioBotId ?? 'main';
 
-  // v0.7：先建 host client（不 connect），用它建 remote KV backend，再装 chrome shim。
-  // 顺序不能反：installChromeShims 会把 window.chrome.storage 指向这个 backend。
+  // v0.7：先建 host client（不 connect），再装直连桥。
+  // 注：桌面版 host-client 走 WebSocket（sendEnvelope → ws），不经 chrome.runtime。
+  // 不装 chromeShims——DeepSeek 反爬会检测 window.chrome 判定扩展环境拒登（见 v0.29 修复）。
   const capabilities = dedupeById([...defaultCapabilities(), ...(options.capabilities ?? [])]);
   const executable = capabilities as unknown as ExecutableCapability[];
   const host = createHostClient({
@@ -93,22 +92,6 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
     reportError: options.reportError,
     botId,
   });
-
-  const remoteKv: StorageKvBackend = {
-    async readAll(): Promise<Record<string, unknown>> {
-      // v0.7：页端不预加载全量（宿主 KV 是 append-only 写路径，读回由调用方显式 kvGet）。
-      return {};
-    },
-    async writeBatch(batch: StorageKvWriteBatch): Promise<void> {
-      for (const [k, v] of Object.entries(batch.set)) await host.kvSet(k, v);
-      for (const k of batch.remove) await host.kvRemove(k);
-    },
-  };
-  // v0.7：chrome.runtime.sendMessage 经 host-client → 宿主 runtime-envelope 路由。
-  const runtimeTransport: Transport = {
-    post: (envelope) => host.sendEnvelope(envelope),
-  };
-  installChromeShims({ localBackend: remoteKv, transport: runtimeTransport });
 
   const bridge = installDirectBridge({ origin, sessionId, reportError: options.reportError });
 
