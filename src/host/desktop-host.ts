@@ -34,7 +34,7 @@ import { createAgentChannel, type AgentChannel } from './agent-channel';
 import { pickFolderViaDialog } from './folder-picker';
 import { createWebEngine } from './engine/web-engine';
 import { createBotRegistry } from './bot/registry';
-import type { BotInstance, PersonaRegistry, RoomConfig } from './bot/types';
+import type { BotInstance, ChatRoomEvent, PersonaRegistry, RoomConfig } from './bot/types';
 import { createSlotRuntime, type SlotRuntime } from './bot/slot-runtime';
 import {
   createChatRoomRuntime,
@@ -212,6 +212,8 @@ export interface DesktopHost {
   readonly agent: AgentFacade;
   /** 订阅智能体事件（面板 WS 推送的数据源）；返回退订函数。 */
   onAgentEvent(cb: (event: AgentLoopEvent) => void): () => void;
+  /** v0.28：订阅聊天室结构化事件（ChatRoomEvent → agent-channel broadcast / UI 渲染）；返回退订函数。 */
+  onChatRoomEvent(cb: (event: ChatRoomEvent) => void): () => void;
 }
 
 export interface AgentFacade {
@@ -576,6 +578,20 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   // 工具执行不在 loop 内重复实现：引擎把消息灌进聊天页，页端拦截器解析工具标签
   // 反向投递到 invokeTool（完整授权链），结果由拦截器 pending 回填下一次请求。
   const agentListeners = new Set<(event: AgentLoopEvent) => void>();
+  // v0.28：聊天室结构化事件总线（ChatRoomEvent，非 AgentLoopEvent）。
+  // onBotReply/onSummary 回调把 CB 准备好的结构化事件推入此集合，
+  // 由 agent-channel 订阅并 broadcast 到 WS（经 {type:'chat-room-event'} 通道）。
+  // 与 agentListeners 分离——AgentLoopEvent 是引擎层原始事件，ChatRoomEvent 是面向 UI 的干净事件。
+  const chatRoomListeners = new Set<(event: ChatRoomEvent) => void>();
+  const emitChatRoomEvent = (event: ChatRoomEvent): void => {
+    for (const cb of chatRoomListeners) {
+      try {
+        cb(event);
+      } catch {
+        // 观察者异常不中断聊天室主流程
+      }
+    }
+  };
   const botRegistry = createBotRegistry({
     onEvent: (event) => {
       for (const cb of agentListeners) {
@@ -707,9 +723,14 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       onAgentEvent: (cb) => { agentListeners.add(cb); return () => agentListeners.delete(cb); },
       rooms: options.chatRooms,
       maxDepth: options.chatRoomMaxDepth,
-      onBotReply: () => {
-        // v0.27：bot 回复已落盘 messageStore，UI 经 chatRoomRuntime.getMessages() 拉取。
-        // 后续可在此经 hub/channel 推实时事件到面板（v0.29 长任务状态回报接线时补）。
+      onBotReply: (event) => {
+        // v0.28：bot 回复落盘后，CB 已构造好 ChatRoomBotReplyEvent（含 roomId/persona/content/messageId）。
+        // 经 chatRoomListeners → agent-channel broadcast 成 {type:'chat-room-event'}，UI 据此渲染气泡。
+        emitChatRoomEvent(event);
+      },
+      onSummary: (event) => {
+        // v0.28：摘要落快照成功后，CB 已构造好 ChatRoomSummaryEvent。同样经结构化通道推 UI。
+        emitChatRoomEvent(event);
       },
     });
 
@@ -1090,6 +1111,11 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
               agentListeners.add(cb);
               return () => agentListeners.delete(cb);
             },
+            // v0.28：聊天室结构化事件订阅（ChatRoomEvent → agent-channel broadcast）。
+            onChatRoomEvent: (cb) => {
+              chatRoomListeners.add(cb);
+              return () => chatRoomListeners.delete(cb);
+            },
             get policyMode() {
               return policyMode;
             },
@@ -1186,6 +1212,11 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     onAgentEvent(cb) {
       agentListeners.add(cb);
       return () => agentListeners.delete(cb);
+    },
+    // v0.28：聊天室结构化事件订阅（供 agent-channel 以外的消费方使用）。
+    onChatRoomEvent(cb) {
+      chatRoomListeners.add(cb);
+      return () => chatRoomListeners.delete(cb);
     },
   };
 }

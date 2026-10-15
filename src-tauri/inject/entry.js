@@ -8075,6 +8075,11 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         if (!event) return;
         handleEvent(event);
       }
+      if (type === "chat-room-event") {
+        const ev = msg2.event;
+        if (!ev) return;
+        handleStructuredEvent(ev);
+      }
     }
     function handleEvent(event) {
       const botId = event.botId ?? "main";
@@ -8089,11 +8094,6 @@ Please report this to https://github.com/markedjs/marked.`, e) {
           break;
         case "assistant":
           thinkingBots.delete(botId);
-          if (botId === "main" && roundInProgress) {
-            appendSummary(event.text ?? "");
-          } else if (config.members.includes(botId)) {
-            appendBotMessage(botId, event.text ?? "");
-          }
           break;
         case "done":
           thinkingBots.delete(botId);
@@ -8108,6 +8108,21 @@ Please report this to https://github.com/markedjs/marked.`, e) {
           thinkingBots.delete(botId);
           if (event.text) appendErrorMessage(botId, event.text);
           break;
+      }
+    }
+    function handleStructuredEvent(ev) {
+      if (ev.roomId !== config.roomId) return;
+      switch (ev.kind) {
+        case "chat-bot-reply": {
+          const botId = ev.botId ?? "main";
+          thinkingBots.delete(botId);
+          appendBotMessage(botId, ev.content ?? "");
+          break;
+        }
+        case "chat-summary": {
+          if (ev.summary) appendSummary(ev.summary);
+          break;
+        }
       }
     }
     function removeWelcome() {

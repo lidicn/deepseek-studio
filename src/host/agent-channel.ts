@@ -15,6 +15,7 @@
 import type { Server } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { AgentLoopEvent } from './agent-loop';
+import type { ChatRoomEvent } from './bot/types';
 import type { PolicyMode } from './policy';
 import { PANEL_POLICY_MODES } from './policy';
 
@@ -34,6 +35,8 @@ export interface AgentChannelHost {
     list(): { botId: string; running: boolean }[];
   };
   onAgentEvent(cb: (event: AgentLoopEvent) => void): () => void;
+  /** v0.28：聊天室结构化事件订阅（ChatRoomEvent → {type:'chat-room-event'} broadcast）。 */
+  onChatRoomEvent?: (cb: (event: ChatRoomEvent) => void) => () => void;
   readonly policyMode: PolicyMode;
   setPolicyMode(mode: PolicyMode): void;
   readonly workspaceRoot: string | null;
@@ -120,7 +123,15 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
     for (const ws of sockets) safeSend(ws, { type: 'event', event });
   }
 
+  // v0.28：聊天室结构化事件单独广播（与 AgentLoopEvent 的 {type:'event'} 区分）。
+  // UI 据此渲染 bot 回复气泡/摘要，按 roomId 过滤当前房间。
+  function broadcastChatRoomEvent(event: ChatRoomEvent): void {
+    for (const ws of sockets) safeSend(ws, { type: 'chat-room-event', event });
+  }
+
   const unsubscribe = options.host.onAgentEvent(broadcast);
+  // onChatRoomEvent 可选（无 chatRooms 配置时 host 不提供）；缺省不订阅。
+  const unsubscribeChatRoom = options.host.onChatRoomEvent?.(broadcastChatRoomEvent);
 
   wss.on('connection', (ws: WebSocket, req) => {
     // 鉴权：query token 必须与 API 令牌一致
@@ -225,6 +236,7 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
   return {
     dispose() {
       unsubscribe();
+      unsubscribeChatRoom?.();
       // F-L1：移除 upgrade 监听器，避免泄漏
       (options.server as unknown as { removeListener: (e: string, fn: unknown) => void })
         .removeListener('upgrade', onUpgrade as never);

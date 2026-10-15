@@ -52,6 +52,22 @@ interface ChatRoomEvent {
   botId?: string;
 }
 
+/** v0.28 结构化聊天室事件（CB 定义，agent-channel 经 {type:'chat-room-event'} broadcast）。 */
+interface StructuredChatRoomEvent {
+  kind: 'chat-bot-reply' | 'chat-summary';
+  roomId: string;
+  // chat-bot-reply
+  persona?: string;
+  botId?: string;
+  senderType?: 'user' | 'main-bot' | 'sub-bot';
+  content?: string;
+  messageId?: string;
+  timestamp?: number;
+  // chat-summary
+  summary?: string;
+  throughMessageId?: string;
+}
+
 export function createChatRoom(config: ChatRoomRuntimeConfig): ChatRoomHandle {
   const { container, shadow } = createShadowContainer('studio-chat-room-root');
   injectStyles(shadow, CHAT_ROOM_CSS);
@@ -198,6 +214,11 @@ export function createChatRoom(config: ChatRoomRuntimeConfig): ChatRoomHandle {
       if (!event) return;
       handleEvent(event);
     }
+    if (type === 'chat-room-event') {
+      const ev = msg.event as StructuredChatRoomEvent | undefined;
+      if (!ev) return;
+      handleStructuredEvent(ev);
+    }
   }
 
   function handleEvent(event: ChatRoomEvent): void {
@@ -216,14 +237,9 @@ export function createChatRoom(config: ChatRoomRuntimeConfig): ChatRoomHandle {
         break;
       case 'assistant':
         thinkingBots.delete(botId);
-        if (botId === 'main' && roundInProgress) {
-          // 摘要器输出
-          appendSummary(event.text ?? '');
-        } else if (config.members.includes(botId)) {
-          // 专家回复
-          appendBotMessage(botId, event.text ?? '');
-        }
-        // idle 时的 main assistant 属于日常对话，忽略
+        // v0.28：结构化 chat-bot-reply 事件是干净的渲染源，原始 assistant 事件
+        // 仍承载内部 sentinel 文本——这里不再用原始 assistant 渲染气泡/摘要，
+        // 只保留思考指示器清理（真正的回复走 handleStructuredEvent）。
         break;
       case 'done':
         thinkingBots.delete(botId);
@@ -240,6 +256,32 @@ export function createChatRoom(config: ChatRoomRuntimeConfig): ChatRoomHandle {
         thinkingBots.delete(botId);
         if (event.text) appendErrorMessage(botId, event.text);
         break;
+    }
+  }
+
+  /**
+   * v0.28 结构化事件渲染（干净路径）。
+   * CB 在 chat-room-runtime 把每条 bot 回复落盘后构造 ChatRoomBotReplyEvent，
+   * 摘要成功后构造 ChatRoomSummaryEvent，经 agent-channel {type:'chat-room-event'} 推来。
+   * 带 roomId——只渲染当前房间的事件（多房间隔离）。
+   */
+  function handleStructuredEvent(ev: StructuredChatRoomEvent): void {
+    // roomId 过滤：非当前房间的事件忽略（多房间隔离）
+    if (ev.roomId !== config.roomId) return;
+    switch (ev.kind) {
+      case 'chat-bot-reply': {
+        // 每条 bot 回复（落盘后由 CB 推出）。botId 决定头像/配色。
+        // main 若是成员，其回复也是回复气泡（非摘要——摘要有独立的 chat-summary 事件）。
+        const botId = ev.botId ?? 'main';
+        thinkingBots.delete(botId);
+        appendBotMessage(botId, ev.content ?? '');
+        break;
+      }
+      case 'chat-summary': {
+        // 摘要事件（CB 在 summaryService.getSummary 成功后推出，roomId 隔离）。
+        if (ev.summary) appendSummary(ev.summary);
+        break;
+      }
     }
   }
 
