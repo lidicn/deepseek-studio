@@ -248,6 +248,16 @@ fn sanitize_window_label(raw: &str) -> String {
 
 fn main() {
     tauri::Builder::default()
+        // v0.30 单实例锁：第二个 deepseek-studio.exe 进程不再创建窗口，
+        // 而是聚焦到已有主窗口（根治多实例 × N bot 窗口 = 窗口爆炸）。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // 第二实例启动时：把已有主窗口提到前台、取消最小化、聚焦。
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         // v0.12 Phase 3：开机自启插件
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
