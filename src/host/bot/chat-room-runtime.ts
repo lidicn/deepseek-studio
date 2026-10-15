@@ -244,13 +244,17 @@ export function createModelSummarizer(deps: {
   onAgentEvent: AgentEventBus;
   /** 产摘要的 botId（优先 room.hostPersona，再缺省 main）。 */
   summarizerBotId?: string;
+  /** 摘要器专属超时（ms），到点即放弃。缺省 30s —— 比全局看门狗（15min）短得多，
+   *  避免散会/手动总结时卡等十几分钟才放弃。超时走 throw → summarize() release 不落脏摘要。 */
+  timeoutMs?: number;
 }): ChatSummarizer {
   const { registry, onAgentEvent } = deps;
+  const timeoutMs = deps.timeoutMs ?? 30_000;
   return async (messages: ReadonlyArray<ChatMessage>): Promise<string> => {
     const summarizerBotId = deps.summarizerBotId ?? 'main';
     if (messages.length === 0) return '';
     const bot = registry.get(summarizerBotId);
-    if (!bot) return '[summary: bot unavailable]';
+    if (!bot) throw new Error('[summary: bot unavailable]');
 
     // 拼摘要 prompt
     const transcript = messages
@@ -265,11 +269,23 @@ export function createModelSummarizer(deps: {
       }
     };
     const unsub = onAgentEvent(listener);
+
+    // 摘要器专属超时：到点即放弃，不等全局看门狗（15min 太长，散会不该卡这么久）。
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('[summary: timeout]')), timeoutMs);
+    });
+
     try {
       const state = registry.getState(summarizerBotId);
       state?.sessionAllowlist.add('chat-insert');
       state?.sessionAllowlist.add('chat-send');
-      await bot.loop.send(`${AGENT_SENTINEL}${prompt}`);
+      // race 摘要发送 vs 超时；send 先 resolve 则看是否捕到 assistant 文本，
+      // 超时先 reject 则走 catch throw。
+      await Promise.race([
+        bot.loop.send(`${AGENT_SENTINEL}${prompt}`),
+        timeout,
+      ]);
       if (!summary) throw new Error('[summary: empty]');
       return summary;
     } catch (err) {
@@ -280,6 +296,7 @@ export function createModelSummarizer(deps: {
       throw err instanceof Error ? err : new Error('[summary: bot error]');
     } finally {
       unsub();
+      if (timer) clearTimeout(timer);
     }
   };
 }

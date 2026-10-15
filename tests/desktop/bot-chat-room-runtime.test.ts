@@ -345,7 +345,7 @@ describe('chat-room-runtime 真摘要器', () => {
     expect(result).not.toContain('[summary');
   });
 
-  it('summarizerBotId 不存在 → 返回不可用占位', async () => {
+  it('summarizerBotId 不存在 → 抛错（v0.29：不可用也走 throw，不返哨兵串）', async () => {
     const script = makeScriptedEngines();
     const registry = createBotRegistry({
       createEngine: ({ botId }) => script.ensureEngine(botId),
@@ -353,10 +353,9 @@ describe('chat-room-runtime 真摘要器', () => {
     });
     const summarizer = createModelSummarizer({ registry, onAgentEvent: () => () => {}, summarizerBotId: 'ghost' });
 
-    const result = await summarizer([
+    await expect(summarizer([
       { id: 'm1', roomId: 'r1', senderId: 'user', senderType: 'user', content: '问题', timestamp: 1, mentions: [] },
-    ] as never);
-    expect(result).toContain('unavailable');
+    ] as never)).rejects.toThrow('unavailable');
   });
 
   it('bot 无回复（超时/空输出）→ 抛错而非返回哨兵串（v0.29 防陈旧摘要落盘）', async () => {
@@ -377,5 +376,33 @@ describe('chat-room-runtime 真摘要器', () => {
     await expect(summarizer([
       { id: 'm1', roomId: 'r1', senderId: 'user', senderType: 'user', content: '问题', timestamp: 1, mentions: [] },
     ] as never)).rejects.toThrow();
+  });
+
+  it('摘要器专属超时：send 不 resolve 时按 timeoutMs 抛错，不等全局看门狗', async () => {
+    // 散会/手动总结不该卡 15 分钟才放弃。用短 timeoutMs 验证快速失败。
+    const script = makeScriptedEngines();
+    const listeners = new Set<(event: AgentLoopEvent) => void>();
+    // 模拟 bot.loop.send 永不 resolve（挂在 pending 态）
+    const registry = createBotRegistry({
+      createEngine: ({ botId }) => {
+        // 一个不 emit assistant 事件的引擎 → send resolve 但 summary 仍空 → throw empty
+        // 这里要测超时，所以让 send 永不 resolve：
+        const e = script.ensureEngine(botId);
+        return { ...e, send: () => new Promise(() => {}) }; // 永不 resolve
+      },
+      onEvent: (ev) => { for (const cb of listeners) cb(ev); },
+    });
+    await registry.create({ botId: 'main', slotId: 'main' });
+    const onAgentEvent = (cb: (event: AgentLoopEvent) => void) => { listeners.add(cb); return () => { listeners.delete(cb); }; };
+
+    const summarizer = createModelSummarizer({ registry, onAgentEvent, summarizerBotId: 'main', timeoutMs: 1500 });
+
+    const start = Date.now();
+    await expect(summarizer([
+      { id: 'm1', roomId: 'r1', senderId: 'user', senderType: 'user', content: '问题', timestamp: 1, mentions: [] },
+    ] as never)).rejects.toThrow('timeout');
+    const elapsed = Date.now() - start;
+    // 应在 ~1.5s 抛错，绝非 15 分钟。留 5s 余量（timer 精度 + 事件循环）。
+    expect(elapsed).toBeLessThan(5000);
   });
 });
