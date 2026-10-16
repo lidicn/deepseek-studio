@@ -488,9 +488,119 @@ export interface ChatRoomRoundCompleteEvent {
   readonly timestamp: number;
 }
 
+// ===== SubBotReport 协议（v0.30）=====
+//
+// 为什么需要：v0.30 之前所有 bot 回复都是同步内联的（planRound 逐个 send，UI 等整轮）。
+// 审计等长任务需要子 bot 离线执行 → 产结构化报告 → 主 bot 汇总，不在聊天室里灌全文。
+// SubBotReport 是子 bot 任务产出的数据契约：summary（≤500 字进上下文）+ findings（结构化）
+// + evidenceRefs（指针不内联）+ transcriptPath（全文落盘供追溯）。
+// 设计稿：docs/架构文档/设计稿-Bot编排-账号槽位人设三层解耦-20261014.md:142-158。
+
+/** 审计发现严重程度。 */
+export type FindingSeverity = 'critical' | 'high' | 'medium' | 'low';
+
+/** 单条审计发现（结构化条目）。 */
+export interface Finding {
+  readonly id: string;
+  readonly severity: FindingSeverity;
+  readonly title: string;
+  /** 文件:行 或其他定位串。 */
+  readonly location: string;
+  readonly description: string;
+  /** 指向 transcript 中的证据（不内联全文）。 */
+  readonly evidenceRef: string;
+}
+
+/**
+ * 子 bot 任务报告（v0.30）。一个离线审计槽位完成后的产出。
+ * 报告本身是纯数据——不加 status/timestamps：状态由 task-complete 事件携带（ok/error），
+ * 时间戳在事件上。
+ */
+export interface SubBotReport {
+  readonly slotId: string;
+  readonly dimension: string;
+  /** ≤500 字，进上下文。 */
+  readonly summary: string;
+  readonly findings: readonly Finding[];
+  /** 证据引用指针，不内联全文。 */
+  readonly evidenceRefs: readonly string[];
+  /** 全文落盘路径 runs/<batchId>/<slotId>.jsonl（供追溯，不进上下文）。 */
+  readonly transcriptPath: string;
+}
+
+/**
+ * 报告存储契约（v0.30）。Claude 定义接口，CB 实现 FS 版（report-store.ts）。
+ * 设计稿 :161 指定 FS（jsonl + report.json），不进 SQLite。
+ * Claude 用 InMemoryReportStore（测试桩）并行建全部新文件，CB 交付 FS 版后一行换。
+ */
+export interface ReportStore {
+  /** mkdir -p runs/<batchId>，返回该批次目录路径。 */
+  ensureBatchDir(batchId: string): string;
+  /** 写 jsonl 一行到 runs/<batchId>/<slotId>.jsonl。 */
+  appendTranscript(batchId: string, slotId: string, event: unknown): void;
+  /** 原子写 runs/<batchId>/<slotId>.report.json。 */
+  writeSubReport(batchId: string, slotId: string, report: SubBotReport): void;
+  /** 读该批次所有 .report.json。 */
+  readSubReports(batchId: string): SubBotReport[];
+  /** 写 runs/<batchId>/summary.md，返回路径。 */
+  writeMergedReport(batchId: string, content: string): string;
+  /** 返回 summary.md 路径，不存在返 ''。 */
+  getMergedReportPath(batchId: string): string;
+}
+
+// ===== v0.30 任务事件（加进 ChatRoomEvent union）=====
+//
+// 术语统一：用 batchId（一批审计），不用 Scheduler 的 runId（单次 send 句柄）。
+// 这三个事件经 emitChatRoomEvent → agent-channel → WS → UI handleStructuredEvent 渲染。
+
+/** 子 bot 任务进度事件（离线执行开始/步进时推给 UI）。 */
+export interface ChatRoomTaskProgressEvent {
+  readonly kind: 'task-progress';
+  readonly roomId: string;
+  readonly batchId: string;
+  readonly slotId: string;
+  readonly dimension: string;
+  /** running=开始执行；step=有可观察的步进。 */
+  readonly status: 'running' | 'step';
+  readonly step?: number;
+  readonly message?: string;
+  readonly timestamp: number;
+}
+
+/** 子 bot 任务完成事件（成功/失败时推给 UI，携带 finding 数或错误）。 */
+export interface ChatRoomTaskCompleteEvent {
+  readonly kind: 'task-complete';
+  readonly roomId: string;
+  readonly batchId: string;
+  readonly slotId: string;
+  readonly dimension: string;
+  readonly ok: boolean;
+  readonly findingCount: number;
+  readonly error?: string;
+  readonly timestamp: number;
+}
+
+/** 综合报告就绪事件（所有维度合并完成后推给 UI，含各子报告摘要 + 路径）。 */
+export interface ChatRoomReportReadyEvent {
+  readonly kind: 'report-ready';
+  readonly roomId: string;
+  readonly batchId: string;
+  readonly summaryPath: string;
+  readonly subReports: ReadonlyArray<{
+    readonly slotId: string;
+    readonly dimension: string;
+    readonly findingCount: number;
+    readonly summary: string;
+  }>;
+  readonly timestamp: number;
+}
+
 /** 聊天室结构化事件联合。UI + 多房间隔离的唯一事件源。 */
 export type ChatRoomEvent =
   | ChatRoomBotReplyEvent
   | ChatRoomSummaryEvent
   | ChatRoomMeetingStateEvent
-  | ChatRoomRoundCompleteEvent;
+  | ChatRoomRoundCompleteEvent
+  | ChatRoomTaskProgressEvent
+  | ChatRoomTaskCompleteEvent
+  | ChatRoomReportReadyEvent;
