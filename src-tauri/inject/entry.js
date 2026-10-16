@@ -2531,6 +2531,10 @@ ${result2.stderr}`;
   }
 
   // src/inject/main-world-interceptor.ts
+  var RAW_TOOL_TAG_GLOBAL_RE = /<(?:local_file_(?:read|write|stat)|shell_exec|python_exec|memory_save|mcp_(?:list|call|test|save))>[\s\S]*?<\/(?:local_file_(?:read|write|stat)|shell_exec|python_exec|memory_save|mcp_(?:list|call|test|save))>/g;
+  function stripRawToolTags(text) {
+    return text.replace(RAW_TOOL_TAG_GLOBAL_RE, "");
+  }
   var currentMemories = [];
   var currentMcpTools = [];
   var stepFlow = null;
@@ -3193,12 +3197,22 @@ ${prompt}`;
               loopState.inAutoContinue = false;
               loopState.streamActive = false;
               const reply = loopState.autoReplyText.trim();
-              d(`auto-continue reply len=${reply.length} hasCallback=${typeof onAssistantReply}`);
+              const hadTools = loopState.autoReplyHadTools;
+              d(`auto-continue reply len=${reply.length} hadTools=${hadTools} hasCallback=${typeof onAssistantReply}`);
               if (reply) {
-                try {
-                  onAssistantReply?.(reply, loopDepth);
-                } catch (e) {
-                  d(`auto-continue push failed: ${e.message}`);
+                if (!hadTools) {
+                  const cleanReply = stripRawToolTags(reply).trim();
+                  if (cleanReply) {
+                    try {
+                      onAssistantReply?.(cleanReply, loopDepth);
+                    } catch (e) {
+                      d(`auto-continue push failed: ${e.message}`);
+                    }
+                  } else {
+                    d(`auto-continue reply all-tool-text (stripped to empty), skipping push`);
+                  }
+                } else {
+                  d(`auto-continue turn had tools, not pushing to host (interceptor will auto-continue)`);
                 }
                 if (chatUI) {
                   try {
@@ -3220,7 +3234,6 @@ ${prompt}`;
               } else {
                 const replyForNudge = loopState.autoReplyText.trim();
                 const hasTaskComplete = !!extractTaskCompleteSignal(replyForNudge);
-                const hadTools = loopState.autoReplyHadTools;
                 if (hadTools) {
                   nudgeCount = 0;
                 } else if (!hasTaskComplete && replyForNudge && shouldNudge(replyForNudge) && nudgeCount < MAX_NUDGES && loopDepth < MAX_LOOP) {
@@ -3300,11 +3313,21 @@ ${prompt}`;
               loopState.inAutoContinue = false;
               loopState.streamActive = false;
               const reply = loopState.autoReplyText.trim();
+              const hadTools = loopState.autoReplyHadTools;
               if (reply) {
-                try {
-                  onAssistantReply?.(reply, loopDepth);
-                } catch (e) {
-                  d(`nudge push failed: ${e.message}`);
+                if (!hadTools) {
+                  const cleanReply = stripRawToolTags(reply).trim();
+                  if (cleanReply) {
+                    try {
+                      onAssistantReply?.(cleanReply, loopDepth);
+                    } catch (e) {
+                      d(`nudge push failed: ${e.message}`);
+                    }
+                  } else {
+                    d(`nudge reply all-tool-text (stripped to empty), skipping push`);
+                  }
+                } else {
+                  d(`nudge turn had tools, not pushing to host`);
                 }
               }
               if (xhr.status === 429 && loopDepth < MAX_LOOP) {
@@ -3318,7 +3341,6 @@ ${prompt}`;
               } else {
                 const replyForNudge = loopState.autoReplyText.trim();
                 const hasTaskComplete = !!extractTaskCompleteSignal(replyForNudge);
-                const hadTools = loopState.autoReplyHadTools;
                 if (hadTools) {
                   nudgeCount = 0;
                   d("auto-continue nudge end: tools detected, handing to scheduleAutoContinue");

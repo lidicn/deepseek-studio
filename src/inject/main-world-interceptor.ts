@@ -32,6 +32,25 @@ import { createStepFlowContainer, type StepFlowHandle } from './step-flow-ui';
 import { hydrateCodeBlocks, type CodeRunner } from './render-code-runner';
 import type { StudioChatUIHandle } from '../ui/studio-chat-ui';
 
+/**
+ * 从文本里剔除原始工具调用标签（<shell_exec>…</shell_exec> 等），返回纯散文。
+ *
+ * 与 streaming-tool-parser 的 clean 路径不同——这是无状态的字符串级正则，
+ * 用于在把 autoReplyText 推给宿主前清除残留的原始标签文本。
+ *
+ * 真机根因：auto-continue 的 XHR 路径把 `visible`（SSE 提取的纯文本，**仍含工具标签**）
+ * 累积到 loopState.autoReplyText；若直接 onAssistantReply(autoReplyText) 推给宿主，
+ * 宿主的 AgentLoop 见到 content 里含 `<shell_exec>` 且 toolCalls=0 → 判定「未解析工具标签」
+ * → 格式纠偏循环 → 永不 emit assistant → 聊天室收不到回复。
+ * 这里在推送前剥标签，让 AgentLoop 只看到干净的散文。
+ */
+const RAW_TOOL_TAG_GLOBAL_RE =
+  /<(?:local_file_(?:read|write|stat)|shell_exec|python_exec|memory_save|mcp_(?:list|call|test|save))>[\s\S]*?<\/(?:local_file_(?:read|write|stat)|shell_exec|python_exec|memory_save|mcp_(?:list|call|test|save))>/g;
+
+function stripRawToolTags(text: string): string {
+  return text.replace(RAW_TOOL_TAG_GLOBAL_RE, '');
+}
+
 /** 页端 → 宿主 的工具调用投递请求（与 host-client.sendToolCall 入参同构）。 */
 export interface ToolCallRequest {
   readonly callId: string;
@@ -906,9 +925,25 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
             loopState.streamActive = false;
             // v0.9：把 auto-continue 收到的模型回复推送给宿主（不渲染到 DOM）
             const reply = loopState.autoReplyText.trim();
-            d(`auto-continue reply len=${reply.length} hasCallback=${typeof onAssistantReply}`);
+            const hadTools = loopState.autoReplyHadTools;
+            d(`auto-continue reply len=${reply.length} hadTools=${hadTools} hasCallback=${typeof onAssistantReply}`);
             if (reply) {
-              try { onAssistantReply?.(reply, loopDepth); } catch (e) { d(`auto-continue push failed: ${(e as Error).message}`); }
+              // v0.32 修复：只在「本轮无工具调用」时把回复推给宿主。
+              // 有工具的回合是中间态——页端拦截器已 forward 工具 + 自动续跑，宿主此时
+              // 不该拿到回复（拿到也是带 <shell_exec> 标签的半截文本）。旧实现无条件推，
+              // 导致宿主 AgentLoop 抓到中间回合（toolCalls=0 + content 含原始标签）→
+              // 格式纠偏循环 → 永不 emit assistant → 聊天室收不到任何回复。
+              // 无工具回合 = 循环走到最终回答，这时推干净的散文（剥标签）给宿主。
+              if (!hadTools) {
+                const cleanReply = stripRawToolTags(reply).trim();
+                if (cleanReply) {
+                  try { onAssistantReply?.(cleanReply, loopDepth); } catch (e) { d(`auto-continue push failed: ${(e as Error).message}`); }
+                } else {
+                  d(`auto-continue reply all-tool-text (stripped to empty), skipping push`);
+                }
+              } else {
+                d(`auto-continue turn had tools, not pushing to host (interceptor will auto-continue)`);
+              }
               // v0.19：auto-continue 回复已通过 SSE 拦截推送给了 chat UI（appendToAssistantMessage）。
               // 流结束，通知 chat UI 格式化渲染。不再操作 DeepSeek DOM。
               if (chatUI) {
@@ -931,7 +966,6 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               //   （由工具结果异步回调触发）。无工具且未 task_complete → 看 shouldNudge 决定是否 nudge。
               const replyForNudge = loopState.autoReplyText.trim();
               const hasTaskComplete = !!extractTaskCompleteSignal(replyForNudge);
-              const hadTools = loopState.autoReplyHadTools;
               if (hadTools) {
                 // 本轮有工具调用：续跑结果回来后 scheduleAutoContinue 接管，nudge 预算复位。
                 nudgeCount = 0;
@@ -1023,8 +1057,20 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
             loopState.inAutoContinue = false;
             loopState.streamActive = false;
             const reply = loopState.autoReplyText.trim();
+            const hadTools = loopState.autoReplyHadTools;
             if (reply) {
-              try { onAssistantReply?.(reply, loopDepth); } catch (e) { d(`nudge push failed: ${(e as Error).message}`); }
+              // v0.32 修复：同 autoContinueWithPow——只在无工具回合推回复给宿主，
+              // 且推送前剥原始工具标签，避免宿主 AgentLoop 误判「未解析工具标签」。
+              if (!hadTools) {
+                const cleanReply = stripRawToolTags(reply).trim();
+                if (cleanReply) {
+                  try { onAssistantReply?.(cleanReply, loopDepth); } catch (e) { d(`nudge push failed: ${(e as Error).message}`); }
+                } else {
+                  d(`nudge reply all-tool-text (stripped to empty), skipping push`);
+                }
+              } else {
+                d(`nudge turn had tools, not pushing to host`);
+              }
               // nudge 回复不重复渲染到 DOM（autoContinueWithPow 的渲染分支只在正常续跑触发，
               // nudge 走同一 .ds-assistant-message-main-content 覆盖会混淆；面板经 onAssistantReply 已收到）。
             }
@@ -1037,7 +1083,6 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               // nudge 回复后再次判定：有工具调用 → 走正常续跑；无工具 + 无 task_complete → 再 nudge（受 MAX_NUDGES 限）
               const replyForNudge = loopState.autoReplyText.trim();
               const hasTaskComplete = !!extractTaskCompleteSignal(replyForNudge);
-              const hadTools = loopState.autoReplyHadTools;
               if (hadTools) {
                 // nudge 后模型终于调了工具：续跑结果回来后 scheduleAutoContinue 接管，nudge 预算复位。
                 nudgeCount = 0;
