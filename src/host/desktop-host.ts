@@ -1251,6 +1251,16 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           state.lastAutoReply.updatedAt = Date.now();
           state.lastAutoReply.fresh = true;
         },
+        // v0.31 账号身份锁：hello 上报指纹与已登记页重复（同账号双窗口 = 必封）。
+        // 该连接已被 page-runtime 标 untrusted + 推阻塞覆盖层（fail-closed）；
+        // 本回调仅告警（center 已配 onError 打 warn）。聊天室告警事件待 system-alert kind 落地再加。
+        onDuplicateAccount: ({ duplicateBotId, existingBotId, fingerprint }) => {
+          const fp = fingerprint.slice(0, 8);
+          console.warn(
+            `[account-lock] DUPLICATE account fp=${fp}… bot=${duplicateBotId ?? 'main'} ` +
+            `already active as bot=${existingBotId ?? 'main'} — duplicate window fail-closed`,
+          );
+        },
         // v0.7：页端 storage shim 的 KV 落盘 backend。
         kvStore: { get: kvGet, set: kvSet, remove: kvRemove },
         onDebugEvalResult: (requestId, ok, result) => {

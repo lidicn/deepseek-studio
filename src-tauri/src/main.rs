@@ -231,6 +231,112 @@ fn resolve_data_dir(raw: &str) -> Option<std::path::PathBuf> {
     Some(path)
 }
 
+/// bot 窗口创建计划：把「该不该建、用哪个 profile」从建窗 IO 里分离出来，便于单测。
+///
+/// 之所以要这一层：v0.31 前 bot 窗口循环里 dataDir 缺失/非法会**静默回退到主 profile**
+/// （只打一句 "cookies WILL cross" 警告然后照建），等于把主账号塞进第二个窗口；
+/// 且两条目解析到同一 profile 时也不报错。二者都直接违反设计稿 §6 铁律
+/// 「1 槽位 : 1 账号 : 1 窗口」——同账号多窗口正是 DeepSeek 封号判据。
+#[derive(Debug, PartialEq, Eq)]
+enum BotWindowPlan {
+    Create {
+        label: String,
+        bot_id: String,
+        visible: bool,
+        data_dir: std::path::PathBuf,
+    },
+    Skip {
+        bot_id: String,
+        reason: String,
+    },
+}
+
+/// Windows 路径大小写不敏感 → 归一化后比较，避免同一 profile 被两条目共用却判为不同。
+fn normalize_for_compare(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy().replace('\\', "/");
+    let s = s.trim_end_matches('/');
+    if cfg!(windows) {
+        s.to_lowercase()
+    } else {
+        s.to_string()
+    }
+}
+
+/// 决定每个配置条目该建窗口还是跳过。
+///
+/// 铁律落地：
+///  - dataDir 缺失/非法 → **不再回退主 profile**，改为按 botId 派生
+///    `profiles/<botId>` 独立 profile（窗口照建，但登录态隔离）；
+///  - 两个条目解析到**同一 profile**（含与主窗口 profile / 与派生目录撞车）→
+///    后者跳过（同账号双窗口 = 必封，fail-closed 而不是静默共用）。
+///
+/// `reserved` 是已占用的 profile 目录（调用方传主窗口自己的 profile）。
+fn plan_bot_windows(
+    entries: &[BotWindowConfig],
+    reserved: &[std::path::PathBuf],
+) -> Vec<BotWindowPlan> {
+    let mut used: Vec<String> = reserved.iter().map(|p| normalize_for_compare(p)).collect();
+    let mut labels: Vec<String> = Vec::new();
+    let mut plans = Vec::with_capacity(entries.len());
+
+    for entry in entries {
+        let bot_id = entry.bot_id.trim().to_string();
+        if bot_id.is_empty() {
+            plans.push(BotWindowPlan::Skip {
+                bot_id,
+                reason: "empty botId".to_string(),
+            });
+            continue;
+        }
+        let label = sanitize_window_label(&bot_id);
+        if labels.iter().any(|l| l == &label) {
+            plans.push(BotWindowPlan::Skip {
+                bot_id,
+                reason: format!("duplicate label {:?}", label),
+            });
+            continue;
+        }
+        // 显式 dataDir 优先；缺失/非法 → 派生 profiles/<botId>，绝不共享主 profile。
+        let data_dir = match entry.data_dir.as_deref().and_then(resolve_data_dir) {
+            Some(d) => d,
+            None => match dirs::config_dir().map(|b| {
+                b.join("deepseek-studio")
+                    .join("profiles")
+                    .join(&bot_id)
+            }) {
+                Some(d) => d,
+                None => {
+                    plans.push(BotWindowPlan::Skip {
+                        bot_id,
+                        reason: "no dataDir and config_dir unavailable".to_string(),
+                    });
+                    continue;
+                }
+            },
+        };
+        let key = normalize_for_compare(&data_dir);
+        if used.iter().any(|u| u == &key) {
+            plans.push(BotWindowPlan::Skip {
+                bot_id,
+                reason: format!(
+                    "profile {} already used by another window (1 slot : 1 account : 1 window)",
+                    data_dir.display()
+                ),
+            });
+            continue;
+        }
+        used.push(key);
+        labels.push(label.clone());
+        plans.push(BotWindowPlan::Create {
+            label,
+            bot_id,
+            visible: entry.visible,
+            data_dir,
+        });
+    }
+    plans
+}
+
 /// 窗口 label 只做字母数字 + 短横/下划线/点，避免非法字符导致 Tauri 拒绝创建。
 /// 截断到 32 字符并保证非空（退化为 "bot"）。
 fn sanitize_window_label(raw: &str) -> String {
@@ -336,14 +442,24 @@ fn main() {
 
             // v0.24：按预配置创建 bot 窗口（每窗口独立登录态）。
             // 主窗口已建好；bot 窗口逐个容错创建——单个失败不影响主窗口，也不中断 setup。
+            // v0.31：改走 plan_bot_windows——dataDir 缺失不再回退主 profile（那是同账号
+            // 双窗口的成因），两条目撞同一 profile 直接跳过（1 槽位 : 1 账号 : 1 窗口）。
             let base_script = if !disable_inject { load_init_script() } else { String::new() };
-            for entry in load_bot_windows_config().bots {
-                let bot_id = entry.bot_id.trim().to_string();
-                if bot_id.is_empty() {
-                    eprintln!("[studio] bot window skipped: empty botId");
-                    continue;
-                }
-                let label = sanitize_window_label(&bot_id);
+            // 主窗口自己的 WebView2 profile（Tauri 默认 = data_local_dir/<identifier>/EBWebView），
+            // 预留出去，避免 bot 窗口的 dataDir 撞上它 → 主账号被复制进第二个窗口。
+            let main_profile: Vec<std::path::PathBuf> = dirs::data_local_dir()
+                .map(|d| vec![d.join("com.deepseek.studio").join("EBWebView")])
+                .unwrap_or_default();
+            for plan in plan_bot_windows(&load_bot_windows_config().bots, &main_profile) {
+                let (label, bot_id, visible, data_dir) = match plan {
+                    BotWindowPlan::Skip { bot_id, reason } => {
+                        eprintln!("[studio] bot window skipped ({:?}): {}", bot_id, reason);
+                        continue;
+                    }
+                    BotWindowPlan::Create { label, bot_id, visible, data_dir } => {
+                        (label, bot_id, visible, data_dir)
+                    }
+                };
                 // 标签必须唯一；重复条目跳过，避免 Tauri 拒绝/panic
                 if app.get_webview_window(&label).is_some() {
                     eprintln!("[studio] bot window skipped: duplicate label {:?}", label);
@@ -355,7 +471,7 @@ fn main() {
                     WebviewUrl::External(Url::parse(CHAT_URL).expect("invalid chat url")),
                 )
                 .title(format!("DeepSeek++ Studio [{}]", bot_id))
-                .visible(entry.visible)
+                .visible(visible)
                 .inner_size(1280.0, 800.0);
 
                 // 注入带 botId 的脚本（禁用注入时不注入）
@@ -365,18 +481,14 @@ fn main() {
                 }
 
                 // profile 隔离：独立 WebView2 user data folder → Cookie/localStorage 不串号
-                if let Some(dir) = entry.data_dir.as_ref().and_then(|d| resolve_data_dir(d)) {
-                    let _ = std::fs::create_dir_all(&dir);
-                    builder = builder.data_directory(dir);
-                } else {
-                    eprintln!(
-                        "[studio] bot {:?} has no valid dataDir → shares main profile (cookies WILL cross)",
-                        bot_id
-                    );
-                }
+                let _ = std::fs::create_dir_all(&data_dir);
+                builder = builder.data_directory(data_dir.clone());
 
                 match builder.build() {
-                    Ok(_) => eprintln!("[studio] bot window created: label={:?} visible={}", label, entry.visible),
+                    Ok(_) => eprintln!(
+                        "[studio] bot window created: label={:?} visible={} profile={:?}",
+                        label, visible, data_dir
+                    ),
                     Err(e) => eprintln!("[studio] FAILED to create bot window {:?}: {:?}", label, e),
                 }
             }
@@ -473,4 +585,115 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running deepseek-studio");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(bot_id: &str, data_dir: Option<&str>) -> BotWindowConfig {
+        BotWindowConfig {
+            bot_id: bot_id.to_string(),
+            visible: true,
+            data_dir: data_dir.map(|s| s.to_string()),
+        }
+    }
+
+    fn created(plans: &[BotWindowPlan]) -> Vec<(&str, String)> {
+        plans
+            .iter()
+            .filter_map(|p| match p {
+                BotWindowPlan::Create { bot_id, data_dir, .. } => {
+                    Some((bot_id.as_str(), normalize_for_compare(data_dir)))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn skip_reasons(plans: &[BotWindowPlan]) -> Vec<String> {
+        plans
+            .iter()
+            .filter_map(|p| match p {
+                BotWindowPlan::Skip { reason, .. } => Some(reason.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn distinct_profiles_all_create() {
+        let plans = plan_bot_windows(
+            &[
+                entry("S1", Some("profiles/S1")),
+                entry("S2", Some("profiles/S2")),
+            ],
+            &[],
+        );
+        assert_eq!(created(&plans).len(), 2);
+        assert!(skip_reasons(&plans).is_empty());
+    }
+
+    #[test]
+    fn missing_datadir_derives_isolated_profile_not_main() {
+        // 回归：旧实现 dataDir 缺失 → 静默共享主 profile（同账号双窗口）。
+        // 现在必须派生 profiles/<botId>，且与主 profile 不同。
+        let main = std::path::PathBuf::from("C:/Users/x/AppData/Local/com.deepseek.studio/EBWebView");
+        let plans = plan_bot_windows(&[entry("S1", None)], &[main.clone()]);
+        let c = created(&plans);
+        assert_eq!(c.len(), 1, "missing dataDir must still create a window");
+        assert_ne!(c[0].1, normalize_for_compare(&main));
+        assert!(c[0].1.ends_with("/profiles/s1"), "got {}", c[0].1);
+    }
+
+    #[test]
+    fn two_entries_same_profile_second_is_skipped() {
+        // 同账号双窗口 = 必封，第二个必须 fail-closed 跳过。
+        let plans = plan_bot_windows(
+            &[
+                entry("S1", Some("profiles/shared")),
+                entry("S2", Some("profiles/shared")),
+            ],
+            &[],
+        );
+        assert_eq!(created(&plans).len(), 1);
+        assert_eq!(skip_reasons(&plans).len(), 1);
+        assert!(skip_reasons(&plans)[0].contains("already used"));
+    }
+
+    #[test]
+    fn profile_colliding_with_main_window_is_skipped() {
+        let main = std::path::PathBuf::from("C:/Users/x/AppData/Local/com.deepseek.studio/EBWebView");
+        let plans = plan_bot_windows(
+            &[entry("S1", Some("C:/Users/x/AppData/Local/com.deepseek.studio/EBWebView"))],
+            &[main],
+        );
+        assert!(created(&plans).is_empty());
+        assert_eq!(skip_reasons(&plans).len(), 1);
+    }
+
+    #[test]
+    fn profile_compare_is_case_insensitive_on_windows() {
+        let keys = [
+            normalize_for_compare(std::path::Path::new("C:/Profiles/S1")),
+            normalize_for_compare(std::path::Path::new("c:/profiles/s1/")),
+        ];
+        assert_eq!(keys[0], keys[1]);
+    }
+
+    #[test]
+    fn duplicate_label_skipped_and_empty_bot_id_skipped() {
+        // "a/b" 与 "ab" 经 sanitize_window_label 后同为 "ab" → 第二条目必须跳过（否则
+        // Tauri 拒绝创建 / 标签冲突）。空 botId 同样跳过。
+        let plans = plan_bot_windows(
+            &[
+                entry("ab", Some("profiles/ab")),
+                entry("a/b", Some("profiles/slash")),
+                entry("  ", Some("profiles/x")),
+            ],
+            &[],
+        );
+        assert_eq!(created(&plans).len(), 1);
+        assert_eq!(skip_reasons(&plans).len(), 2);
+    }
 }

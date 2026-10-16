@@ -33,6 +33,10 @@ export interface ConsentMeta {
 /** 宿主 → 注入页 */
 export type HostToPageMessage =
   | { type: 'hello-ack'; sessionId: string }
+  // v0.31 账号身份锁：宿主检测到同账号双窗口（hello 上报的 accountFingerprint 与
+  // 已登记页重复）→ 令该页 fail-closed。页端应渲染阻塞覆盖层并停止一切工具调用。
+  // 这是防封号铁律「1 槽位 : 1 账号 : 1 窗口」的执行手段——同账号多窗口必封。
+  | { type: 'account-duplicate-block'; reason: string; duplicateOf?: string }
   // v0.24：botId 全程可选，缺省='main'（单窗口/旧注入脚本行为不变）。
   | { type: 'dispatch'; callId: string; tool: string; params: unknown; botId?: string }
   | { type: 'consent-required'; callId: string; tool: string; params: unknown; meta?: ConsentMeta; botId?: string }
@@ -66,7 +70,9 @@ export type HostToPageMessage =
 /** 注入页 → 宿主 */
 export type PageToHostMessage =
   // v0.24：hello 上报注入脚本自报的 botId（window.__studioBotId ?? 'main'）。
-  | { type: 'hello'; origin: string; sessionId: string; botId?: string }
+  // v0.31：同时上报账号身份指纹（localStorage.userToken 的 SHA-256，不外泄原始 token）。
+  // 宿主据此做同账号双窗口去重——两窗口登同一 DeepSeek 账号 → 同指纹 → 第二个 fail-closed。
+  | { type: 'hello'; origin: string; sessionId: string; botId?: string; accountFingerprint?: string }
   | { type: 'result'; callId: string; ok: boolean; data?: unknown; error?: string }
   | { type: 'consent-decision'; callId: string; decision: ConsentDecision }
   /** v0.5 5.4：页端自检发现宿主注入对象被篡改，上报宿主以便降级。 */

@@ -42,6 +42,12 @@ export interface PageClient {
   readonly untrusted: boolean;
   /** v0.24：注入脚本自报的 botId（hello 时登记；旧脚本不上报 → undefined）。 */
   readonly botId: string | undefined;
+  /**
+   * v0.31：注入脚本 hello 上报的账号身份指纹（localStorage.userToken 的 SHA-256）。
+   * 不外泄原始 token。宿主据此做同账号双窗口去重；两窗口同指纹 → 第二个 fail-closed。
+   * 旧脚本/未登录 → undefined（不参与去重，向后兼容）。
+   */
+  readonly accountFingerprint: string | undefined;
   send(msg: HostToPageMessage): void;
 }
 
@@ -75,6 +81,18 @@ export interface PageRuntimeHubOptions {
   /** v1.0：宿主推送记忆列表更新时的回调。 */
   onMemoriesUpdate?: (memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>) => void;
   onToolResult?: (info: { callId: string; tool: string; ok: boolean; error?: string; botId?: string }) => void;
+  /**
+   * v0.31 账号身份锁：hello 上报的 accountFingerprint 与已登记页重复（同账号双窗口）。
+   * 防封号铁律「1 槽位 : 1 账号 : 1 窗口」的违例告警。命中后该连接已被标记 untrusted
+   * + 推 account-duplicate-block（fail-closed），本回调仅用于告警/落事件。
+   */
+  onDuplicateAccount?: (info: {
+    duplicateId: string;
+    duplicateBotId: string | undefined;
+    existingId: string;
+    existingBotId: string | undefined;
+    fingerprint: string;
+  }) => void;
   /** v0.7：页端 storage shim 的 KV 后端（宿主侧落盘）。缺省时 kv-* 消息回 no-kv-store。 */
   kvStore?: {
     get(key: string): Promise<unknown>;
@@ -127,7 +145,7 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
     if (pathname !== path) return;
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
   });
-  const clients = new Map<string, { ws: WebSocket; origin: string | null; untrusted: boolean; botId: string | undefined }>();
+  const clients = new Map<string, { ws: WebSocket; origin: string | null; untrusted: boolean; botId: string | undefined; accountFingerprint: string | undefined }>();
   const pendingDispatch = new Map<string, { resolve: (r: ExecuteResult) => void; timer: ReturnType<typeof setTimeout> }>();
   const pendingConsent = new Map<string, { resolve: (d: ConsentDecision) => void; timer: ReturnType<typeof setTimeout> }>();
 
@@ -172,7 +190,7 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
 
   wss.on('connection', (ws: WebSocket) => {
     const id = crypto.randomUUID();
-    const rec: { ws: WebSocket; origin: string | null; untrusted: boolean; botId: string | undefined } = { ws, origin: null, untrusted: false, botId: undefined };
+    const rec: { ws: WebSocket; origin: string | null; untrusted: boolean; botId: string | undefined; accountFingerprint: string | undefined } = { ws, origin: null, untrusted: false, botId: undefined, accountFingerprint: undefined };
     clients.set(id, rec);
     ws.on('message', async (raw) => {
       let msg: PageToHostMessage;
@@ -185,7 +203,34 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         rec.origin = msg.origin ?? null;
         // v0.24：登记自报 botId（旧脚本不上报 → undefined，pickClient 按 main 处理）。
         rec.botId = typeof msg.botId === 'string' && msg.botId.length > 0 ? msg.botId : undefined;
+        // v0.31：登记账号身份指纹（旧脚本/未登录 → undefined，不参与去重）。
+        rec.accountFingerprint = typeof msg.accountFingerprint === 'string' && msg.accountFingerprint.length > 0 ? msg.accountFingerprint : undefined;
         safeSend(ws, { type: 'hello-ack', sessionId: id });
+        // v0.31 账号身份锁：同账号双窗口 = 必封。hello 登记指纹后立即查重——
+        // 已有另一个 trusted 页报到相同指纹 → 本连接 fail-closed（标 untrusted + 推阻塞）。
+        if (rec.accountFingerprint && !rec.untrusted) {
+          let dup: { id: string; botId: string | undefined } | null = null;
+          for (const [otherId, other] of clients.entries()) {
+            if (otherId === id) continue;
+            if (other.untrusted) continue;
+            if (other.accountFingerprint && other.accountFingerprint === rec.accountFingerprint) {
+              dup = { id: otherId, botId: other.botId };
+              break;
+            }
+          }
+          if (dup) {
+            rec.untrusted = true;
+            const reason = `账号已在另一窗口登录（bot=${dup.botId ?? 'main'}）。同账号多窗口会触发 DeepSeek 封号，请关闭本窗口或切换账号。`;
+            safeSend(ws, { type: 'account-duplicate-block', reason, duplicateOf: dup.botId ?? 'main' });
+            options.onDuplicateAccount?.({
+              duplicateId: id,
+              duplicateBotId: rec.botId,
+              existingId: dup.id,
+              existingBotId: dup.botId,
+              fingerprint: rec.accountFingerprint,
+            });
+          }
+        }
       } else if (msg.type === 'result') {
         const p = pendingDispatch.get(msg.callId);
         if (p) {
@@ -332,6 +377,7 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         origin: c.origin,
         untrusted: c.untrusted,
         botId: c.botId,
+        accountFingerprint: c.accountFingerprint,
         send: (m: HostToPageMessage) => safeSend(c.ws, m),
       }));
     },

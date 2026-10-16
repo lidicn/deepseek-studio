@@ -11,6 +11,7 @@
 import type { ExecutableCapability, ExecuteResult } from '../capabilities/types';
 import type { ConsentDecision, HostToPageMessage, PageToHostMessage } from '../host/protocol';
 import { showConsent } from '../ui/consent';
+import { showAccountBlockOverlay } from '../ui/account-block';
 
 export interface WebSocketLike {
   send(data: string): void;
@@ -83,6 +84,8 @@ export function createHostClient(options: HostClientOptions): HostClient {
   let stopped = false;
   let backoff = 500;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  // v0.31：监听 userToken 变更（登出/换号），变更后重新 hello 上报最新账号指纹。
+  let tokenStorageHandler: ((ev: StorageEvent) => void) | null = null;
   const pendingToolCalls = new Map<string, { resolve: (r: ExecuteResult) => void; timer: ReturnType<typeof setTimeout> }>();
   const pendingKv = new Map<string, { resolve: (v: unknown, error?: string) => void }>();
   const pendingEnvelope = new Map<string, { resolve: (v: unknown) => void }>();
@@ -117,6 +120,67 @@ export function createHostClient(options: HostClientOptions): HostClient {
         options.reportError?.('host-client send failed', e);
       }
     }
+  }
+
+  /**
+   * v0.31 账号身份锁：读取当前页登录的 DeepSeek 账号指纹。
+   *
+   * DeepSeek 把会话 token 存在 localStorage['userToken']（见 deepseek-pp/src/core/
+   * deepseek/active-client.ts:85,666），可能是裸字符串或 {token|value|accessToken} 对象。
+   * 每账号稳定唯一（登录态生命周期内不变），是天然的同账号双窗口去重键。
+   *
+   * 只上报确定性指纹，**绝不外泄原始 token**（不做加密断言——指纹只用于同账号去重判定，
+   * 非安全边界）。未登录/旧环境无 userToken → undefined（不参与去重，向后兼容）。
+   */
+  function readAccountFingerprint(): string | undefined {
+    try {
+      const raw = globalThis.localStorage?.getItem('userToken');
+      const token = readUserToken(raw);
+      if (!token) return undefined;
+      // 缓存：token 不变时不重算（hello + storage 事件都会调）。
+      if (cachedRawToken === token) return cachedFingerprint;
+      cachedRawToken = token;
+      cachedFingerprint = fingerprintHash(token);
+      return cachedFingerprint;
+    } catch {
+      return undefined;
+    }
+  }
+
+  let cachedRawToken: string | null = null;
+  let cachedFingerprint: string | undefined = undefined;
+
+  // 复用 active-client.ts:666 readDeepSeekUserToken 的解析：裸字符串 or 对象。
+  function readUserToken(raw: string | null): string | null {
+    if (!raw || raw.trim() === 'null') return null;
+    const trimmed = raw.trim();
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed === 'string') return parsed.trim() || null;
+      if (parsed && typeof parsed === 'object') {
+        const v = (parsed as Record<string, unknown>).token
+          ?? (parsed as Record<string, unknown>).value
+          ?? (parsed as Record<string, unknown>).accessToken;
+        return typeof v === 'string' && v.trim() ? v.trim() : null;
+      }
+    } catch {
+      // 非 JSON → 裸 token 字符串
+    }
+    return trimmed || null;
+  }
+
+  // 确定性非加密 hash（FNV-1a 32bit × 2 + 长度混入）→ 16 进制 16 位。
+  // 目的：同一 token 同一指纹、不同 token 极小概率撞。**不抗对抗**（指纹不用于安全判定）。
+  function fingerprintHash(s: string): string {
+    let h1 = 0x811c9dc5 >>> 0;
+    let h2 = 0x01000193 >>> 0;
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+      h2 = Math.imul(h2 + c, 0x1000003b) >>> 0;
+    }
+    const mix = (h1 ^ (s.length * 0x9e3779b1) ^ h2) >>> 0;
+    return mix.toString(16).padStart(8, '0') + (h2 >>> 0).toString(16).padStart(8, '0');
   }
 
   function handle(msg: HostToPageMessage): void {
@@ -179,6 +243,10 @@ export function createHostClient(options: HostClientOptions): HostClient {
       }
     } else if (msg.type === 'debug-reload') {
       location.reload();
+    } else if (msg.type === 'account-duplicate-block') {
+      // v0.31 账号身份锁：宿主检测到本页账号已在另一窗口登录 → fail-closed。
+      // 同账号多窗口会触发 DeepSeek 封号（设计稿 §6 铁律），覆盖层挡住一切交互。
+      showAccountBlockOverlay(msg.reason, msg.duplicateOf);
     }
   }
 
@@ -201,7 +269,9 @@ export function createHostClient(options: HostClientOptions): HostClient {
     socket.onopen = () => {
       backoff = 500;
       // v0.24：上报本页所属 botId，宿主据此把工具派发/同意闸门路由到本窗口。
-      send({ type: 'hello', origin, sessionId: crypto.randomUUID(), botId: options.botId });
+      // v0.31：同时上报账号身份指纹（localStorage.userToken 派生），宿主据此做
+      // 同账号双窗口去重——两窗口登同一 DeepSeek 账号 → 同指纹 → 第二个 fail-closed。
+      send({ type: 'hello', origin, sessionId: crypto.randomUUID(), botId: options.botId, accountFingerprint: readAccountFingerprint() });
     };
     socket.onmessage = (ev: { data: unknown }) => onMessage(ev.data);
     socket.onclose = () => {
@@ -248,6 +318,18 @@ export function createHostClient(options: HostClientOptions): HostClient {
     },
     connect() {
       stopped = false;
+      // v0.31：userToken 变更（登出/换号）→ 重新 hello 上报最新账号指纹。
+      // 宿主据此重新做同账号去重（换号可能解除/触发重复）。
+      if (!tokenStorageHandler && typeof globalThis.addEventListener === 'function') {
+        tokenStorageHandler = (ev: StorageEvent) => {
+          if (ev.key !== 'userToken') return;
+          cachedRawToken = null; // 失效缓存，下次 readAccountFingerprint 重算
+          if (ws && ws.readyState === OPEN) {
+            send({ type: 'hello', origin, sessionId: crypto.randomUUID(), botId: options.botId, accountFingerprint: readAccountFingerprint() });
+          }
+        };
+        globalThis.addEventListener('storage', tokenStorageHandler);
+      }
       connectWs();
     },
     log(text: string) {
@@ -310,6 +392,11 @@ export function createHostClient(options: HostClientOptions): HostClient {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
       }
+      // v0.31：移除 userToken 变更监听
+      if (tokenStorageHandler && typeof globalThis.removeEventListener === 'function') {
+        globalThis.removeEventListener('storage', tokenStorageHandler);
+      }
+      tokenStorageHandler = null;
       for (const p of pendingToolCalls.values()) {
         clearTimeout(p.timer);
         p.resolve({ ok: false, error: 'disconnected' });

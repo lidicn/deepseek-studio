@@ -710,6 +710,79 @@
     }).join("\uFF1B");
   }
 
+  // src/ui/account-block.ts
+  var STYLE_ID2 = "ds-account-block-style";
+  var CSS2 = `
+.ds-account-block-overlay {
+  position: fixed; inset: 0; z-index: 2147483647;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(180, 24, 24, 0.97);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+               "Microsoft YaHei", sans-serif;
+}
+.ds-account-block-card {
+  max-width: 560px; margin: 0 24px; padding: 32px 28px;
+  background: #fff; border-radius: 14px; color: #1a1a1a;
+  box-shadow: 0 24px 60px rgba(0,0,0,.4);
+}
+.ds-account-block-title {
+  font-size: 20px; font-weight: 700; color: #b41818; margin-bottom: 12px;
+}
+.ds-account-block-body {
+  font-size: 15px; line-height: 1.7; color: #333; margin-bottom: 20px;
+}
+.ds-account-block-body strong { color: #b41818; }
+.ds-account-block-hint {
+  font-size: 13px; color: #666; margin-top: 16px; padding-top: 16px;
+  border-top: 1px solid #eee;
+}
+`;
+  function ensureStyles2() {
+    const doc = globalThis.document;
+    if (!doc) return;
+    if (doc.getElementById(STYLE_ID2)) return;
+    const style = doc.createElement("style");
+    style.id = STYLE_ID2;
+    style.textContent = CSS2;
+    doc.head.appendChild(style);
+  }
+  var overlayEl = null;
+  function showAccountBlockOverlay(reason, duplicateOf) {
+    const doc = globalThis.document;
+    if (!doc || !doc.body) return;
+    if (overlayEl) return;
+    ensureStyles2();
+    const overlay = doc.createElement("div");
+    overlay.className = "ds-account-block-overlay";
+    overlay.setAttribute("role", "alertdialog");
+    overlay.setAttribute("aria-modal", "true");
+    const card = doc.createElement("div");
+    card.className = "ds-account-block-card";
+    const title = doc.createElement("div");
+    title.className = "ds-account-block-title";
+    title.textContent = "\u26A0\uFE0F \u8D26\u53F7\u51B2\u7A81 \u2014 \u672C\u7A97\u53E3\u5DF2\u505C\u7528";
+    const body = doc.createElement("div");
+    body.className = "ds-account-block-body";
+    body.innerHTML = "";
+    const p1 = doc.createElement("div");
+    p1.textContent = reason;
+    const p2 = doc.createElement("div");
+    p2.innerHTML = `\u540C\u4E00 DeepSeek \u8D26\u53F7\u5728\u591A\u4E2A\u7A97\u53E3\u5E76\u53D1\u767B\u5F55\u4F1A\u89E6\u53D1 <strong>\u98CE\u63A7\u5C01\u53F7</strong>\u3002`;
+    body.append(p1, p2);
+    if (duplicateOf) {
+      const p3 = doc.createElement("div");
+      p3.textContent = `\u5DF2\u5360\u7528\u8BE5\u8D26\u53F7\u7684\u7A97\u53E3\uFF1Abot=${duplicateOf}`;
+      body.append(p3);
+    }
+    const hint = doc.createElement("div");
+    hint.className = "ds-account-block-hint";
+    hint.textContent = "\u8BF7\u5173\u95ED\u672C\u7A97\u53E3\uFF0C\u6216\u5728\u672C\u7A97\u53E3\u767B\u51FA\u540E\u5207\u6362\u5230\u53E6\u4E00\u4E2A DeepSeek \u8D26\u53F7\u3002\u672C\u7A97\u53E3\u7684\u5DE5\u5177\u8C03\u7528\u5DF2\u88AB\u5BBF\u4E3B\u62D2\u7EDD\uFF08fail-closed\uFF09\u3002";
+    card.append(title, body, hint);
+    overlay.append(card);
+    doc.body.append(overlay);
+    overlayEl = overlay;
+  }
+
   // src/desktop/host-client.ts
   var OPEN = 1;
   function createHostClient(options) {
@@ -721,6 +794,7 @@
     let stopped = false;
     let backoff = 500;
     let reconnectTimer = null;
+    let tokenStorageHandler = null;
     const pendingToolCalls = /* @__PURE__ */ new Map();
     const pendingKv = /* @__PURE__ */ new Map();
     const pendingEnvelope = /* @__PURE__ */ new Map();
@@ -747,6 +821,46 @@
           options.reportError?.("host-client send failed", e);
         }
       }
+    }
+    function readAccountFingerprint() {
+      try {
+        const raw = globalThis.localStorage?.getItem("userToken");
+        const token = readUserToken(raw);
+        if (!token) return void 0;
+        if (cachedRawToken === token) return cachedFingerprint;
+        cachedRawToken = token;
+        cachedFingerprint = fingerprintHash(token);
+        return cachedFingerprint;
+      } catch {
+        return void 0;
+      }
+    }
+    let cachedRawToken = null;
+    let cachedFingerprint = void 0;
+    function readUserToken(raw) {
+      if (!raw || raw.trim() === "null") return null;
+      const trimmed = raw.trim();
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (typeof parsed === "string") return parsed.trim() || null;
+        if (parsed && typeof parsed === "object") {
+          const v2 = parsed.token ?? parsed.value ?? parsed.accessToken;
+          return typeof v2 === "string" && v2.trim() ? v2.trim() : null;
+        }
+      } catch {
+      }
+      return trimmed || null;
+    }
+    function fingerprintHash(s) {
+      let h1 = 2166136261 >>> 0;
+      let h2 = 16777619 >>> 0;
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        h1 = Math.imul(h1 ^ c, 16777619) >>> 0;
+        h2 = Math.imul(h2 + c, 268435515) >>> 0;
+      }
+      const mix = (h1 ^ s.length * 2654435761 ^ h2) >>> 0;
+      return mix.toString(16).padStart(8, "0") + (h2 >>> 0).toString(16).padStart(8, "0");
     }
     function handle(msg) {
       if (msg.type === "dispatch") {
@@ -802,6 +916,8 @@
         }
       } else if (msg.type === "debug-reload") {
         location.reload();
+      } else if (msg.type === "account-duplicate-block") {
+        showAccountBlockOverlay(msg.reason, msg.duplicateOf);
       }
     }
     function onMessage(raw) {
@@ -820,7 +936,7 @@
       ws = socket;
       socket.onopen = () => {
         backoff = 500;
-        send({ type: "hello", origin, sessionId: crypto.randomUUID(), botId: options.botId });
+        send({ type: "hello", origin, sessionId: crypto.randomUUID(), botId: options.botId, accountFingerprint: readAccountFingerprint() });
       };
       socket.onmessage = (ev) => onMessage(ev.data);
       socket.onclose = () => {
@@ -863,6 +979,16 @@
       },
       connect() {
         stopped = false;
+        if (!tokenStorageHandler && typeof globalThis.addEventListener === "function") {
+          tokenStorageHandler = (ev) => {
+            if (ev.key !== "userToken") return;
+            cachedRawToken = null;
+            if (ws && ws.readyState === OPEN) {
+              send({ type: "hello", origin, sessionId: crypto.randomUUID(), botId: options.botId, accountFingerprint: readAccountFingerprint() });
+            }
+          };
+          globalThis.addEventListener("storage", tokenStorageHandler);
+        }
         connectWs();
       },
       log(text) {
@@ -948,6 +1074,10 @@
           clearTimeout(reconnectTimer);
           reconnectTimer = null;
         }
+        if (tokenStorageHandler && typeof globalThis.removeEventListener === "function") {
+          globalThis.removeEventListener("storage", tokenStorageHandler);
+        }
+        tokenStorageHandler = null;
         for (const p of pendingToolCalls.values()) {
           clearTimeout(p.timer);
           p.resolve({ ok: false, error: "disconnected" });
@@ -1090,6 +1220,16 @@
   }
 
   // src/inject/sse-text-extractor.ts
+  function snapshotFragments(parsed) {
+    if (!parsed || typeof parsed !== "object") return null;
+    const o = parsed;
+    if (o.p !== void 0) return null;
+    if (!o.v || typeof o.v !== "object" || Array.isArray(o.v)) return null;
+    const resp = o.v.response;
+    if (!resp || typeof resp !== "object") return null;
+    const frags = resp.fragments;
+    return Array.isArray(frags) && frags.length > 0 ? frags : null;
+  }
   var SseTextStreamExtractor = class {
     constructor() {
       /** 尚未遇到换行的不完整行（跨 chunk 保留）。 */
@@ -1098,6 +1238,12 @@
       __publicField(this, "activeFragmentType", null);
       /** v0.18：累积 THINK 推理段文本，供步骤流推理笔记使用。 */
       __publicField(this, "reasoningBuffer", "");
+      /**
+       * 是否已消费过全量 response 快照的 content。快照是累积的（每次重发都含全部已流过
+       * 内容），只有首次观测需要取 content，后续重发必须跳过，否则内容重复。
+       * 实例按 XHR 创建，故每条回复自动重置。
+       */
+      __publicField(this, "snapshotSeen", false);
     }
     /**
      * 喂入一段原始 SSE 文本（可能在任意字节边界截断），返回本次可确认的完整行所携带的文本。
@@ -1154,6 +1300,25 @@
           } else {
             out += frag.content;
           }
+        }
+        return out;
+      }
+      const snap = snapshotFragments(obj);
+      if (snap) {
+        const first = !this.snapshotSeen;
+        this.snapshotSeen = true;
+        for (const item of snap) {
+          const t = item?.type;
+          if (t === "THINK" || t === "RESPONSE") this.activeFragmentType = t;
+        }
+        if (!first) return "";
+        let out = "";
+        for (const item of snap) {
+          if (!item || typeof item !== "object") continue;
+          const frag = item;
+          if (typeof frag.content !== "string") continue;
+          if (frag.type === "THINK") this.reasoningBuffer += frag.content;
+          else out += frag.content;
         }
         return out;
       }
@@ -2779,6 +2944,17 @@ ${prompt}`;
                   const p = String(obj.p ?? "");
                   if (!p || /^response(\/|$)/.test(p)) {
                     rawDataText += obj.v;
+                  }
+                } else {
+                  const snap = snapshotFragments(frame.parsed);
+                  if (snap) {
+                    if (!xhr.__dsSnapSeen) {
+                      xhr.__dsSnapSeen = true;
+                      for (const f2 of snap) {
+                        const c = f2?.content;
+                        if (typeof c === "string") rawDataText += c;
+                      }
+                    }
                   }
                 }
               }
