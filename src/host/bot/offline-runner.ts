@@ -32,7 +32,7 @@ import type { BotRegistryInternal } from './registry';
 import type { SlotRuntime } from './slot-runtime';
 import type { RunHandle } from './scheduler';
 import type { ChatRoomTaskCompleteEvent, ChatRoomTaskProgressEvent, ReportStore } from './types';
-import { parseSubBotReport } from './report-protocol';
+import { isDegradedReport, parseSubBotReport } from './report-protocol';
 
 /** 事件订阅器形状（接 desktop-host 的 agentListeners，同 strategy-generator）。 */
 export type AgentEventBus = (cb: (event: AgentLoopEvent) => void) => () => void;
@@ -147,18 +147,22 @@ export function createOfflineRunExecutor(deps: OfflineRunExecutorDeps): OfflineR
         throw new Error(lastErrorText || 'offline-runner 未取得子 bot 回复（assistant 文本为空）');
       }
 
-      // 成功：解析末尾 assistant 文本 → 写 SubBotReport → 推 task-complete(ok=true)。
+      // 解析末尾 assistant 文本 → 写 SubBotReport。
+      // 降级（模型没按要求出 JSON）仍落盘报告（不丢内容），但 ok=false——"审计完成、
+      // 无问题"不该是假象：模型跑完了不等于产出了可用的结构化审计结论。
       const report = parseSubBotReport(lastAssistantText, slotId, dimension, transcriptPath);
       reportStore.writeSubReport(batchId, slotId, report);
 
+      const degraded = isDegradedReport(report);
       deps.onTaskComplete?.({
         kind: 'task-complete',
         roomId,
         batchId,
         slotId,
         dimension,
-        ok: true,
+        ok: !degraded,
         findingCount: report.findings.length,
+        ...(degraded ? { error: '模型未按要求输出结构化 JSON，已降级保留原始输出' } : {}),
         timestamp: now(),
       });
 

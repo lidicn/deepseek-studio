@@ -175,6 +175,24 @@ describe('createOfflineRunExecutor', () => {
     expect(executor).toBeTruthy();
   });
 
+  it('模型输出非结构化（真机"原始工具标签"形态）→ 报告落盘但 ok=false', async () => {
+    const { executor, emit, completeSink, reportStore } = mockDeps(async () => {
+      // 真机抓到：模型末尾吐未被页端拦截器解析的原始工具标签
+      emit({ botId: 'S1', type: 'assistant', text: '<shell_exec>{"command":"echo x"}</shell_exec>' } as AgentLoopEvent);
+    });
+    const handle = mkHandle('S1', 'security', 'batch-degraded', 'prompt');
+    await executor(handle);
+
+    // 报告仍落盘（不丢原始输出）
+    const report = reportStore.getSubReport('batch-degraded', 'S1');
+    expect(report).toBeTruthy();
+    expect(report!.findings[0].description).toContain('shell_exec');
+    // 但 ok=false —— 不能把"降级"当成"审计完成、无问题"
+    expect(completeSink).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'task-complete', ok: false, error: expect.stringContaining('结构化 JSON') }),
+    );
+  });
+
   it('超时 → task-complete ok=false + 仍 unloadPersona', async () => {
     const { completeSink } = mockDeps(() => new Promise(() => {})); // 永不 resolve
     const executorWithShortTimeout = createOfflineRunExecutor({

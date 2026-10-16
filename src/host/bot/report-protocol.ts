@@ -23,6 +23,19 @@ const VALID_SEVERITY: readonly FindingSeverity[] = ['critical', 'high', 'medium'
 /** 默认审计维度（detectAuditCommand 未显式指定维度时用）。 */
 export const DEFAULT_AUDIT_DIMENSIONS = ['security', 'performance', 'maintainability'];
 
+/** 降级报告的哨兵 finding id（调用方据此识别"这不是模型产出的结构化报告"）。 */
+export const FALLBACK_FINDING_ID = 'F-fallback';
+
+/**
+ * 该报告是否为降级产物（模型没输出结构化 JSON，走了 fallbackReport）。
+ *
+ * 用途：offline-runner 据此把 task-complete 标成 ok=false——报告本身仍落盘（不丢内容），
+ * 但"审计完成、无问题"不该是假象。判据是哨兵 id，不靠文案匹配。
+ */
+export function isDegradedReport(report: SubBotReport): boolean {
+  return report.findings.some((f) => f.id === FALLBACK_FINDING_ID);
+}
+
 /**
  * 拼「让 audit-expert 产结构化 SubBotReport」的 prompt。
  * 要求严格 JSON 输出 + 字段说明 + 维度/目标上下文。
@@ -90,7 +103,7 @@ export function parseSubBotReport(
   }
 
   const o = obj as Record<string, unknown>;
-  const summary = typeof o.summary === 'string' ? o.summary : '';
+  const summary = typeof o.summary === 'string' ? o.summary.trim() : '';
   const findingsRaw = Array.isArray(o.findings) ? o.findings : [];
   const evidenceRefsRaw = Array.isArray(o.evidenceRefs) ? o.evidenceRefs : [];
 
@@ -98,6 +111,19 @@ export function parseSubBotReport(
   for (const f of findingsRaw) {
     const parsed = parseFinding(f);
     if (parsed) findings.push(parsed);
+  }
+
+  // 既无 summary 又无 findings = 解析出的不是审计报告。
+  //
+  // 真机抓到的形态：模型末尾吐了一个未被页端拦截器解析的原始工具标签
+  // `<shell_exec>{"command":"..."}</shell_exec>`，本函数 indexOf('{')..lastIndexOf('}')
+  // 恰好圈住内层 {"command":...} → JSON.parse 成功 → 返回一份"合法"的空报告，
+  // 于是 ok=true、findings=0，用户看到的是"审计完成、无问题"。这是假成功。
+  //
+  // 注意不能把「有 summary 但 findings 为空」也判失败——审计确实可能未发现问题，
+  // 那时 summary 会写明「该维度未发现问题」，是有效报告。判据必须是 summary 也缺失。
+  if (!summary && findings.length === 0) {
+    return fallbackReport(slotId, dimension, transcriptPath, text);
   }
 
   const evidenceRefs = evidenceRefsRaw.filter((r): r is string => typeof r === 'string');
@@ -151,7 +177,7 @@ function fallbackReport(
     summary: '审计结果（非结构化）——模型未按要求输出 JSON，已降级保留原始内容',
     findings: [
       {
-        id: 'F-fallback',
+        id: FALLBACK_FINDING_ID,
         severity: 'medium',
         title: '审计结果（非结构化）',
         location: 'N/A',

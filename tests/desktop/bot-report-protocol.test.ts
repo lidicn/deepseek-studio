@@ -112,10 +112,31 @@ describe('parseSubBotReport', () => {
     expect(r.findings[0].id).toBe('F2');
   });
 
-  it('summary 缺失 → 默认占位串', () => {
+  it('summary 有值 + findings 空 → 有效报告（该维度未发现问题）', () => {
+    // 审计确实可能查不出问题——此时模型会写「该维度未发现问题」。不能判失败。
+    const raw = JSON.stringify({ summary: '该维度未发现问题', findings: [], evidenceRefs: [] });
+    const r = parseSubBotReport(raw, 'S1', 'security', TP);
+    expect(r.summary).toBe('该维度未发现问题');
+    expect(r.findings).toHaveLength(0);
+  });
+
+  it('summary 与 findings 双缺 → 降级（不冒充空报告）', () => {
+    // 一个只有 findings/evidenceRefs 的裸对象不是审计报告，不能当"无问题"收下。
     const raw = JSON.stringify({ findings: [], evidenceRefs: [] });
     const r = parseSubBotReport(raw, 'S1', 'security', TP);
-    expect(r.summary).toBe('(未提供摘要)');
+    expect(r.findings).toHaveLength(1);
+    expect(r.findings[0].title).toContain('非结构化');
+  });
+
+  it('原始工具标签包裹的 JSON（真机形态）→ 降级，不冒充空报告', () => {
+    // 真机抓到：模型末尾吐未被页端拦截器解析的原始工具标签，其内层 {"command":...}
+    // 会被 indexOf('{')..lastIndexOf('}') 圈住并 JSON.parse 成功——若不校验，
+    // 就会产出 summary="(未提供摘要)" + findings=[] 的"空报告"且 ok=true（假成功）。
+    const raw = '<shell_exec>{"command":"Get-ChildItem -Path E:/x"}</shell_exec>';
+    const r = parseSubBotReport(raw, 'S1', 'security', TP);
+    expect(r.findings).toHaveLength(1);
+    expect(r.findings[0].title).toContain('非结构化');
+    expect(r.findings[0].description).toContain('shell_exec');
   });
 
   it('finding 缺 id → 自动生成', () => {
