@@ -50,6 +50,11 @@ import { SqliteContextEngine, SnapshotStore } from './bot/context-engine';
 import { SqliteRoomSummaryService } from './bot/room-summary';
 import { SqliteRoomStateStore } from './bot/meeting-state';
 import { createStrategyGenerator } from './bot/strategy-generator';
+import { Scheduler } from './bot/scheduler';
+import { FileSlotRegistry } from './bot/slot-registry';
+import { InMemoryReportStore } from './bot/in-memory-report-store';
+import { createOfflineRunExecutor } from './bot/offline-runner';
+import { createAuditDispatcher } from './bot/audit-meeting';
 import { createFileStorageKvBackend } from './file-storage-backend';
 import os from 'node:os';
 import path from 'node:path';
@@ -720,6 +725,33 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       registry: botRegistry,
       onAgentEvent: (cb) => { agentListeners.add(cb); return () => agentListeners.delete(cb); },
     });
+    // v0.30：审计会议 —— 离线执行器 + ReportStore + AuditDispatcher。
+    // auditSlotRegistry 用 S1-S5 工作槽（CB 的 FileSlotRegistry，1:1:1 铁律）。
+    // Scheduler 注入 offlineRunExecutor 作 runner：assign 调 runner（副作用写 reportStore）
+    // + 自动 release slot（scheduler.ts:83-89）。slotId===botId（offline-runner 读取）。
+    // reportStore 先用 InMemoryReportStore（Claude 测试桩），CB 交付 FS 版后一行换。
+    const auditSlotRegistry = new FileSlotRegistry({ slotIds: ['S1', 'S2', 'S3', 'S4', 'S5'] });
+    const auditReportStore = new InMemoryReportStore();
+    // 任务级事件（task-progress/task-complete）由 runner 发出——它知道每个任务的粒度；
+    // 批次级 report-ready 由 dispatcher 发出。两者都经 emitChatRoomEvent → UI。
+    const offlineRunExecutor = createOfflineRunExecutor({
+      registry: botRegistry,
+      slotRuntime: fullSlotRuntime,
+      onAgentEvent: (cb) => { agentListeners.add(cb); return () => agentListeners.delete(cb); },
+      reportStore: auditReportStore,
+      onTaskProgress: (event) => emitChatRoomEvent(event),
+      onTaskComplete: (event) => emitChatRoomEvent(event),
+    });
+    const auditScheduler = new Scheduler({
+      slots: auditSlotRegistry,
+      personas,
+      runner: offlineRunExecutor,
+    });
+    const auditDispatcher = createAuditDispatcher({
+      scheduler: auditScheduler,
+      reportStore: auditReportStore,
+      onReportReady: (event) => emitChatRoomEvent(event),
+    });
     chatRoomRuntime = createChatRoomRuntime({
       mentionParser: chatMentionParser,
       handoffParser: new DefaultHandoffParser(chatMentionParser),
@@ -767,6 +799,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           timestamp: Date.now(),
         });
       },
+      // v0.30：审计会议调度器（触发离线审计）。任务/报告事件在 runner + dispatcher
+      // 创建处直接接 emitChatRoomEvent（见上方 offlineRunExecutor / auditDispatcher）。
+      auditDispatcher,
     });
 
     // 预创建聊天室成员 bot + 加载人设。
@@ -793,6 +828,24 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         }
       }),
     ).then(() => undefined);
+
+    // v0.30：预创建审计工作槽 bot（S1-S5）。botId=slotId（offline-runner 读取 slotId===botId）。
+    // 人设不在此加载——SlotRuntime.run 会按 handle.persona（'audit-expert'）幂等加载，
+    // 离线执行器 finally 补 unloadPersona。这里只保证 registry.get('S1') 能取到 BotInstance。
+    // 复用 roomBotsReady 的 await 时序（start() 里 await，审计 bot 在 agent-channel 启动前就绪）。
+    const prevReady = roomBotsReady;
+    roomBotsReady = (prevReady ?? Promise.resolve()).then(() =>
+      Promise.all(
+        ['S1', 'S2', 'S3', 'S4', 'S5'].map(async (slotId) => {
+          if (botRegistry.get(slotId)) return;
+          try {
+            await botRegistry.create({ botId: slotId, slotId });
+          } catch (err) {
+            console.warn(`[desktop-host] 审计槽 bot ${slotId} 创建失败:`, err);
+          }
+        }),
+      ).then(() => undefined),
+    );
   }
 
   /** 切换审批档位并持久化（channel 与 DesktopHost 返回对象共用）。 */

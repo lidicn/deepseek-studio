@@ -50,6 +50,8 @@ import { MapParticipantResolver } from './participant-resolver';
 import { DefaultMentionRouter } from './mention-router';
 import { detectMeetingCommand } from './meeting-commands';
 import type { MeetingCommand } from './meeting-commands';
+import { detectAuditCommand } from './audit-meeting';
+import type { AuditDispatcher } from './audit-meeting';
 import type { StrategyGenerator } from './strategy-generator';
 import { defaultMeetingStrategy } from './meeting-state';
 
@@ -104,6 +106,15 @@ export interface ChatRoomRuntimeOptions {
   readonly strategyGenerator?: StrategyGenerator;
   /** 会议状态变更回调（开会/散会时推 UI）。 */
   readonly onMeetingStateChange?: (roomId: string, status: MeetingStatus, strategy: MeetingStrategy | null) => void;
+
+  // v0.30 审计会议（离线执行）
+  /**
+   * 审计调度器；缺省时审计命令走 no-op（现有测试不破）。
+   * 注：task-progress/task-complete/report-ready 事件不在此接线——由 desktop-host 在创建
+   * offlineRunExecutor（任务级 sink）和 createAuditDispatcher（report-ready）时直接接
+   * emitChatRoomEvent。runtime 只负责触发 dispatch。
+   */
+  readonly auditDispatcher?: AuditDispatcher;
 }
 
 export interface ChatRoomRuntime {
@@ -317,6 +328,7 @@ export function createChatRoomRuntime(options: ChatRoomRuntimeOptions): ChatRoom
     meetingState,
     strategyGenerator,
     onMeetingStateChange,
+    auditDispatcher,
   } = options;
 
   // v0.29：meetingState 缺省时用内存 stub —— 既有测试不传 meetingState 也能跑、
@@ -351,6 +363,27 @@ export function createChatRoomRuntime(options: ChatRoomRuntimeOptions): ChatRoom
       // 但 ConversationRound 全字段 mandatory，不可 throw 否则 unhandled rejection）。
       // v0.29：仍需推 round-complete —— UI submitMessage 对任何消息都置 roundInProgress=true，
       // 不推 round-complete 会让控制指令后输入框锁死。
+      onRoundComplete?.({ roomId, triggerMessageId: '', members: [], contents: {}, pendingHandoff: [] });
+      return { roomId, triggerMessageId: '', members: [], contents: {}, pendingHandoff: [] };
+    }
+
+    // v0.30 审计命令路由 —— 检测到 @main 审计 / /审计 时走离线执行分支。
+    // 必须在 @提及解析之前对原始 text 判定（同会议命令约束：@main 若被剥掉命令丢失）。
+    // 命中时跳过内联 planRound，落盘用户审计指令（真实任务起点，同 meeting start），
+    // dispatch 走离线执行器（N bot 并行 → SubBotReport → 汇总 → report-ready），
+    // 推 round-complete 解锁输入框。
+    const auditCmd = detectAuditCommand(text);
+    if (auditCmd.kind === 'audit' && auditDispatcher) {
+      messageStore.append({
+        roomId,
+        senderId: userId,
+        senderType: 'user',
+        content: text,
+        timestamp: Date.now(),
+        mentions: [],
+      });
+      const batchId = `batch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      await auditDispatcher.dispatch(roomId, batchId, auditCmd.target, auditCmd.dimensions);
       onRoundComplete?.({ roomId, triggerMessageId: '', members: [], contents: {}, pendingHandoff: [] });
       return { roomId, triggerMessageId: '', members: [], contents: {}, pendingHandoff: [] };
     }

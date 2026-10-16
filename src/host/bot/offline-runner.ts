@@ -83,12 +83,18 @@ export function createOfflineRunExecutor(deps: OfflineRunExecutorDeps): OfflineR
     state?.sessionAllowlist.add('chat-send');
 
     // 临时 listener：捕获该 botId 全量事件，逐条写 jsonl 转录 + 记末尾 assistant 文本。
+    // 同时记末尾 error 文本——AgentLoop.send 吞引擎异常（agent-loop.ts:197 只 emit 不 rethrow），
+    // 引擎挂掉时 send 正常 resolve 但永远没有 assistant 文本，只有这里能拿到原因。
     let lastAssistantText = '';
+    let lastErrorText = '';
     const listener = (event: AgentLoopEvent): void => {
       if (event.botId !== botId) return;
       reportStore.appendTranscript(batchId, slotId, event);
       if (event.type === 'assistant' && event.text) {
         lastAssistantText = event.text;
+      }
+      if (event.type === 'error' && event.text) {
+        lastErrorText = event.text;
       }
     };
     const unsub = onAgentEvent(listener);
@@ -117,6 +123,13 @@ export function createOfflineRunExecutor(deps: OfflineRunExecutorDeps): OfflineR
         throw new Error(`offline-runner timeout (${timeoutMs}ms)`);
       }
 
+      // 无 assistant 文本 = 子 bot 没有产出。send 正常 resolve 不代表成功：引擎异常被
+      // AgentLoop 吞掉（agent-loop.ts:197），此时 raced 是 fulfilled 但全是 error 事件。
+      // 必须显式判失败，否则"引擎挂了"和"审计出报告"都推 ok=true，决策门形同虚设。
+      if (!lastAssistantText) {
+        throw new Error(lastErrorText || 'offline-runner 未取得子 bot 回复（assistant 文本为空）');
+      }
+
       // 成功：解析末尾 assistant 文本 → 写 SubBotReport → 推 task-complete(ok=true)。
       const report = parseSubBotReport(lastAssistantText, slotId, dimension, transcriptPath);
       reportStore.writeSubReport(batchId, slotId, report);
@@ -135,8 +148,10 @@ export function createOfflineRunExecutor(deps: OfflineRunExecutorDeps): OfflineR
       return report;
     } catch (err) {
       // 失败：推 task-complete(ok=false) + 仍写一份降级报告（不丢执行记录）。
+      // 降级报告带上失败原因（而非空串）——否则 summary 只会写"(空输出)"，汇总时
+      // 看不出该维度是超时、引擎挂还是解析失败。
       const errMsg = err instanceof Error ? err.message : String(err);
-      const fallback = parseSubBotReport('', slotId, dimension, transcriptPath);
+      const fallback = parseSubBotReport(`[执行失败] ${errMsg}`, slotId, dimension, transcriptPath);
       reportStore.writeSubReport(batchId, slotId, fallback);
 
       deps.onTaskComplete?.({
