@@ -25,19 +25,15 @@
  */
 
 import type { Scheduler } from './scheduler';
-import type {
-  ChatRoomReportReadyEvent,
-  ChatRoomTaskCompleteEvent,
-  ChatRoomTaskProgressEvent,
-  ReportStore,
-} from './types';
+import type { ChatRoomReportReadyEvent, ReportStore } from './types';
 import { buildAuditTaskPrompt } from './report-protocol';
 import { DEFAULT_AUDIT_DIMENSIONS } from './report-protocol';
 import { mergeReports } from './report-merge';
 
-/** 任务进度/完成/报告就绪推送口（dispatch 注入，转 emitChatRoomEvent）。 */
-export type TaskProgressSink = (event: ChatRoomTaskProgressEvent) => void;
-export type TaskCompleteSink = (event: ChatRoomTaskCompleteEvent) => void;
+/**
+ * 报告就绪推送口（dispatch 注入，转 emitChatRoomEvent）。
+ * 任务级 sink（task-progress/task-complete）由 offline-runner 拥有——见 OfflineRunExecutorDeps。
+ */
 export type ReportReadySink = (event: ChatRoomReportReadyEvent) => void;
 
 /** 审计命令解析结果。 */
@@ -57,10 +53,10 @@ export interface AuditDispatcher {
 /** 空白分隔。 */
 const WS = /[^\S\n]*/;
 
-/** 显式审计命令：`/审计 <target>` 或 `@main 审计 <target>`。 */
+/** 显式审计命令：`/审计 <target>`、`@main 审计 <target>`、`/audit <target>`、`@main audit <target>`。 */
 const EXP_AUDIT: readonly RegExp[] = [
-  new RegExp(`^/+审计${WS.source}`, 'i'),
-  new RegExp(`^@main${WS.source}审计${WS.source}`, 'i'),
+  new RegExp(`^/+(?:审计|audit)${WS.source}`, 'i'),
+  new RegExp(`^@main${WS.source}(?:审计|audit)${WS.source}`, 'i'),
 ];
 
 /** 显式维度标记：`维度` / `dim` / `dimension`。 */
@@ -120,8 +116,6 @@ export function detectAuditCommand(text: string): AuditCommand {
 export interface AuditDispatcherDeps {
   readonly scheduler: Scheduler;
   readonly reportStore: ReportStore;
-  readonly onTaskProgress?: TaskProgressSink;
-  readonly onTaskComplete?: TaskCompleteSink;
   readonly onReportReady?: ReportReadySink;
 }
 
@@ -142,9 +136,18 @@ export function createAuditDispatcher(deps: AuditDispatcherDeps): AuditDispatche
     ): Promise<void> {
       reportStore.ensureBatchDir(batchId);
 
-      // 每个维度一个 assign：runner（offlineRunExecutor）已注入 scheduler，副作用写 reportStore。
-      const assigns = dimensions.map((dimension) =>
+      // N 维度并行前，先一次性快照空闲槽并显式 zip 给每个维度。
+      //
+      // 为什么必须显式指定 slot：Scheduler.assign 里 pickSlot() 在 await personas.load()
+      // 之前**同步**执行，之后才 setState('busy')。并发 assign 时三者都先看到同一个空闲槽
+      // （如 S1）→ 全落同一槽，运行互相覆盖，N 并行退化成 1。预分配不同 slot 绕开这个
+      // 时序窗口（不改 CB 的 scheduler.ts 契约）。
+      const idleSlots = scheduler.idleSlots();
+      const assigns = dimensions.map((dimension, i) =>
         scheduler.assign({
+          // 槽位不足时（dimensions > 空闲槽），超出的维度不指定 slot —— 交由 Scheduler
+          // 自动挑（可能抛 no-idle-slot，被下面 allSettled 吞，该维度无报告，graceful）。
+          ...(idleSlots[i] ? { slot: idleSlots[i].id } : {}),
           persona: 'audit-expert',
           task: {
             dimension,
