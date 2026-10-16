@@ -52,7 +52,7 @@ import { SqliteRoomStateStore } from './bot/meeting-state';
 import { createStrategyGenerator } from './bot/strategy-generator';
 import { Scheduler } from './bot/scheduler';
 import { FileSlotRegistry } from './bot/slot-registry';
-import { InMemoryReportStore } from './bot/in-memory-report-store';
+import { FileReportStore } from './bot/report-store';
 import { createOfflineRunExecutor } from './bot/offline-runner';
 import { createAuditDispatcher } from './bot/audit-meeting';
 import { createFileStorageKvBackend } from './file-storage-backend';
@@ -729,9 +729,11 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     // auditSlotRegistry 用 S1-S5 工作槽（CB 的 FileSlotRegistry，1:1:1 铁律）。
     // Scheduler 注入 offlineRunExecutor 作 runner：assign 调 runner（副作用写 reportStore）
     // + 自动 release slot（scheduler.ts:83-89）。slotId===botId（offline-runner 读取）。
-    // reportStore 先用 InMemoryReportStore（Claude 测试桩），CB 交付 FS 版后一行换。
+    // reportStore 用 CB 交付的 FileReportStore（FS 落盘，runs/<batchId>/ 下 .jsonl +
+    // .report.json + summary.md）——v0.31 决策门的"落盘"项要求真实文件可读，
+    // InMemoryReportStore 仅测试桩，真机必须走 FS 版。
     const auditSlotRegistry = new FileSlotRegistry({ slotIds: ['S1', 'S2', 'S3', 'S4', 'S5'] });
-    const auditReportStore = new InMemoryReportStore();
+    const auditReportStore = new FileReportStore();
     // 任务级事件（task-progress/task-complete）由 runner 发出——它知道每个任务的粒度；
     // 批次级 report-ready 由 dispatcher 发出。两者都经 emitChatRoomEvent → UI。
     const offlineRunExecutor = createOfflineRunExecutor({
