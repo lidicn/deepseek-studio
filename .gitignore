@@ -23,6 +23,18 @@ src/inject/pow-wasm-base64.txt
 tauri*.log
 vitest.config.ts.timestamp-*.mjs
 
+# 一次性调试日志与临时脚本（本地保留，勿提交）
+*-log.txt
+extract_mimo.py
+scripts/check-registry.*
+scripts/patch-studio-ui.mjs
+scripts/test-consent*.cjs
+scripts/test-mcp*.cjs
+scripts/test-single-output.txt
+scripts/user-test-write.txt
+yuanbao-audit/tmp-control.txt
+.codebuddy/plans/
+
 # os / editor
 .Thumbs.db
 yuanbao-audit/src-tauri/target/
