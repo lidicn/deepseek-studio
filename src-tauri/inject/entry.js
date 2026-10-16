@@ -7679,6 +7679,18 @@ Please report this to https://github.com/markedjs/marked.`, e) {
           }
           break;
         }
+        case "task-progress": {
+          appendTaskProgress(ev.slotId ?? "", ev.dimension ?? "", ev.taskStatus ?? "running", ev.message);
+          break;
+        }
+        case "task-complete": {
+          appendTaskComplete(ev.slotId ?? "", ev.dimension ?? "", ev.ok ?? false, ev.findingCount ?? 0, ev.error);
+          break;
+        }
+        case "report-ready": {
+          appendReportCard(ev.summaryPath ?? "", ev.subReports ?? []);
+          break;
+        }
       }
     }
     function updateMeetingChip(status, strategy) {
@@ -7745,6 +7757,63 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     }
     function appendStatus(text) {
       const msg2 = el("div", { className: "studio-chat-msg studio-chat-msg-status", text });
+      messages.appendChild(msg2);
+      scrollToBottom();
+    }
+    function appendTaskProgress(slotId, dimension, status, message) {
+      removeWelcome();
+      const msg2 = el("div", { className: "studio-chat-msg studio-chat-msg-task" });
+      msg2.style.borderLeftColor = "#3b82f6";
+      const label = el("div", { className: "studio-chat-summary-label", text: `\u{1F52C} \u5BA1\u8BA1\u4E2D \xB7 ${dimension}` });
+      msg2.appendChild(label);
+      const body = el("div", { className: "studio-chat-msg-body" });
+      body.textContent = `\u69FD ${slotId} \xB7 ${status === "running" ? "\u6267\u884C\u4E2D" : "\u6B65\u8FDB"}${message ? " \xB7 " + message : ""}`;
+      msg2.appendChild(body);
+      messages.appendChild(msg2);
+      scrollToBottom();
+    }
+    function appendTaskComplete(slotId, dimension, ok, findingCount, error) {
+      removeWelcome();
+      const msg2 = el("div", { className: "studio-chat-msg studio-chat-msg-task" });
+      msg2.style.borderLeftColor = ok ? "#22c55e" : "#ef4444";
+      const icon2 = ok ? "\u2705" : "\u274C";
+      const label = el("div", { className: "studio-chat-summary-label", text: `${icon2} \u5BA1\u8BA1\u5B8C\u6210 \xB7 ${dimension}` });
+      msg2.appendChild(label);
+      const body = el("div", { className: "studio-chat-msg-body" });
+      if (ok) {
+        body.textContent = `\u69FD ${slotId} \xB7 \u53D1\u73B0 ${findingCount} \u6761`;
+      } else {
+        body.textContent = `\u69FD ${slotId} \xB7 \u5931\u8D25${error ? "\uFF1A" + error : ""}`;
+      }
+      msg2.appendChild(body);
+      messages.appendChild(msg2);
+      scrollToBottom();
+    }
+    function appendReportCard(summaryPath, subReports) {
+      removeWelcome();
+      const msg2 = el("div", { className: "studio-chat-msg studio-chat-msg-report" });
+      msg2.style.borderLeftColor = "#6366f1";
+      const label = el("div", { className: "studio-chat-summary-label", text: "\u{1F4CA} \u7EFC\u5408\u5BA1\u8BA1\u62A5\u544A" });
+      msg2.appendChild(label);
+      const body = el("div", { className: "studio-chat-msg-body" });
+      const total = subReports.reduce((s, r) => s + r.findingCount, 0);
+      const head = el("div", { text: `\u5171 ${subReports.length} \u4E2A\u7EF4\u5EA6 \xB7 ${total} \u6761\u53D1\u73B0` });
+      head.style.fontWeight = "bold";
+      head.style.marginBottom = "8px";
+      body.appendChild(head);
+      for (const r of subReports) {
+        const row = el("div", { text: `\u2022 ${r.dimension}\uFF08${r.findingCount} \u6761\uFF09\uFF1A${r.summary}` });
+        row.style.marginBottom = "4px";
+        body.appendChild(row);
+      }
+      if (summaryPath) {
+        const path = el("div", { text: `\u{1F4C4} \u62A5\u544A\u8DEF\u5F84\uFF1A${summaryPath}` });
+        path.style.marginTop = "8px";
+        path.style.fontSize = "0.85em";
+        path.style.color = "#888";
+        body.appendChild(path);
+      }
+      msg2.appendChild(body);
       messages.appendChild(msg2);
       scrollToBottom();
     }

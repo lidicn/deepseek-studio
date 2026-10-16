@@ -58,9 +58,11 @@ interface ChatRoomEvent {
 /** v0.28 结构化聊天室事件（CB 定义，agent-channel 经 {type:'chat-room-event'} broadcast）。
  *  v0.29：加 meeting-state 成员（与 types.ts 的 ChatRoomEvent union 同步——
  *  本 interface 是本地硬编码，未从 types.ts import，必须手动同步，否则 TS 编译不过）。
- *  v0.29 修复：加 round-complete 成员 —— 给 UI 确定性轮次结束信号（不依赖 main bot done）。 */
+ *  v0.29 修复：加 round-complete 成员 —— 给 UI 确定性轮次结束信号（不依赖 main bot done）。
+ *  v0.30：加 task-progress / task-complete / report-ready 成员（审计会议离线执行事件）。 */
 interface StructuredChatRoomEvent {
-  kind: 'chat-bot-reply' | 'chat-summary' | 'meeting-state' | 'round-complete';
+  kind: 'chat-bot-reply' | 'chat-summary' | 'meeting-state' | 'round-complete'
+    | 'task-progress' | 'task-complete' | 'report-ready';
   roomId: string;
   // chat-bot-reply
   persona?: string;
@@ -77,6 +79,18 @@ interface StructuredChatRoomEvent {
   strategy?: { focusTopics: string[]; minRoundsBeforeAutoSummary: number; summaryStyle?: string } | null;
   // round-complete
   memberCount?: number;
+  // v0.30 task-progress / task-complete / report-ready
+  batchId?: string;
+  slotId?: string;
+  dimension?: string;
+  taskStatus?: 'running' | 'step';
+  step?: number;
+  message?: string;
+  ok?: boolean;
+  findingCount?: number;
+  error?: string;
+  summaryPath?: string;
+  subReports?: ReadonlyArray<{ slotId: string; dimension: string; findingCount: number; summary: string }>;
 }
 
 export function createChatRoom(config: ChatRoomRuntimeConfig): ChatRoomHandle {
@@ -315,6 +329,21 @@ export function createChatRoom(config: ChatRoomRuntimeConfig): ChatRoomHandle {
         }
         break;
       }
+      case 'task-progress': {
+        // v0.30 子 bot 离线审计进度（某维度开始执行时推出）。
+        appendTaskProgress(ev.slotId ?? '', ev.dimension ?? '', ev.taskStatus ?? 'running', ev.message);
+        break;
+      }
+      case 'task-complete': {
+        // v0.30 子 bot 审计完成（成功/失败，携带 finding 数或错误）。
+        appendTaskComplete(ev.slotId ?? '', ev.dimension ?? '', ev.ok ?? false, ev.findingCount ?? 0, ev.error);
+        break;
+      }
+      case 'report-ready': {
+        // v0.30 综合审计报告就绪（所有维度合并完成）。
+        appendReportCard(ev.summaryPath ?? '', ev.subReports ?? []);
+        break;
+      }
     }
   }
 
@@ -394,6 +423,72 @@ export function createChatRoom(config: ChatRoomRuntimeConfig): ChatRoomHandle {
 
   function appendStatus(text: string): void {
     const msg = el('div', { className: 'studio-chat-msg studio-chat-msg-status', text });
+    messages.appendChild(msg);
+    scrollToBottom();
+  }
+
+  /** v0.30 子 bot 离线审计进度行（某维度开始执行时推出）。 */
+  function appendTaskProgress(slotId: string, dimension: string, status: string, message?: string): void {
+    removeWelcome();
+    const msg = el('div', { className: 'studio-chat-msg studio-chat-msg-task' });
+    msg.style.borderLeftColor = '#3b82f6';
+    const label = el('div', { className: 'studio-chat-summary-label', text: `🔬 审计中 · ${dimension}` });
+    msg.appendChild(label);
+    const body = el('div', { className: 'studio-chat-msg-body' });
+    body.textContent = `槽 ${slotId} · ${status === 'running' ? '执行中' : '步进'}${message ? ' · ' + message : ''}`;
+    msg.appendChild(body);
+    messages.appendChild(msg);
+    scrollToBottom();
+  }
+
+  /** v0.30 子 bot 审计完成卡（成功/失败，携带 finding 数或错误）。 */
+  function appendTaskComplete(slotId: string, dimension: string, ok: boolean, findingCount: number, error?: string): void {
+    removeWelcome();
+    const msg = el('div', { className: 'studio-chat-msg studio-chat-msg-task' });
+    msg.style.borderLeftColor = ok ? '#22c55e' : '#ef4444';
+    const icon = ok ? '✅' : '❌';
+    const label = el('div', { className: 'studio-chat-summary-label', text: `${icon} 审计完成 · ${dimension}` });
+    msg.appendChild(label);
+    const body = el('div', { className: 'studio-chat-msg-body' });
+    if (ok) {
+      body.textContent = `槽 ${slotId} · 发现 ${findingCount} 条`;
+    } else {
+      body.textContent = `槽 ${slotId} · 失败${error ? '：' + error : ''}`;
+    }
+    msg.appendChild(body);
+    messages.appendChild(msg);
+    scrollToBottom();
+  }
+
+  /** v0.30 综合审计报告卡（所有维度合并完成，含各子报告摘要 + 路径）。 */
+  function appendReportCard(
+    summaryPath: string,
+    subReports: ReadonlyArray<{ slotId: string; dimension: string; findingCount: number; summary: string }>,
+  ): void {
+    removeWelcome();
+    const msg = el('div', { className: 'studio-chat-msg studio-chat-msg-report' });
+    msg.style.borderLeftColor = '#6366f1';
+    const label = el('div', { className: 'studio-chat-summary-label', text: '📊 综合审计报告' });
+    msg.appendChild(label);
+    const body = el('div', { className: 'studio-chat-msg-body' });
+    const total = subReports.reduce((s, r) => s + r.findingCount, 0);
+    const head = el('div', { text: `共 ${subReports.length} 个维度 · ${total} 条发现` });
+    head.style.fontWeight = 'bold';
+    head.style.marginBottom = '8px';
+    body.appendChild(head);
+    for (const r of subReports) {
+      const row = el('div', { text: `• ${r.dimension}（${r.findingCount} 条）：${r.summary}` });
+      row.style.marginBottom = '4px';
+      body.appendChild(row);
+    }
+    if (summaryPath) {
+      const path = el('div', { text: `📄 报告路径：${summaryPath}` });
+      path.style.marginTop = '8px';
+      path.style.fontSize = '0.85em';
+      path.style.color = '#888';
+      body.appendChild(path);
+    }
+    msg.appendChild(body);
     messages.appendChild(msg);
     scrollToBottom();
   }
