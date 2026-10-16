@@ -51,10 +51,6 @@ function msgBoxes(): Element[] {
   return Array.from(document.querySelectorAll('.studio-chat-msg'));
 }
 
-function byClass(cls: string): Element[] {
-  return Array.from(document.querySelectorAll(`.${cls}`));
-}
-
 describe('v0.30 审计报告卡 UI', () => {
   beforeEach(() => {
     lastWs = null;
