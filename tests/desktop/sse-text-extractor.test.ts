@@ -79,6 +79,67 @@ describe('SseTextStreamExtractor', () => {
     expect(calls[0].params).toEqual({ command: 'dir /a' });
   });
 
+  it('回归（真机）：全量 response 快照携带的初始 content 不丢失', () => {
+    // 真机抓到的形态：模型直接以工具标签开头 → 标签首字符 `<` 落在
+    // {"v":{"response":{...,"fragments":[{"type":"RESPONSE","content":"<"}]}}} 快照里。
+    // 该快照无 p 字段，旧实现三个分支全落空，`<` 被静默丢弃 → 工具永不执行。
+    const stream =
+      'event: update_session\ndata: {"updated_at":1792130768.482292}\n' +
+      'data: {"v":{"response":{"message_id":2,"status":"WIP","fragments":[{"id":2,"type":"RESPONSE","content":"<"}]}}}\n\n' +
+      'data: {"v":"local_file"}\n\ndata: {"v":"_stat>"}\n\ndata: {"v":"{\\"path\\":\\"E:/x\\"}"}\n\n' +
+      'data: {"v":"</local_file_stat>"}\n\n';
+
+    for (const width of [1, 13, 64, 200]) {
+      const extractor = new SseTextStreamExtractor();
+      let assembled = '';
+      for (const part of splitIntoParts(stream, width)) assembled += extractor.feed(part);
+      assembled += extractor.flush();
+      expect(assembled, `width=${width}`).toContain('<local_file_stat>{"path":"E:/x"}</local_file_stat>');
+    }
+  });
+
+  it('快照累积重发时 content 不重复（只首次消费）', () => {
+    const snapshot = (content: string) =>
+      `data: {"v":{"response":{"fragments":[{"id":2,"type":"RESPONSE","content":${JSON.stringify(content)}}]}}}\n\n`;
+    const sse = new SseTextStreamExtractor();
+    // 首次快照带 "AB"，之后服务端重发同一份累积快照——不能重复输出 AB
+    let out = sse.feed(snapshot('AB'));
+    out += sse.feed(snapshot('AB'));
+    out += sse.flush();
+    expect(out).toBe('AB');
+  });
+
+  it('快照 + 后续增量 patch 串联 StreamingToolCallParser 能识别工具调用', () => {
+    const stream =
+      'data: {"v":{"response":{"fragments":[{"id":2,"type":"RESPONSE","content":"<she"}]}}}\n\n' +
+      'data: {"p":"response/fragments/-1/content","o":"APPEND","v":"ll_exec>"}\n\n' +
+      'data: {"v":"{\\"command\\":\\"pwd\\"}"}\n\n' +
+      'data: {"v":"</shell_exec>"}\n\n';
+    const sse = new SseTextStreamExtractor();
+    const parser = new StreamingToolCallParser(TOOL_NAMES);
+    const calls: ParsedToolCall[] = [];
+    for (const part of splitIntoParts(stream, 11)) {
+      const visible = sse.feed(part);
+      if (visible) calls.push(...parser.feed(visible).calls);
+    }
+    const tail = sse.flush();
+    if (tail) calls.push(...parser.feed(tail).calls);
+    calls.push(...parser.flush().calls);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].invocationName).toBe('shell_exec');
+    expect(calls[0].params).toEqual({ command: 'pwd' });
+  });
+
+  it('快照里的 THINK fragment 进推理缓冲，RESPONSE 进可见文本', () => {
+    const sse = new SseTextStreamExtractor();
+    const stream =
+      'data: {"v":{"response":{"fragments":[{"id":1,"type":"THINK","content":"想一下"},{"id":2,"type":"RESPONSE","content":"答案"}]}}}\n\n';
+    const out = sse.feed(stream) + sse.flush();
+    expect(out).toBe('答案');
+    expect(sse.consumeReasoning()).toBe('想一下');
+  });
+
   it('普通字符串 delta 跨 chunk 正确拼接', () => {
     const sse = new SseTextStreamExtractor();
     const p1 = 'data: {"v":"hel' ; // 残行（无换行），应被缓冲

@@ -12,7 +12,7 @@
  */
 
 import { StreamingToolCallParser, type ParsedToolCall } from './streaming-tool-parser';
-import { SseTextStreamExtractor } from './sse-text-extractor';
+import { SseTextStreamExtractor, snapshotFragments } from './sse-text-extractor';
 import { DeepSeekSseFrameDecoder } from './deepseek-sse-frame-decoder';
 import { isSupportedUpstreamTool, SUPPORTED_INVOCATION_NAMES } from '../shared/tool-contract';
 import { shouldSkipAutoContinue } from '../shared/tool-result-format';
@@ -398,13 +398,14 @@ function installFetchHook(
             // v0.7：先把原始 SSE 提取成可见纯文本（跨 chunk 不丢事件），再解析工具标签
             const rawSse = decoder.decode(value, { stream: true });
             const text = sse.feed(rawSse);
-            // v0.19：推送可见文本给自建聊天 UI（终端式追加，流结束后由 chat UI 格式化）
+            // v0.19：推送可见文本给自建聊天 UI（80ms 节流 + markdown 实时渲染 + 光标）
             if (loopState?.chatUI && text) loopState.chatUI.appendToAssistantMessage(text);
-            // v0.18：抽取推理文本到步骤笔记
+            // v0.18：抽取推理文本到步骤笔记 + chat UI think 块（传累积全量快照）
             const rsn = sse.consumeReasoning();
             if (rsn) {
               stepReasoningAccum += rsn;
               stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
+              if (loopState?.chatUI) loopState.chatUI.appendReasoning(stepReasoningAccum);
             }
             const { calls } = parser.feed(text);
             for (const c of calls) forward(c);
@@ -598,17 +599,35 @@ function installXhrHooks(
                 if (!p || /^response(\/|$)/.test(p)) {
                   rawDataText += obj.v;
                 }
+              } else {
+                // 全量 response 快照：{"v":{"response":{...,"fragments":[{type,content}]}}}。
+                // 无 p 字段，既不是 string 也不是数组，旧实现三个分支全落空 → 快照里的
+                // content 被静默丢弃。真机后果：模型直接以工具标签开头时，标签首字符 `<`
+                // 就是这个初始 content，丢了它整条工具调用永远解析不出来（rawDataText 是
+                // 喂给 StreamingToolCallParser 的唯一来源，比 visible 更关键）。
+                // 快照累积重发，只取首次（frameDec 每 XHR 一个实例，用 __dsSnapSeen 记）。
+                const snap = snapshotFragments(frame.parsed);
+                if (snap) {
+                  if (!(xhr as Record<string, unknown>).__dsSnapSeen) {
+                    (xhr as Record<string, unknown>).__dsSnapSeen = true;
+                    for (const f of snap) {
+                      const c = (f as { content?: unknown })?.content;
+                      if (typeof c === 'string') rawDataText += c;
+                    }
+                  }
+                }
               }
             }
           }
           let visible = sse.feed(part);
           // readyState===4：流结束，刷出 SSE 缓冲区里最后一个不带换行的残留事件
           if (xhr.readyState === 4) visible += sse.flush();
-          // v0.18：抽取推理文本到步骤笔记
+          // v0.18：抽取推理文本到步骤笔记 + chat UI think 块
           const rsnX = sse.consumeReasoning();
           if (rsnX) {
             stepReasoningAccum += rsnX;
             stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
+            if (loopState?.chatUI) loopState.chatUI.appendReasoning(stepReasoningAccum);
           }
           if (visible) {
             diag(`xhr extracted[${visible.length}]: ${visible.slice(0, 300).replace(/\s+/g, ' ')}`);

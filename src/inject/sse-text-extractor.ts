@@ -51,6 +51,30 @@ export function extractTextFromSseLine(line: string): string {
 }
 
 /**
+ * 全量 response 快照：`{"v":{"response":{...,"fragments":[{type,content}]}}}`。
+ *
+ * DeepSeek 在响应开始时下发一次该形态（携带首个 fragment 的初始 content），后续用
+ * 增量 patch（`{"p":"response/fragments/-1/content","o":"APPEND","v":"..."}`、
+ * 裸 `{"v":"..."}`）续写。它没有 `p` 字段，因此既不匹配 fragment APPEND 分支，
+ * 也不是字符串/数组 v —— 旧实现三个分支全落空、静默丢内容。
+ *
+ * 真机后果：模型若直接以工具标签开头（前面没有散文），标签首字符 `<` 就是响应的首个
+ * content、恰好落在本快照里被丢掉，于是 `<shell_exec>` 退化成 `shell_exec>`，
+ * StreamingToolCallParser 永远匹配不到工具标签 → 工具不执行 → agent-loop 判定
+ * 「未解析的工具标签」反复纠偏直到耗尽。非快照形态返回 null。
+ */
+export function snapshotFragments(parsed: unknown): readonly unknown[] | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const o = parsed as Record<string, unknown>;
+  if (o.p !== undefined) return null; // 带 p 的是增量 patch，不是快照
+  if (!o.v || typeof o.v !== 'object' || Array.isArray(o.v)) return null;
+  const resp = (o.v as Record<string, unknown>).response;
+  if (!resp || typeof resp !== 'object') return null;
+  const frags = (resp as Record<string, unknown>).fragments;
+  return Array.isArray(frags) && frags.length > 0 ? frags : null;
+}
+
+/**
  * 有状态的 SSE 文本提取器。每个 HTTP 响应流（fetch）或每个 XHR 对象持有一个实例，
  * 逐 chunk 喂入原始 SSE 文本，吐出累积的可见纯文本。
  *
@@ -63,6 +87,12 @@ export class SseTextStreamExtractor {
   private activeFragmentType: 'THINK' | 'RESPONSE' | null = null;
   /** v0.18：累积 THINK 推理段文本，供步骤流推理笔记使用。 */
   private reasoningBuffer = '';
+  /**
+   * 是否已消费过全量 response 快照的 content。快照是累积的（每次重发都含全部已流过
+   * 内容），只有首次观测需要取 content，后续重发必须跳过，否则内容重复。
+   * 实例按 XHR 创建，故每条回复自动重置。
+   */
+  private snapshotSeen = false;
 
   /**
    * 喂入一段原始 SSE 文本（可能在任意字节边界截断），返回本次可确认的完整行所携带的文本。
@@ -123,6 +153,28 @@ export class SseTextStreamExtractor {
         } else {
           out += frag.content;
         }
+      }
+      return out;
+    }
+    // 全量 response 快照（无 p 字段）：只在首次观测时消费其 fragment content，
+    // 否则（快照累积重发）会重复。见 snapshotFragments 注释：这是「模型直接以工具
+    // 标签开头」时标签首字符 `<` 的唯一携带者，漏掉即整条工具调用失联。
+    const snap = snapshotFragments(obj);
+    if (snap) {
+      const first = !this.snapshotSeen;
+      this.snapshotSeen = true;
+      for (const item of snap) {
+        const t = (item as { type?: unknown })?.type;
+        if (t === 'THINK' || t === 'RESPONSE') this.activeFragmentType = t;
+      }
+      if (!first) return '';
+      let out = '';
+      for (const item of snap) {
+        if (!item || typeof item !== 'object') continue;
+        const frag = item as { type?: unknown; content?: unknown };
+        if (typeof frag.content !== 'string') continue;
+        if (frag.type === 'THINK') this.reasoningBuffer += frag.content;
+        else out += frag.content;
       }
       return out;
     }
