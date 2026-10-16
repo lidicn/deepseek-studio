@@ -56,6 +56,16 @@ export interface OfflineRunExecutorDeps {
   readonly onTaskProgress?: TaskProgressSink;
   /** 完成推送（可选，转 emitChatRoomEvent）。 */
   readonly onTaskComplete?: TaskCompleteSink;
+  /**
+   * 该槽是否有可用窗口（宿主提供：hub.trustedPages 里有没有 botId===槽 的页）。
+   *
+   * 为什么必须预检：审计槽是独立的页面驱动 bot，工具走 chat-*（页端执行侧）。槽若没有
+   * 绑定窗口，desktop-host 的 routeExecution 会落到 Node rehydrate 回退分支——该分支
+   * 只跑 start/stop、根本不调 execute，却返回 ok:true。于是子 bot 拿着假成功一直轮询
+   * chat-read，直到 timeoutMs 才失败，报出来的原因是"超时"，而真因是"这个槽没窗口"。
+   * 预检把 120s 的误导性超时换成即时、准确的环境错误。
+   */
+  readonly hasWindowFor?: (botId: string) => boolean;
 }
 
 /**
@@ -115,6 +125,13 @@ export function createOfflineRunExecutor(deps: OfflineRunExecutorDeps): OfflineR
         status: 'running',
         timestamp: now(),
       });
+
+      // 预检窗口可用性：槽没有绑定窗口时立刻失败，不要拖到 timeoutMs（原因也会被
+      // 误报成"超时"而非"这个槽没窗口"）。见 hasWindowFor 的接口注释。
+      // 放在 task-progress 之后，让 UI 仍能看到 running → complete(ok=false) 的完整生命周期。
+      if (deps.hasWindowFor && !deps.hasWindowFor(botId)) {
+        throw new Error(`槽 ${slotId} 无可用窗口（botId=${botId} 没有已连接的审计页），无法执行页面驱动工具`);
+      }
 
       const sendP = slotRuntime.run(handle);
       const raced = await Promise.race([sendP, timeout]);

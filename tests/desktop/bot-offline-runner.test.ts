@@ -143,6 +143,38 @@ describe('createOfflineRunExecutor', () => {
     expect(report!.findings[0].description).toContain('engine down');
   });
 
+  it('槽无窗口 → 即时失败（不空转到超时），原因写明无窗口', async () => {
+    const { executor, completeSink, progressSink, slotRuntime } = mockDeps(async () => {
+      // 不该走到这里——预检在 slotRuntime.run 之前就抛
+    });
+    const guarded = createOfflineRunExecutor({
+      registry: {
+        get: vi.fn(() => ({ id: 'S1', loop: { send: vi.fn() }, engine: {} })),
+        getState: vi.fn(() => ({
+          toolCallCounter: { current: 0 },
+          stopFlag: { stopped: false },
+          lastAutoReply: { text: '' } as never,
+          sessionAllowlist: new Set<string>(),
+        })),
+      } as unknown as BotRegistryInternal,
+      slotRuntime: (slotRuntime as unknown) as SlotRuntime,
+      onAgentEvent: () => () => {},
+      reportStore: new InMemoryReportStore(),
+      hasWindowFor: () => false,
+      onTaskProgress: progressSink,
+      onTaskComplete: completeSink,
+    });
+    const handle = mkHandle('S1', 'security', 'batch-nowin', 'prompt');
+
+    await expect(guarded(handle)).rejects.toThrow('无可用窗口');
+    expect(slotRuntime.run).not.toHaveBeenCalled();      // 没白跑 120s
+    expect(completeSink).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'task-complete', ok: false, error: expect.stringContaining('无可用窗口') }),
+    );
+    expect(progressSink).toHaveBeenCalled();            // running 先推，生命周期完整
+    expect(executor).toBeTruthy();
+  });
+
   it('超时 → task-complete ok=false + 仍 unloadPersona', async () => {
     const { completeSink } = mockDeps(() => new Promise(() => {})); // 永不 resolve
     const executorWithShortTimeout = createOfflineRunExecutor({

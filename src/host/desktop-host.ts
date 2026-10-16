@@ -741,6 +741,10 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       slotRuntime: fullSlotRuntime,
       onAgentEvent: (cb) => { agentListeners.add(cb); return () => agentListeners.delete(cb); },
       reportStore: auditReportStore,
+      // 预检：槽必须有已连接的可信页（hub 在 start() 里建，闭包按调用时读取）。
+      // 无窗口时立即失败并给出准确原因，而不是让 chat-read 轮询空转到 120s 超时。
+      hasWindowFor: (botId) =>
+        !!hub && hub.trustedPages.some((p) => (p.botId ?? 'main') === botId),
       onTaskProgress: (event) => emitChatRoomEvent(event),
       onTaskComplete: (event) => emitChatRoomEvent(event),
     });
