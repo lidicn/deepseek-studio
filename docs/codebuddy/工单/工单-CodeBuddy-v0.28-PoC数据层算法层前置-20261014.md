@@ -102,3 +102,22 @@ PoC 是 4 人 + 用户在同一房间持续对话，消息量会快速超过 Web
 ---
 
 *工单完。有问题在本文件下方追加回复，或走 `docs/交接单/`。*
+
+---
+
+## 完成回执（CodeBuddy · 2026-10-14）
+
+经核对，工单任务 A/B/C **在 v0.27a 交付时已一并完成，并随权威提交 `c8207be`（feat/bot-data）落地**，无需新提交。
+
+- **A（算法层补测 A1–A5）**：`tests/desktop/bot-round-orchestrator.test.ts` 的 `describe('A 任务：上下文传递与接力链路…')` 区块（第 127–175 行），5 个用例全过。
+- **B1（窗口截断）**：`tests/desktop/bot-context-engine.test.ts` 的 `B1:` 用例（第 163–181 行），断言超过 `maxVerbatimMessages` 时只留最近窗口、且上一轮摘要保留。
+- **B2（阈值）**：`tests/desktop/bot-room-summary.test.ts` 的 `B2:` 用例（第 147–159 行），按 `summaryEveryTurns` 阈值返回。
+- **B3（CAS 并发防双摘要）**：`tests/desktop/bot-room-summary.test.ts` 的 `并发 summarize 同房间 → 只一个 commit 成功，不覆盖` 用例（第 95–103 行）。
+- **B4（增量压缩）**：`tests/desktop/bot-context-engine.test.ts` 的 `增量压缩` 用例（第 120–132 行）+ `tests/desktop/bot-room-summary.test.ts` 的 `增量` 用例（第 133–145 行）。
+- **C（3 persona 包）**：`frontend-expert` / `backend-expert` / `audit-expert` 已在 `c8207be` 的 `personas/` 目录。
+
+**独立验证（不依赖接线层测试）**：`npx vitest run` 上述 8 个文件 → **8 文件 / 62 用例全过（0 失败）**，含 A1–A5 与 B1–B4。
+
+**提交哈希（feat/bot-data）**：`c8207be` —— A/B/C 均已含于该提交；按主开发回复单 Q1/Q4「以 `c8207be` 为准、无需重复提交」的裁定，本次无新提交。
+
+衔接面未改动（`src/host/bot/types.ts` 契约未动）。下一步等主开发 v0.27 真机验收 + 用户 v0.28 PoC 启动通知。
