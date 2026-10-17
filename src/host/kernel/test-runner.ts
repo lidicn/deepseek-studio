@@ -22,11 +22,11 @@ export interface TestRunResult {
  * @param workspace 工作区路径
  * @param filter 可选的测试文件过滤（如 "tests/desktop/telemetry-store.test.ts"）
  */
-export async function runTests(workspace: string, filter?: string): Promise<TestRunResult> {
+export async function runTests(_workspace: string, filter?: string): Promise<TestRunResult> {
   const start = Date.now();
 
   // 走 capabilities/shell.ts 双闸
-  // workspace 传 null：测试环境不做工作区边界校验
+  // workspace 传 null：测试环境不做工作区边界校验（_workspace 保留为公开签名，本实现不做边界校验）
   const shell = createShellCapability({ workspace: null, timeoutMs: 120_000 });
   const argv = filter
     ? ['npx', 'vitest', 'run', filter]
@@ -34,7 +34,8 @@ export async function runTests(workspace: string, filter?: string): Promise<Test
 
   const result = await shell.execute({ argv });
   const durationMs = Date.now() - start;
-  const rawOutput = (result.data?.stdout ?? '') + (result.data?.stderr ?? '');
+  const data = (result.data ?? {}) as { stdout?: string; stderr?: string };
+  const rawOutput = (data.stdout ?? '') + (data.stderr ?? '');
 
   // 用文本估算结果
   let total = 0, passed = 0, failed = 0;

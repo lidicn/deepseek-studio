@@ -6,8 +6,8 @@
  * 2. 支持单文件替换（oldText → newText），比 unified diff 更可靠
  * 3. 多文件批量编辑时，任意一个失败都回滚所有已成功的文件
  */
-import { readFileSync, writeFileSync, renameSync, existsSync, copyFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 /** 单文件编辑指令 */
 export interface EditInstruction {
@@ -32,28 +32,6 @@ export interface EditResult {
   }>;
   /** 是否全部回滚了 */
   rolledBack: boolean;
-}
-
-/**
- * 应用单条编辑指令（不做回滚）
- */
-function applySingleEdit(workspace: string, instr: EditInstruction): { replacements: number; error?: string } {
-  const absPath = join(workspace, instr.path);
-  if (!existsSync(absPath)) {
-    return { replacements: 0, error: `file not found: ${instr.path}` };
-  }
-  const content = readFileSync(absPath, 'utf-8');
-  const count = content.split(instr.oldText).length - 1;
-  if (count === 0) {
-    return { replacements: 0, error: `oldText not found in ${instr.path}` };
-  }
-  if (count > 1) {
-    return { replacements: 0, error: `oldText not unique in ${instr.path} (found ${count} times)` };
-  }
-  const newContent = content.replace(instr.oldText, instr.newText);
-  writeFileSync(absPath + '.tmp', newContent, 'utf-8');
-  renameSync(absPath + '.tmp', absPath);
-  return { replacements: 1 };
 }
 
 /**

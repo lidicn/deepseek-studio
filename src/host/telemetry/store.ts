@@ -4,7 +4,7 @@
  * 复用 web-engine.ts:132 recordToolCall 既有埋点口，不另造第二套。
  * 落盘格式：每天一个 JSONL 文件，每行一条 JSON 记录。
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** 一条工具调用记录（与 ToolCallRecord 对齐） */
