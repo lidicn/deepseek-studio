@@ -13,7 +13,7 @@ import { createApiServer, type ApiServer, type RateLimitOptions } from '../api/s
 import { createBearerAuthenticator } from '../api/auth';
 import { createFakeOfficialBackend } from '../api/official-backend';
 import { createPlatformDesktop, type PlatformDesktop } from './platform-desktop';
-import { createSecretRing, type SecretRing } from './host-token';
+import { createSecretRing, type SecretRing, DEFAULT_SECRET_GRACE_MS } from './host-token';
 import { createEchoCapability } from '../capabilities/echo';
 import { createChatReadCapability } from '../capabilities/chat-read';
 import { createChatInsertCapability } from '../capabilities/chat-insert';
@@ -33,7 +33,7 @@ import { AGENT_SENTINEL, type AgentLoopEvent } from './agent-loop';
 import { createAgentChannel, type AgentChannel } from './agent-channel';
 import { pickFolderViaDialog } from './folder-picker';
 import { createWebEngine } from './engine/web-engine';
-import { createBotRegistry } from './bot/registry';
+import { createBotRegistry, SessionAllowlist } from './bot/registry';
 import type { BotInstance, ChatRoomEvent, PersonaRegistry, RoomConfig } from './bot/types';
 import { createSlotRuntime, type SlotRuntime } from './bot/slot-runtime';
 import {
@@ -277,6 +277,9 @@ function createHostResourceScope(): ContentResourceScope {
     },
   };
 }
+
+/** QD-R2-08：用户点 allow-session 的默认 TTL（与密钥轮换宽限期同族，10min）。 */
+const DEFAULT_SESSION_GRANT_TTL_MS = DEFAULT_SECRET_GRACE_MS;
 
 export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   // 密钥环：轮换期新密钥立即生效、旧密钥在宽限期内仍被接受，
@@ -648,8 +651,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       // 否则每一步 chat-insert/send 都要在聊天页弹同意框，AgentLoop 根本跑不起来。
       // 仅限 chat 驱动两项；file/shell 的同意闸门不受影响。审计照常记录。
       const state = botRegistry.getState('main');
-      state?.sessionAllowlist.add('chat-insert');
-      state?.sessionAllowlist.add('chat-send');
+      state?.sessionAllowlist.addPermanent('chat-insert');
+      state?.sessionAllowlist.addPermanent('chat-send');
       return mainBot?.loop.send(`${AGENT_SENTINEL}${text}`) ?? Promise.reject(new Error('main bot not ready'));
     },
     stop: () => mainBot?.loop.stop(),
@@ -664,8 +667,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   // 收集 AgentLoop 的 assistant 事件作为最终回答返回。
   async function agentSender(text: string): Promise<string> {
     const state = botRegistry.getState('main');
-    state?.sessionAllowlist.add('chat-insert');
-    state?.sessionAllowlist.add('chat-send');
+    state?.sessionAllowlist.addPermanent('chat-insert');
+    state?.sessionAllowlist.addPermanent('chat-send');
     let finalAnswer = '';
     const listener = (event: AgentLoopEvent) => {
       if (event.type === 'assistant' && event.text) {
@@ -860,6 +863,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       throw new Error(`unknown policy mode: ${String(mode)}`);
     }
     policyMode = mode;
+    // QD-R2-08：策略档位切换 → 旧 allow-session 授权一律作废（档位语义变了）。
+    sessionAllowlist.clear();
+    for (const bot of botRegistry.list()) botRegistry.getState(bot.id)?.sessionAllowlist.clear();
     const persist = persistConfigPatch({ policyMode: mode });
     if (!persist.ok) console.warn(`[desktop-host] policyMode 持久化失败: ${persist.error}`);
   }
@@ -868,6 +874,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   function setWorkspaceRoot(target: string | null): { ok: boolean; error?: string } {
     if (target === null) {
       mutableWorkspace.setRoot(null);
+      // QD-R2-08：工作区边界变化 → 旧 allow-session 授权一律作废。
+      sessionAllowlist.clear();
+      for (const bot of botRegistry.list()) botRegistry.getState(bot.id)?.sessionAllowlist.clear();
       const persist = persistConfigPatch({ workspaceRoot: '' });
       if (!persist.ok) console.warn(`[desktop-host] workspaceRoot 持久化失败: ${persist.error}`);
       return { ok: true };
@@ -876,6 +885,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       return { ok: false, error: 'not-a-directory' };
     }
     mutableWorkspace.setRoot(target);
+    sessionAllowlist.clear();
+    for (const bot of botRegistry.list()) botRegistry.getState(bot.id)?.sessionAllowlist.clear();
     const persist = persistConfigPatch({ workspaceRoot: mutableWorkspace.root });
     if (!persist.ok) console.warn(`[desktop-host] workspaceRoot 持久化失败: ${persist.error}`);
     return { ok: true };
@@ -954,7 +965,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   let hub: PageRuntimeHub | null = null;
   const debugEvalPending = new Map<string, { resolve: (r: { ok: boolean; result?: string; error?: string }) => void; timer: ReturnType<typeof setTimeout> }>();
   let agentChannel: AgentChannel | null = null;
-  const sessionAllowlist = new Set<string>();
+  const sessionAllowlist = new SessionAllowlist();
 
   function randomCallId(): string {
     return crypto.randomUUID();
@@ -1067,13 +1078,13 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
 
   /** v0.24：取指定 bot 的会话级同意放行表（每 bot 独立，互不串）。
    *  无 botId / bot 未登记 → 回退桌面单例（保持 v0.23 及更早行为，向后兼容）。 */
-  function allowlistFor(botId?: string): Set<string> {
+  function allowlistFor(botId?: string): SessionAllowlist {
     return (botId && botRegistry.getState(botId)?.sessionAllowlist) || sessionAllowlist;
   }
 
   async function ensureConsent(tool: string, params: unknown, callId: string, meta?: ConsentMeta, botId?: string): Promise<ConsentGate> {
     const allowlist = allowlistFor(botId);
-    if (allowlist.has(tool)) return 'session-approved';
+    if (allowlist.has(tool, params)) return 'session-approved';
     if (!hub) return 'consent-unavailable'; // 宿主尚未就绪，无法征求用户同意 → fail-closed
     // 「没有人类在场」与「人类点了拒绝」成因不同，审计必须能区分：
     // 前者是环境问题（窗口关了），后者是用户决策。两者都 fail-closed 拒绝。
@@ -1086,7 +1097,10 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       return 'consent-unavailable';
     }
     const decision = await hub.requestConsent(callId, tool, params, meta, botId);
-    if (decision === 'allow-session') allowlist.add(tool);
+    if (decision === 'allow-session') {
+      // QD-R2-08：绑工具+参数指纹+10min TTL，不再永久全局放行。
+      allowlist.addTemporary(tool, params, DEFAULT_SESSION_GRANT_TTL_MS);
+    }
     return decision !== 'deny' ? 'approved' : 'consent-denied';
   }
 
@@ -1177,7 +1191,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       if (options.agentPage) {
         agentChannel = createAgentChannel({
           server: server.rawServer,
-          token: options.config.token,
+          // QD-R2-12：WS 接轮换环，不再传冻结字面量。
+          token: () => apiTokenRing.accepted,
           host: {
             bots: {
               get(botId = 'main') {
@@ -1195,8 +1210,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
                 return {
                   sendMessage: (text) => {
                     const state = botRegistry.getState(botId);
-                    state?.sessionAllowlist.add('chat-insert');
-                    state?.sessionAllowlist.add('chat-send');
+                    state?.sessionAllowlist.addPermanent('chat-insert');
+                    state?.sessionAllowlist.addPermanent('chat-send');
                     return bot.loop.send(`${AGENT_SENTINEL}${text}`);
                   },
                   stop: () => bot.loop.stop(),
@@ -1233,7 +1248,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       }
       hub = createPageRuntimeHub({
         server: server.rawServer,
-        token: options.config.token,
+        // QD-R2-12：WS 接轮换环，不再传冻结字面量。
+        token: () => apiTokenRing.accepted,
         onError: (m, e) => console.warn(`[page-runtime] ${m}`, e),
         // v0.6：页端 tool-call 的真实执行入口（走完整授权链 + 同意闸门 + 宿主侧能力）。
         // v0.24：botId 透传，工具按发起 bot 的窗口路由 + 其授权/白名单执行。

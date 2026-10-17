@@ -222,12 +222,30 @@ export class McpController {
       initialized: false,
     };
 
+    // QD-R2-07：统一清理。exit 和 error 两条腿都要走它——
+    // spawn 失败（ENOENT）时 exit 不一定触发，若只在 exit 里清理，
+    // connections 表里留下一条 closed=false 的陈旧 conn，后续同 serverId 调用空等 30s。
+    let cleanedUp = false;
+    const cleanup = (reason: string, err?: Error) => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      conn.closed = true;
+      for (const [, p] of conn.pendingRequests) {
+        if (p.timer) clearTimeout(p.timer);
+        p.reject(err ?? new Error(`MCP server ${serverId}: ${reason}`));
+      }
+      conn.pendingRequests.clear();
+      try {
+        proc.stdout?.removeAllListeners();
+        proc.stderr?.removeAllListeners();
+      } catch { /* ignore */ }
+      this.connections.delete(serverId);
+    };
+
     // P0-3 修复：spawn 失败（命令不存在 / 权限不足）必须监听 error，否则 uncaughtException 杀宿主
     proc.on('error', (err) => {
       console.error(`[mcp] spawn error for ${serverId}: ${err.message}`);
-      // 触发所有 pending 请求的 reject，避免调用方永久等待
-      for (const [, req] of conn.pendingRequests) req.reject(err);
-      conn.pendingRequests.clear();
+      cleanup('spawn error', err);
     });
 
     let buffer = '';
@@ -259,18 +277,11 @@ export class McpController {
 
     proc.on('exit', (code) => {
       console.warn(`[mcp ${serverId}] exited with code ${code}`);
-      // R1-05：标记关闭，持有旧 conn 引用的后续调用快速失败，不再空等 30s。
-      conn.closed = true;
-      // reject 所有在途请求，避免干等 30s 超时
-      for (const [, p] of conn.pendingRequests) {
-        if (p.timer) clearTimeout(p.timer);
-        p.reject(new Error(`MCP server ${serverId} exited with code ${code}`));
-      }
-      conn.pendingRequests.clear();
-      proc.stdout?.removeAllListeners();
-      proc.stderr?.removeAllListeners();
-      this.connections.delete(serverId);
+      cleanup(`exited with code ${code}`);
     });
+
+    // QD-R2-07：向已死进程 stdin 写入的 EPIPE 兜底，避免 unhandled error 事件
+    proc.stdin?.on('error', () => { /* EPIPE / ECONNRESET 已在 cleanup 里 reject pending */ });
 
     this.connections.set(serverId, conn);
     await this.initializeConnection(conn);

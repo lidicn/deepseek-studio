@@ -9,6 +9,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { createStrategyGenerator } from '../../src/host/bot/strategy-generator';
 import type { AgentLoopEvent } from '../../src/host/agent-loop';
 import type { BotRegistryInternal, BotInternalState } from '../../src/host/bot/registry';
+import { SessionAllowlist } from '../../src/host/bot/registry';
 import type { RoomConfig } from '../../src/host/bot/types';
 
 const ROOM: RoomConfig = {
@@ -30,7 +31,7 @@ function mockBot(registrySend: (msg: string) => Promise<void>) {
     toolCallCounter: { current: 0 },
     stopFlag: { stopped: false },
     lastAutoReply: { text: '' } as never,
-    sessionAllowlist: new Set<string>(),
+    sessionAllowlist: new SessionAllowlist(),
   };
   const registry = {
     get: vi.fn(() => ({ id: 'main', loop: { send: registrySend }, engine: {} })),

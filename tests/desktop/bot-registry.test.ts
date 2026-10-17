@@ -107,7 +107,7 @@ describe('BotRegistry —— v0.23 多 bot 去单例', () => {
     expect(s1.toolCallCounter.current).toBe(5);
     expect(s2.toolCallCounter.current).toBe(10);
 
-    s1.sessionAllowlist.add('chat-send');
+    s1.sessionAllowlist.addPermanent('chat-send');
     expect(s2.sessionAllowlist.has('chat-send')).toBe(false);
   });
 

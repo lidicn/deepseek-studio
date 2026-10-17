@@ -12,6 +12,7 @@ import { createOfflineRunExecutor } from '../../src/host/bot/offline-runner';
 import { InMemoryReportStore } from '../../src/host/bot/in-memory-report-store';
 import type { AgentLoopEvent } from '../../src/host/agent-loop';
 import type { BotRegistryInternal, BotInternalState } from '../../src/host/bot/registry';
+import { SessionAllowlist } from '../../src/host/bot/registry';
 import type { SlotRuntime } from '../../src/host/bot/slot-runtime';
 import type { RunHandle } from '../../src/host/bot/scheduler';
 import type { Persona } from '../../src/host/bot/types';
@@ -43,7 +44,7 @@ function mockDeps(runImpl: (handle: RunHandle) => Promise<unknown>) {
     toolCallCounter: { current: 0 },
     stopFlag: { stopped: false },
     lastAutoReply: { text: '' } as never,
-    sessionAllowlist: new Set<string>(),
+    sessionAllowlist: new SessionAllowlist(),
   };
   const registry = {
     get: vi.fn(() => ({ id: 'S1', loop: { send: vi.fn() }, engine: {} })),
@@ -154,7 +155,7 @@ describe('createOfflineRunExecutor', () => {
           toolCallCounter: { current: 0 },
           stopFlag: { stopped: false },
           lastAutoReply: { text: '' } as never,
-          sessionAllowlist: new Set<string>(),
+          sessionAllowlist: new SessionAllowlist(),
         })),
       } as unknown as BotRegistryInternal,
       slotRuntime: (slotRuntime as unknown) as SlotRuntime,
@@ -202,7 +203,7 @@ describe('createOfflineRunExecutor', () => {
           toolCallCounter: { current: 0 },
           stopFlag: { stopped: false },
           lastAutoReply: { text: '' } as never,
-          sessionAllowlist: new Set<string>(),
+          sessionAllowlist: new SessionAllowlist(),
         })),
       } as unknown as BotRegistryInternal,
       slotRuntime: {

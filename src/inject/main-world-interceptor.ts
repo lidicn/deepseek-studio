@@ -26,7 +26,7 @@ import {
   MAX_ERROR_RETRIES,
   type PendingResult,
 } from '../shared/continuation-prompt';
-import { classifyResponse, classifySseFrame, errorBackoffMs, filterReplayableHeaders, recordVerdict, type ClassifiedResponse } from './response-classifier';
+import { classifyResponse, classifySseFrame, errorBackoffMs, recordVerdict, type ClassifiedResponse } from './response-classifier';
 import type { ExecuteResult } from '../capabilities/types';
 import { createPowHeaders } from './pow';
 import { createToolCard, updateToolCardByCallId, stripRawToolTagsFromMessage } from './tool-card-ui';
@@ -717,6 +717,36 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   // v0.9 POW：捕获页面正常请求的 headers（Authorization / X-App-Version 等）
   const capturedHeaders: Record<string, string> = {};
 
+  // QD-R2-09/10：finishStepFlow 提到外层作用域，pow 与 nudge 共用。
+  // 原定义在 autoContinueWithPow 的 xhr executor 里是局部常量，nudge 拿不到 → nudge fatal 时 UI 永不复位。
+  const finishStepFlow = (): void => {
+    if (stepFlow) {
+      stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1000));
+      const sf = stepFlow;
+      stepFlow = null;
+      stepFlowStep = 0;
+      stepFlowToolCount = 0;
+      setTimeout(() => sf.destroy(), 3000);
+    }
+    chatUI?.setBusy(false);
+    // QD-R2-09：错误路径上 assistant 气泡收尾，否则上一轮 startAssistantMessage 建的容器
+    // 永远挂着闪烁光标（视觉上「还在输出」）。
+    try { chatUI?.finishAssistantMessage(); } catch { /* ignore */ }
+  };
+
+  // QD-R2-11：重放头过滤统一出口。pow 与 nudge 必须用同一套规则——
+  // 上次只改了 pow 路径（黑名单剔 content-type/length/x-ds-pow-response），nudge 还走 filterReplayableHeaders
+  // 白名单，导致 nudge 请求缺一次性会话头 → 422 → fatal → UI 卡死。
+  const replayHeaders = (src: Record<string, string>): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(src)) {
+      const lower = k.toLowerCase();
+      if (lower === 'content-type' || lower === 'content-length' || lower === 'x-ds-pow-response') continue;
+      out[k] = v;
+    }
+    return out;
+  };
+
   const forward = (call: ParsedToolCall): void => {
     console.log('[interceptor] forward:', call.invocationName, JSON.stringify(call.params).slice(0, 150));
     d(`forward: ${call.invocationName} params=${JSON.stringify(call.params).slice(0, 200)}`);
@@ -908,15 +938,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
 
       d(`auto-continue loop=${loopDepth} computing PoW... capturedHeaders=${JSON.stringify(Object.keys(capturedHeaders))}`);
 
-      // 重放头：剔除会干扰请求的头。
-      // - content-type / content-length：我们自己设置
-      // - x-ds-pow-response：上一次请求的 POW 响应，不能复用
-      const filteredHeaders: Record<string, string> = {};
-      for (const [k, v] of Object.entries(capturedHeaders)) {
-        const lower = k.toLowerCase();
-        if (lower === 'content-type' || lower === 'content-length' || lower === 'x-ds-pow-response') continue;
-        filteredHeaders[k] = v;
-      }
+      // 重放头：统一走外层 replayHeaders（QD-R2-11，与 nudge 共用）。
+      const filteredHeaders = replayHeaders(capturedHeaders);
 
       // 算 POW headers
       const powHeaders = await createPowHeaders(filteredHeaders);
@@ -937,19 +960,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
         for (const [k, v] of Object.entries(powHeaders)) {
           try { xhr.setRequestHeader(k, v); } catch { /* ignore */ }
         }
-        // R0-R2：结束循环的统一清理（stepFlow 收尾 + chatUI 复位 + loopDepth 清零），
-        // fatal/重试耗尽/正常结束复用，避免错误分支漏清理。
-        const finishStepFlow = (): void => {
-          if (stepFlow) {
-            stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1000));
-            const sf = stepFlow;
-            stepFlow = null;
-            stepFlowStep = 0;
-            stepFlowToolCount = 0;
-            setTimeout(() => sf.destroy(), 3000);
-          }
-          chatUI?.setBusy(false);
-        };
+        // QD-R2-09/10：收尾统一走外层 finishStepFlow（含 finishAssistantMessage）。
         xhr.onreadystatechange = () => {
           if (xhr.readyState === 4) {
             d(`auto-continue loop=${loopDepth} status=${xhr.status} autoReplyLen=${loopState.autoReplyText.length} inAuto=${loopState.inAutoContinue}`);
@@ -1074,8 +1085,9 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       } catch { /* keep original */ }
 
       d(`auto-continue nudge loop=${loopDepth} count=${nudgeCount} computing PoW...`);
-      // R0-R3：同 autoContinueWithPow，重放头走白名单，剔除一次性令牌/Cookie/CSRF。
-      const filteredHeaders = filterReplayableHeaders(capturedHeaders);
+      // QD-R2-11：与 pow 路径共用同一黑名单（原走 filterReplayableHeaders 白名单，
+      // 缺一次性会话头 → 422 → fatal → UI 卡死）。
+      const filteredHeaders = replayHeaders(capturedHeaders);
       const powHeaders = await createPowHeaders(filteredHeaders);
 
       loopState.inAutoContinue = true;
@@ -1123,6 +1135,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
             if (verdict.verdict === 'fatal' || (verdict.verdict === 'retryable' && errorRetryCount >= MAX_ERROR_RETRIES)) {
               d(`auto-continue nudge ${verdict.verdict}: status=${xhr.status} reason=${verdict.reason} retries=${errorRetryCount}, stop`);
               loopState.streamActive = false;
+              // QD-R2-10：nudge fatal 分支补 finishStepFlow（含 setBusy(false) + finishAssistantMessage）。
+              finishStepFlow();
               loopDepth = 0;
             } else if (verdict.verdict === 'retryable') {
               errorRetryCount += 1;

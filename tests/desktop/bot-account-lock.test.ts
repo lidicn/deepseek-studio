@@ -54,7 +54,7 @@ describe('page-runtime —— v0.31 账号身份锁', () => {
 
   async function startHub(onDuplicateAccount?: (info: { duplicateId: string; duplicateBotId: string | undefined; existingId: string; existingBotId: string | undefined; fingerprint: string }) => void) {
     server = createServer();
-    hub = createPageRuntimeHub({ server, onDuplicateAccount });
+    hub = createPageRuntimeHub({ server, token: 't', onDuplicateAccount });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     const addr = server.address();
     port = typeof addr === 'object' && addr ? addr.port : 0;

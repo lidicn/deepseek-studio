@@ -18,6 +18,7 @@ import type { AgentLoopEvent } from './agent-loop';
 import type { ChatRoomEvent } from './bot/types';
 import type { PolicyMode } from './policy';
 import { PANEL_POLICY_MODES } from './policy';
+import { verifyWsQueryToken, type WSQueryTokenSource } from './host-token';
 
 /** 单个 bot 的面板可调用能力面（与改造前 AgentChannelHost.agent 形状一致）。 */
 export interface BotHandle {
@@ -56,8 +57,11 @@ export interface AgentChannelHost {
 export interface AgentChannelOptions {
   server: Server;
   host: AgentChannelHost;
-  /** API 令牌：WS 连接鉴权用。 */
-  token: string;
+  /**
+   * API 令牌：WS 连接鉴权用。
+   * QD-R2-12：支持每连接求值的 TokenSource（轮换环），与 page-runtime 共用 helper。
+   */
+  token: WSQueryTokenSource;
   path?: string;
   onError?: (message: string, error?: unknown) => void;
 }
@@ -134,9 +138,9 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
   const unsubscribeChatRoom = options.host.onChatRoomEvent?.(broadcastChatRoomEvent);
 
   wss.on('connection', (ws: WebSocket, req) => {
-    // 鉴权：query token 必须与 API 令牌一致
+    // 鉴权：query token 必须与当前 accepted 集合之一匹配（QD-R2-12：接轮换环 + 常数时间比较）。
     const url = new URL(req.url ?? '/', 'http://localhost');
-    if (url.searchParams.get('token') !== options.token) {
+    if (!verifyWsQueryToken(url.searchParams.get('token'), options.token)) {
       try {
         ws.close(1008, 'unauthorized');
       } catch {

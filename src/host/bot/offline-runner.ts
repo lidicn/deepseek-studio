@@ -89,8 +89,8 @@ export function createOfflineRunExecutor(deps: OfflineRunExecutorDeps): OfflineR
 
     // 放行页面驱动工具（同 strategy-generator :74-78），让 loop.send 触发子 bot 回复。
     const state = registry.getState(botId);
-    state?.sessionAllowlist.add('chat-insert');
-    state?.sessionAllowlist.add('chat-send');
+    state?.sessionAllowlist.addPermanent('chat-insert');
+    state?.sessionAllowlist.addPermanent('chat-send');
 
     // 临时 listener：捕获该 botId 全量事件，逐条写 jsonl 转录 + 记末尾 assistant 文本。
     // 同时记末尾 error 文本——AgentLoop.send 吞引擎异常（agent-loop.ts:197 只 emit 不 rethrow），

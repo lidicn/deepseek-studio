@@ -228,8 +228,8 @@ function createGenerateReply(
     try {
       // 5. sessionAllowlist 加 chat-insert/chat-send（与 agentSender 同模式）
       const state = registry.getState(botId);
-      state?.sessionAllowlist.add('chat-insert');
-      state?.sessionAllowlist.add('chat-send');
+      state?.sessionAllowlist.addPermanent('chat-insert');
+      state?.sessionAllowlist.addPermanent('chat-send');
 
       // 6. 发送 → loop.send resolve 时 assistant 事件已同步 emit
       // v0.28：带 roomId，AgentLoop 把它戳到每条事件上供 UI 按 roomId 过滤。
@@ -289,8 +289,8 @@ export function createModelSummarizer(deps: {
 
     try {
       const state = registry.getState(summarizerBotId);
-      state?.sessionAllowlist.add('chat-insert');
-      state?.sessionAllowlist.add('chat-send');
+      state?.sessionAllowlist.addPermanent('chat-insert');
+      state?.sessionAllowlist.addPermanent('chat-send');
       // race 摘要发送 vs 超时；send 先 resolve 则看是否捕到 assistant 文本，
       // 超时先 reject 则走 catch throw。
       await Promise.race([

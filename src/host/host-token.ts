@@ -169,3 +169,39 @@ export function createHostTokenAuthority(
     },
   };
 }
+
+/**
+ * QD-R2-12：WS query token 校验共享 helper。
+ * - source 是字符串 = 固定单 token（兼容旧用法）；
+ * - source 是函数 = 每连接求值的 accepted 集合（轮换环）；
+ * - candidates 为空 / 空串 → 返回 false（fail-closed，不再等于「不校验」）；
+ * - 比较走常数时间，避免时序侧信道。
+ *
+ * 同时用于 /studio（page-runtime）与 /agent-ws（agent-channel），两处必须一致。
+ */
+export type WSQueryTokenSource = string | (() => Iterable<string>);
+
+export function verifyWsQueryToken(
+  presented: string | null,
+  source: WSQueryTokenSource | undefined,
+): boolean {
+  if (!presented || !source) return false;
+  const candidates: readonly string[] = typeof source === 'function'
+    ? [...source()].filter((t) => typeof t === 'string' && t.length > 0)
+    : [source].filter((t) => t.length > 0);
+  if (candidates.length === 0) return false;
+  const enc = (s: string) => {
+    const u = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i);
+    return u;
+  };
+  const a = enc(presented);
+  for (const cand of candidates) {
+    const b = enc(cand);
+    if (a.length !== b.length) continue;
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+    if (diff === 0) return true;
+  }
+  return false;
+}

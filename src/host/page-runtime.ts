@@ -17,6 +17,7 @@ import type { ToolExecutionResult } from './desktop-host';
 import type { ConsentDecision, ConsentMeta, HostToPageMessage, PageToHostMessage } from './protocol';
 import { mapUpstreamToolInvocation } from '../shared/tool-contract';
 import { DEEPSEEK_ORIGIN } from './tool-definitions';
+import { verifyWsQueryToken, type WSQueryTokenSource } from './host-token';
 
 /**
  * PNA 白名单：公网页（chat.deepseek.com）需要连本机 ws 通道，Chromium 在「实际握手
@@ -54,8 +55,12 @@ export interface PageClient {
 export interface PageRuntimeHubOptions {
   server: Server;
   path?: string;
-  /** P0-2 修复：WS 连接必须校验 query token，零鉴权时任意本地进程可连工具通道。 */
-  token?: string;
+  /**
+   * P0-2 修复：WS 连接必须校验 query token，零鉴权时任意本地进程可连工具通道。
+   * QD-R2-12：支持每请求求值的 TokenSource（轮换环），不再是构造期冻结字面量；
+   * 空 token / 取到空集合 → fail-closed（拒绝所有连接），不再等于「不校验」。
+   */
+  token?: WSQueryTokenSource;
   dispatchTimeoutMs?: number;
   consentTimeoutMs?: number;
   onError?: (message: string, error?: unknown) => void;
@@ -146,14 +151,12 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
     const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
     if (pathname !== path) return;
     // P0-2 修复：WS 连接必须校验 query token，零鉴权时任意本地进程可连工具通道。
-    // 照抄 agent-channel.ts 的 fail-closed 模式：token 不一致直接 close(1008)。
-    if (options.token) {
-      const url = new URL(req.url ?? '/', 'http://localhost');
-      if (url.searchParams.get('token') !== options.token) {
-        options.onError?.(`ws upgrade rejected: invalid token`);
-        socket.destroy();
-        return;
-      }
+    // QD-R2-12：接轮换环（TokenSource 函数形式）；candidates 为空 = fail-closed 拒绝。
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    if (!verifyWsQueryToken(url.searchParams.get('token'), options.token)) {
+      options.onError?.('ws upgrade rejected: invalid or missing token (fail-closed)');
+      socket.destroy();
+      return;
     }
     // R2-03：upgrade 阶段即校验 Origin。原实现只判路径，任意公网网页都能连上本机
     // 工具通道（浏览器同源策略不阻止 ws 建连）。带 Origin 但不在白名单 → 直接销毁。

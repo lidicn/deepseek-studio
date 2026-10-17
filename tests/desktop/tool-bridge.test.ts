@@ -97,7 +97,7 @@ describe('page-runtime tool-call → executor', () => {
       ok: true,
       data: { tool, params },
     }));
-    const hub = createPageRuntimeHub({ server, path: '/studio', executor });
+    const hub = createPageRuntimeHub({ server, path: '/studio', token: 't', executor });
     const port = await listen(server);
 
     const client = new WebSocket(`ws://127.0.0.1:${port}/studio?token=t`);
@@ -120,7 +120,7 @@ describe('page-runtime tool-call → executor', () => {
   it('rejects unsupported invocation with unknown-tool (fail-closed)', async () => {
     server = http.createServer();
     const executor = vi.fn(async (): Promise<ToolExecutionResult> => ({ ok: true }));
-    const hub = createPageRuntimeHub({ server, path: '/studio', executor });
+    const hub = createPageRuntimeHub({ server, path: '/studio', token: 't', executor });
     const port = await listen(server);
 
     const client = new WebSocket(`ws://127.0.0.1:${port}/studio?token=t`);

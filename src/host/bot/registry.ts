@@ -28,7 +28,69 @@ export interface AutoReplyBuffer {
 }
 
 /**
- * 每个 bot 独立持有的协调状态。原 desktop-host 单实例的 4 个对象（540-544）拆到 per-bot。
+ * QD-R2-08：会话级放行表。
+ *
+ * 过去是裸 Set<string>：用户点一次「本次会话允许」= 该 bot 永久放行该工具，
+ * 无 TTL、无参数作用域（允许 shell.exec 跑 ls 之后跑 rm 也免检）、无撤销路径。
+ *
+ * 现在分两类：
+ * - 永久预授权（bot 自己启动时 add 的 chat-insert/chat-send）：仍永久；
+ * - 用户点的 allow-session：绑「工具 + 参数指纹」+ 默认 10min TTL，到期自动清。
+ * setPolicyMode / setWorkspaceRoot / bot 断开三处必须调 clear()。
+ */
+export class SessionAllowlist {
+  /** key = `${tool}#${fingerprint}`；value = expiresAt（null = 永久预授权）。 */
+  private entries = new Map<string, number | null>();
+
+  /** bot 启动时的内部预授权（chat-insert/send）：永久、不绑参数。 */
+  addPermanent(tool: string): void {
+    this.entries.set(`${tool}#`, null);
+  }
+
+  /** 用户点「本次会话允许」：绑参数指纹 + TTL。 */
+  addTemporary(tool: string, params: unknown, ttlMs: number): void {
+    this.entries.set(`${tool}#${fingerprint(params)}`, Date.now() + ttlMs);
+  }
+
+  has(tool: string, params?: unknown): boolean {
+    this.sweep();
+    if (this.entries.has(`${tool}#`)) return true; // 永久预授权
+    if (params !== undefined && this.entries.has(`${tool}#${fingerprint(params)}`)) return true;
+    return false;
+  }
+
+  clear(): void {
+    this.entries.clear();
+  }
+
+  private sweep(): void {
+    const now = Date.now();
+    for (const [k, exp] of this.entries) {
+      if (exp !== null && now > exp) this.entries.delete(k);
+    }
+  }
+}
+
+/** 稳定参数指纹：排序 key 后 JSON.stringify。工具 params 都是纯 JSON，无循环。 */
+function fingerprint(params: unknown): string {
+  if (params === null || typeof params !== 'object') return String(params ?? '');
+  try {
+    const sorted = sortKeys(params as Record<string, unknown>);
+    return JSON.stringify(sorted);
+  } catch {
+    return '';
+  }
+}
+function sortKeys(obj: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(obj).sort()) {
+    const v = obj[k];
+    out[k] = v !== null && typeof v === 'object' ? sortKeys(v as Record<string, unknown>) : v;
+  }
+  return out;
+}
+
+/** 每个 bot 独立持有的协调状态。原 desktop-host 单实例的 4 个对象（540-544）拆到 per-bot。
  * desktop-host 经 registry.getState(botId) 取到后，把 hub 回调接到 main bot 的 state。
  */
 export interface BotInternalState {
@@ -38,8 +100,8 @@ export interface BotInternalState {
   stopFlag: { stopped: boolean };
   /** 本 bot 的 auto-continue 回复缓冲（hub.onAssistantReply 写；WebEngine 读/消费）。 */
   lastAutoReply: AutoReplyBuffer;
-  /** 本 bot 的会话级工具放行表（sendMessage 时 add chat-insert/chat-send）。 */
-  sessionAllowlist: Set<string>;
+  /** 本 bot 的会话级工具放行表（sendMessage 时预授权 chat-insert/chat-send；用户 allow-session 走 TTL）。 */
+  sessionAllowlist: SessionAllowlist;
   /** v0.25：人设（SlotRuntime.loadPersona 写入）。 */
   persona?: Persona;
   /** v0.25：人设工具白名单（persona.tools 转 Set；空/缺省=继承全部）。 */
@@ -76,7 +138,7 @@ function freshState(): BotInternalState {
     toolCallCounter: { current: 0 },
     stopFlag: { stopped: false },
     lastAutoReply: { text: '', loop: 0, updatedAt: 0, fresh: false },
-    sessionAllowlist: new Set<string>(),
+    sessionAllowlist: new SessionAllowlist(),
   };
 }
 

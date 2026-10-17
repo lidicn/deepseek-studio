@@ -72,8 +72,8 @@ export function createStrategyGenerator(deps: StrategyGeneratorDeps): StrategyGe
     try {
       // 与 createModelSummarizer 同：放行 chat-insert/chat-send，loop.send 触发主 bot 回复。
       const state = registry.getState(botId);
-      state?.sessionAllowlist.add('chat-insert');
-      state?.sessionAllowlist.add('chat-send');
+      state?.sessionAllowlist.addPermanent('chat-insert');
+      state?.sessionAllowlist.addPermanent('chat-send');
 
       const sendP = bot.loop.send(`${AGENT_SENTINEL}${prompt}`);
       const raced = await Promise.race([sendP, timeout]);
