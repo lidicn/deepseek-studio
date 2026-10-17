@@ -7,7 +7,7 @@
  * 这消除了「宿主与拦截器双重解析/双重执行」的风险。
  *
  * 护栏：
- *   - max_steps：一个用户消息最多续跑 N 步（默认 15），防模型死循环
+ *   - max_steps：一个用户消息最多续跑 N 步（默认 25），防模型死循环
  *   - stop()：随时中断（上下文保留在聊天页，可再次发送继续）
  *   - 格式纠偏：回复里出现未被解析器消费的原始工具标签 → 发一次纠偏提示（每步最多一次）
  *
@@ -23,33 +23,13 @@ export const DEFAULT_CONTINUE_NUDGE =
   `${AGENT_SENTINEL}工具已执行完毕，结果已回填。请根据工具结果继续完成任务；` +
   '若任务已完成，直接给出最终回答，不要再调用工具。';
 
-export const FORMAT_CORRECTION_NUDGE =
-  `${AGENT_SENTINEL}刚才的回复里包含未能解析的工具调用（JSON 可能不合法）。` +
-  '请严格按以下格式重新发起一次工具调用，标签体必须是合法 JSON（键用双引号）：\n' +
-  '<local_file_read>{"path":"绝对路径"}</local_file_read>\n' +
-  '<local_file_write>{"path":"绝对路径","content":"文本"}</local_file_write>\n' +
-  '<shell_exec>{"command":"命令行"}</shell_exec>';
+// S22：FORMAT_CORRECTION_NUDGE / RAW_TOOL_TAG_RE / correctionAttempts 已删除
+// （WebEngine completion 自证后不再需要宿主侧格式纠偏）
 
-/** 未被解析器消费的原始工具标签（出现即说明 JSON 解析失败，需要纠偏）。
- *  用非贪婪 [\s\S]*? 替代 [^<]*，允许标签体内含 <（如写 HTML、命令重定向）。 */
-const RAW_TOOL_TAG_RE = /<(?:local_file_(?:read|write|stat)|shell_exec|python_exec|memory_save|mcp_(?:list|call|test|save))>[\s\S]*?<\/(?:local_file_(?:read|write|stat)|shell_exec|python_exec|memory_save|mcp_(?:list|call|test|save))>/;
-
-export type AgentEventType = 'user' | 'assistant' | 'tool' | 'status' | 'error' | 'done';
-
-export interface AgentLoopEvent {
-  type: AgentEventType;
-  /** 文本内容（user/assistant/error）或状态说明（status/tool）。 */
-  text?: string;
-  /** 当前步数（从 1 开始）。 */
-  step?: number;
-  /** 本轮发生的工具调用次数（tool 事件）。 */
-  toolCalls?: number;
-  /** v0.23：事件来源 bot 标识。缺省=主 bot（向后兼容现有面板）。 */
-  botId?: string;
-  /** v0.28：聊天室房间标识。聊天室驱动的 send 带上；日常对话不带（undefined）。
-   *  供 UI 按 roomId 过滤当前房间事件（多房间隔离）。 */
-  roomId?: string;
-}
+// 类型定义已下沉至 src/shared/agent-loop-event.ts（R3 边界：shared 不得反向 import host）。
+// import 供本文件内部使用，并 re-export 保持既有 import 路径不变。
+import type { AgentEventType, AgentLoopEvent } from '../shared/agent-loop-event';
+export type { AgentEventType, AgentLoopEvent };
 
 export interface AgentLoopOptions {
   engine: ModelEngine;
@@ -107,21 +87,19 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
       active = true;
       currentRoomId = opts?.roomId;
       options.stopFlag.stopped = false;
-      // v1.6：全局看门狗——任意 send 挂起超过 watchdogMs 强制复位 active，防永久 agent-busy
+      // v1.6：全局看门狗——任意 send 挂起超过 watchdogMs 置停止信号，防永久 agent-busy。
+      // R2-01：watchdog 只置 stopFlag.stopped=true 并通知，**绝不释放 active**（active 的
+      // 释放权唯一归属 finally），也**不立刻清掉 stopFlag**。原实现提前 active=false 会让
+      // 新 send 通过 busy 检查形成并发回合，二者共享 stopFlag 互相改写；同 tick 内
+      // stopped=true 又 false 使停止信号不可预测。仍挂起的 await 在下一回合边界读到
+      // stopped=true 自行退出，finally 统一释放 active。
       const watchdog = setTimeout(() => {
-        if (active) {
-          options.stopFlag.stopped = true;
-          emit({ type: 'error', text: `全局看门狗触发（${Math.round(watchdogMs / 60000)} 分钟），强制结束本次循环` });
-          emit({ type: 'done' });
-          active = false;
-          options.stopFlag.stopped = false;
-        }
+        if (!active) return;
+        options.stopFlag.stopped = true;
+        emit({ type: 'error', text: `全局看门狗触发（${Math.round(watchdogMs / 60000)} 分钟），强制结束本次循环` });
+        emit({ type: 'done' });
       }, watchdogMs);
       emit({ type: 'user', text });
-
-      // v1.6：纠偏次数计数 —— 连续纠偏仍见原始工具标签说明页端解析失效，停止避免死循环
-      let correctionAttempts = 0;
-      const MAX_CORRECTION_ATTEMPTS = 3;
 
       try {
         emit({ type: 'status', text: '已发送，等待模型回复…', step: 1 });
@@ -135,19 +113,6 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
           }
           if (result.timedOut) {
             emit({ type: 'error', text: `模型回复等待超时（看门狗兜底），已返回的部分内容可能不完整`, step });
-          }
-
-          // 原始工具标签泄漏 → JSON 解析失败，纠偏一次（计一步）
-          if (result.toolCalls === 0 && RAW_TOOL_TAG_RE.test(result.content)) {
-            correctionAttempts += 1;
-            if (correctionAttempts > MAX_CORRECTION_ATTEMPTS) {
-              // 连续纠偏失败：页端拦截器未解析工具标签，继续纠偏只会死循环
-              emit({ type: 'error', text: `连续 ${MAX_CORRECTION_ATTEMPTS} 次纠偏后模型仍输出未解析工具标签。页端拦截器可能未正确加载（尝试刷新 DeepSeek 页面）。停止循环。`, step });
-              break;
-            }
-            emit({ type: 'status', text: `检测到未解析的工具调用，发送格式纠偏（第 ${correctionAttempts} 次）…`, step });
-            result = await options.engine.send(FORMAT_CORRECTION_NUDGE);
-            continue;
           }
 
           if (result.toolCalls > 0) {
@@ -189,7 +154,9 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
         clearTimeout(watchdog);
         active = false;
         currentRoomId = undefined;
-        options.stopFlag.stopped = false;
+        // R2-06：不在单个回合结束时无条件清掉共享 stopFlag.stopped。原实现 finally 复位会
+        // 抹掉用户 stop() 意图；多 loop 共享时 A 回合结束会清掉 B 正在生效的停止信号。
+        // 停止信号由下一次 send() 开始时自行复位；全局急停不在此处清除。
       }
     },
   };

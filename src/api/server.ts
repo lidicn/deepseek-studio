@@ -3,11 +3,16 @@
  *
  * 端点：
  *   POST /v1/chat/completions   OpenAI 兼容；stream=true 走 SSE（reasoning 仅在 reasoning_content）
- *   GET  /v1/models             模型列表
- *   GET  /healthz               健康检查（免鉴权）
- *   GET  /v1/queue/status       队列状态
- * 其余 /v1/* 未实现 → 501
- * 鉴权缺失/错误 → 401（fail-closed）
+ *   GET  /v1/models             模型列表（需鉴权）
+ *   GET  /v1/queue/status       队列状态（需鉴权）
+ *   POST /v1/debug/eval         调试 JS 执行（需鉴权，且仅 STUDIO_DEBUG=1 开启）
+ * 其余 /v1/* 未实现 → 501。
+ *
+ * 免鉴权端点（显式清单，fail-closed：未列出的一律 401）：
+ *   GET  /healthz               健康检查（无敏感信息，供进程探活）
+ *   GET  /agent | /agent.js | /agent.css  M1 面板静态资源（HTML 内嵌真实令牌，
+ *                               威胁模型与 v0.5 一致：本地进程本就能读 config.json）
+ * 鉴权缺失/错误 → 401。
  */
 
 import http from 'node:http';
@@ -168,6 +173,9 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
 
   let active = 0;
   let queued = 0;
+  // R1-06：本实现超限即 429、不排队，queued/depth/avgWaitMs 恒为 0；
+  // 单独如实累计被并发上限拒绝的请求数，避免监控把「限流拒绝」误读成「跑得慢」。
+  let rejectedByConcurrency = 0;
   type RecentEntry = { startedAt: number; endedAt?: number; ok?: boolean; waitMs: number };
   const recent: RecentEntry[] = [];
 
@@ -263,10 +271,9 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         return;
       }
 
-      // 调试端点免鉴权（本地回环）
-      if (pathname === '/v1/debug/eval') {
-        // 跳过鉴权，直接处理
-      } else if (!auth.authenticate(req.headers['authorization'])) {
+      // R1-01：/v1/debug/eval 不再豁免鉴权——「本机回环」不等于「可信」，
+      // 本机任意进程都能访问回环。所有 /v1 端点统一走 Bearer 校验（fail-closed）。
+      if (!auth.authenticate(req.headers['authorization'])) {
         sendJson(401, { error: { code: 'unauthorized', message: 'missing or invalid bearer token' } });
         return;
       }
@@ -287,6 +294,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
           maxConcurrent,
           depth: queued,
           avgWaitMs: waits.length > 0 ? Math.round(waits.reduce((a, b) => a + b, 0) / waits.length) : 0,
+          rejectedByConcurrency,
           recent: recent.map((r) => ({ startedAt: r.startedAt, endedAt: r.endedAt, ok: r.ok, waitMs: r.waitMs })),
         };
         sendJson(200, status);
@@ -337,10 +345,12 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         return;
       }
 
-      // 调试端点：让网页执行 JS
+      // 调试端点：让网页执行 JS。R1-01：除统一 Bearer 鉴权外，还须显式 STUDIO_DEBUG=1 开启，
+      // 默认关闭，避免成为常驻的任意 JS 执行面。
       if (pathname === '/v1/debug/eval' && req.method === 'POST') {
-        if (!options.debugEval) {
-          sendJson(501, { error: { code: 'not_implemented', message: 'debugEval not configured' } });
+        const debugEnabled = process.env.STUDIO_DEBUG === '1' || process.env.STUDIO_DEBUG === 'true';
+        if (!options.debugEval || !debugEnabled) {
+          sendJson(501, { error: { code: 'not_implemented', message: 'debugEval disabled (configure debugEval and set STUDIO_DEBUG=1)' } });
           return;
         }
         const raw = await readBody(req);
@@ -499,8 +509,10 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
           });
           return;
         }
-        // 5.2 并发上限：默认串行（maxConcurrent=1），避免高频触发上游风控
+        // 5.2 并发上限：默认串行（maxConcurrent=1），避免高频触发上游风控。
+        // fail-closed 不排队：超限直接 429，并如实累计拒绝数（R1-06）。
         if (active >= maxConcurrent) {
+          rejectedByConcurrency += 1;
           res.setHeader('Retry-After', '1');
           sendJson(429, {
             error: { code: 'concurrency_limited', message: `at most ${maxConcurrent} concurrent request(s)` },
@@ -528,22 +540,45 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         };
 
         if (request.stream) {
+          // R1-04：客户端中途断开（关页面/断网）必须中止上游生成，否则 for-await 不中断、
+          // 白耗配额并占死 maxConcurrent=1 的唯一并发位，后续请求全部 429。
+          const ac = new AbortController();
+          // 客户端中途断开（关页面/断网/主动 destroy）在不同 Node 版本落在不同事件上，
+          // 全部挂上：req.close/aborted、res.close/aborted、底层 socket close。
+          // 客户端中途断开（关页面/断网/主动 destroy）在不同 Node 版本落在不同事件上，
+          // req.close/aborted、res.close/aborted、底层 socket close 都挂上，任一触发即中止上游。
+          const onClose = (): void => ac.abort();
+          req.on('close', onClose);
+          req.on('aborted', onClose);
+          res.on('close', onClose);
+          res.on('aborted', onClose);
+          req.socket?.on('close', onClose);
           res.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
             Connection: 'keep-alive',
           });
+          // 所有写入前判 writableEnded/destroyed：断开后再 write 会抛 ERR_STREAM_DESTROYED，
+          // catch 内二次 write 会冒泡成对已结束响应 sendJson（write after end）。
+          const safeWrite = (chunk: string): void => {
+            if (!res.writableEnded && !res.destroyed) res.write(chunk);
+          };
           let ok = true;
           try {
-            for await (const c of options.backend.chatCompletion(request)) {
-              res.write(formatSSE(c));
+            for await (const c of options.backend.chatCompletion(request, ac.signal)) {
+              safeWrite(formatSSE(c));
             }
-            res.write(formatSSE(emptyDelta(request.model)));
-            res.write(SSE_DONE);
+            safeWrite(formatSSE(emptyDelta(request.model)));
+            safeWrite(SSE_DONE);
           } catch (err) {
             ok = false;
-            res.write(formatSSE(errorChunk(String(err))));
+            if (!ac.signal.aborted) safeWrite(formatSSE(errorChunk(String(err))));
           } finally {
+            req.removeListener('close', onClose);
+            req.removeListener('aborted', onClose);
+            res.removeListener('close', onClose);
+            res.removeListener('aborted', onClose);
+            req.socket?.removeListener('close', onClose);
             res.end();
             release(ok);
           }

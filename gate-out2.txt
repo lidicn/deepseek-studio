@@ -1,0 +1,32 @@
+﻿
+> deepseek-studio@0.4.0 gate
+> tsx tools/gate/run.ts
+
+
+=== [typecheck] ===
+✅ [typecheck] 通过
+
+=== [boundary-audit] ===
+node.exe : === 边界审计：违规 ===
+At line:1 char:1
++ & "C:\Users\lidicn\AppData\Local\Doubao\User Data\sandbox_runtime\bas ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (=== 边界审计：违规 ===:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  [R3] src/shared/harness-metrics.ts → ../host/agent-loop  (shared 不许 import host（依赖方向只能向下）)
+  [R4] tools/bench/run.ts → ../../src/host/kernel/message-history  (tools 不许 import src/host)
+  [R4] tools/bench/run.ts → ../../src/host/kernel/task-loop  (tools 不许 import src/host)
+  [R4] tools/bench/run.ts → ../../src/host/engine/model-engine  (tools 不许 import src/host)
+  [R4] tools/e2e/runner.ts → ../../src/host/kernel/message-history  (tools 不许 import src/host)
+  [R4] tools/e2e/runner.ts → ../../src/host/kernel/task-loop  (tools 不许 import src/host)
+  [R4] tools/eval/run.ts → ../../src/host/policy  (tools 不许 import src/host)
+  [R4] tools/eval/run.ts → ../../src/host/workspace  (tools 不许 import src/host)
+  [R4] tools/eval/run.ts → ../../src/host/workspace  (tools 不许 import src/host)
+  [R4] tools/eval/run.ts → ../../src/host/kernel/message-history  (tools 不许 import src/host)
+  [R4] tools/eval/run.ts → ../../src/host/kernel/task-loop  (tools 不许 import src/host)
+  [R4] tools/eval/run.ts → ../../src/host/engine/model-engine  (tools 不许 import src/host)
+  [R4] tools/metrics/replay.ts → ../../src/host/engine/model-engine  (tools 不许 import src/host)
+  [R4] tools/metrics/report.ts → ../../src/host/agent-loop  (tools 不许 import src/host)
+
+❌ [boundary-audit] 失败：请检查上方输出

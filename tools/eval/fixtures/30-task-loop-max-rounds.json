@@ -1,0 +1,7 @@
+{
+  "name": "maxRounds reached",
+  "contract": "task-loop",
+  "case": "max-rounds",
+  "input": {},
+  "expect": { "stopReason": "max-rounds" }
+}

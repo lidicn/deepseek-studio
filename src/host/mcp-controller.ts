@@ -68,6 +68,8 @@ interface McpServerConnection {
   pendingRequests: Map<number, { resolve: (r: unknown) => void; reject: (e: Error) => void; timer?: NodeJS.Timeout }>;
   tools: McpTool[];
   initialized: boolean;
+  /** R1-05：进程已退出/连接已关闭，后续请求快速失败，不再空等 30s 超时。 */
+  closed?: boolean;
 }
 
 function defaultConfigPath(): string {
@@ -249,6 +251,8 @@ export class McpController {
 
     proc.on('exit', (code) => {
       console.warn(`[mcp ${serverId}] exited with code ${code}`);
+      // R1-05：标记关闭，持有旧 conn 引用的后续调用快速失败，不再空等 30s。
+      conn.closed = true;
       // reject 所有在途请求，避免干等 30s 超时
       for (const [, p] of conn.pendingRequests) {
         if (p.timer) clearTimeout(p.timer);
@@ -310,6 +314,12 @@ export class McpController {
 
     // stdio 传输
     return new Promise((resolve, reject) => {
+      // R1-05：进程缺失/已退出时显式快速失败。原可选链 `conn.process?.stdin?.write`
+      // 在 process 为 undefined 时不抛错也不写入，promise 只能干等 30s 定时器。
+      if (conn.closed || !conn.process || !conn.process.stdin) {
+        reject(new Error(`MCP server ${conn.id} not running`));
+        return;
+      }
       const timer = setTimeout(() => {
         if (conn.pendingRequests.has(id)) {
           conn.pendingRequests.delete(id);
@@ -318,7 +328,7 @@ export class McpController {
       }, 30000);
       conn.pendingRequests.set(id, { resolve, reject, timer });
       try {
-        conn.process?.stdin?.write(JSON.stringify(msg) + '\n');
+        conn.process.stdin.write(JSON.stringify(msg) + '\n');
       } catch (e) {
         conn.pendingRequests.delete(id);
         clearTimeout(timer);

@@ -50,14 +50,17 @@ export interface ApiConfig {
 }
 
 export interface QueueStatus {
+  /** 当前在等待队列中的请求数（本实现无排队，超限直接 429，恒为 0）。 */
   queued: number;
   active: number;
   /** v0.5 5.3 可观测性扩展（保留 queued/active 以兼容既有消费者）。 */
   maxConcurrent: number;
-  /** 当前排队深度。 */
+  /** 当前排队深度（与 queued 同口径，恒为 0）。 */
   depth: number;
-  /** 近期平均等待毫秒。 */
+  /** 近期平均等待毫秒（无排队，恒为 0）。 */
   avgWaitMs: number;
+  /** R1-06：因并发上限被 429 拒绝的累计请求数（fail-closed 不排队，如实反映限流）。 */
+  rejectedByConcurrency: number;
   /** 最近若干次执行的等待与结果。 */
   recent: Array<{ startedAt: number; endedAt?: number; ok?: boolean; waitMs: number }>;
 }

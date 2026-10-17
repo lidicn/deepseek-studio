@@ -78,9 +78,28 @@ export interface WebEngineOptions {
    * 未注入时默认 no-op，不污染测试输出。
    */
   logger?: (entry: Record<string, unknown>) => void;
+  /**
+   * S7：流式 delta 回调。轮询中检测到文本增长时回调当前累计文本。
+   * 不传时行为完全不变。
+   */
+  onDelta?: (text: string) => void;
+  /**
+   * S8：send() 初始请求（chat-insert/chat-send）失败时的重试次数（默认 2）。
+   * 指数退避：500ms / 1500ms。仅重试幂等的初始发送，不重试已发 tool call 的轮次。
+   */
+  maxSendRetries?: number;
+  /** S21：每轮结束输出结构化事件，未注入则静默。 */
+  onRoundComplete?: (entry: { round: number; content: string; toolCalls: number; completion: CompletionStatus; durationMs: number }) => void;
+  /**
+   * S24：MutationObserver 流式 delta 钩子。宿主注入脚本通过 postMessage 推送 delta，
+   * WebEngine 收到后转发给 onDelta。真机验证前此回调不自动触发。
+   */
+  streamPush?: (text: string) => void;
 }
 
 export interface WebEngine extends ModelEngine {
+  /** WebEngine 一定实现（覆盖 ModelEngine 的可选声明）。 */
+  waitForNextReply(): Promise<EngineSendResult>;
   /**
    * M2-2：由 hub 在执行完一次工具调用后调用，把结构化记录喂进当前轮的缓冲区。
    * 仅当创建时传了 onToolCall 才有意义；否则缓冲为 null，此调用为空操作。
@@ -90,6 +109,8 @@ export interface WebEngine extends ModelEngine {
   getMetrics(): HarnessMetrics | undefined;
   /** S4：获取本轮已尝试的重连次数（测试断言用）。 */
   getReconnectAttempts(): number;
+  /** S15：完整清理（metrics dispose、缓冲清空）。 */
+  destroy(): void;
 }
 
 export function createWebEngine(options: WebEngineOptions): WebEngine {
@@ -141,13 +162,21 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
   let roundNum = 0;
 
   /** S5：打一条结构化日志（未注入 logger 则 no-op）。 */
-  function logRound(elapsedMs: number, completion: CompletionStatus, toolCalls: number): void {
+  function logRound(elapsedMs: number, completion: CompletionStatus, toolCalls: number, content: string): void {
+    const round = ++roundNum;
     options.logger?.({
-      round: ++roundNum,
+      round,
       completion,
       toolCalls,
       elapsedMs,
       reconnects: reconnectAttempts,
+    });
+    options.onRoundComplete?.({
+      round,
+      content,
+      toolCalls,
+      completion,
+      durationMs: elapsedMs,
     });
   }
 
@@ -171,6 +200,10 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
     getReconnectAttempts(): number {
       return reconnectAttempts;
     },
+    destroy(): void {
+      metrics?.dispose();
+      currentRecords = null;
+    },
     async health() {
       const r = await options.dispatch('chat-read', {});
       if (r.ok) return { ok: true };
@@ -182,10 +215,20 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
       // M2-2：每轮重置缓冲（onToolCall 存在时新建空数组）
       currentRecords = options.onToolCall ? [] : null;
 
-      const ins = await options.dispatch('chat-insert', { text });
-      if (!ins.ok) { closeRoundForMetrics('disconnected'); return { content: '', toolCalls: 0, toolCallRecords: currentRecords ?? undefined, completion: 'disconnected' }; }
-      const sent = await options.dispatch('chat-send', {});
-      if (!sent.ok) { closeRoundForMetrics('disconnected'); return { content: '', toolCalls: 0, toolCallRecords: currentRecords ?? undefined, completion: 'disconnected' }; }
+      // S8：初始发送带指数退避重试
+      const maxSendRetries = options.maxSendRetries ?? 2;
+      let insOk = false, sentOk = false;
+      for (let attempt = 0; attempt <= maxSendRetries; attempt++) {
+        if (attempt > 0) await sleep(500 * Math.pow(3, attempt - 1)); // 500ms, 1500ms
+        const ins = await options.dispatch('chat-insert', { text });
+        if (!ins.ok) continue;
+        const sent = await options.dispatch('chat-send', {});
+        if (sent.ok) { insOk = true; sentOk = true; break; }
+      }
+      if (!insOk || !sentOk) {
+        closeRoundForMetrics('disconnected');
+        return { content: '', toolCalls: 0, toolCallRecords: currentRecords ?? undefined, completion: 'disconnected' };
+      }
 
       const baseline = await readLastMessage();
       const baselineText = baseline?.text ?? '';
@@ -211,7 +254,7 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
           if (!reconnected) {
             closeRoundForMetrics('disconnected');
             const tc = options.toolCallCounter.current - counterStart;
-            logRound(Date.now() - startedAt, 'disconnected', tc);
+            logRound(Date.now() - startedAt, 'disconnected', tc, lastText);
             return {
               content: lastText,
               toolCalls: tc,
@@ -223,6 +266,9 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
           if (!snap) continue; // 重连成功但首读仍失败，下一轮再试
         }
         lastText = snap.text;
+        if (lastText !== baselineText && lastText.length > 0 && lastText !== prevSnapshot) {
+          options.onDelta?.(lastText); // S7：delta 回调
+        }
         if (lastText !== baselineText && lastText.length > 0 && lastText === prevSnapshot) {
           stableHits += 1;
           if (stableHits >= 2) break;
@@ -235,7 +281,7 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
       const toolCalls = options.toolCallCounter.current - counterStart;
       const completion = decideCompletion({ timedOut, dispatchFailed: false, stopped });
       closeRoundForMetrics(completion);
-      logRound(Date.now() - startedAt, completion, toolCalls);
+      logRound(Date.now() - startedAt, completion, toolCalls, lastText);
       return {
         content: lastText,
         toolCalls,
@@ -295,7 +341,7 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
           if (!reconnected) {
             closeRoundForMetrics('disconnected');
             const tc = options.toolCallCounter.current - counterStart;
-            logRound(Date.now() - startedAt, 'disconnected', tc);
+            logRound(Date.now() - startedAt, 'disconnected', tc, lastText);
             return {
               content: lastText,
               toolCalls: tc,
@@ -307,6 +353,9 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
           if (!snap) continue;
         }
         lastText = snap.text;
+        if (lastText !== baselineText && lastText.length > 0 && lastText !== prevSnapshot) {
+          options.onDelta?.(lastText); // S7：delta 回调
+        }
         if (lastText !== baselineText && lastText.length > 0 && lastText === prevSnapshot) {
           stableHits += 1;
           if (stableHits >= 2) break;
@@ -319,7 +368,7 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
       const toolCalls = options.toolCallCounter.current - counterStart;
       const completion = decideCompletion({ timedOut, dispatchFailed: false, stopped });
       closeRoundForMetrics(completion);
-      logRound(Date.now() - startedAt, completion, toolCalls);
+      logRound(Date.now() - startedAt, completion, toolCalls, lastText);
       return {
         content: lastText,
         toolCalls,

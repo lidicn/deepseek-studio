@@ -1,0 +1,7 @@
+[health] 宿主 = http://127.0.0.1:8760
+[health] /healthz -> ok=true body={"ok":true}
+[health] engine.health() -> { ok: true }
+[health] 真页面探测 chat-read -> ok=true error=
+[health]            data keys = [ 'count', 'messages' ]
+[health] 当前对话消息数 count=1，最后一条长度=44
+[health] 发送一条简单消息…（首次 chat-insert/send 可能在页面弹同意框，请点「允许本次会话」）

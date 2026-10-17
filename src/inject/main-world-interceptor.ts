@@ -23,8 +23,10 @@ import {
   extractTaskCompleteSignal,
   MAX_LOOP,
   MAX_NUDGES,
+  MAX_ERROR_RETRIES,
   type PendingResult,
 } from '../shared/continuation-prompt';
+import { classifyResponse, classifySseFrame, errorBackoffMs, filterReplayableHeaders, recordVerdict, type ClassifiedResponse } from './response-classifier';
 import type { ExecuteResult } from '../capabilities/types';
 import { createPowHeaders } from './pow';
 import { createToolCard, updateToolCardByCallId, stripRawToolTagsFromMessage } from './tool-card-ui';
@@ -112,6 +114,8 @@ interface LoopState {
   /** v1.6：本轮 auto-continue 回复里是否出现了工具调用（由 forward 在 inAutoContinue 时置位）。
    *  readyState===4 时据此判断「模型没调工具」→ 走 nudge 判定，避免 pending 异步未到位的误判。 */
   autoReplyHadTools: boolean;
+  /** R0-R5：本轮流里检测到的 SSE 错误帧（200 内嵌错误），readyState===4 时据此分类。 */
+  sseErrorSeen?: ClassifiedResponse | null;
   /** v1.6：用户原始任务（首轮请求 prompt 字段，augmentation 前）。XHR/fetch hook 在首条消息时写入，
    *  autoContinueWithPow / autoContinueNudge 读它拼续跑 prompt。 */
   originalTask: string;
@@ -594,6 +598,13 @@ function installXhrHooks(
           const frames = frameDec.push(part);
           let rawDataText = '';
           for (const frame of frames) {
+            // R0-R5：识别流内 SSE 错误帧（event=error / status=0·429·500 载荷），
+            // 200 状态码下也记录，供 readyState===4 分类，避免被当空回复 nudge。
+            const sseErr = classifySseFrame(frame.event?.type ?? null, frame.parsed);
+            if (sseErr && loopState) {
+              recordVerdict({ status: xhr.status, verdict: sseErr.verdict, reason: sseErr.reason, attempt: 0 });
+              loopState.sseErrorSeen = sseErr;
+            }
             // 从 frame.parsed 里提取原始 content（未 JSON 转义的文本）
             if (frame.parsed && typeof frame.parsed === 'object') {
               const obj = frame.parsed as {
@@ -700,6 +711,9 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   const collectedExecutions: PendingResult[] = [];
   // v1.6：nudge 计数（无工具断流纠偏次数上限 MAX_NUDGES）。
   let nudgeCount = 0;
+  // R0-R2：独立错误重试计数（429/网络错误/5xx/200 错误体），与 loopDepth/nudgeCount 互不占用，
+  // 封顶 MAX_ERROR_RETRIES，防止服务器错误消耗整轮续跑预算并叠加 nudge 形成 33 连发。
+  let errorRetryCount = 0;
   // v0.9 POW：捕获页面正常请求的 headers（Authorization / X-App-Version 等）
   const capturedHeaders: Record<string, string> = {};
 
@@ -847,8 +861,10 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     collectedExecutions.length = 0;
     nudgeCount = 0;
     loopDepth = 0;
+    errorRetryCount = 0;
+    loopState.sseErrorSeen = null;
     loopState.autoReplyHadTools = false;
-    d('new user message: reset collectedExecutions/nudgeCount/loopDepth');
+    d('new user message: reset collectedExecutions/nudgeCount/loopDepth/errorRetryCount');
     if (chatUI) {
       if (loopState.newUserPrompt) {
         chatUI.addUserMessage(loopState.newUserPrompt);
@@ -888,16 +904,10 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
 
       d(`auto-continue loop=${loopDepth} computing PoW... capturedHeaders=${JSON.stringify(Object.keys(capturedHeaders))}`);
 
-      // 过滤 capturedHeaders：移除会干扰请求的头
-      // - content-type：我们自己设置 application/json
-      // - content-length：fetch 自动计算
-      // - x-ds-pow-response：上一次请求的 POW 响应，不能复用
-      const filteredHeaders: Record<string, string> = {};
-      for (const [k, v] of Object.entries(capturedHeaders)) {
-        const lower = k.toLowerCase();
-        if (lower === 'content-type' || lower === 'content-length' || lower === 'x-ds-pow-response') continue;
-        filteredHeaders[k] = v;
-      }
+      // R0-R3：重放头走白名单（filterReplayableHeaders），只保留协议必需的中性头。
+      // 原实现只剔 content-type/length/x-ds-pow-response，一次性会话令牌（x-hif-leim/
+      // x-hif-dliq）、Cookie、CSRF 都会被原样复用，过期/一次性凭证导致上游静默失败。
+      const filteredHeaders = filterReplayableHeaders(capturedHeaders);
 
       // 算 POW headers
       const powHeaders = await createPowHeaders(filteredHeaders);
@@ -907,6 +917,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       // v0.9：标记 auto-continue 模式，让 XHR hook 累积回复文本（不渲染到 DOM）
       loopState.inAutoContinue = true;
       loopState.autoReplyText = '';
+      loopState.sseErrorSeen = null;
       await new Promise<void>((resolve) => {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/v0/chat/completion', true);
@@ -917,6 +928,19 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
         for (const [k, v] of Object.entries(powHeaders)) {
           try { xhr.setRequestHeader(k, v); } catch { /* ignore */ }
         }
+        // R0-R2：结束循环的统一清理（stepFlow 收尾 + chatUI 复位 + loopDepth 清零），
+        // fatal/重试耗尽/正常结束复用，避免错误分支漏清理。
+        const finishStepFlow = (): void => {
+          if (stepFlow) {
+            stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1000));
+            const sf = stepFlow;
+            stepFlow = null;
+            stepFlowStep = 0;
+            stepFlowToolCount = 0;
+            setTimeout(() => sf.destroy(), 3000);
+          }
+          chatUI?.setBusy(false);
+        };
         xhr.onreadystatechange = () => {
           if (xhr.readyState === 4) {
             d(`auto-continue loop=${loopDepth} status=${xhr.status} autoReplyLen=${loopState.autoReplyText.length} inAuto=${loopState.inAutoContinue}`);
@@ -955,13 +979,32 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                 }
               }
             }
-            if (xhr.status === 429 && loopDepth < MAX_LOOP) {
-              d('auto-continue 429, retrying in 8s');
+            // R0-R2：显式分类响应，不再只认 429、其余一律当空回复 nudge。
+            const httpVerdict = classifyResponse(xhr.status, xhr.responseText);
+            // R0-R5：流内 SSE 错误帧优先于 HTTP 状态分类（200 内嵌错误也按错误处理）。
+            const verdict = loopState.sseErrorSeen ?? httpVerdict;
+            recordVerdict({ status: xhr.status, verdict: verdict.verdict, reason: verdict.reason, attempt: errorRetryCount });
+            if (verdict.verdict === 'fatal' || (verdict.verdict === 'retryable' && errorRetryCount >= MAX_ERROR_RETRIES)) {
+              // 不可重试（401/403/402/400）或错误预算耗尽 → 停手上报，禁止落入 nudge/续跑。
+              d(`auto-continue ${verdict.verdict}: status=${xhr.status} reason=${verdict.reason} retries=${errorRetryCount}/${MAX_ERROR_RETRIES}, stop loop`);
+              loopState.streamActive = false;
+              finishStepFlow();
+              loopDepth = 0;
+            } else if (verdict.verdict === 'retryable') {
+              // 429/断连/5xx/200错误体：独立错误预算 + 指数退避，不占用工具续跑/nudge 预算。
+              errorRetryCount += 1;
               loopState.streamActive = false;
               if (autoContinueTimer) clearTimeout(autoContinueTimer);
-              autoContinueTimer = setTimeout(() => { autoContinueTimer = null; autoContinueWithPow(); }, 8000);
+              const delay = verdict.retryAfterMs ?? errorBackoffMs(errorRetryCount - 1);
+              d(`auto-continue retryable: status=${xhr.status} reason=${verdict.reason}, retry ${errorRetryCount}/${MAX_ERROR_RETRIES} in ${delay}ms`);
+              autoContinueTimer = setTimeout(() => { autoContinueTimer = null; autoContinueWithPow(); }, delay);
+            } else if (loopDepth >= MAX_LOOP) {
+              // 达工具续跑步数上限：正常结束。
+              d('auto-continue reached MAX_LOOP, stop');
+              finishStepFlow();
+              loopDepth = 0;
             } else {
-              // v1.6：nudge 机制（移植自 deepseek-pp shouldNudge + buildNudgePrompt）。
+              // ok：v1.6 nudge 机制（移植自 deepseek-pp shouldNudge + buildNudgePrompt）。
               // autoReplyHadTools = forward 在本轮 SSE 里检测到工具调用 → 有工具，走 scheduleAutoContinue
               //   （由工具结果异步回调触发）。无工具且未 task_complete → 看 shouldNudge 决定是否 nudge。
               const replyForNudge = loopState.autoReplyText.trim();
@@ -980,16 +1023,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                 // 这里负责 stepFlow 的 finish+destroy —— onStreamEnd 在 loopDepth>0 时不销毁，
                 // 交给本分支。避免之前 stepFlow 反复创建销毁的闪烁。
                 d(`auto-continue loop end: hadTools=${hadTools} taskComplete=${hasTaskComplete} shouldNudge=${replyForNudge ? shouldNudge(replyForNudge) : false} nudgeCount=${nudgeCount}/${MAX_NUDGES}`);
-                if (stepFlow) {
-                  stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1000));
-                  const sf = stepFlow;
-                  stepFlow = null;
-                  stepFlowStep = 0;
-                  stepFlowToolCount = 0;
-                  setTimeout(() => sf.destroy(), 3000);
-                }
-                // v0.19：循环结束，chat UI 切换到完成状态
-                chatUI?.setBusy(false);
+                finishStepFlow();
                 // 循环结束：重置 loopDepth，让下次用户消息的 onStreamEnd 能正常销毁
                 loopDepth = 0;
               }
@@ -1031,16 +1065,13 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       } catch { /* keep original */ }
 
       d(`auto-continue nudge loop=${loopDepth} count=${nudgeCount} computing PoW...`);
-      const filteredHeaders: Record<string, string> = {};
-      for (const [k, v] of Object.entries(capturedHeaders)) {
-        const lower = k.toLowerCase();
-        if (lower === 'content-type' || lower === 'content-length' || lower === 'x-ds-pow-response') continue;
-        filteredHeaders[k] = v;
-      }
+      // R0-R3：同 autoContinueWithPow，重放头走白名单，剔除一次性令牌/Cookie/CSRF。
+      const filteredHeaders = filterReplayableHeaders(capturedHeaders);
       const powHeaders = await createPowHeaders(filteredHeaders);
 
       loopState.inAutoContinue = true;
       loopState.autoReplyText = '';
+      loopState.sseErrorSeen = null;
       await new Promise<void>((resolve) => {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/v0/chat/completion', true);
@@ -1074,11 +1105,23 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               // nudge 回复不重复渲染到 DOM（autoContinueWithPow 的渲染分支只在正常续跑触发，
               // nudge 走同一 .ds-assistant-message-main-content 覆盖会混淆；面板经 onAssistantReply 已收到）。
             }
-            if (xhr.status === 429 && loopDepth < MAX_LOOP) {
-              d('auto-continue nudge 429, retrying in 8s');
+            // R0-R2：nudge 响应同样显式分类，错误走独立预算 + 退避，fatal 立即停止，
+            // 不再把断连/5xx/200错误体当「模型没说完」继续 nudge。
+            const httpVerdict = classifyResponse(xhr.status, xhr.responseText);
+            // R0-R5：流内 SSE 错误帧优先于 HTTP 状态分类（200 内嵌错误也按错误处理）。
+            const verdict = loopState.sseErrorSeen ?? httpVerdict;
+            recordVerdict({ status: xhr.status, verdict: verdict.verdict, reason: verdict.reason, attempt: errorRetryCount });
+            if (verdict.verdict === 'fatal' || (verdict.verdict === 'retryable' && errorRetryCount >= MAX_ERROR_RETRIES)) {
+              d(`auto-continue nudge ${verdict.verdict}: status=${xhr.status} reason=${verdict.reason} retries=${errorRetryCount}, stop`);
+              loopState.streamActive = false;
+              loopDepth = 0;
+            } else if (verdict.verdict === 'retryable') {
+              errorRetryCount += 1;
               loopState.streamActive = false;
               if (autoContinueTimer) clearTimeout(autoContinueTimer);
-              autoContinueTimer = setTimeout(() => { autoContinueTimer = null; autoContinueNudge(previousReplyText); }, 8000);
+              const delay = verdict.retryAfterMs ?? errorBackoffMs(errorRetryCount - 1);
+              d(`auto-continue nudge retryable: status=${xhr.status} reason=${verdict.reason}, retry ${errorRetryCount}/${MAX_ERROR_RETRIES} in ${delay}ms`);
+              autoContinueTimer = setTimeout(() => { autoContinueTimer = null; autoContinueNudge(previousReplyText); }, delay);
             } else {
               // nudge 回复后再次判定：有工具调用 → 走正常续跑；无工具 + 无 task_complete → 再 nudge（受 MAX_NUDGES 限）
               const replyForNudge = loopState.autoReplyText.trim();

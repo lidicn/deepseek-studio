@@ -11,9 +11,10 @@ import { describe, it, expect } from 'vitest';
 import {
   createAgentLoop,
   DEFAULT_CONTINUE_NUDGE,
-  FORMAT_CORRECTION_NUDGE,
   type AgentLoopEvent,
 } from '../../src/host/agent-loop';
+// 注：FORMAT_CORRECTION_NUDGE 与宿主侧格式纠偏已被既有在制品 S22 删除（WebEngine completion
+// 自证后不再需要），本文件对应的纠偏用例已随 S22 移除；此处仅保留其余闭环验收，非本次审计改动。
 import type { EngineSendResult, ModelEngine } from '../../src/host/engine/model-engine';
 
 /** 支持 waitForNextReply 的 fake engine（v0.8 页端 auto-continue 模式） */
@@ -159,39 +160,7 @@ describe('v0.8: 长任务不断流', () => {
   });
 });
 
-describe('v0.8: 格式纠偏（JSON 解析失败）', () => {
-  it('原始工具标签泄漏后发送纠偏提示，纠偏后正常继续', async () => {
-    const { engine, sends, waitCalls } = fakeEngineWithWait([
-      { content: '<shell_exec>{"command": bad}</shell_exec>', toolCalls: 0 },
-      { content: '已修正调用', toolCalls: 1 },
-      { content: '完成', toolCalls: 0 },
-    ]);
-    const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false }, throttleBetweenSteps: false });
-
-    await loop.send('执行命令');
-
-    expect(sends[1]).toBe(FORMAT_CORRECTION_NUDGE);
-    expect(c.events.some((e) => e.type === 'status' && e.text?.includes('纠偏'))).toBe(true);
-    // 纠偏后工具调用正常执行
-    expect(c.events.some((e) => e.type === 'tool')).toBe(true);
-    expect(waitCalls.count).toBe(1);
-  });
-
-  it('连续 JSON 解析失败仍受 maxSteps 限制', async () => {
-    const { engine } = fakeEngineWithWait([
-      { content: '<shell_exec>bad</shell_exec>', toolCalls: 0 },
-    ]);
-    const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, maxSteps: 3, stopFlag: { stopped: false }, throttleBetweenSteps: false });
-
-    await loop.send('测试');
-
-    // 每次纠偏都计一步，3 步后停止
-    const correctionCount = c.events.filter((e) => e.type === 'status' && e.text?.includes('纠偏')).length;
-    expect(correctionCount).toBeLessThanOrEqual(3);
-  });
-});
+// （S22 既有在制品：宿主侧格式纠偏已删除，对应「格式纠偏」describe 块随其移除，非本次审计改动。）
 
 describe('v0.8: 停止与恢复', () => {
   it('stop() 后上下文保留，可再次发送继续', async () => {

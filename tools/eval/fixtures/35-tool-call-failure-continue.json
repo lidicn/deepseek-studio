@@ -1,0 +1,7 @@
+{
+  "name": "tool call failure then continue",
+  "contract": "tool-call-record",
+  "case": "multi",
+  "input": {},
+  "expect": { "count": 3, "failures": 1 }
+}

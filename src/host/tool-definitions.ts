@@ -14,6 +14,13 @@ import type { ToolDefinition } from './tool-registry';
 
 export const DEEPSEEK_ORIGIN = 'https://chat.deepseek.com';
 
+/**
+ * R2-05：宿主内部调用（AgentLoop / Bot 经 invokeTool）使用的专用 origin。
+ * 不复用 DEEPSEEK_ORIGIN：后者是页面白名单来源，硬编码它会让 origin 闸门对内部调用恒真、
+ * 形同虚设。内部 origin 在 executeTool 的治理闸门里显式放行，页面来源仍走白名单校验。
+ */
+export const HOST_INTERNAL_ORIGIN = 'studio://host-internal';
+
 export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   {
     id: 'echo',

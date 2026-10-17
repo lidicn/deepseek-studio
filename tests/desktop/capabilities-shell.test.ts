@@ -116,13 +116,20 @@ describe('shell.exec —— argv 执行与安全红线', () => {
     expect((r.data as { exitCode: number }).exitCode).toBe(3);
   });
 
-  it('超时上限生效：子进程被杀而不再挂住宿主', async () => {
+  it('超时上限生效：子进程被杀而不再挂住宿主（R1-03/R1-08：timedOut:true、exitCode:null）', async () => {
     const cap = createShellCapability({ timeoutMs: 300 });
     const started = Date.now();
     const r = await cap.execute({ argv: [node, '-e', 'setTimeout(() => {}, 30000)'] });
     expect(r.ok).toBe(false);
     expect(r.error).toBe('timeout');
     expect(Date.now() - started).toBeLessThan(10_000);
+    // R1-08：超时结果显式 timedOut:true、exitCode:null，与「非零退出」用不同字段区分
+    const data = r.data as { timedOut?: boolean; exitCode: number | null; timeoutMs?: number };
+    expect(data.timedOut).toBe(true);
+    expect(data.exitCode).toBeNull();
+    expect(data.timeoutMs).toBe(300);
+    // R1-03：超时即 resolve，不再依赖裸 kill 的 close；details 同样带 timedOut
+    expect((r.details as { timedOut?: boolean })?.timedOut).toBe(true);
   });
 
   it('注入串作为 argv 元素时是普通参数，不会被解释执行', async () => {

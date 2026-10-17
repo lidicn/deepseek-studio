@@ -143,9 +143,18 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
   options.server.on('upgrade', (req, socket, head) => {
     const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
     if (pathname !== path) return;
+    // R2-03：upgrade 阶段即校验 Origin。原实现只判路径，任意公网网页都能连上本机
+    // 工具通道（浏览器同源策略不阻止 ws 建连）。带 Origin 但不在白名单 → 直接销毁。
+    // 无 Origin 的非浏览器客户端（测试/本机脚本）放行，由 R2-02 的 hello-ready 闸门兜底。
+    const origin = req.headers.origin;
+    if (origin !== undefined && !isPnaAllowedOrigin(origin)) {
+      options.onError?.(`ws upgrade rejected: origin not allowed (${origin})`);
+      socket.destroy();
+      return;
+    }
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
   });
-  const clients = new Map<string, { ws: WebSocket; origin: string | null; untrusted: boolean; botId: string | undefined; accountFingerprint: string | undefined }>();
+  const clients = new Map<string, { ws: WebSocket; origin: string | null; untrusted: boolean; ready: boolean; botId: string | undefined; accountFingerprint: string | undefined; reqOrigin: string | null }>();
   const pendingDispatch = new Map<string, { resolve: (r: ExecuteResult) => void; timer: ReturnType<typeof setTimeout> }>();
   const pendingConsent = new Map<string, { resolve: (d: ConsentDecision) => void; timer: ReturnType<typeof setTimeout> }>();
 
@@ -180,17 +189,28 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
     // 兼容规则：调用方不传 botId → 完全沿用改造前的「任一可信页」行为，不做 botId 过滤。
     // 这样单窗口 / 旧脚本 / 遗留调用路径行为不变；而多 bot 引擎各自带 botId 调用即精确寻址。
     // 关键：被自检判定为篡改的页必须被跳过，否则工具就派发给了敌意页面。
+    // R2-02：未完成 hello 握手（ready=false）的连接也必须跳过——原实现只查 untrusted，
+    // 已连接但从不发 hello 的本机进程会成为合法 dispatch 目标，截获含文件路径/shell 命令的参数。
     for (const c of clients.values()) {
-      if (c.untrusted) continue;
+      if (c.untrusted || !c.ready) continue;
       if (botId !== undefined && (c.botId ?? MAIN_BOT_ID) !== botId) continue;
       return c;
     }
     return null;
   }
 
-  wss.on('connection', (ws: WebSocket) => {
+  wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     const id = crypto.randomUUID();
-    const rec: { ws: WebSocket; origin: string | null; untrusted: boolean; botId: string | undefined; accountFingerprint: string | undefined } = { ws, origin: null, untrusted: false, botId: undefined, accountFingerprint: undefined };
+    // R2-02：ready 仅在 hello 成功后置 true；reqOrigin 用于校验自报 origin 与握手 Origin 一致。
+    const rec: { ws: WebSocket; origin: string | null; untrusted: boolean; ready: boolean; botId: string | undefined; accountFingerprint: string | undefined; reqOrigin: string | null } = {
+      ws,
+      origin: null,
+      untrusted: false,
+      ready: false,
+      botId: undefined,
+      accountFingerprint: undefined,
+      reqOrigin: (req.headers.origin as string | undefined) ?? null,
+    };
     clients.set(id, rec);
     ws.on('message', async (raw) => {
       let msg: PageToHostMessage;
@@ -200,11 +220,21 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         return;
       }
       if (msg.type === 'hello') {
+        // R2-02：握手带了 Origin 时，hello 自报 origin 必须与之完全一致，防止自报伪造
+        // （任意网页可在 hello 里谎报 origin=https://chat.deepseek.com 绕过后续校验）。
+        if (rec.reqOrigin && msg.origin && msg.origin !== rec.reqOrigin) {
+          rec.untrusted = true;
+          options.onError?.(`hello origin mismatch: claimed=${msg.origin} handshake=${rec.reqOrigin}`);
+          try { ws.close(); } catch { /* ignore */ }
+          return;
+        }
         rec.origin = msg.origin ?? null;
         // v0.24：登记自报 botId（旧脚本不上报 → undefined，pickClient 按 main 处理）。
         rec.botId = typeof msg.botId === 'string' && msg.botId.length > 0 ? msg.botId : undefined;
         // v0.31：登记账号身份指纹（旧脚本/未登录 → undefined，不参与去重）。
         rec.accountFingerprint = typeof msg.accountFingerprint === 'string' && msg.accountFingerprint.length > 0 ? msg.accountFingerprint : undefined;
+        // R2-02：hello 登记完成 → 标记 ready，pickClient 只派发 ready 且未被判定篡改的连接。
+        rec.ready = true;
         safeSend(ws, { type: 'hello-ack', sessionId: id });
         // v0.31 账号身份锁：同账号双窗口 = 必封。hello 登记指纹后立即查重——
         // 已有另一个 trusted 页报到相同指纹 → 本连接 fail-closed（标 untrusted + 推阻塞）。
@@ -417,13 +447,14 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
     },
     broadcastMemories(memories) {
       const msg: HostToPageMessage = { type: 'memories-update', memories };
+      // R2-02：未完成 hello 的连接不收广播（避免向未握手连接泄露记忆内容/调试代码）。
       for (const c of clients.values()) {
-        if (!c.untrusted) safeSend(c.ws, msg);
+        if (!c.untrusted && c.ready) safeSend(c.ws, msg);
       }
     },
     broadcastDebugEval(requestId, code) {
       for (const c of clients.values()) {
-        if (!c.untrusted) safeSend(c.ws, { type: 'debug-eval', requestId, code });
+        if (!c.untrusted && c.ready) safeSend(c.ws, { type: 'debug-eval', requestId, code });
       }
     },
     dispose() {

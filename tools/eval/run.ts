@@ -324,6 +324,73 @@ async function runOne(fx: Fixture): Promise<CaseResult> {
         break;
       }
 
+      // ---- S16 新增 ----
+      case 'task-loop/multi-round': {
+        // 3 轮工具后 completed
+        let round = 0;
+        const engine: ModelEngine = {
+          name: 'web',
+          async health() { return { ok: true }; },
+          async send() {
+            round++;
+            if (round < 3) return { content: 'working...', toolCalls: 1 };
+            return { content: 'done <task_complete>{}</task_complete>', toolCalls: 1 };
+          },
+        };
+        const h = createMessageHistory();
+        const loop = createTaskLoop({ engine, history: h, maxRounds: 5 });
+        const r = await loop.run('test');
+        actual = { stopReason: r.stopReason, rounds: r.round };
+        break;
+      }
+      case 'task-loop/max-rounds': {
+        const engine: ModelEngine = {
+          name: 'web',
+          async health() { return { ok: true }; },
+          async send() { return { content: 'still working', toolCalls: 1 }; },
+        };
+        const h = createMessageHistory();
+        const loop = createTaskLoop({ engine, history: h, maxRounds: 2 });
+        const r = await loop.run('test');
+        actual = { stopReason: r.stopReason };
+        break;
+      }
+      case 'engine/completion-truncated': {
+        const r: EngineSendResult = { content: 'partial...', toolCalls: 0, timedOut: true, completion: 'truncated' };
+        actual = { completion: r.completion, timedOut: r.timedOut };
+        break;
+      }
+      case 'engine/completion-disconnected': {
+        const r: EngineSendResult = { content: '', toolCalls: 0, completion: 'disconnected' };
+        actual = { completion: r.completion };
+        break;
+      }
+      case 'tool-call-record/multi': {
+        const recs: ToolCallRecord[] = [
+          { tool: 'read_file', ok: true },
+          { tool: 'write_file', ok: true },
+          { tool: 'shell.exec', ok: false, error: 'denied' },
+        ];
+        actual = { count: recs.length, failures: recs.filter((r) => !r.ok).length };
+        break;
+      }
+      case 'message-history/long-context': {
+        const h = createMessageHistory();
+        for (let i = 0; i < 10; i++) h.append({ role: 'user', content: `msg-${i}` });
+        const snap = h.snapshot();
+        actual = { count: snap.messages.length };
+        break;
+      }
+      case 'message-history/empty': {
+        const h = createMessageHistory();
+        actual = { size: h.size(), roles: h.byRole('user').length };
+        break;
+      }
+      case 'special-chars/echo': {
+        actual = { text: fx.input.text };
+        break;
+      }
+
       default:
         return {
           name: fx.name,

@@ -1,0 +1,5 @@
+﻿
+> deepseek-studio@0.4.0 typecheck
+> tsc --noEmit
+
+tests/desktop/web-engine-input-validation.test.ts(11,43): error TS6133: 'p' is declared but its value is never read.

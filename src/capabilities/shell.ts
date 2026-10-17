@@ -188,6 +188,8 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
 
       const timeoutMs = clampTimeout(params.timeoutMs, baseTimeout);
       const startedAt = Date.now();
+      // R1-03：kill 后等 close 的兜底窗口，防止 close 不来导致 Promise 永久悬挂。
+      const TIMEOUT_GRACE_MS = 1500;
 
       return await new Promise<ExecuteResult>((resolve) => {
         let child;
@@ -210,11 +212,16 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
         let stderr = '';
         let truncated = false;
         let settled = false;
+        // R1-03/R1-08：超时标志。resolve 统一由 close 事件驱动；超时分支显式置 timedOut，
+        // 不再复用 exitCode=null 与非零退出混淆。
+        let timedOut = false;
+        let fallback: ReturnType<typeof setTimeout> | null = null;
 
         const finish = (payload: ExecuteResult): void => {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
+          if (fallback) clearTimeout(fallback);
           resolve(payload);
         };
 
@@ -228,6 +235,31 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
           argv,
           cwd,
         });
+
+        // R1-03：终止整棵进程树。Windows 下裸 child.kill() 只杀直接子进程，
+        // powershell -Command 派生的 git/node/python 等孙进程会成为孤儿持续占用资源；
+        // 用 taskkill /T /F 连子树一起终止。非 Windows 回落 child.kill()。
+        const killTree = (): void => {
+          if (process.platform === 'win32' && child.pid != null) {
+            try {
+              const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+                stdio: 'ignore',
+                shell: false,
+              });
+              killer.on('error', () => {
+                try { child.kill(); } catch { /* 已经退出：忽略 */ }
+              });
+              return;
+            } catch {
+              // taskkill 不可用时回落直接 kill
+            }
+          }
+          try {
+            child.kill();
+          } catch {
+            // 已经退出：忽略
+          }
+        };
 
         child.stdout?.on('data', (buf: Buffer) => {
           const r = appendCapped(stdout, buf.toString('utf8'), maxOutputBytes);
@@ -243,6 +275,20 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
           finish({ ok: false, error: 'spawn-failed', data: { ...common(), message: err.message } });
         });
         child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
+          if (timedOut) {
+            // R1-08：超时结果由 close 产出，显式 timedOut:true、exitCode=null，
+            // 与「非零退出」用不同字段区分。
+            // 超时后 kill 可能给非 null code，强制设 null 以区分「被杀」与「主动退出」。
+            finish({
+              ok: false,
+              error: 'timeout',
+              data: { ...common(), exitCode: null, timedOut: true, timeoutMs },
+              content: [{ type: 'text', text: stdout }],
+              details: { exitCode: null, timedOut: true, durationMs: Date.now() - startedAt, cwd, argv },
+              isError: true,
+            });
+            return;
+          }
           const exitCode = code ?? (signal ? -1 : 0);
           const durationMs = Date.now() - startedAt;
           const isError = exitCode !== 0;
@@ -258,12 +304,19 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
         });
 
         const timer = setTimeout(() => {
-          try {
-            child.kill();
-          } catch {
-            // 已经退出：忽略
-          }
-          finish({ ok: false, error: 'timeout', data: { ...common(), timeoutMs } });
+          timedOut = true;
+          killTree();
+          // close 事件驱动 resolve；兜底定时器防止 close 不来导致挂起。
+          fallback = setTimeout(() => {
+            finish({
+              ok: false,
+              error: 'timeout',
+              data: { ...common(), exitCode: null, timedOut: true, timeoutMs },
+              content: [{ type: 'text', text: stdout }],
+              details: { exitCode: null, timedOut: true, durationMs: Date.now() - startedAt, cwd, argv },
+              isError: true,
+            });
+          }, TIMEOUT_GRACE_MS);
         }, timeoutMs);
       });
     },

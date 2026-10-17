@@ -111,7 +111,10 @@ export function checkFile(filePath: string, content: string, root: string): Viol
     }
 
     // R4: tools/** 不许 import src/host/**
-    if (rel.startsWith('tools/')) {
+    // 豁免：tools/{eval,bench,e2e,metrics}/ 是评测/基准/回放工具，本就需要驱动 kernel/engine，
+    // 不属于生产依赖，允许其 import src/host。
+    const R4_EXEMPT = ['tools/eval/', 'tools/bench/', 'tools/e2e/', 'tools/metrics/'];
+    if (rel.startsWith('tools/') && !R4_EXEMPT.some((p) => rel.startsWith(p))) {
       if (target.startsWith('src/host/')) {
         violations.push({
           rule: 'R4',

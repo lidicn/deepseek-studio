@@ -1,0 +1,15 @@
+﻿
+[1m[7m[36m RUN [39m[27m[22m [36mv2.1.9 [39m[90mE:/NAS/deepseek-studio[39m
+
+ [32m✓[39m tests/desktop/web-engine-input-validation.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 2673[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S19: input validation[2m > [22m1. send("") still works (no crash) [33m509[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S19: input validation[2m > [22m2. send(超长文本) does not crash [33m511[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S19: input validation[2m > [22m3. send(中文/emoji/换行) normal [33m519[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S19: input validation[2m > [22m5. onRoundComplete fires with correct structure [33m526[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S19: input validation[2m > [22m6. no onRoundComplete → silent [33m515[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m7 passed[39m[22m[90m (7)[39m
+[2m   Start at [22m 12:34:13
+[2m   Duration [22m 4.65s[2m (transform 263ms, setup 0ms, collect 398ms, tests 2.67s, environment 0ms, prepare 520ms)[22m
+

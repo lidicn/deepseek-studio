@@ -3,7 +3,6 @@ import {
   createAgentLoop,
   AGENT_SENTINEL,
   DEFAULT_CONTINUE_NUDGE,
-  FORMAT_CORRECTION_NUDGE,
   type AgentLoopEvent,
 } from '../../src/host/agent-loop';
 import type { EngineSendResult, ModelEngine } from '../../src/host/engine/model-engine';
@@ -71,21 +70,6 @@ describe('agent-loop —— 状态机', () => {
     expect(c.events.some((e) => e.type === 'error' && e.text?.includes('已达最大步数'))).toBe(true);
   });
 
-  it('原始工具标签泄漏：发送格式纠偏提示', async () => {
-    const { engine, sends } = fakeEngine([
-      { content: '<local_file_read>{"path": bad json}</local_file_read>', toolCalls: 0 },
-      { content: '已重新调用', toolCalls: 1 },
-      { content: '完成', toolCalls: 0 },
-    ]);
-    const c = collector();
-    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag: { stopped: false }, throttleBetweenSteps: false });
-
-    await loop.send('读文件');
-
-    expect(sends[1]).toBe(FORMAT_CORRECTION_NUDGE);
-    expect(c.events.some((e) => e.type === 'status' && e.text?.includes('纠偏'))).toBe(true);
-  });
-
   it('stop() 置位 stopFlag，循环在下一步边界停止', async () => {
     const { engine } = fakeEngine([
       { content: '调工具', toolCalls: 1 },
@@ -106,7 +90,8 @@ describe('agent-loop —— 状态机', () => {
     };
     await p;
 
-    expect(stopFlag.stopped).toBe(false); // finally 复位
+    // R2-06：回合结束不再无条件清掉共享 stopFlag，停止意图保留到下次 send 开始时复位
+    expect(stopFlag.stopped).toBe(true);
     expect(c.events.some((e) => e.type === 'status' && e.text?.includes('停止'))).toBe(true);
   });
 
@@ -136,6 +121,26 @@ describe('agent-loop —— 状态机', () => {
     const first = loop.send('第一条');
     await expect(loop.send('第二条')).rejects.toThrow('agent-busy');
     await first;
+  });
+
+  it('R2-06：回合中外部置停后，finally 不清零共享 stopFlag（停止意图保留）', async () => {
+    const stopFlag = { stopped: false };
+    let engineSend = 0;
+    const engine: ModelEngine = {
+      name: 'web',
+      async health() { return { ok: true }; },
+      async send() {
+        engineSend += 1;
+        if (engineSend === 1) stopFlag.stopped = true; // 回合进行中外部置停
+        return { content: '', toolCalls: 0 };
+      },
+    };
+    const c = collector();
+    const loop = createAgentLoop({ engine, onEvent: c.onEvent, stopFlag, throttleBetweenSteps: false });
+    await loop.send('任务');
+    // R2-06：finally 不再无条件复位，停止信号保持 true（下次 send 开始时才复位）
+    expect(stopFlag.stopped).toBe(true);
+    expect(c.events.some((e) => e.type === 'status' && e.text?.includes('停止'))).toBe(true);
   });
 
   it('SENTINEL 常量存在且被面板前缀使用（契约守卫）', () => {

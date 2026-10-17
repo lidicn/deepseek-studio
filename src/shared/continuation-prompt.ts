@@ -45,6 +45,12 @@ interface NormalizedToolResult {
 export const MAX_LOOP = 25;
 /** 单回合最多 nudge 次数（防无限 nudge 死循环，对齐 deepseek-pp MAX_NUDGES）。 */
 export const MAX_NUDGES = 8;
+/**
+ * R0-R2：独立的错误重试预算。原实现把 429/网络错误/200 空回复与「应续跑」混在同一个
+ * MAX_LOOP=25 里，一次服务器错误能消耗整轮预算并叠加 nudge，形成 25 续跑 + 8 nudge = 33
+ * 连发。错误重试单独封顶 3 次，与工具续跑步数、nudge 次数互不占用。
+ */
+export const MAX_ERROR_RETRIES = 3;
 /** 续跑 prompt 里带完整 detail/output 的最近结果条数；更早的压缩为 summary。 */
 export const FULL_TOOL_RESULT_WINDOW = 4;
 

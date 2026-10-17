@@ -1,0 +1,7 @@
+{
+  "name": "special chars echo",
+  "contract": "special-chars",
+  "case": "echo",
+  "input": { "text": "hello\nworld \"quoted\" emoji🎉" },
+  "expect": { "text": "hello\nworld \"quoted\" emoji🎉" }
+}

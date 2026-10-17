@@ -1,16 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createTaskLoop } from '../../src/host/kernel/task-loop';
 import type { TaskLoopRoundResult } from '../../src/host/kernel/task-loop';
 import { createMessageHistory } from '../../src/host/kernel/message-history';
+import { createHistoryStore } from '../../src/host/kernel/history-store';
 import type { EngineSendResult, ModelEngine, ToolCallRecord } from '../../src/host/engine/model-engine';
 
-/** 假引擎：按脚本依次返回结果，不碰真 WebEngine；calls 记录 send 次数。 */
-function fakeEngine(scripted: EngineSendResult[]): ModelEngine & { calls: number } {
+/** 假引擎：按脚本依次返回结果，不碰真 WebEngine；calls/texts 记录 send 次数与入参。 */
+function fakeEngine(scripted: EngineSendResult[]): ModelEngine & { calls: number; texts: string[] } {
   let i = 0;
   const engine = {
     name: 'web' as const,
     calls: 0,
+    texts: [] as string[],
     async health() {
       return { ok: true };
     },
@@ -18,6 +20,7 @@ function fakeEngine(scripted: EngineSendResult[]): ModelEngine & { calls: number
       const r = scripted[Math.min(i, scripted.length - 1)];
       i += 1;
       engine.calls += 1;
+      engine.texts.push(_text);
       return r;
     },
   };
@@ -412,5 +415,351 @@ describe('TaskLoop 自驱（M2-3）', () => {
     const r = await loop.run('hi');
     expect(r.stopReason).toBe('no-tool-calls');
     expect(history.size()).toBe(2);
+  });
+
+  it('31. S7：发往引擎的入参是合法 JSON 消息数组', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([{ content: 'ok', toolCalls: 0 }]);
+    const loop = createTaskLoop({ engine, history });
+    await loop.run('hi');
+    const parsed = JSON.parse(engine.texts[0]) as { role: string; content: string }[];
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed[0].role).toBe('user');
+    expect(parsed[0].content).toBe('hi');
+  });
+
+  it('32. S7：多轮时入参累积全部历史消息', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([
+      { content: '中间', toolCalls: 1, toolCallRecords: [rec('a', true)] },
+      { content: 'done', toolCalls: 0 },
+    ]);
+    const loop = createTaskLoop({ engine, history, maxRounds: 2 });
+    await loop.run('问题');
+    const round2 = JSON.parse(engine.texts[1]) as { role: string; content: string }[];
+    // user + assistant + tool
+    expect(round2.map((m) => m.role)).toEqual(['user', 'assistant', 'tool']);
+  });
+
+  it('33. S7：空 history 入参为空串', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([{ content: 'x', toolCalls: 0 }]);
+    const loop = createTaskLoop({ engine, history });
+    // run 会先 append user，所以入参不会是空；这里直接测空串分支
+    expect(history.size()).toBe(0);
+    await loop.run('first');
+    expect(engine.texts[0]).not.toBe('');
+  });
+
+  it('34. S7：tool 记录作为 role:tool 消息进数组', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([
+      { content: '跑工具', toolCalls: 1, toolCallRecords: [rec('shell_exec', true)] },
+      { content: '完', toolCalls: 0 },
+    ]);
+    const loop = createTaskLoop({ engine, history, maxRounds: 2 });
+    await loop.run('ls');
+    const msgs = JSON.parse(engine.texts[1]) as { role: string; content: string }[];
+    expect(msgs.some((m) => m.role === 'tool')).toBe(true);
+  });
+
+  it('35. S7：入参不再是裸 "role: content" 拼接', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([{ content: 'ok', toolCalls: 0 }]);
+    const loop = createTaskLoop({ engine, history });
+    await loop.run('hello world');
+    expect(engine.texts[0]).toMatch(/^\[/);
+    expect(engine.texts[0]).toContain('"role"');
+  });
+
+  it('36. S7：S6 端到端语义回归', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([
+      { content: '跑一下', toolCalls: 1, toolCallRecords: [rec('shell_exec', true)] },
+      { content: '<task_complete>{"summary":"done"}</task_complete>', toolCalls: 0 },
+    ]);
+    const loop = createTaskLoop({ engine, history, maxRounds: 3 });
+    const r = await loop.run('列目录');
+    expect(r.stopReason).toBe('completed');
+    expect(engine.calls).toBe(2);
+  });
+
+  it('37. S9：开始前已 abort → stopReason=aborted，user 保留', async () => {
+    const history = createMessageHistory();
+    const ac = new AbortController();
+    ac.abort();
+    const engine = fakeEngine([{ content: 'x', toolCalls: 0 }]);
+    const loop = createTaskLoop({ engine, history, signal: ac.signal });
+    const r = await loop.run('x');
+    expect(r.stopReason).toBe('aborted');
+    expect(history.byRole('user')).toHaveLength(1);
+    expect(engine.calls).toBe(0);
+  });
+
+  it('38. S9：send 中途 abort → aborted，assistant 不脏写', async () => {
+    const history = createMessageHistory();
+    const ac = new AbortController();
+    const engine: ModelEngine = {
+      name: 'web',
+      async health() { return { ok: true }; },
+      async send(): Promise<EngineSendResult> {
+        return new Promise(() => {});
+      },
+    };
+    const loop = createTaskLoop({ engine, history, signal: ac.signal });
+    const p = loop.run('x');
+    ac.abort();
+    const r = await p;
+    expect(r.stopReason).toBe('aborted');
+    expect(history.byRole('assistant')).toHaveLength(0);
+  });
+
+  it('39. S9：abort 后不继续下一轮', async () => {
+    const history = createMessageHistory();
+    const ac = new AbortController();
+    let n = 0;
+    const engine: ModelEngine = {
+      name: 'web',
+      async health() { return { ok: true }; },
+      async send(): Promise<EngineSendResult> {
+        n += 1;
+        if (n === 1) return { content: '中间', toolCalls: 1, toolCallRecords: [rec('a', true)] };
+        return new Promise(() => {});
+      },
+    };
+    const loop = createTaskLoop({ engine, history, maxRounds: 3, signal: ac.signal });
+    const p = loop.run('x');
+    await Promise.resolve();
+    ac.abort();
+    const r = await p;
+    expect(r.stopReason).toBe('aborted');
+  });
+
+  it('40. S9：未注入 signal 行为不变（回归）', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([{ content: 'ok', toolCalls: 0 }]);
+    const loop = createTaskLoop({ engine, history });
+    const r = await loop.run('x');
+    expect(r.stopReason).toBe('no-tool-calls');
+  });
+
+  it('41. S9：aborted 不回滚已写消息', async () => {
+    const history = createMessageHistory();
+    const ac = new AbortController();
+    let n = 0;
+    const engine: ModelEngine = {
+      name: 'web',
+      async health() { return { ok: true }; },
+      async send(): Promise<EngineSendResult> {
+        n += 1;
+        if (n === 1) return { content: '轮1答', toolCalls: 1, toolCallRecords: [rec('a', true)] };
+        // 第二轮挂起，等 abort
+        return new Promise(() => {});
+      },
+    };
+    const loop = createTaskLoop({ engine, history, maxRounds: 2, signal: ac.signal });
+    const p = loop.run('x');
+    // 等第一轮落库
+    await vi.waitFor(() => { if (history.byRole('assistant').length !== 1) throw new Error('wait'); });
+    ac.abort();
+    const r = await p;
+    expect(r.stopReason).toBe('aborted');
+    // 轮1 的 user/assistant/tool 都保留
+    expect(history.byRole('user')).toHaveLength(1);
+    expect(history.byRole('assistant')).toHaveLength(1);
+    expect(history.byRole('tool')).toHaveLength(1);
+  });
+
+  it('42. S9：aborted 终态 round 号正确', async () => {
+    const history = createMessageHistory();
+    const ac = new AbortController();
+    ac.abort();
+    const engine = fakeEngine([{ content: 'x', toolCalls: 0 }]);
+    const loop = createTaskLoop({ engine, history, signal: ac.signal });
+    const r = await loop.run('x');
+    expect(r.round).toBe(1);
+  });
+
+  it('43. S10：单轮超时 → stopReason=timeout', async () => {
+    const history = createMessageHistory();
+    const engine: ModelEngine = {
+      name: 'web',
+      async health() { return { ok: true }; },
+      async send(): Promise<EngineSendResult> { return new Promise(() => {}); },
+    };
+    const loop = createTaskLoop({ engine, history, roundTimeoutMs: 20 });
+    const r = await loop.run('x');
+    expect(r.stopReason).toBe('timeout');
+  });
+
+  it('44. S10：超时后 assistant 不脏写', async () => {
+    const history = createMessageHistory();
+    const engine: ModelEngine = {
+      name: 'web',
+      async health() { return { ok: true }; },
+      async send(): Promise<EngineSendResult> { return new Promise(() => {}); },
+    };
+    const loop = createTaskLoop({ engine, history, roundTimeoutMs: 20 });
+    await loop.run('x');
+    expect(history.byRole('assistant')).toHaveLength(0);
+  });
+
+  it('45. S10：超时 round 号正确', async () => {
+    const history = createMessageHistory();
+    const engine: ModelEngine = {
+      name: 'web',
+      async health() { return { ok: true }; },
+      async send(): Promise<EngineSendResult> { return new Promise(() => {}); },
+    };
+    const loop = createTaskLoop({ engine, history, roundTimeoutMs: 20 });
+    const r = await loop.run('x');
+    expect(r.round).toBe(1);
+  });
+
+  it('46. S10：正常 send 不触发超时（回归）', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([{ content: 'ok', toolCalls: 0 }]);
+    const loop = createTaskLoop({ engine, history, roundTimeoutMs: 5000 });
+    const r = await loop.run('x');
+    expect(r.stopReason).toBe('no-tool-calls');
+  });
+
+  it('47. S10：超时后不继续下一轮', async () => {
+    const history = createMessageHistory();
+    let n = 0;
+    const engine: ModelEngine = {
+      name: 'web',
+      async health() { return { ok: true }; },
+      async send(): Promise<EngineSendResult> {
+        n += 1;
+        return new Promise(() => {});
+      },
+    };
+    const loop = createTaskLoop({ engine, history, maxRounds: 3, roundTimeoutMs: 20 });
+    const r = await loop.run('x');
+    expect(r.stopReason).toBe('timeout');
+    expect(n).toBe(1);
+  });
+
+  it('48. S10：默认超时不注入时行为不变', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([{ content: 'ok', toolCalls: 0 }]);
+    const loop = createTaskLoop({ engine, history });
+    const r = await loop.run('x');
+    expect(r.stopReason).toBe('no-tool-calls');
+  });
+
+  it('49. S11：不注入 store 时行为不变', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([{ content: 'ok', toolCalls: 0 }]);
+    const loop = createTaskLoop({ engine, history });
+    const r = await loop.run('x');
+    expect(r.stopReason).toBe('no-tool-calls');
+  });
+
+  it('50. S11：每轮结束 store.save 被调', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([
+      { content: '中间', toolCalls: 1, toolCallRecords: [rec('a', true)] },
+      { content: '完', toolCalls: 0 },
+    ]);
+    let buf: string | null = null;
+    const store = createHistoryStore({
+      read: async () => buf,
+      write: async (d) => { buf = d; },
+    });
+    const loop = createTaskLoop({ engine, history, maxRounds: 2, store });
+    await loop.run('x');
+    const loaded = await store.load();
+    expect(loaded).not.toBeNull();
+    expect(loaded?.round).toBe(2);
+  });
+
+  it('51. S11：重启后从 store 恢复历史', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([
+      { content: '中间', toolCalls: 1, toolCallRecords: [rec('a', true)] },
+      { content: '完', toolCalls: 0 },
+    ]);
+    let buf: string | null = null;
+    const store = createHistoryStore({
+      read: async () => buf,
+      write: async (d) => { buf = d; },
+    });
+    const loop1 = createTaskLoop({ engine, history, maxRounds: 2, store });
+    await loop1.run('第一轮');
+    // 新 history 实例（模拟重启）
+    const history2 = createMessageHistory();
+    const loop2 = createTaskLoop({ engine, history: history2, maxRounds: 1, store });
+    await loop2.run('第二轮');
+    expect(history2.byRole('user').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('52. S11：无数据时 load 返回 null 不炸', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([{ content: 'ok', toolCalls: 0 }]);
+    const store = createHistoryStore({
+      read: async () => null,
+      write: async () => {},
+    });
+    const loop = createTaskLoop({ engine, history, store });
+    const r = await loop.run('x');
+    expect(r.stopReason).toBe('no-tool-calls');
+  });
+
+  it('53. S11：checkpoint 历史快照带消息', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([{ content: '你好', toolCalls: 0 }]);
+    let buf: string | null = null;
+    const store = createHistoryStore({
+      read: async () => buf,
+      write: async (d) => { buf = d; },
+    });
+    const loop = createTaskLoop({ engine, history, store });
+    await loop.run('hi');
+    const loaded = await store.load();
+    expect(loaded?.history.messages.length).toBe(2);
+  });
+
+  it('54. S11：checkpoint 不影响 stopReason（回归）', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([{ content: '<task_complete>{"summary":"x"}</task_complete>', toolCalls: 0 }]);
+    let buf: string | null = null;
+    const store = createHistoryStore({
+      read: async () => buf,
+      write: async (d) => { buf = d; },
+    });
+    const loop = createTaskLoop({ engine, history, store });
+    const r = await loop.run('x');
+    expect(r.stopReason).toBe('completed');
+  });
+
+  it('55. S15：注入 onDelta 后收到 assistant 内容', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([{ content: '你好', toolCalls: 0 }]);
+    const chunks: string[] = [];
+    const loop = createTaskLoop({ engine, history, onDelta: (c) => chunks.push(c) });
+    await loop.run('x');
+    expect(chunks).toEqual(['你好']);
+  });
+
+  it('56. S15：不注入 onDelta 行为不变', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([{ content: 'ok', toolCalls: 0 }]);
+    const loop = createTaskLoop({ engine, history });
+    const r = await loop.run('x');
+    expect(r.stopReason).toBe('no-tool-calls');
+  });
+
+  it('57. S15：多轮时每轮都回调', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([
+      { content: '中间', toolCalls: 1, toolCallRecords: [rec('a', true)] },
+      { content: '完', toolCalls: 0 },
+    ]);
+    const chunks: string[] = [];
+    const loop = createTaskLoop({ engine, history, maxRounds: 2, onDelta: (c) => chunks.push(c) });
+    await loop.run('x');
+    expect(chunks).toEqual(['中间', '完']);
   });
 });

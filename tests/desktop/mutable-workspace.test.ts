@@ -122,6 +122,15 @@ describe('lexicallyInside —— 路径逃逸判定（v0.19 双点前缀修复�
     expect(ws.contains('C:\\proj')).toBe(true);
   });
 
+  it('R1-02：相对路径以工作区根为基准，而不是进程 cwd', () => {
+    const ws = createWorkspace('C:\\proj', winDeps);
+    expect(ws.contains('src\\main.ts')).toBe(true);
+    expect(ws.resolveWithin('src\\main.ts')).toBe('C:\\proj\\src\\main.ts');
+    // 越界的相对路径仍被拒绝
+    expect(ws.contains('..\\secret')).toBe(false);
+    expect(ws.resolveWithin('..\\secret')).toBeNull();
+  });
+
   it('根目录作为工作区时不失真（normalize 不变空串/裸盘符）', () => {
     // Windows C:\ 作为工作区根
     const wsRoot = createWorkspace('C:\\', winDeps);

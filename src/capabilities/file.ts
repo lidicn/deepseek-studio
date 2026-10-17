@@ -43,8 +43,10 @@ export function createFileCapability(id: FileToolId, options: FileCapabilityOpti
     const raw = firstString(params, ['path', 'filePath', 'target']);
     if (!raw) return null;
     if (!workspace || !isWorkspaceConfigured(workspace)) return null;
-    // contains 内部已做 realpath 二次校验（符号链接越狱在此被拦住）
-    if (workspace.contains(raw)) return path.resolve(raw);
+    // R1-02：相对路径以工作区根为基准（resolveWithin 内部含 realpath 二次校验，
+    // 符号链接越狱在此被拦住）；越界时仅当宿主显式授权才返回。
+    const within = workspace.resolveWithin(raw);
+    if (within) return within;
     return ctx?.allowOutsideWorkspace === true ? path.resolve(raw) : null;
   };
 

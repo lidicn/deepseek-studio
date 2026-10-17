@@ -1,0 +1,7 @@
+{
+  "name": "api-engine finish_reason=length",
+  "contract": "engine",
+  "case": "completion-disconnected",
+  "input": {},
+  "expect": { "completion": "disconnected" }
+}

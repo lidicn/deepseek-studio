@@ -146,8 +146,15 @@ export function createWorkspace(root: string, deps: Partial<WorkspaceDeps> = {})
   }
   const rootNorm = normalizeForCompare(rootReal, caseSensitive);
 
+  // R1-02：相对路径一律以工作区根 root 为基准解析，而不是进程 cwd。
+  // 否则同一工具调用的语义随宿主启动目录漂移（cwd 在工作区内时可用、在外时报越界）。
+  const resolveTarget = (target: string): string => {
+    const candidate = path.isAbsolute(target) ? target : path.join(rootAbs, target);
+    return d.resolve(candidate);
+  };
+
   function containsRaw(target: string): boolean {
-    const abs = d.resolve(target);
+    const abs = resolveTarget(target);
     if (!lexicallyInside(rootNorm, normalizeForCompare(abs, caseSensitive))) return false;
     // 目标已存在 → 必须再验真实路径，防止「工作区内的软链接指向外部」
     if (d.statSync(abs) !== undefined) {
@@ -167,7 +174,7 @@ export function createWorkspace(root: string, deps: Partial<WorkspaceDeps> = {})
     root: rootAbs,
     contains: containsRaw,
     resolveWithin(target) {
-      const abs = d.resolve(target);
+      const abs = resolveTarget(target);
       return containsRaw(abs) ? abs : null;
     },
   };

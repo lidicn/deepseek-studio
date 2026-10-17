@@ -1,0 +1,7 @@
+{
+  "name": "completion=truncated",
+  "contract": "engine",
+  "case": "completion-truncated",
+  "input": {},
+  "expect": { "completion": "truncated", "timedOut": true }
+}

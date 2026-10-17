@@ -1,0 +1,325 @@
+﻿
+[1m[7m[36m RUN [39m[27m[22m [36mv2.1.9 [39m[90mE:/NAS/deepseek-studio[39m
+
+ [32m✓[39m tests/desktop/kernel-task-loop.test.ts [2m([22m[2m57 tests[22m[2m)[22m[90m 235[2mms[22m[39m
+node.exe : (node:17644) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+At line:1 char:1
++ & "C:\Users\lidicn\AppData\Local\Doubao\User Data\sandbox_runtime\bas ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ((node:17644) Ex...nge at any time:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/desktop/bot-chat-room-runtime.test.ts [2m([22m[2m16 tests[22m[2m)[22m[33m 3515[2mms[22m[39m
+   [33m[2m✓[22m[39m chat-room-runtime 真摘要器[2m > [22m摘要器专属超时：send 不 resolve 时按 timeoutMs 抛错，不等全局看门狗 [33m1503[2mms[22m[39m
+[90mstdout[2m | tests/desktop/web-engine-transport.test.ts[2m > [22m[2mWebEngine as ModelEngine transport (M1-2)[2m > [22m[2m3. metrics injected: recordToolCall changes snapshot numbers
+[22m[39mbefore: {"toolCallsTotal":0,"successCount":0,"failureCount":0,"skipCount":0,"toolRounds":0,"nudgeRounds":0,"nudgeRate":0,"noNudgeCompletionRate":1}
+after : {"toolCallsTotal":0,"successCount":0,"failureCount":0,"skipCount":0,"toolRounds":2,"nudgeRounds":0,"nudgeRate":0,"noNudgeCompletionRate":1}
+
+ [32m✓[39m tests/desktop/web-engine-transport.test.ts [2m([22m[2m30 tests[22m[2m)[22m[33m 5252[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine as ModelEngine transport (M1-2)[2m > [22m4. two consecutive send rounds: buffers are independent [33m411[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine as ModelEngine transport (M1-2)[2m > [22m13. send() with dispatch failure returns completion=disconnected [33m2012[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine as ModelEngine transport (M1-2)[2m > [22m16. disconnected completion bumps nudgeRounds [33m2013[2mms[22m[39m
+(node:44528) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/desktop/bot-chat-room-event.test.ts [2m([22m[2m11 tests[22m[2m)[22m[33m 2527[2mms[22m[39m
+   [33m[2m✓[22m[39m ChatRoomEvent 结构化推送（v0.28 任务 A）[2m > [22m摘要失败不重置轮数 → 下一轮成功才推一次 [33m348[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-hooks.test.ts [2m([22m[2m25 tests[22m[2m)[22m[90m 31[2mms[22m[39m
+[90mstderr[2m | tests/desktop/bot-report-store.test.ts[2m > [22m[2mFileReportStore · 子报告读回[2m > [22m[2m坏 JSON 文
+件跳过不抛（不阻塞 merge）
+[22m[39m[report-store] skip unreadable report C:\Users\lidicn\AppData\Local\Temp\studio-report-store-test-17922117190
+85\runs\batch-1\zz-broken.report.json: Expected property name or '}' in JSON at position 2 (line 1 column 3)
+
+ [32m✓[39m tests/desktop/bot-report-store.test.ts [2m([22m[2m28 tests[22m[2m)[22m[33m 837[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-offline-runner.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 101[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-slot-runtime-integration.test.ts [2m([22m[2m13 tests[22m[2m)[22m[90m 32[2mms[22m[39m
+ [32m✓[39m tests/desktop/sse-text-extractor.test.ts [2m([22m[2m19 tests[22m[2m)[22m[90m 33[2mms[22m[39m
+ [32m✓[39m tests/desktop/capabilities-shell.test.ts [2m([22m[2m22 tests[22m[2m)[22m[33m 1884[2mms[22m[39m
+   [33m[2m✓[22m[39m shell.exec —— argv 执行与安全红线[2m > [22m超时上限生效：子进程被杀而不再挂住宿主 [33m415[2mms[22m[39m
+   [33m[2m✓[22m[39m shell.exec —— argv 执行与安全红线[2m > [22m超时参数被夹到合法区间，异常值不会导致永不超时 [33m397[2mms[22m[39m
+(node:45804) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/desktop/bot-audit-meeting-integration.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 1074[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-bridge.test.ts [2m([22m[2m13 tests[22m[2m)[22m[90m 146[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-event-bus.test.ts [2m([22m[2m19 tests[22m[2m)[22m[90m 30[2mms[22m[39m
+(node:32304) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/desktop/bot-meeting-state.test.ts [2m([22m[2m20 tests[22m[2m)[22m[33m 1539[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-round-orchestrator.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 28[2mms[22m[39m
+(node:46208) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m5.2 限流与并发[2m > [22m[2m超出令牌桶 → 429 且带 Retry-After
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m5.2 限流与并发[2m > [22m[2m并发上限生效：上限 1 时第二个请求被拒
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m5.5 CORS 严格化（fail-closed）[2m > [22m[2m本地回环源获得放行头
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m5.5 CORS 严格化（fail-closed）[2m > [22m[2m非本地源不获得放行头（浏览器自会拦截）
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m5.5 CORS 严格化（fail-closed）[2m > [22m[2m非本地源的预检请求直接 403
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m5.1 令牌轮换与宽限期[2m > [22m[2m轮换后新令牌立即生效，旧令牌在宽限期内仍可用
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m审计经 HTTP 可读（3.2.4）[2m > [22m[2mGET /v1/tools/audit 返回执行记录
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m审计经 HTTP 可读（3.2.4）[2m > [22m[2m未配置审计读取时返回 501（不伪装成空列表）
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m5.4 完整性探测与宿主降级[2m > [22m[2m页端上报篡改后，宿主不再把工具派发给该页
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstderr[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m5.4 完整性探测与宿主降级[2m > [22m[2m页端上报篡改后，宿主不再把工具派发给该页
+[22m[39m[page-runtime] integrity violation: page=a0b4f37d-c8f9-4d6c-ae99-a6f4a0d182af reason=member-replaced detail=h
+ost [90mundefined[39m
+
+ [32m✓[39m tests/desktop/security-v05.test.ts [2m([22m[2m15 tests[22m[2m)[22m[33m 959[2mms[22m[39m
+   [33m[2m✓[22m[39m 5.4 完整性探测与宿主降级[2m > [22m页端上报篡改后，宿主不再把工具派发给该页 [33m370[2mms[22m[39m
+(node:33676) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstderr[2m | tests/desktop/memory-store-v2.test.ts[2m > [22m[2m记忆层 v2：迁移与降级[2m > [22m[2m旧 memories.json 首次启动
+自动导入（原文件保留）
+[22m[39m[memory] migrated 1 memories from C:\Users\lidicn\AppData\Local\Temp\studio-mem-v2-test-1792211739923\memorie
+s.json (file kept as backup)
+
+[90mstderr[2m | tests/desktop/memory-store-v2.test.ts[2m > [22m[2m记忆层 v2：迁移与降级[2m > [22m[2mnode:sqlite 不可用时降级内存
+存储，读写检索仍可用
+[22m[39m[memory] sqlite unavailable, degraded to in-memory store: The argument 'path' must be a string, Uint8Array, o
+r URL without null bytes. Received 'C:\\Users\\lidicn\\AppData\\Local\\Temp\\studio-mem-v2-test-1792211739923\\bad\x00p
+ath'
+
+ [32m✓[39m tests/desktop/memory-store-v2.test.ts [2m([22m[2m18 tests[22m[2m)[22m[33m 2826[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-result-format.test.ts [2m([22m[2m33 tests[22m[2m)[22m[90m 59[2mms[22m[39m
+ [32m✓[39m tests/desktop/agent-channel-chat-room-event.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 804[2mms[22m[39m
+   [33m[2m✓[22m[39m agent-channel —— v0.28 ChatRoomEvent 广播[2m > [22mhost 无 onChatRoomEvent（向后兼容）→ agent-channel 正常工作不崩 [33m525[2mms[22m[39m
+ [32m✓[39m tests/desktop/agent-channel-multibot.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 334[2mms[22m[39m
+ [32m✓[39m tests/desktop/v09-skills-tools-contract.test.ts [2m([22m[2m23 tests[22m[2m)[22m[33m 681[2mms[22m[39m
+ [32m✓[39m tests/desktop/policy.test.ts [2m([22m[2m22 tests[22m[2m)[22m[90m 42[2mms[22m[39m
+ [32m✓[39m tests/desktop/v08-tool-loop.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 23[2mms[22m[39m
+ [32m✓[39m tests/desktop/agent-loop.test.ts [2m([22m[2m13 tests[22m[2m)[22m[90m 84[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-slot-scheduler.test.ts [2m([22m[2m16 tests[22m[2m)[22m[33m 1128[2mms[22m[39m
+(node:6884) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m宿主侧能力执行侧解析[2m > [22m[2mshell / file 解析为 host 侧，既有 chat-* 仍为 page 侧
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m宿主侧能力绝不经过页面（核心不变量）[2m > [22m[2m有页端连接时，shell.exec 仍只在宿主内执行，页面收不到 dispatch
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m宿主侧能力绝不经过页面（核心不变量）[2m > [22m[2m页端若声称能执行 shell.exec，宿主也不会把命令交给它
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m三档策略在宿主链路上的行为[2m > [22m[2mask 档 + 无页端：命令需审批但无人可问 → consent-unavailable
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m三档策略在宿主链路上的行为[2m > [22m[2mfull 档 + 无页端：直接执行，不阻塞在同意闸门上
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m三档策略在宿主链路上的行为[2m > [22m[2mauto 档：常规命令无需审批即执行
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m三档策略在宿主链路上的行为[2m > [22m[2mauto 档：命中风险命令仍要审批（无页 → 拒绝）
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m文件能力受工作区约束[2m > [22m[2m未配置工作区 → file.* 被策略硬拒绝（不弹窗，直接 deny）
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m文件能力受工作区约束[2m > [22m[2m工作区内读写放行，区外按档位处理
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m文件能力受工作区约束[2m > [22m[2mask 档越界访问需审批，且页端收到越界徽标
+[22m[39m[automation] started, 0 tasks loaded
+
+ [32m✓[39m tests/desktop/host-side-tools.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 1514[2mms[22m[39m
+   [33m[2m✓[22m[39m 宿主侧能力绝不经过页面（核心不变量）[2m > [22m有页端连接时，shell.exec 仍只在宿主内执行，页面收不到 dispatch [33m501[2mms[22m[39m
+   [33m[2m✓[22m[39m 宿主侧能力绝不经过页面（核心不变量）[2m > [22m页端若声称能执行 shell.exec，宿主也不会把命令交给它 [33m313[2mms[22m[39m
+ [32m✓[39m tests/desktop/harness-events.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 25[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-audit-meeting.test.ts [2m([22m[2m14 tests[22m[2m)[22m[90m 38[2mms[22m[39m
+(node:37016) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/desktop/bot-context-engine.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 1949[2mms[22m[39m
+   [33m[2m✓[22m[39m ContextEngine[2m > [22m超阈值 → 调 summarizer，快照 version+1，verbatim 归零 [33m439[2mms[22m[39m
+ [32m✓[39m tests/desktop/v10-sandbox-executor.test.ts [2m([22m[2m17 tests[22m[2m)[22m[33m 8336[2mms[22m[39m
+   [33m[2m✓[22m[39m v0.10: 沙箱执行器（execPythonInSandbox）[2m > [22m简单 print 执行成功（需要系统 python） [33m449[2mms[22m[39m
+   [33m[2m✓[22m[39m v0.10: 沙箱执行器（execPythonInSandbox）[2m > [22m多行代码执行成功（需要系统 python） [33m433[2mms[22m[39m
+   [33m[2m✓[22m[39m v0.10: 沙箱执行器（execPythonInSandbox）[2m > [22m语法错误返回失败和 stderr（需要系统 python） [33m516[2mms[22m[39m
+   [33m[2m✓[22m[39m v0.10: 沙箱执行器（execPythonInSandbox）[2m > [22m运行时异常返回失败和 traceback（需要系统 python） [33m569[2mms[22m[39m
+   [33m[2m✓[22m[39m v0.10: 沙箱执行器（execPythonInSandbox）[2m > [22m超时控制：无限循环被超时终止（需要系统 python） [33m2208[2mms[22m[39m
+   [33m[2m✓[22m[39m v0.10: 沙箱执行器（execPythonInSandbox）[2m > [22mcwd 可配置（需要系统 python） [33m317[2mms[22m[39m
+   [33m[2m✓[22m[39m v0.10: 工件代码执行入口（runArtifactCode）[2m > [22m失败执行返回 ok=false 和 error [33m430[2mms[22m[39m
+   [33m[2m✓[22m[39m v0.10: 工件代码执行入口（runArtifactCode）[2m > [22m支持自定义超时 [33m1677[2mms[22m[39m
+   [33m[2m✓[22m[39m v0.10: 沙箱隔离性验证[2m > [22m代码无法访问沙箱目录外的文件（默认 cwd 是临时目录） [33m326[2mms[22m[39m
+ [32m✓[39m tests/desktop/v11-sidebar-ui.test.ts [2m([22m[2m18 tests[22m[2m)[22m[90m 28[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-report-protocol.test.ts [2m([22m[2m18 tests[22m[2m)[22m[90m 30[2mms[22m[39m
+ [32m✓[39m tests/desktop/api-engine.test.ts [2m([22m[2m19 tests[22m[2m)[22m[90m 27[2mms[22m[39m
+ [32m✓[39m tests/desktop/engine-tool-records.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 338[2mms[22m[39m
+(node:14700) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstdout[2m | tests/desktop/page-runtime-multibot.test.ts[2m > [22m[2mpage-runtime —— v0.24 多 bot 寻址[2m > [22m[2minvokeTool 带 botId → dispatch 只到该 bot 的窗口
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime-multibot.test.ts[2m > [22m[2mpage-runtime —— v0.24 多 bot 寻址[2m > [22m[2m不传 botId → 向后兼容，落到任一可信页（行为不变）
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime-multibot.test.ts[2m > [22m[2mpage-runtime —— v0.24 多 bot 寻址[2m > [22m[2m不存在的 botId → 不走错窗口（无匹配页 → echo 走 Node 回退）
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime-multibot.test.ts[2m > [22m[2mpage-runtime —— v0.24 多 bot 寻址[2m > [22m[2m同意闸门按 botId 路由：chat-send 只问该 bot 的窗口
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime-multibot.test.ts[2m > [22m[2mpage-runtime —— v0.24 多 bot 寻址[2m > [22m[2m指定 botId 但该 bot 窗口不在场 → consent-unavailable（不拿别人的同意）
+[22m[39m[automation] started, 0 tasks loaded
+
+ [32m✓[39m tests/desktop/page-runtime-multibot.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 308[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-registry.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 25[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-strategy-generator.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 86[2mms[22m[39m
+ [32m✓[39m tests/desktop/kernel-message-history.test.ts [2m([22m[2m15 tests[22m[2m)[22m[90m 37[2mms[22m[39m
+[90mstderr[2m | tests/desktop/v07-storage-runtime.test.ts[2m > [22m[2mv0.7: file-storage-backend 持久化[2m > [22m[
+2m文件损坏时 readAll 返回空对象并打警告（不崩溃）
+[22m[39m[storage] failed to read C:\Users\lidicn\AppData\Local\Temp\studio-v07-test-1792211789620\corrupt.json, start
+ing empty: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+
+ [32m✓[39m tests/desktop/v07-storage-runtime.test.ts [2m([22m[2m12 tests[22m[2m)[22m[33m 512[2mms[22m[39m
+ [32m✓[39m tests/desktop/continuation-prompt.test.ts [2m([22m[2m25 tests[22m[2m)[22m[90m 32[2mms[22m[39m
+(node:23252) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/desktop/bot-room-summary.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 2533[2mms[22m[39m
+   [33m[2m✓[22m[39m RoomSummaryService[2m > [22msummarize 生成摘要并落快照（version=1） [33m377[2mms[22m[39m
+   [33m[2m✓[22m[39m RoomSummaryService[2m > [22m并发 summarize 同房间 → 只一个 commit 成功，不覆盖 [33m639[2mms[22m[39m
+   [33m[2m✓[22m[39m RoomSummaryService[2m > [22m租约过期后新 summarize 可接管 [33m325[2mms[22m[39m
+   [33m[2m✓[22m[39m RoomSummaryService[2m > [22mCAS 版本不匹配 → commit 放弃，不覆盖 [33m345[2mms[22m[39m
+   [33m[2m✓[22m[39m RoomSummaryService[2m > [22m增量：已有摘要时只摘要新消息并累加 [33m357[2mms[22m[39m
+[90mstdout[2m | tests/desktop/web-engine-reconnect.test.ts[2m > [22m[2mWebEngine S4: reconnect on disconnect[2m > [22m[2m6. waitForNextReply also reconnects on disconnect
+[22m[39m[web-engine] waitForNextReply start, hasConsume=false
+
+ [32m✓[39m tests/desktop/web-engine-reconnect.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 2957[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S4: reconnect on disconnect[2m > [22m1. no disconnect → reconnectAttempts stays 0 [33m515[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S4: reconnect on disconnect[2m > [22m7. send() with chat-send failure → disconnected immediately (no reconnect) [33m2024[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-loop.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 14[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-account-lock.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 225[2mms[22m[39m
+ [32m✓[39m tests/desktop/inject-loader.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 74[2mms[22m[39m
+(node:15144) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/desktop/bot-chat-room-store.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 1453[2mms[22m[39m
+   [33m[2m✓[22m[39m ChatMessageStore - SQLite 模式[2m > [22mgetMessages 按 throughMessageId 取范围（含端点） [33m361[2mms[22m[39m
+   [33m[2m✓[22m[39m ChatMessageStore - SQLite 模式[2m > [22mcount 返回房间消息总数 [33m416[2mms[22m[39m
+(node:3464) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/desktop/bot-chat-relay-integration.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 350[2mms[22m[39m
+ [32m✓[39m tests/desktop/mutable-workspace.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 38[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-persona-registry.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 335[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-report-merge.test.ts [2m([22m[2m9 tests[22m[2m)[22m[90m 51[2mms[22m[39m
+(node:35348) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstdout[2m | tests/desktop/tool-registry.test.ts[2m > [22m[2mv0.3.1 allowlist 端到端闸门（desktop-host）
+[22m[39m[automation] started, 0 tasks loaded
+
+ [32m✓[39m tests/desktop/tool-registry.test.ts [2m([22m[2m13 tests[22m[2m)[22m[90m 144[2mms[22m[39m
+ [32m✓[39m tests/desktop/http-api.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 304[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-instructions.test.ts [2m([22m[2m9 tests[22m[2m)[22m[90m 16[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-slot-runtime.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 24[2mms[22m[39m
+ [32m✓[39m tests/desktop/web-engine-retry.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 5670[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S8: send() retry with backoff[2m > [22m1. first attempt succeeds → no retry [33m513[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S8: send() retry with backoff[2m > [22m2. transient failure on first attempt → retry succeeds [33m560[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S8: send() retry with backoff[2m > [22m3. all retries exhausted → disconnected [33m2030[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S8: send() retry with backoff[2m > [22m4. exponential backoff: 500ms then 1500ms [33m2018[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S8: send() retry with backoff[2m > [22m6. retry succeeds on chat-send failure [33m544[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-meeting-commands.test.ts [2m([22m[2m15 tests[22m[2m)[22m[90m 22[2mms[22m[39m
+ [32m✓[39m tests/desktop/audit.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 23[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-mention-parser.test.ts [2m([22m[2m17 tests[22m[2m)[22m[90m 22[2mms[22m[39m
+ [32m✓[39m tests/desktop/bridge-runtime.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 50[2mms[22m[39m
+ [32m✓[39m tests/desktop/metrics-report.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 15[2mms[22m[39m
+ [32m✓[39m tests/desktop/web-engine-input-validation.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 2669[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S19: input validation[2m > [22m1. send("") still works (no crash) [33m510[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S19: input validation[2m > [22m2. send(超长文本) does not crash [33m520[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S19: input validation[2m > [22m3. send(中文/emoji/换行) normal [33m517[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S19: input validation[2m > [22m5. onRoundComplete fires with correct structure [33m520[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S19: input validation[2m > [22m6. no onRoundComplete → silent [33m506[2mms[22m[39m
+ [32m✓[39m tests/desktop/tools-contract.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 17[2mms[22m[39m
+(node:3020) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstdout[2m | tests/desktop/page-runtime.test.ts[2m > [22m[2mpage-runtime + 宿主路由[2m > [22m[2mecho 经页端路由返回成功
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime.test.ts[2m > [22m[2mpage-runtime + 宿主路由[2m > [22m[2mchat-send 需用户同意，allow-once 放行
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime.test.ts[2m > [22m[2mpage-runtime + 宿主路由[2m > [22m[2mchat-send 用户拒绝 → consent-denied
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime.test.ts[2m > [22m[2mpage-runtime + 宿主路由[2m > [22m[2m无页端连接 → chat-send fail-closed 拒绝（无人可问，记 consent-unavailable）
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime.test.ts[2m > [22m[2mpage-runtime + 宿主路由[2m > [22m[2mecho 无页端 → Node 回退（snapshot）
+[22m[39m[automation] started, 0 tasks loaded
+
+ [32m✓[39m tests/desktop/page-runtime.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 292[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-mention-router.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 17[2mms[22m[39m
+ [32m✓[39m tests/desktop/kernel-tool-bridge.test.ts [2m([22m[2m12 tests[22m[2m)[22m[90m 17[2mms[22m[39m
+(node:13844) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstdout[2m | tests/e2e/smoke.test.ts[2m > [22m[2mv0.2 最小闭环
+[22m[39m[automation] started, 0 tasks loaded
+
+ [32m✓[39m tests/e2e/smoke.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 282[2mms[22m[39m
+ [32m✓[39m tests/desktop/kernel-history-store.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 21[2mms[22m[39m
+ [32m✓[39m tests/desktop/host-client-timeout.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 16[2mms[22m[39m
+ [32m✓[39m tests/desktop/kernel-e2e-tool-round.test.ts [2m([22m[2m2 tests[22m[2m)[22m[90m 19[2mms[22m[39m
+ [32m✓[39m tests/desktop/tools-audit.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 15[2mms[22m[39m
+[90mstdout[2m | tests/desktop/desktop-entry.test.ts[2m > [22m[2m注入装配（entry + shims）[2m > [22m[2minstallStudio 装配直连桥并挂 window.__deepseekStudio
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+ [32m✓[39m tests/desktop/desktop-entry.test.ts [2m([22m[2m2 tests[22m[2m)[22m[90m 64[2mms[22m[39m
+(node:24776) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstdout[2m | tests/desktop/page-runtime-disconnect.test.ts[2m > [22m[2mpage-runtime 断线结算（C4 回归）[2m > [22m[2m同意前页端断开 → pendingConsent 立即结算，不干等 60s
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime-disconnect.test.ts[2m > [22m[2mpage-runtime 断线结算（C4 回归）[2m > [22m[2m派发后页端断开 → pendingDispatch 立即结算，不干等 30s
+[22m[39m[automation] started, 0 tasks loaded
+
+ [32m✓[39m tests/desktop/page-runtime-disconnect.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 575[2mms[22m[39m
+   [33m[2m✓[22m[39m page-runtime 断线结算（C4 回归）[2m > [22m同意前页端断开 → pendingConsent 立即结算，不干等 60s [33m384[2mms[22m[39m
+ [32m✓[39m tests/desktop/kernel-session-manager.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 25[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-authority.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 36[2mms[22m[39m
+ [32m✓[39m tests/desktop/bridge-storage-concurrency.test.ts [2m([22m[2m2 tests[22m[2m)[22m[90m 33[2mms[22m[39m
+ [32m✓[39m tests/desktop/web-engine-edge.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 2551[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S16: edge cases[2m > [22m1. send() with chat-insert failing → immediately disconnected [33m2034[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S16: edge cases[2m > [22m4. send() empty text still works [33m506[2mms[22m[39m
+[90mstdout[2m | tests/desktop/web-engine-edge.test.ts[2m > [22m[2mWebEngine S16: edge cases[2m > [22m[2m5. waitForNextReply with consumeAutoReply returns complete immediately
+[22m[39m[web-engine] waitForNextReply start, hasConsume=true
+
+ [32m✓[39m tests/desktop/bot-handoff-parser.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 18[2mms[22m[39m
+ [32m✓[39m tests/desktop/deepseek-sse-frame-decoder.test.ts [2m([22m[2m3 tests[22m[2m)[22m[90m 13[2mms[22m[39m
+ [32m✓[39m tests/desktop/bridge-storage.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 19[2mms[22m[39m
+ [32m✓[39m tests/desktop/metrics-replay.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 14[2mms[22m[39m
+ [32m✓[39m tests/desktop/kernel-adapter.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 11[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-participant-resolver.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 12[2mms[22m[39m
+ [32m✓[39m tests/desktop/direct-bridge.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 12[2mms[22m[39m
+ [32m✓[39m tests/desktop/tools-symbols.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 16[2mms[22m[39m
+ [32m✓[39m tests/desktop/pi-transport-probe.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 22[2mms[22m[39m
+ [32m✓[39m tests/desktop/host-client.test.ts [2m([22m[2m1 test[22m[2m)[22m[90m 142[2mms[22m[39m
+ [32m✓[39m tests/desktop/tools-bench.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 16[2mms[22m[39m
+ [32m✓[39m tests/desktop/tools-doc-drift-security.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 179[2mms[22m[39m
+ [32m✓[39m tests/desktop/transport-webview.test.ts [2m([22m[2m1 test[22m[2m)[22m[90m 294[2mms[22m[39m
+ [32m✓[39m tests/desktop/tools-m3-clean.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 8[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-definitions-v04.test.ts [2m([22m[2m2 tests[22m[2m)[22m[90m 8[2mms[22m[39m
+ [32m✓[39m tests/desktop/studio-chat-room-audit-ui.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 1202[2mms[22m[39m
+   [33m[2m✓[22m[39m v0.30 审计报告卡 UI[2m > [22mtask-progress → 渲染蓝边进度行 [33m639[2mms[22m[39m
+ [32m✓[39m tests/desktop/step-flow-ui.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 481[2mms[22m[39m
+   [33m[2m✓[22m[39m StepFlowContainer (v0.18)[2m > [22m不同步骤的工具进入不同分组，同步骤工具合并 [33m319[2mms[22m[39m
+ [32m✓[39m tests/desktop/chat-capabilities.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 112[2mms[22m[39m
+ [32m✓[39m tests/desktop/chat-send-confirm.test.ts [2m([22m[2m2 tests[22m[2m)[22m[90m 100[2mms[22m[39m
+ [32m✓[39m tests/desktop/consent.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 303[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m96 passed[39m[22m[90m (96)[39m
+[2m      Tests [22m [1m[32m1027 passed[39m[22m[90m (1027)[39m
+[2m   Start at [22m 12:34:59
+[2m   Duration [22m 216.69s[2m (transform 5.06s, setup 0ms, collect 22.17s, tests 61.44s, environment 26.77s, prepare 38.86s)[22m
+

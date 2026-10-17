@@ -1,0 +1,11 @@
+{
+  "userPrompt": "帮我完成任务",
+  "replayLines": [
+    {"kind": "loop", "type": "tool"},
+    {"kind": "bus", "event": "after-call"},
+    {"kind": "loop", "type": "assistant"},
+    {"kind": "loop", "type": "tool"},
+    {"kind": "bus", "event": "after-call"},
+    {"kind": "loop", "type": "assistant"}
+  ]
+}

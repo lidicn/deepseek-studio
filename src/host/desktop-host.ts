@@ -27,7 +27,7 @@ import {
   type ToolDefinition,
   type ToolRegistry,
 } from './tool-registry';
-import { DEFAULT_TOOL_DEFINITIONS, DEEPSEEK_ORIGIN } from './tool-definitions';
+import { DEFAULT_TOOL_DEFINITIONS, HOST_INTERNAL_ORIGIN } from './tool-definitions';
 import { createPageRuntimeHub, type PageRuntimeHub } from './page-runtime';
 import { AGENT_SENTINEL, type AgentLoopEvent } from './agent-loop';
 import { createAgentChannel, type AgentChannel } from './agent-channel';
@@ -1001,7 +1001,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     if (!executor) {
       return finish('unknown-capability', 'unknown-capability');
     }
-    if (!registry.isOriginAllowed(name, grantOrigin)) {
+    // R2-05：宿主内部 origin（HOST_INTERNAL_ORIGIN）显式放行；页面来源仍必须命中白名单，
+    // 闸门不再因硬编码 DEEPSEEK_ORIGIN 而对内部调用恒真。
+    if (grantOrigin !== HOST_INTERNAL_ORIGIN && !registry.isOriginAllowed(name, grantOrigin)) {
       return finish('origin-denied', 'origin-denied');
     }
     // 4) 策略闸门（v0.5）：宿主本机型能力（shell / file）先过三档策略。
@@ -1134,9 +1136,15 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         };
       }
     }
-    // 回退：Node 宿主内 rehydrate（仅 echo 等无 DOM 依赖能力）。
+    // 回退：Node 宿主内 rehydrate。R2-04：只允许无 DOM 依赖的能力（当前仅 echo）。
+    // 原实现只要 capabilities.get(name) 存在就 start→stop 并返回 ok:true，chat-send/insert
+    // 这类真正需要 DOM 的能力在无页时也假成功，模型基于「已发送」继续推理，比报错更危险。
+    const DOM_FREE_FALLBACK = new Set(['echo']);
     const cap = capabilities.get(name);
     if (cap) {
+      if (!DOM_FREE_FALLBACK.has(name)) {
+        return { ok: false, reason: 'no-page-for-dom-capability' };
+      }
       const scope = createHostResourceScope();
       epoch += 1;
       await cap.start(scope, epoch);
@@ -1153,7 +1161,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       sessionId: 'host-agent',
       requestId: crypto.randomUUID(),
       scope: tool,
-      origin: DEEPSEEK_ORIGIN,
+      // R2-05：使用专用内部 origin，不再硬编码 DEEPSEEK_ORIGIN 让 origin 闸门恒真。
+      origin: HOST_INTERNAL_ORIGIN,
     });
     return executeTool(tool, params, grant, botId);
   }

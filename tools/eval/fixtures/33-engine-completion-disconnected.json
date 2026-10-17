@@ -1,0 +1,7 @@
+{
+  "name": "completion=disconnected",
+  "contract": "engine",
+  "case": "completion-disconnected",
+  "input": {},
+  "expect": { "completion": "disconnected" }
+}

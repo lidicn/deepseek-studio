@@ -1,0 +1,7 @@
+{
+  "name": "3 rounds then completed",
+  "contract": "task-loop",
+  "case": "multi-round",
+  "input": {},
+  "expect": { "stopReason": "completed", "rounds": 3 }
+}

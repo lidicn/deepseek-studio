@@ -1,0 +1,7 @@
+{
+  "name": "10 messages long context",
+  "contract": "message-history",
+  "case": "long-context",
+  "input": {},
+  "expect": { "count": 10 }
+}

@@ -25,7 +25,7 @@
  * 纯模块：无 DOM / 无 IO / 无运行时依赖（仅 type-only import），可直接单测。
  */
 
-import type { AgentLoopEvent } from '../host/agent-loop';
+import type { AgentLoopEvent } from './agent-loop-event';
 import type { ToolEventBus, ToolEventPayload } from './tool-event-bus';
 
 // ---------------------------------------------------------------- 类型

@@ -119,7 +119,7 @@ export function checkMessageHistory(src: string): ContractViolation[] {
 
 /**
  * TaskLoop 契约：
- * - TaskLoopStopReason 必须只有四个合法值：completed / no-tool-calls / timeout / max-rounds
+ * - TaskLoopStopReason 必须只有这些合法值：completed / no-tool-calls / timeout / max-rounds / empty-response / aborted
  * - 必须导出 createTaskLoop
  */
 export function checkTaskLoop(src: string): ContractViolation[] {
@@ -134,7 +134,7 @@ export function checkTaskLoop(src: string): ContractViolation[] {
   const stopType = src.match(/export\s+type\s+TaskLoopStopReason\s*=([\s\S]*?);/);
   if (stopType) {
     const body = stopType[1];
-    const allowed = ['completed', 'no-tool-calls', 'timeout', 'max-rounds', 'empty-response'];
+    const allowed = ['completed', 'no-tool-calls', 'timeout', 'max-rounds', 'empty-response', 'aborted'];
     // 提取所有字符串字面量
     const literals = [...body.matchAll(/'([^']+)'/g)].map((m) => m[1]);
     for (const a of allowed) {

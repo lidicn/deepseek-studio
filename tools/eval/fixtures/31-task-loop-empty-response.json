@@ -1,0 +1,6 @@
+{
+  "name": "task-loop empty-response stop",
+  "contract": "task-loop",
+  "case": "stop-no-tool-calls",  "input": {},
+  "expect": { "stopReason": "no-tool-calls" }
+}

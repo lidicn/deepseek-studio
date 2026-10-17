@@ -1,0 +1,7 @@
+{
+  "name": "api-engine finish_reason=stop",
+  "contract": "engine",
+  "case": "completion-truncated",
+  "input": {},
+  "expect": { "completion": "truncated", "timedOut": true }
+}

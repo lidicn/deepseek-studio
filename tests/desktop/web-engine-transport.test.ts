@@ -351,4 +351,141 @@ describe('WebEngine as ModelEngine transport (M1-2)', () => {
     await engine.send('x');
     expect(entries[0].completion).toBe('truncated');
   });
+
+  // ---- S7: onDelta streaming callback ----
+  it('23. onDelta called when text grows during polling', async () => {
+    const deltas: string[] = [];
+    let readCount = 0;
+    const dispatch = async (tool: string): Promise<ExecuteResult> => {
+      if (tool === 'chat-read') {
+        readCount++;
+        const text = readCount <= 2 ? '' : readCount === 3 ? 'Hel' : readCount === 4 ? 'Hello' : 'Hello world';
+        return okResult({ messages: [{ text }], count: 1 });
+      }
+      return okResult();
+    };
+    const engine = createWebEngine({
+      dispatch,
+      toolCallCounter: { current: 0 },
+      pollIntervalMs: 1,
+      stepTimeoutMs: 500,
+      onDelta: (t) => deltas.push(t),
+    });
+    await engine.send('hi');
+    expect(deltas.length).toBeGreaterThanOrEqual(2);
+    expect(deltas[deltas.length - 1]).toBe('Hello world');
+  });
+
+  it('24. no onDelta → no throw, streaming is opt-in', async () => {
+    let readCount = 0;
+    const dispatch = async (tool: string): Promise<ExecuteResult> => {
+      if (tool === 'chat-read') {
+        readCount++;
+        return okResult({ messages: [{ text: readCount > 3 ? 'done' : '' }], count: 1 });
+      }
+      return okResult();
+    };
+    const engine = createWebEngine({
+      dispatch,
+      toolCallCounter: { current: 0 },
+      pollIntervalMs: 1,
+      stepTimeoutMs: 500,
+    });
+    await expect(engine.send('hi')).resolves.toBeDefined();
+  });
+
+  it('25. onDelta not called for identical snapshots', async () => {
+    const deltas: string[] = [];
+    let readCount = 0;
+    const dispatch = async (tool: string): Promise<ExecuteResult> => {
+      if (tool === 'chat-read') {
+        readCount++;
+        // baseline empty, then immediately stable
+        const text = readCount <= 1 ? '' : 'stable';
+        return okResult({ messages: [{ text }], count: 1 });
+      }
+      return okResult();
+    };
+    const engine = createWebEngine({
+      dispatch,
+      toolCallCounter: { current: 0 },
+      pollIntervalMs: 1,
+      stepTimeoutMs: 500,
+      onDelta: (t) => deltas.push(t),
+    });
+    await engine.send('hi');
+    // first change ('' → 'stable') triggers one delta, subsequent identical snapshots don't
+    expect(deltas.length).toBe(1);
+  });
+
+  it('26. onDelta receives cumulative text, not incremental diff', async () => {
+    const deltas: string[] = [];
+    let readCount = 0;
+    const dispatch = async (tool: string): Promise<ExecuteResult> => {
+      if (tool === 'chat-read') {
+        readCount++;
+        const text = readCount <= 2 ? '' : readCount === 3 ? 'A' : readCount === 4 ? 'AB' : 'ABC';
+        return okResult({ messages: [{ text }], count: 1 });
+      }
+      return okResult();
+    };
+    const engine = createWebEngine({
+      dispatch,
+      toolCallCounter: { current: 0 },
+      pollIntervalMs: 1,
+      stepTimeoutMs: 500,
+      onDelta: (t) => deltas.push(t),
+    });
+    await engine.send('hi');
+    expect(deltas).toContain('A');
+    expect(deltas).toContain('AB');
+    expect(deltas).toContain('ABC');
+  });
+
+  // ---- S9: multi-instance isolation ----
+  it('27. two instances have independent reconnect counters', async () => {
+    let readCount = 0;
+    const dispatch = async (tool: string): Promise<ExecuteResult> => {
+      if (tool === 'chat-read') { readCount++; return { ok: false, error: 'dead' } as ExecuteResult; }
+      return okResult();
+    };
+    const e1 = createWebEngine({ dispatch, toolCallCounter: { current: 0 }, pollIntervalMs: 1, stepTimeoutMs: 5000, maxReconnectAttempts: 2, reconnectBackoffMs: 1 });
+    const e2 = createWebEngine({ dispatch, toolCallCounter: { current: 0 }, pollIntervalMs: 1, stepTimeoutMs: 5000, maxReconnectAttempts: 2, reconnectBackoffMs: 1 });
+    await e1.send('a');
+    expect(e1.getReconnectAttempts()).toBe(2);
+    expect(e2.getReconnectAttempts()).toBe(0);
+  });
+
+  it('28. two instances have independent metrics', async () => {
+    const bus1 = createToolEventBus();
+    const bus2 = createToolEventBus();
+    const m1 = createHarnessMetrics(bus1);
+    const m2 = createHarnessMetrics(bus2);
+    const e1 = createWebEngine({ dispatch: makeFakeDispatch(), toolCallCounter: { current: 0 }, pollIntervalMs: 1, stepTimeoutMs: 30, metrics: m1 });
+    // e2 不创建也能验证 m2 初始为 0（隔离测试）
+    e1.recordToolCall({ tool: 'shell.exec', ok: true });
+    expect(m1.snapshot().toolRounds).toBe(1);
+    expect(m2.snapshot().toolRounds).toBe(0);
+  });
+
+  it('29. two instances have independent round counters', async () => {
+    const log1: unknown[] = [];
+    const log2: unknown[] = [];
+    const e1 = createWebEngine({ dispatch: makeFakeDispatch(), toolCallCounter: { current: 0 }, pollIntervalMs: 1, stepTimeoutMs: 30, logger: (e) => log1.push(e) });
+    const e2 = createWebEngine({ dispatch: makeFakeDispatch(), toolCallCounter: { current: 0 }, pollIntervalMs: 1, stepTimeoutMs: 30, logger: (e) => log2.push(e) });
+    await e1.send('a');
+    await e1.send('b');
+    await e2.send('c');
+    expect((log1[0] as Record<string, unknown>).round).toBe(1);
+    expect((log1[1] as Record<string, unknown>).round).toBe(2);
+    expect((log2[0] as Record<string, unknown>).round).toBe(1);
+  });
+
+  it('30. no shared global state between instances', () => {
+    const e1 = createWebEngine({ dispatch: makeFakeDispatch(), toolCallCounter: { current: 0 }, pollIntervalMs: 1, stepTimeoutMs: 30 });
+    const e2 = createWebEngine({ dispatch: makeFakeDispatch(), toolCallCounter: { current: 0 }, pollIntervalMs: 1, stepTimeoutMs: 30 });
+    // both start fresh
+    expect(e1.getReconnectAttempts()).toBe(0);
+    expect(e2.getReconnectAttempts()).toBe(0);
+  });
 });
