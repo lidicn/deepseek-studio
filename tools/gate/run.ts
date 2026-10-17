@@ -19,6 +19,7 @@ interface Step {
 
 const baseSteps: Step[] = [
   { name: 'typecheck', cmd: 'npx tsc --noEmit' },
+  { name: 'vitest', cmd: 'npx vitest run' },
   { name: 'boundary-audit', cmd: 'npx tsx tools/audit/boundary.ts' },
   { name: 'contract-guard', cmd: 'npx tsx tools/contract/check.ts' },
   { name: 'eval-golden', cmd: 'npx tsx tools/eval/run.ts' },
