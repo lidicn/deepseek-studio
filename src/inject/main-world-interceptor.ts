@@ -882,6 +882,10 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     stepReasoningAccum = '';
     loopState.streamActive = true;
     loopState.autoReplyHadTools = false;
+    // UI 渲染修复：auto-continue 每轮创建新消息容器，否则回复追加到旧消息上不显示
+    if (chatUI) {
+      chatUI.startAssistantMessage({ name: `回合 ${loopDepth}`, type: 'main-bot' });
+    }
     try {
       // v1.6：续跑 prompt 带原始任务 + 窗口化全部历史 + 工具目录（移植自 deepseek-pp
       // buildContinuationPrompt）。collectedExecutions 跨循环累积，pending 只是本轮回填缓冲。

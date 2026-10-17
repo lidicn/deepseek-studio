@@ -3252,6 +3252,9 @@ ${prompt}`;
       stepReasoningAccum = "";
       loopState.streamActive = true;
       loopState.autoReplyHadTools = false;
+      if (chatUI) {
+        chatUI.startAssistantMessage({ name: `\u56DE\u5408 ${loopDepth}`, type: "main-bot" });
+      }
       try {
         const continuationPrompt = buildContinuationPrompt(loopState.originalTask, collectedExecutions, TOOL_CATALOG_TEXT);
         pending.length = 0;
