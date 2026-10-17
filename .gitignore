@@ -38,3 +38,7 @@ yuanbao-audit/tmp-control.txt
 # os / editor
 .Thumbs.db
 yuanbao-audit/src-tauri/target/
+
+# QD 台账第 11/16 条：仓根一次性调试件统一罩面（只仓根，不递归）。
+# 历史上散落 .diag/.port/.proc/.status/.tail/.p*/*-out/*-log/vitest-*/tc-*/gate-* 等 60+ 枚。
+/*.txt
