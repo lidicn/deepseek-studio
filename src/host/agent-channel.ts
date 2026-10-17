@@ -141,12 +141,23 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
     // 鉴权：query token 必须与当前 accepted 集合之一匹配（QD-R2-12：接轮换环 + 常数时间比较）。
     const url = new URL(req.url ?? '/', 'http://localhost');
     if (!verifyWsQueryToken(url.searchParams.get('token'), options.token)) {
-      try {
-        ws.close(1008, 'unauthorized');
-      } catch {
-        /* ignore */
-      }
+      try { ws.close(1008, 'unauthorized'); } catch { /* ignore */ }
       return;
+    }
+    // QD-R2-16：Origin 校验。面板是本机 Tauri 窗口（http://127.0.0.1:8760/agent 或 tauri://localhost）。
+    // 公网页（chat.deepseek.com 等）不应该连 /agent-ws——它没有页端业务，只有本机控制面。
+    // 带 Origin 但非 localhost → 拒；无 Origin = 本机脚本/测试，token 已校验，放行。
+    const origin = req.headers.origin;
+    if (origin !== undefined) {
+      let okOrigin = false;
+      try {
+        const u = new URL(origin);
+        okOrigin = u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]';
+      } catch { okOrigin = false; }
+      if (!okOrigin) {
+        try { ws.close(1008, 'forbidden origin'); } catch { /* ignore */ }
+        return;
+      }
     }
     sockets.add(ws);
     safeSend(ws, statePayload());

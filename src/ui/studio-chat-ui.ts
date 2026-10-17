@@ -411,7 +411,9 @@ export function createStudioChatUI(): StudioChatUIHandle {
     currentRawText = '';
     currentReasoning = '';
     thinkUserToggled = false;
-    streamRenderTimer = null;
+    // QD-R2-15：上一轮在飞的 80ms 节流 timer 必须 clear，否则它触发时会把新一轮
+    // currentAssistant 置空（见 :423），绕过 :421 的节流门多渲一次。
+    if (streamRenderTimer) { clearTimeout(streamRenderTimer); streamRenderTimer = null; }
     scrollToBottom(true);
   }
 

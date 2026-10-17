@@ -94,6 +94,12 @@ export interface PolicyInput {
 export const FILE_TOOLS: readonly string[] = ['file.read', 'file.write', 'file.list', 'file.stat'];
 /** 进程执行类工具（R4-P0-1：mcp.test 会 spawn 任意命令，纳入进程类）。 */
 export const PROCESS_TOOLS: readonly string[] = ['shell.exec', 'mcp.test'];
+/**
+ * QD-R2-16：其它可执行能力工具。workspace 档下同样硬拒绝（它们不在 PROCESS_TOOLS 里，
+ * 之前落到 not-governed allow，绕过了 workspace 档「不越界」的承诺）。
+ * 其它档位：tool-definitions 已标 risk:privileged，由同意闸门兜底。
+ */
+export const EXECUTION_TOOLS: readonly string[] = ['python.exec', 'mcp.call', 'mcp.save'];
 
 export function isFileTool(tool: string): boolean {
   return FILE_TOOLS.includes(tool);
@@ -256,6 +262,12 @@ export function evaluatePolicy(input: PolicyInput): PolicyVerdict {
       reason: risks.length > 0 ? 'risk-detected' : outsideCwd ? 'outside-workspace' : 'inside-workspace',
       riskFlags: risks,
     };
+  }
+
+  // QD-R2-16：可执行能力工具在 workspace 档硬拒绝（与 shell 同级承诺）；
+  // 其它档位由 risk:privileged 走同意闸门。
+  if (EXECUTION_TOOLS.includes(tool) && mode === 'workspace') {
+    return { decision: 'deny', reason: 'mode-restricted', detail: tool };
   }
 
   // 其它工具不归本引擎管辖，沿用既有 risk 阈值同意闸门。
