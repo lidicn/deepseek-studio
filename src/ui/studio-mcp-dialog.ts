@@ -299,9 +299,9 @@ export function createMcpConfigDialog(): { container: HTMLElement; open: (server
     (nameInput as HTMLInputElement).value = serverId ?? '';
     (cmdInput as HTMLInputElement).value = '';
     (urlInput as HTMLInputElement).value = '';
-    argsList.innerHTML = '';
-    envList.innerHTML = '';
-    headersList.innerHTML = '';
+    argsList.replaceChildren();
+    envList.replaceChildren();
+    headersList.replaceChildren();
     transportType = 'stdio';
     (transportSelect as HTMLSelectElement).value = 'stdio';
     updateTransportFields();

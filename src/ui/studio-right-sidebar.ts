@@ -181,7 +181,7 @@ export function createRightSidebar(): { container: HTMLElement; toggle: HTMLElem
   toggle.addEventListener('click', () => { isOpen ? hide() : show(); });
 
   function renderArtifacts(): void {
-    artifactList.innerHTML = '';
+    artifactList.replaceChildren();
     if (artifacts.length === 0) {
       artifactList.appendChild(el('div', { className: 'studio-right-empty', text: '暂无产物' }));
       return;
@@ -201,7 +201,7 @@ export function createRightSidebar(): { container: HTMLElement; toggle: HTMLElem
   }
 
   function renderTasks(): void {
-    taskList.innerHTML = '';
+    taskList.replaceChildren();
     if (tasks.length === 0) {
       taskList.appendChild(el('div', { className: 'studio-right-empty', text: '暂无任务' }));
       return;
@@ -216,7 +216,7 @@ export function createRightSidebar(): { container: HTMLElement; toggle: HTMLElem
   }
 
   function renderSkills(): void {
-    skillTags.innerHTML = '';
+    skillTags.replaceChildren();
     if (globalState.skills.length === 0) {
       skillTags.appendChild(el('span', { className: 'studio-right-empty', text: '暂无', style: { padding: '0' } }));
       return;
@@ -230,7 +230,7 @@ export function createRightSidebar(): { container: HTMLElement; toggle: HTMLElem
   }
 
   function renderRecent(): void {
-    recentList.innerHTML = '';
+    recentList.replaceChildren();
     if (artifacts.length === 0) {
       recentList.appendChild(el('div', { className: 'studio-right-empty', text: '暂无最近文件' }));
       return;

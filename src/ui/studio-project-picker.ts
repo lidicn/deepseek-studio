@@ -160,7 +160,7 @@ export function createProjectPicker(): { container: HTMLElement; open: () => voi
   }
 
   function renderProjectList(): void {
-    projectList.innerHTML = '';
+    projectList.replaceChildren();
     const filtered = projects.filter((p) =>
       !searchQuery || p.name.toLowerCase().includes(searchQuery) || p.path.toLowerCase().includes(searchQuery),
     );

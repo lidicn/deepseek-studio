@@ -165,7 +165,7 @@ export function createSkillsPanel(): { container: HTMLElement; open: () => void;
   }
 
   function renderSkills(): void {
-    skillList.innerHTML = '';
+    skillList.replaceChildren();
     const filtered = skills.filter((s) =>
       !searchQuery || s.name.toLowerCase().includes(searchQuery) || s.description.toLowerCase().includes(searchQuery),
     );

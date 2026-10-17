@@ -73,7 +73,7 @@ export function showAccountBlockOverlay(reason: string, duplicateOf?: string): v
 
   const body = doc.createElement('div');
   body.className = 'ds-account-block-body';
-  body.innerHTML = '';
+  body.replaceChildren();
   const p1 = doc.createElement('div');
   p1.textContent = reason;
   const p2 = doc.createElement('div');

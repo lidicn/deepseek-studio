@@ -168,7 +168,7 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
   mcpTab.appendChild(mcpAddBtn);
 
   function renderMcpServers(): void {
-    mcpServerList.innerHTML = '';
+    mcpServerList.replaceChildren();
     if (globalState.mcpServers.length === 0) {
       mcpServerList.appendChild(el('div', { className: 'studio-empty-state', text: '暂无配置的 MCP 服务器' }));
       return;
@@ -220,7 +220,7 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
   skillsTab.appendChild(skillsList);
 
   function renderSkillsList(): void {
-    skillsList.innerHTML = '';
+    skillsList.replaceChildren();
     if (globalState.skills.length === 0) {
       skillsList.appendChild(el('div', { className: 'studio-empty-state', text: '暂无技能，点击扫描按钮扫描技能目录' }));
       return;
@@ -246,7 +246,7 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
   memoryTab.appendChild(memoryList);
 
   function renderMemories(): void {
-    memoryList.innerHTML = '';
+    memoryList.replaceChildren();
     if (globalState.memories.length === 0) {
       memoryList.appendChild(el('div', { className: 'studio-empty-state', text: '暂无保存的记忆' }));
       return;
@@ -291,7 +291,7 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
       const h = await fetch('http://127.0.0.1:8762/healthz').then((r) => r.json());
       leverTab.querySelector('#lh-status')!.textContent = h.ok ? '运行中' : '异常';
       const data = await fetch('http://127.0.0.1:8762/v1/applications').then((r) => r.json());
-      lhAppList.innerHTML = '';
+      lhAppList.replaceChildren();
       for (const app of data.applications.slice(0, 20)) {
         const row = el('div', { className: 'studio-memory-item' });
         row.innerHTML = `<div class="studio-memory-content"><div class="studio-memory-name">${app.name}</div><div class="studio-memory-text">${Math.round(app.size / 10) / 100} KB</div></div>`;

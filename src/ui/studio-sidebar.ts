@@ -313,7 +313,7 @@ export function createSidebar(): { container: HTMLElement; show: () => void; hid
 
   // 渲染项目列表
   function renderProjects(projects: ProjectInfo[], currentId: string | null): void {
-    projectList.innerHTML = '';
+    projectList.replaceChildren();
     for (const p of projects) {
       const item = el('div', { className: `studio-project-item${p.id === currentId ? ' active' : ''}` }, [
         icon(Icons.folder, 14),
