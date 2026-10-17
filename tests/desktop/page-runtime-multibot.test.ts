@@ -1,4 +1,4 @@
-/**
+﻿/**
  * v0.24：page-runtime 多 bot 寻址测试。
  *
  * 起一个真实 desktop-host，连两个「假注入页」，各在 hello 里自报不同 botId，
@@ -31,7 +31,7 @@ async function connectFakePage(opts: {
 }): Promise<WebSocket> {
   const { port, botId, onDispatch, onConsent } = opts;
   return new Promise<WebSocket>((resolve) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/studio`);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/studio?token=t`);
     ws.on('open', () => {
       ws.send(JSON.stringify({ type: 'hello', origin: 'https://chat.deepseek.com', sessionId: botId, botId }));
     });

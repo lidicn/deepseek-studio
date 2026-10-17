@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 宿主侧能力接入集成测试（v0.5）
  *
  * 覆盖的是最关键的架构不变量：**shell / file 绝不能被派发到页面**。
@@ -46,7 +46,7 @@ afterEach(async () => {
 function connectPage(host: DesktopHost, seen: HostToPageMessage[]): Promise<WebSocket> {
   const port = Number(new URL(host.url).port);
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/studio`);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/studio?token=t`);
     ws.on('open', () => {
       ws.send(JSON.stringify({ type: 'hello', origin: 'https://chat.deepseek.com', sessionId: 'p1' }));
       resolve(ws);

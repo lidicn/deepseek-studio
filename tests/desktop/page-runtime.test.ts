@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 宿主 ↔ 页端路由 + 同意闸门 集成测试（v0.4）
  *
  * 起一个真实 desktop-host（含页端 ws 集线器），用一个最小 ws「假页」模拟注入页，
@@ -11,7 +11,7 @@ import type { HostToPageMessage } from '../../src/host/protocol';
 
 function connectFakePage(port: number, handler: (msg: HostToPageMessage) => void): Promise<WebSocket> {
   return new Promise((resolve) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/studio`);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/studio?token=t`);
     ws.on('open', () => {
       ws.send(JSON.stringify({ type: 'hello', origin: 'https://chat.deepseek.com', sessionId: 'p1' }));
       resolve(ws);

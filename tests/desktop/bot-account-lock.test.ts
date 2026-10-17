@@ -1,4 +1,4 @@
-/**
+﻿/**
  * v0.31 账号身份锁测试（page-runtime hub 同账号去重 fail-closed）
  *
  * 直接起 createPageRuntimeHub（裸 http server + noServer ws），连两个假注入页，
@@ -25,7 +25,7 @@ async function connectFakePage(opts: {
   const { port, botId, accountFingerprint } = opts;
   const inbox: HostToPageMessage[] = [];
   return new Promise((resolve) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/studio`);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/studio?token=t`);
     ws.on('open', () => {
       ws.send(JSON.stringify({
         type: 'hello',

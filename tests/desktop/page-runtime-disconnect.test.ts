@@ -17,7 +17,7 @@ import type { HostToPageMessage } from '../../src/host/protocol';
 
 function connectFakePage(port: number, handler: (msg: HostToPageMessage) => void): Promise<WebSocket> {
   return new Promise((resolve) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/studio`);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/studio?token=t`);
     ws.on('open', () => {
       ws.send(JSON.stringify({ type: 'hello', origin: 'https://chat.deepseek.com', sessionId: 'p1' }));
       resolve(ws);

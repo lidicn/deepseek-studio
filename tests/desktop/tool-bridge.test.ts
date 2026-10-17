@@ -1,4 +1,4 @@
-/**
+﻿/**
  * v0.6 工具调用事件桥集成测试
  *
  * 覆盖「模型发起 tool-call → 页端拦截投递 → 宿主真实执行 → 结果回注」闭环的关键环节：
@@ -100,7 +100,7 @@ describe('page-runtime tool-call → executor', () => {
     const hub = createPageRuntimeHub({ server, path: '/studio', executor });
     const port = await listen(server);
 
-    const client = new WebSocket(`ws://127.0.0.1:${port}/studio`);
+    const client = new WebSocket(`ws://127.0.0.1:${port}/studio?token=t`);
     await waitForWsOpen(client);
     client.send(JSON.stringify({ type: 'hello', origin: 'https://chat.deepseek.com', sessionId: 'p1' }));
     await nextMessage(client); // hello-ack
@@ -123,7 +123,7 @@ describe('page-runtime tool-call → executor', () => {
     const hub = createPageRuntimeHub({ server, path: '/studio', executor });
     const port = await listen(server);
 
-    const client = new WebSocket(`ws://127.0.0.1:${port}/studio`);
+    const client = new WebSocket(`ws://127.0.0.1:${port}/studio?token=t`);
     await waitForWsOpen(client);
     client.send(JSON.stringify({ type: 'hello', origin: 'https://chat.deepseek.com', sessionId: 'p2' }));
     await nextMessage(client);
@@ -167,7 +167,7 @@ describe('host-client sendToolCall round-trip', () => {
     (globalThis as { WebSocket?: unknown }).WebSocket = WebSocket;
 
     const host = createHostClient({
-      url: `ws://127.0.0.1:${port}/studio`,
+      url: `ws://127.0.0.1:${port}/studio?token=t`,
       capabilities: [],
     });
     host.connect();
