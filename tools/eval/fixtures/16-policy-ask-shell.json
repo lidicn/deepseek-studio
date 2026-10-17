@@ -1,0 +1,12 @@
+{
+  "name": "ask: even non-risky shell requires approval",
+  "contract": "policy",
+  "case": "evaluate",
+  "input": {
+    "tool": "shell.exec",
+    "params": { "command": "ls" },
+    "mode": "ask",
+    "workspaceRoot": "/workspace"
+  },
+  "expect": { "decision": "require-consent", "reason": "requires-approval" }
+}

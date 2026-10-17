@@ -1,0 +1,7 @@
+{
+  "name": "MessageHistory restore loads messages into new history",
+  "contract": "message-history",
+  "case": "restore",
+  "input": {},
+  "expect": { "size": 1, "firstRole": "user" }
+}

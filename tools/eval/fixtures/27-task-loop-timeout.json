@@ -1,0 +1,7 @@
+{
+  "name": "TaskLoop: timedOut=true → stopReason=timeout",
+  "contract": "task-loop",
+  "case": "stop-timeout",
+  "input": {},
+  "expect": { "stopReason": "timeout" }
+}

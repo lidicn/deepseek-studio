@@ -11,7 +11,29 @@
  */
 
 import type { ExecuteResult } from '../../capabilities/types';
-import type { EngineSendResult, ModelEngine } from './model-engine';
+import type { CompletionStatus, EngineSendResult, ModelEngine, ToolCallRecord } from './model-engine';
+import type { HarnessMetrics } from '../../shared/harness-metrics';
+import type { ToolEventBus } from '../../shared/tool-event-bus';
+import { createHarnessMetrics } from '../../shared/harness-metrics';
+
+// ---------------------------------------------------------------- pure completion decision
+
+/**
+ * S2：纯函数——根据一轮的退出原因判定完成状态。
+ * 纯逻辑、无副作用，便于单测。
+ */
+export function decideCompletion(opts: {
+  timedOut: boolean;
+  dispatchFailed: boolean;
+  stopped: boolean;
+}): CompletionStatus {
+  if (opts.dispatchFailed) return 'disconnected';
+  if (opts.timedOut) return 'truncated';
+  if (opts.stopped) return 'unknown';
+  return 'complete';
+}
+
+// ---------------------------------------------------------------- options
 
 export interface WebEngineOptions {
   /** 页端 DOM 能力调用入口（desktop-host.invokeTool：完整授权链 + 同意闸门）。 */
@@ -28,13 +50,79 @@ export interface WebEngineOptions {
   getAutoReply?(): { text: string; loop: number; updatedAt: number; fresh: boolean };
   /** v0.9：消费（读取并清除 fresh 标志）页端 auto-continue 推送的回复。 */
   consumeAutoReply?(): { text: string; loop: number; updatedAt: number; fresh: boolean };
+  /**
+   * M2-2：工具调用结构化回调。传入后，WebEngine 会在本轮 send/waitForNextReply 期间
+   * 累积每条 ToolCallRecord，并在返回值里填充 toolCallRecords 数组。
+   * 未传入时 toolCallRecords 为 undefined，行为与改动前完全一致。
+   */
+  onToolCall?(rec: ToolCallRecord): void;
+  /**
+   * M1-2：可选注入的 harness 指标收集器。外部注入方便测试与替换；
+   * 未注入时行为与之前完全一致。
+   */
+  metrics?: HarnessMetrics;
+  /**
+   * M1-2：若未注入 metrics，可传入 toolEventBus 由引擎内部懒创建。
+   * 两者都不传时 metrics 为 undefined，getMetrics() 返回 undefined。
+   */
+  toolEventBus?: ToolEventBus;
+  /**
+   * S4：断流恢复——轮询中 dispatch 失败时尝试重连的最大次数（默认 3）。
+   * 重连通过 health() 探测；耗尽后本轮以 completion='disconnected' 返回。
+   */
+  maxReconnectAttempts?: number;
+  /** S4：重连退避基数 ms（默认 500，线性退避：第 n 次等 n*backoff）。 */
+  reconnectBackoffMs?: number;
+  /**
+   * S5：结构化日志注入。每轮结束打一条 {round, completion, toolCalls, elapsedMs}。
+   * 未注入时默认 no-op，不污染测试输出。
+   */
+  logger?: (entry: Record<string, unknown>) => void;
 }
 
-export interface WebEngine extends ModelEngine {}
+export interface WebEngine extends ModelEngine {
+  /**
+   * M2-2：由 hub 在执行完一次工具调用后调用，把结构化记录喂进当前轮的缓冲区。
+   * 仅当创建时传了 onToolCall 才有意义；否则缓冲为 null，此调用为空操作。
+   */
+  recordToolCall(rec: ToolCallRecord): void;
+  /** M1-2：获取当前 harness 指标（可能为 undefined，取决于注入方式）。 */
+  getMetrics(): HarnessMetrics | undefined;
+  /** S4：获取本轮已尝试的重连次数（测试断言用）。 */
+  getReconnectAttempts(): number;
+}
 
 export function createWebEngine(options: WebEngineOptions): WebEngine {
   const pollIntervalMs = options.pollIntervalMs ?? 1_500;
   const stepTimeoutMs = options.stepTimeoutMs ?? 120_000;
+  const maxReconnectAttempts = options.maxReconnectAttempts ?? 3;
+  const reconnectBackoffMs = options.reconnectBackoffMs ?? 500;
+
+  // M2-2：本轮工具调用记录缓冲。仅当 options.onToolCall 存在时才创建（非 null）。
+  // 每次 send / waitForNextReply 开始时重置，结束时随返回值带出。
+  let currentRecords: ToolCallRecord[] | null = options.onToolCall ? [] : null;
+
+  // M1-2：harness 指标。外部注入优先；否则若给了 bus 则懒创建。
+  let metrics: HarnessMetrics | undefined = options.metrics;
+  if (!metrics && options.toolEventBus) {
+    metrics = createHarnessMetrics(options.toolEventBus);
+  }
+
+  function recordToolCall(rec: ToolCallRecord): void {
+    if (currentRecords) currentRecords.push(rec);
+    options.onToolCall?.(rec);
+    // M1-2：把工具调用事件喂给 harness 指标（type='tool' 回合计数）。
+    metrics?.onEvent({ type: 'tool', text: rec.tool, toolCalls: 1 });
+  }
+
+  /** S3：一轮结束时按 completion 关闭指标回合。truncated/disconnected → 记 nudge。 */
+  function closeRoundForMetrics(completion: CompletionStatus): void {
+    if (!metrics) return;
+    if (completion === 'truncated' || completion === 'disconnected') {
+      metrics.onEvent({ type: 'status', text: `纠偏（completion=${completion}）` });
+    }
+    metrics.onEvent({ type: 'assistant' });
+  }
 
   async function readLastMessage(): Promise<{ text: string; count: number } | null> {
     const r = await options.dispatch('chat-read', {});
@@ -47,8 +135,42 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
 
   const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
 
+  // S4：重连计数（测试断言用）。
+  let reconnectAttempts = 0;
+  // S5：轮次计数。
+  let roundNum = 0;
+
+  /** S5：打一条结构化日志（未注入 logger 则 no-op）。 */
+  function logRound(elapsedMs: number, completion: CompletionStatus, toolCalls: number): void {
+    options.logger?.({
+      round: ++roundNum,
+      completion,
+      toolCalls,
+      elapsedMs,
+      reconnects: reconnectAttempts,
+    });
+  }
+
+  /** S4：轮询中检测到 dispatch 失败时，尝试重连。成功返回 true。 */
+  async function tryReconnect(): Promise<boolean> {
+    for (let i = 1; i <= maxReconnectAttempts; i++) {
+      reconnectAttempts = i;
+      await sleep(reconnectBackoffMs * i); // 线性退避
+      const h = await options.dispatch('chat-read', {});
+      if (h.ok) return true;
+    }
+    return false;
+  }
+
   return {
     name: 'web',
+    recordToolCall,
+    getMetrics(): HarnessMetrics | undefined {
+      return metrics;
+    },
+    getReconnectAttempts(): number {
+      return reconnectAttempts;
+    },
     async health() {
       const r = await options.dispatch('chat-read', {});
       if (r.ok) return { ok: true };
@@ -57,11 +179,13 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
     async send(text: string): Promise<EngineSendResult> {
       // 工具调用计数从本轮起点清零
       const counterStart = options.toolCallCounter.current;
+      // M2-2：每轮重置缓冲（onToolCall 存在时新建空数组）
+      currentRecords = options.onToolCall ? [] : null;
 
       const ins = await options.dispatch('chat-insert', { text });
-      if (!ins.ok) return { content: '', toolCalls: 0 };
+      if (!ins.ok) { closeRoundForMetrics('disconnected'); return { content: '', toolCalls: 0, toolCallRecords: currentRecords ?? undefined, completion: 'disconnected' }; }
       const sent = await options.dispatch('chat-send', {});
-      if (!sent.ok) return { content: '', toolCalls: 0 };
+      if (!sent.ok) { closeRoundForMetrics('disconnected'); return { content: '', toolCalls: 0, toolCallRecords: currentRecords ?? undefined, completion: 'disconnected' }; }
 
       const baseline = await readLastMessage();
       const baselineText = baseline?.text ?? '';
@@ -71,20 +195,36 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
       let stableHits = 0;
       let lastText = '';
       let timedOut = false;
+      let stopped = false;
 
       for (;;) {
-        if (options.isStopped?.()) break;
+        if (options.isStopped?.()) { stopped = true; break; }
         if (Date.now() - startedAt > stepTimeoutMs) {
           timedOut = true;
           break;
         }
         await sleep(pollIntervalMs);
-        const snap = await readLastMessage();
-        if (!snap) continue; // 单次读取失败：继续轮询，看门狗兜底
+        let snap = await readLastMessage();
+        if (!snap) {
+          // S4：dispatch 失败 → 尝试重连
+          const reconnected = await tryReconnect();
+          if (!reconnected) {
+            closeRoundForMetrics('disconnected');
+            const tc = options.toolCallCounter.current - counterStart;
+            logRound(Date.now() - startedAt, 'disconnected', tc);
+            return {
+              content: lastText,
+              toolCalls: tc,
+              toolCallRecords: currentRecords ?? undefined,
+              completion: 'disconnected',
+            };
+          }
+          snap = await readLastMessage();
+          if (!snap) continue; // 重连成功但首读仍失败，下一轮再试
+        }
         lastText = snap.text;
         if (lastText !== baselineText && lastText.length > 0 && lastText === prevSnapshot) {
           stableHits += 1;
-          // 连续两次轮询（间隔 pollIntervalMs）快照一致 → 回复结束
           if (stableHits >= 2) break;
         } else {
           stableHits = 0;
@@ -93,7 +233,16 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
       }
 
       const toolCalls = options.toolCallCounter.current - counterStart;
-      return { content: lastText, toolCalls, timedOut: timedOut || undefined };
+      const completion = decideCompletion({ timedOut, dispatchFailed: false, stopped });
+      closeRoundForMetrics(completion);
+      logRound(Date.now() - startedAt, completion, toolCalls);
+      return {
+        content: lastText,
+        toolCalls,
+        timedOut: timedOut || undefined,
+        toolCallRecords: currentRecords ?? undefined,
+        completion,
+      };
     },
     /**
      * 不发消息，只等待下一条回复（页端 auto-continue 触发）。
@@ -103,41 +252,60 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
     async waitForNextReply(): Promise<EngineSendResult> {
       const counterStart = options.toolCallCounter.current;
       const startedAt = Date.now();
+      currentRecords = options.onToolCall ? [] : null;
       console.log(`[web-engine] waitForNextReply start, hasConsume=${!!options.consumeAutoReply}`);
 
-      // 路径 A：consumeAutoReply 可用时，等待 fresh 标志（auto-continue 完成时置位）
+      let timedOut = false;
+      let stopped = false;
+
+      // 路径 A：consumeAutoReply
       if (options.consumeAutoReply) {
         while (Date.now() - startedAt < stepTimeoutMs) {
-          if (options.isStopped?.()) break;
+          if (options.isStopped?.()) { stopped = true; break; }
           const reply = options.consumeAutoReply();
           if (reply.fresh && reply.text.length > 0) {
             const toolCalls = options.toolCallCounter.current - counterStart;
-            console.log(`[web-engine] waitForNextReply got fresh reply len=${reply.text.length} toolCalls=${toolCalls} elapsed=${Date.now()-startedAt}ms`);
-            return { content: reply.text, toolCalls };
+            return { content: reply.text, toolCalls, toolCallRecords: currentRecords ?? undefined, completion: 'complete' };
           }
           await sleep(pollIntervalMs);
         }
-        console.log(`[web-engine] waitForNextReply path A timeout after ${Date.now()-startedAt}ms, fallback to DOM`);
-        // 超时降级到 DOM 轮询
+        if (stopped) {
+          return { content: '', toolCalls: 0, toolCallRecords: currentRecords ?? undefined, completion: 'unknown' };
+        }
+        timedOut = true;
       }
 
-      // 路径 B：DOM 轮询（降级）
+      // 路径 B：DOM 轮询
       const baseline = await readLastMessage();
       const baselineText = baseline?.text ?? '';
       let prevSnapshot: string | null = null;
       let stableHits = 0;
       let lastText = '';
-      let timedOut = false;
 
       for (;;) {
-        if (options.isStopped?.()) break;
+        if (options.isStopped?.()) { stopped = true; break; }
         if (Date.now() - startedAt > stepTimeoutMs) {
           timedOut = true;
           break;
         }
         await sleep(pollIntervalMs);
-        const snap = await readLastMessage();
-        if (!snap) continue;
+        let snap = await readLastMessage();
+        if (!snap) {
+          const reconnected = await tryReconnect();
+          if (!reconnected) {
+            closeRoundForMetrics('disconnected');
+            const tc = options.toolCallCounter.current - counterStart;
+            logRound(Date.now() - startedAt, 'disconnected', tc);
+            return {
+              content: lastText,
+              toolCalls: tc,
+              toolCallRecords: currentRecords ?? undefined,
+              completion: 'disconnected',
+            };
+          }
+          snap = await readLastMessage();
+          if (!snap) continue;
+        }
         lastText = snap.text;
         if (lastText !== baselineText && lastText.length > 0 && lastText === prevSnapshot) {
           stableHits += 1;
@@ -149,7 +317,16 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
       }
 
       const toolCalls = options.toolCallCounter.current - counterStart;
-      return { content: lastText, toolCalls, timedOut: timedOut || undefined };
+      const completion = decideCompletion({ timedOut, dispatchFailed: false, stopped });
+      closeRoundForMetrics(completion);
+      logRound(Date.now() - startedAt, completion, toolCalls);
+      return {
+        content: lastText,
+        toolCalls,
+        timedOut: timedOut || undefined,
+        toolCallRecords: currentRecords ?? undefined,
+        completion,
+      };
     },
   };
 }

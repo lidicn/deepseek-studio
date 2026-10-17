@@ -1,0 +1,9 @@
+{
+  "name": "extractTaskCompleteSignal parses <task_complete>{json}</task_complete>",
+  "contract": "continuation-prompt",
+  "case": "extractTaskCompleteSignal",
+  "input": {
+    "text": "Done. <task_complete>{\"summary\":\"all tests pass\",\"artifacts\":[\"a.txt\"]}</task_complete>"
+  },
+  "expect": { "summary": "all tests pass", "artifacts": ["a.txt"] }
+}

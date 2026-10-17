@@ -1,0 +1,9 @@
+{
+  "name": "shouldSkipAutoContinue: all terminate=true skips; mixed does not; empty does not",
+  "contract": "tool-result-format",
+  "case": "shouldSkipAutoContinue",
+  "input": {
+    "results": [{ "terminate": true }, { "terminate": true }]
+  },
+  "expect": true
+}

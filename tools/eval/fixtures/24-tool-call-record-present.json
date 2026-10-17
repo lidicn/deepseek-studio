@@ -1,0 +1,7 @@
+{
+  "name": "EngineSendResult with toolCallRecords array reads first record",
+  "contract": "tool-call-record",
+  "case": "present",
+  "input": {},
+  "expect": { "count": 1, "first": "read_file" }
+}

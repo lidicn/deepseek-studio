@@ -6,9 +6,10 @@
   "scripts": {
     "start": "tsx src/api-yuanbao/main.ts",
     "build:inject": "node esbuild.inject.mjs",
-    "test": "tsx --test src/api-yuanbao/tests/*.test.ts src/inject-yuanbao/tests/*.test.ts"
+    "test": "tsx --test src/api-yuanbao/tests/*.test.ts src/inject-yuanbao/tests/*.test.ts src/browser/tests/*.test.ts"
   },
   "dependencies": {
+    "playwright": "^1.64.0",
     "tsx": "^4.19.0"
   },
   "devDependencies": {

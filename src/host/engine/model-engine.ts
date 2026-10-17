@@ -16,6 +16,9 @@ export interface ToolCallRecord {
   readonly error?: string;
 }
 
+/** S2：本轮完成状态自证。 */
+export type CompletionStatus = 'complete' | 'truncated' | 'disconnected' | 'unknown';
+
 export interface EngineSendResult {
   /** 本轮模型回复的可见文本（工具标签已被拦截器摘除）。 */
   readonly content: string;
@@ -23,6 +26,20 @@ export interface EngineSendResult {
   readonly toolCalls: number;
   /** 看门狗超时被截断的回复（内容可能不完整，调用方决定是否提示用户）。 */
   readonly timedOut?: boolean;
+  /**
+   * 本轮工具调用的结构化记录（M2-2 additive）。
+   * 仅当引擎在创建时传入了 onToolCall 回调时才会填充；
+   * 老调用方继续读 toolCalls 数字即可，此字段对老代码完全透明。
+   */
+  readonly toolCallRecords?: readonly ToolCallRecord[];
+  /**
+   * S2：本轮完成状态自证。老调用方不读此字段则完全无感知。
+   *   complete     — 模型正常输出完毕
+   *   truncated    — 看门狗截断（timedOut 的语义化别名）
+   *   disconnected — 页端不可达 / dispatch 失败
+   *   unknown      — 兜底（用户主动 stop 等）
+   */
+  readonly completion?: 'complete' | 'truncated' | 'disconnected' | 'unknown';
 }
 
 export interface ModelEngine {

@@ -32,6 +32,9 @@ import {
   DEFAULT_PORT,
   type TaobaoServer,
 } from './server';
+import { launchYuanbaoSession, YUANBOO_URL, defaultBrowserProfileDir, type BrowserSessionHandle } from '../browser/session';
+import { createBrowserLoop, type BrowserLoopHandle } from '../browser/browser-loop';
+import { browserLoopToLoopView } from '../browser/loop-adapter';
 
 export const DEFAULT_UPSTREAM_URL = 'http://127.0.0.1:8760';
 export const DEFAULT_TARGET_ROUNDS = 5;
@@ -332,6 +335,79 @@ export async function createRuntime(config: TaobaoConfig, deps: RuntimeDeps = {}
   };
 }
 
+// ── 方案 A：有头可见浏览器窗口运行时 ──────────────────────────────────
+
+export interface BrowserRuntime {
+  server: TaobaoServer;
+  session: BrowserSessionHandle;
+  loop: BrowserLoopHandle;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export interface BrowserRuntimeDeps {
+  log?: (msg: string) => void;
+  /** 测试可注入假 session；默认真起系统 Chrome 窗口 */
+  launch?: typeof launchYuanbaoSession;
+}
+
+/** 起一个可见 Chrome 窗口打开元宝，并把监控循环 / 控制 API 都接好。 */
+export async function createBrowserRuntime(
+  config: TaobaoConfig,
+  deps: BrowserRuntimeDeps = {},
+): Promise<BrowserRuntime> {
+  const log = deps.log ?? ((m: string) => console.log(m));
+  const launch = deps.launch ?? launchYuanbaoSession;
+
+  const userDataDir = defaultBrowserProfileDir(config.configDir);
+  log(`[yuanbao] 启动可见浏览器窗口（系统 Chrome，登录态目录 ${userDataDir}）`);
+  const session = await launch({ userDataDir, channel: 'chrome', startUrl: YUANBOO_URL });
+
+  const loop = createBrowserLoop({
+    session,
+    target: config.target,
+    log: (msg, level) => log(`[yuanbao-browser${level ? `/${level}` : ''}] ${msg}`),
+  });
+
+  const loopView = browserLoopToLoopView(loop);
+
+  const server = createApiServer({
+    config: { host: config.host, port: config.port, token: config.token },
+    loop: loopView,
+    allowLoopbackUnauthenticated: process.env.TAOBAO_AUDIT_AUTH === 'loopback',
+    statusExtras: () => ({
+      project: config.project,
+      sessionUrl: YUANBOO_URL,
+      seenRounds: [...loop.state.seenRounds],
+      phase: loop.state.phase,
+      allDone: loop.state.allDone,
+      needDecision: loop.state.needDecision,
+    }),
+    auditLogPath: config.auditLogPath,
+    browserControls: {
+      screenshot: () => session.screenshot(),
+      send: (text) => session.sendText(text),
+    },
+  });
+
+  return {
+    session,
+    loop,
+    server,
+    async start() {
+      await server.start();
+      log(`[yuanbao] 控制 API on ${server.url}`);
+      log('[yuanbao] 浏览器窗口已打开：若未登录，请在窗口内扫码登录，脚本会自动开始监控');
+      void loop.run();
+    },
+    async stop() {
+      loop.dispose();
+      await session.close();
+      await server.stop();
+    },
+  };
+}
+
 // ── 孤儿防护：父进程（Tauri 壳）消失 → self-exit（§1 同实现）──────────────
 export type GuardDeps = {
   getPpid: () => number;
@@ -363,14 +439,13 @@ export function installOrphanGuard(d: GuardDeps, intervalMs = 2_000): () => void
 
 export async function main(): Promise<void> {
   const config = loadConfig();
-  const runtime = await createRuntime(config);
+  const runtime = await createBrowserRuntime(config);
   await runtime.start();
-  console.log(`[taobao] token 取自 TAOBAO_AUDIT_TOKEN 或 ${config.configPath}`);
-  console.log(`[taobao] 审计任务：${runtime.loop.status().rounds}/${config.target} 轮，间隔 ${config.intervalMs}ms`);
-  console.log(`[taobao] 上游审计源 ${config.upstreamUrl}/v1/tools/audit（超时 ${config.fetchTimeoutMs}ms）`);
+  console.log(`[yuanbao] token 取自 YUANBAO_AUDIT_TOKEN 或 ${config.configPath}`);
+  console.log(`[yuanbao] 目标 ${config.target} 轮；可见浏览器窗口打开 ${YUANBOO_URL}，登录后自动监控`);
 
   const shutdown = async (sig: string): Promise<void> => {
-    console.log(`[taobao] 收到 ${sig}，退出中`);
+    console.log(`[yuanbao] 收到 ${sig}，退出中`);
     await runtime.stop();
     process.exit(0);
   };

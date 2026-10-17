@@ -1,0 +1,7 @@
+{
+  "name": "EngineSendResult without toolCallRecords leaves it undefined (old path safe)",
+  "contract": "tool-call-record",
+  "case": "optional-undefined",
+  "input": {},
+  "expect": { "hasToolCallRecords": false, "value": null }
+}

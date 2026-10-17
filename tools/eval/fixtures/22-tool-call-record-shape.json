@@ -1,0 +1,7 @@
+{
+  "name": "ToolCallRecord shape: tool + ok fields",
+  "contract": "tool-call-record",
+  "case": "shape",
+  "input": {},
+  "expect": { "tool": "shell.exec", "ok": true }
+}

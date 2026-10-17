@@ -19,6 +19,17 @@ await build({
   logLevel: 'info',
 });
 
+// Tauri 用的自启动入口（不依赖 8761 token，页面加载即跑）
+await build({
+  entryPoints: ['src/inject-yuanbao/desktop-entry.ts'],
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  target: 'es2020',
+  outfile: 'dist/desktop-entry.js',
+  logLevel: 'info',
+});
+
 // 同时生成一个可直接粘贴到浏览器控制台的 loader（自动从 8761 获取 token）
 const loader = `
 // yuanbao-audit 注入 loader：在元宝页面控制台执行

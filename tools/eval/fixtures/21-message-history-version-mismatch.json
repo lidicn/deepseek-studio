@@ -1,0 +1,7 @@
+{
+  "name": "MessageHistory restore throws on version 2",
+  "contract": "message-history",
+  "case": "version-mismatch",
+  "input": {},
+  "expect": { "threw": true }
+}

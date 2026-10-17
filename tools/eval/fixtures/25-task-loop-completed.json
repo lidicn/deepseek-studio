@@ -1,0 +1,7 @@
+{
+  "name": "TaskLoop: <task_complete> → stopReason=completed",
+  "contract": "task-loop",
+  "case": "stop-completed",
+  "input": {},
+  "expect": { "stopReason": "completed" }
+}

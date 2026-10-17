@@ -13,9 +13,13 @@
     "build": "npm run build:inject",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "eval:golden": "tsx tools/eval/run.ts",
+    "metrics:report": "tsx tools/metrics/report.ts",
+    "gate": "tsx tools/gate/run.ts"
   },
   "devDependencies": {
+    "@earendil-works/pi-agent-core": "0.83.0",
     "@tauri-apps/cli": "^2.0.0",
     "@types/node": "^20.0.0",
     "@types/ws": "^8.5.0",

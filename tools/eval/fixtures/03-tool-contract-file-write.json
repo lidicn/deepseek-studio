@@ -1,0 +1,13 @@
+{
+  "name": "local_file_write maps to file.write; unknown tag returns null; file.list is a file tool",
+  "contract": "tool-contract",
+  "case": "map",
+  "input": {
+    "invocationName": "local_file_write",
+    "params": { "path": "/tmp/out.txt", "content": "hello" }
+  },
+  "expect": {
+    "id": "file.write",
+    "params": { "path": "/tmp/out.txt", "content": "hello" }
+  }
+}

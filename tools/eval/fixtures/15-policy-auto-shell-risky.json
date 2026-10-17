@@ -1,0 +1,12 @@
+{
+  "name": "auto: risky shell (rm -rf) requires consent",
+  "contract": "policy",
+  "case": "evaluate",
+  "input": {
+    "tool": "shell.exec",
+    "params": { "command": "rm -rf /" },
+    "mode": "auto",
+    "workspaceRoot": "/workspace"
+  },
+  "expect": { "decision": "require-consent", "reason": "risk-detected" }
+}

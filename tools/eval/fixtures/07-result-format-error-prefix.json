@@ -1,0 +1,13 @@
+{
+  "name": "isError=true prepends [错误] to joined content",
+  "contract": "tool-result-format",
+  "case": "formatToolResultText",
+  "input": {
+    "result": {
+      "ok": false,
+      "content": [{ "type": "text", "text": "permission denied" }],
+      "isError": true
+    }
+  },
+  "expect": "[错误] permission denied"
+}

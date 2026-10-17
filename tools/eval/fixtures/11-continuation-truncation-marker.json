@@ -1,0 +1,10 @@
+{
+  "name": "clampText over limit appends ...[truncated] sentinel",
+  "contract": "continuation-prompt",
+  "case": "clampText",
+  "input": {
+    "value": "AAAAAAAAAABBBBBBBBBB",
+    "maxLen": 10
+  },
+  "expect": "AAAAAAAAAA\n...[truncated]"
+}

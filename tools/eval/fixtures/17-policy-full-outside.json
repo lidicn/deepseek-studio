@@ -1,0 +1,12 @@
+{
+  "name": "full: file outside workspace is allowed (no consent)",
+  "contract": "policy",
+  "case": "evaluate",
+  "input": {
+    "tool": "file.read",
+    "params": { "path": "/etc/hosts" },
+    "mode": "full",
+    "workspaceRoot": "/workspace"
+  },
+  "expect": { "decision": "allow", "reason": "outside-workspace" }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "file.list is classified as a file tool (boundary-aware)",
+  "contract": "tool-contract",
+  "case": "isFileTool",
+  "input": { "tool": "file.list" },
+  "expect": true
+}

@@ -1,0 +1,7 @@
+{
+  "name": "TaskLoop: timeout priority over completed",
+  "contract": "task-loop",
+  "case": "priority-timeout",
+  "input": {},
+  "expect": { "stopReason": "timeout" }
+}

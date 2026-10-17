@@ -1,0 +1,16 @@
+{
+  "name": "formatToolResultText joins content parts; isError prefixes [错误]",
+  "contract": "tool-result-format",
+  "case": "formatToolResultText",
+  "input": {
+    "result": {
+      "ok": true,
+      "content": [
+        { "type": "text", "text": "line one" },
+        { "type": "text", "text": "line two" }
+      ],
+      "isError": false
+    }
+  },
+  "expect": "line oneline two"
+}

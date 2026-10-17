@@ -1,0 +1,12 @@
+{
+  "name": "auto: non-risky shell allowed; risky shell requires consent",
+  "contract": "policy",
+  "case": "evaluate",
+  "input": {
+    "tool": "shell.exec",
+    "params": { "command": "ls -la" },
+    "mode": "auto",
+    "workspaceRoot": "/workspace"
+  },
+  "expect": { "decision": "allow", "reason": "inside-workspace" }
+}

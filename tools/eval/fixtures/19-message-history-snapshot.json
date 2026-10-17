@@ -1,0 +1,7 @@
+{
+  "name": "MessageHistory snapshot returns version:1 with messages",
+  "contract": "message-history",
+  "case": "snapshot",
+  "input": {},
+  "expect": { "version": 1, "messageCount": 2 }
+}

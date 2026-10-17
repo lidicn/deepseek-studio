@@ -146,6 +146,15 @@ export interface TaobaoServerOptions {
   statusExtras?: () => Record<string, unknown>;
   /** audit-log.jsonl 路径，提供后开放 GET /v1/audit-log。 */
   auditLogPath?: string;
+  /**
+   * 浏览器动作原语（方案 A：有头可见窗口）。提供后开放：
+   *   GET  /v1/screenshot  → { pngBase64 }
+   *   POST /v1/send       { text } → 向元宝输入框发消息
+   */
+  browserControls?: {
+    screenshot(): Promise<Buffer>;
+    send(text: string): Promise<{ ok: boolean; reason?: string }>;
+  };
 }
 
 export interface TaobaoServer {
@@ -321,6 +330,50 @@ export function createApiServer(options: TaobaoServerOptions): TaobaoServer {
         }
         // 报告接收成功（实际状态更新由 main.ts 的回调处理，这里仅确认）
         sendJson(200, { ok: true, received: body.rounds.length, at: Date.now() });
+        return;
+      }
+
+      if (pathname === '/v1/screenshot') {
+        if (req.method !== 'GET') {
+          fail(405, 'method_not_allowed', 'GET only', { Allow: 'GET' });
+          return;
+        }
+        if (!options.browserControls) {
+          fail(404, 'not_found', 'browser controls not available');
+          return;
+        }
+        try {
+          const buf = await options.browserControls.screenshot();
+          sendJson(200, { ok: true, pngBase64: buf.toString('base64'), bytes: buf.length });
+        } catch (err) {
+          fail(500, 'screenshot_failed', err instanceof Error ? err.message : String(err));
+        }
+        return;
+      }
+
+      if (pathname === '/v1/send') {
+        if (req.method !== 'POST') {
+          fail(405, 'method_not_allowed', 'POST only', { Allow: 'POST' });
+          return;
+        }
+        if (!options.browserControls) {
+          fail(404, 'not_found', 'browser controls not available');
+          return;
+        }
+        const raw = await readBody(req, { maxBodyBytes, timeoutMs: readBodyTimeoutMs });
+        let body: { text?: unknown };
+        try {
+          body = JSON.parse(raw);
+        } catch {
+          fail(400, 'bad_request', 'invalid json');
+          return;
+        }
+        if (typeof body.text !== 'string' || !body.text.trim()) {
+          fail(400, 'bad_request', 'text (non-empty string) required');
+          return;
+        }
+        const result = await options.browserControls.send(body.text);
+        sendJson(200, { ok: result.ok, reason: result.reason });
         return;
       }
 

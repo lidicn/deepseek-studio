@@ -1,0 +1,16 @@
+{
+  "name": "buildContinuationPrompt emits sentinel tags <original_task> and <tool_results>",
+  "contract": "continuation-prompt",
+  "case": "buildContinuationPrompt",
+  "input": {
+    "mode": "sentinel",
+    "originalTask": "read the config file",
+    "executions": [
+      { "invocationName": "local_file_read", "ok": true, "result": "key=value" }
+    ]
+  },
+  "expect": {
+    "contains": ["<original_task>", "</original_task>", "<tool_results>", "</tool_results>"],
+    "notContains": ["<fake_sentinel_xyz>"]
+  }
+}

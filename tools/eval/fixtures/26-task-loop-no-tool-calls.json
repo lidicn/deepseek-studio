@@ -1,0 +1,7 @@
+{
+  "name": "TaskLoop: toolCalls=0 → stopReason=no-tool-calls",
+  "contract": "task-loop",
+  "case": "stop-no-tool-calls",
+  "input": {},
+  "expect": { "stopReason": "no-tool-calls" }
+}

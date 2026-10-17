@@ -1,0 +1,12 @@
+{
+  "name": "workspace mode: shell is hard denied (mode-restricted)",
+  "contract": "policy",
+  "case": "evaluate",
+  "input": {
+    "tool": "shell.exec",
+    "params": { "command": "ls" },
+    "mode": "workspace",
+    "workspaceRoot": "/workspace"
+  },
+  "expect": { "decision": "deny", "reason": "mode-restricted" }
+}

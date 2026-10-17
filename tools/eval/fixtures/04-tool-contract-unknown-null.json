@@ -1,0 +1,10 @@
+{
+  "name": "unknown invocation returns null; file.list is governed as a file tool",
+  "contract": "tool-contract",
+  "case": "map",
+  "input": {
+    "invocationName": "nonexistent_tool_xyz",
+    "params": {}
+  },
+  "expect": null
+}

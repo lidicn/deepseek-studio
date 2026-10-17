@@ -1,0 +1,13 @@
+{
+  "name": "local_file_read maps to file.read with start->offset, max_chars->limit",
+  "contract": "tool-contract",
+  "case": "map",
+  "input": {
+    "invocationName": "local_file_read",
+    "params": { "path": "/etc/hosts", "start": 10, "max_chars": 500 }
+  },
+  "expect": {
+    "id": "file.read",
+    "params": { "path": "/etc/hosts", "offset": 10, "limit": 500 }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "shell_exec upstream tag maps to shell.exec with param adaptation",
+  "contract": "tool-contract",
+  "case": "map",
+  "input": {
+    "invocationName": "shell_exec",
+    "params": { "command": "ls -la", "timeout_ms": 5000, "cwd": "/tmp" }
+  },
+  "expect": {
+    "id": "shell.exec",
+    "params": { "command": "ls -la", "timeoutMs": 5000, "cwd": "/tmp" }
+  }
+}
