@@ -154,7 +154,11 @@ function tryFixEscapedQuotes(body: string): string {
         let j = i + 1;
         while (j < body.length && (body[j] === ' ' || body[j] === '\t' || body[j] === '\n')) j++;
         const next = body[j];
-        if (next === ',' || next === '}' || next === ']' || next === undefined) {
+        // 字符串结束的情况：
+        // - , } ]  → 值结束（后面有下一个键 / 对象结束 / 数组结束）
+        // - :      → 键名结束（后面是值）
+        // - undefined → 字符串到 body 末尾
+        if (next === ',' || next === '}' || next === ']' || next === ':' || next === undefined) {
           // 字符串结束
           inString = false;
           out += ch;

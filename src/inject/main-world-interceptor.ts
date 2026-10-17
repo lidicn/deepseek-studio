@@ -904,10 +904,15 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
 
       d(`auto-continue loop=${loopDepth} computing PoW... capturedHeaders=${JSON.stringify(Object.keys(capturedHeaders))}`);
 
-      // R0-R3：重放头走白名单（filterReplayableHeaders），只保留协议必需的中性头。
-      // 原实现只剔 content-type/length/x-ds-pow-response，一次性会话令牌（x-hif-leim/
-      // x-hif-dliq）、Cookie、CSRF 都会被原样复用，过期/一次性凭证导致上游静默失败。
-      const filteredHeaders = filterReplayableHeaders(capturedHeaders);
+      // 重放头：剔除会干扰请求的头。
+      // - content-type / content-length：我们自己设置
+      // - x-ds-pow-response：上一次请求的 POW 响应，不能复用
+      const filteredHeaders: Record<string, string> = {};
+      for (const [k, v] of Object.entries(capturedHeaders)) {
+        const lower = k.toLowerCase();
+        if (lower === 'content-type' || lower === 'content-length' || lower === 'x-ds-pow-response') continue;
+        filteredHeaders[k] = v;
+      }
 
       // 算 POW headers
       const powHeaders = await createPowHeaders(filteredHeaders);

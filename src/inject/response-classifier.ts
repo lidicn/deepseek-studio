@@ -117,9 +117,15 @@ const REPLAYABLE_HEADER_ALLOWLIST = new Set([
   'user-agent',
   'authorization',
   'lang',
+  // 设备 / 客户端标识（PoW 挑战必需）
+  'x-device-id',
+  'x-device-model',
   'x-client-build',
+  'x-client-bundle-id',
   'x-client-platform',
   'x-client-version',
+  'x-client-locale',
+  'x-client-timezone-offset',
 ]);
 
 export function filterReplayableHeaders(headers: Record<string, string>): Record<string, string> {

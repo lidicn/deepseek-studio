@@ -1203,7 +1203,7 @@
           let j2 = i + 1;
           while (j2 < body.length && (body[j2] === " " || body[j2] === "	" || body[j2] === "\n")) j2++;
           const next = body[j2];
-          if (next === "," || next === "}" || next === "]" || next === void 0) {
+          if (next === "," || next === "}" || next === "]" || next === ":" || next === void 0) {
             inString = false;
             out += ch;
           } else {
@@ -1572,6 +1572,7 @@ ${cleanStderr}`);
   // src/shared/continuation-prompt.ts
   var MAX_LOOP = 25;
   var MAX_NUDGES = 8;
+  var MAX_ERROR_RETRIES = 3;
   var FULL_TOOL_RESULT_WINDOW = 4;
   var ORIGINAL_TASK_MAX_CHARS = 8e3;
   var PREVIOUS_TEXT_MAX_CHARS = 4e3;
@@ -1748,6 +1749,98 @@ ${stderr.trimEnd()}
     if (!value) return value;
     return value.length > maxLen ? `${value.slice(0, maxLen)}
 ...[truncated]` : value;
+  }
+
+  // src/inject/response-classifier.ts
+  function parseBodyError(bodyText) {
+    if (!bodyText) return null;
+    let obj;
+    try {
+      obj = JSON.parse(bodyText);
+    } catch {
+      return null;
+    }
+    if (!obj || typeof obj !== "object") return null;
+    const o = obj;
+    const code2 = typeof o.code === "number" ? o.code : typeof o.status === "number" ? o.status : void 0;
+    const err = o.error;
+    if (code2 === void 0 && !err) return null;
+    if (code2 === 401 || code2 === 403 || code2 === 402 || code2 === 429) {
+      return { retryable: code2 === 429, reason: `body-error-${code2}` };
+    }
+    return { retryable: true, reason: `body-error-${code2 ?? "unknown"}` };
+  }
+  function classifyResponse(status, bodyText) {
+    if (status === 0) return { verdict: "retryable", status, reason: "network-error" };
+    if (status === 429) {
+      return { verdict: "retryable", status, reason: "rate-limited", retryAfterMs: parseRetryAfterMs(bodyText) };
+    }
+    if (status >= 500 && status < 600) return { verdict: "retryable", status, reason: `server-${status}` };
+    if (status === 401 || status === 403 || status === 402) return { verdict: "fatal", status, reason: `auth-billing-${status}` };
+    if (status >= 400) return { verdict: "fatal", status, reason: `client-${status}` };
+    if (status >= 200 && status < 300) {
+      const bodyErr = parseBodyError(bodyText);
+      if (bodyErr) {
+        return bodyErr.retryable ? { verdict: "retryable", status, reason: bodyErr.reason } : { verdict: "fatal", status, reason: bodyErr.reason };
+      }
+      return { verdict: "ok", status, reason: "success" };
+    }
+    return { verdict: "retryable", status, reason: `unclassified-${status}` };
+  }
+  function parseRetryAfterMs(bodyText) {
+    if (!bodyText) return void 0;
+    try {
+      const obj = JSON.parse(bodyText);
+      const ra = obj.retryAfter ?? obj.retry_after;
+      if (typeof ra === "number" && ra > 0) return ra * 1e3;
+    } catch {
+    }
+    return void 0;
+  }
+  function classifySseFrame(eventType, parsed) {
+    if (eventType && eventType.toLowerCase() === "error") {
+      return { verdict: "fatal", status: 200, reason: "sse-error-frame" };
+    }
+    if (!parsed || typeof parsed !== "object") return null;
+    const o = parsed;
+    const code2 = typeof o.code === "number" ? o.code : typeof o.status === "number" ? o.status : void 0;
+    if ((code2 === 0 || code2 === 429 || code2 === 500) && (o.error || o.message)) {
+      return { verdict: code2 === 429 || code2 === 500 ? "retryable" : "fatal", status: 200, reason: `sse-error-payload-${code2}` };
+    }
+    return null;
+  }
+  function errorBackoffMs(attempt, jitterMs = 300) {
+    const base = Math.min(2e3 * 2 ** Math.max(0, Math.min(attempt, 2)), 8e3);
+    return base + Math.round(Math.random() * jitterMs);
+  }
+  var REPLAYABLE_HEADER_ALLOWLIST = /* @__PURE__ */ new Set([
+    "content-type",
+    "accept",
+    "user-agent",
+    "authorization",
+    "lang",
+    // 设备 / 客户端标识（PoW 挑战必需）
+    "x-device-id",
+    "x-device-model",
+    "x-client-build",
+    "x-client-bundle-id",
+    "x-client-platform",
+    "x-client-version",
+    "x-client-locale",
+    "x-client-timezone-offset"
+  ]);
+  function filterReplayableHeaders(headers) {
+    const out = {};
+    for (const [k, v2] of Object.entries(headers)) {
+      if (REPLAYABLE_HEADER_ALLOWLIST.has(k.toLowerCase())) out[k] = v2;
+    }
+    return out;
+  }
+  var TELEMETRY_CAP = 50;
+  var ring = [];
+  function recordVerdict(trace) {
+    ring.push({ at: Date.now(), ...trace });
+    if (ring.length > TELEMETRY_CAP) ring.shift();
   }
 
   // src/inject/pow-wasm.ts
@@ -2936,6 +3029,11 @@ ${prompt}`;
             const frames = frameDec.push(part);
             let rawDataText = "";
             for (const frame of frames) {
+              const sseErr = classifySseFrame(frame.event?.type ?? null, frame.parsed);
+              if (sseErr && loopState) {
+                recordVerdict({ status: xhr.status, verdict: sseErr.verdict, reason: sseErr.reason, attempt: 0 });
+                loopState.sseErrorSeen = sseErr;
+              }
               if (frame.parsed && typeof frame.parsed === "object") {
                 const obj = frame.parsed;
                 if (Array.isArray(obj.v)) {
@@ -3008,6 +3106,7 @@ ${prompt}`;
     let loopDepth = 0;
     const collectedExecutions = [];
     let nudgeCount = 0;
+    let errorRetryCount = 0;
     const capturedHeaders = {};
     const forward = (call) => {
       console.log("[interceptor] forward:", call.invocationName, JSON.stringify(call.params).slice(0, 150));
@@ -3134,8 +3233,10 @@ ${prompt}`;
       collectedExecutions.length = 0;
       nudgeCount = 0;
       loopDepth = 0;
+      errorRetryCount = 0;
+      loopState.sseErrorSeen = null;
       loopState.autoReplyHadTools = false;
-      d("new user message: reset collectedExecutions/nudgeCount/loopDepth");
+      d("new user message: reset collectedExecutions/nudgeCount/loopDepth/errorRetryCount");
       if (chatUI) {
         if (loopState.newUserPrompt) {
           chatUI.addUserMessage(loopState.newUserPrompt);
@@ -3175,6 +3276,7 @@ ${prompt}`;
         d(`auto-continue loop=${loopDepth} PoW done, sending...`);
         loopState.inAutoContinue = true;
         loopState.autoReplyText = "";
+        loopState.sseErrorSeen = null;
         await new Promise((resolve) => {
           const xhr = new XMLHttpRequest();
           xhr.open("POST", "/api/v0/chat/completion", true);
@@ -3191,6 +3293,17 @@ ${prompt}`;
             } catch {
             }
           }
+          const finishStepFlow = () => {
+            if (stepFlow) {
+              stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1e3));
+              const sf = stepFlow;
+              stepFlow = null;
+              stepFlowStep = 0;
+              stepFlowToolCount = 0;
+              setTimeout(() => sf.destroy(), 3e3);
+            }
+            chatUI?.setBusy(false);
+          };
           xhr.onreadystatechange = () => {
             if (xhr.readyState === 4) {
               d(`auto-continue loop=${loopDepth} status=${xhr.status} autoReplyLen=${loopState.autoReplyText.length} inAuto=${loopState.inAutoContinue}`);
@@ -3223,14 +3336,28 @@ ${prompt}`;
                   }
                 }
               }
-              if (xhr.status === 429 && loopDepth < MAX_LOOP) {
-                d("auto-continue 429, retrying in 8s");
+              const httpVerdict = classifyResponse(xhr.status, xhr.responseText);
+              const verdict = loopState.sseErrorSeen ?? httpVerdict;
+              recordVerdict({ status: xhr.status, verdict: verdict.verdict, reason: verdict.reason, attempt: errorRetryCount });
+              if (verdict.verdict === "fatal" || verdict.verdict === "retryable" && errorRetryCount >= MAX_ERROR_RETRIES) {
+                d(`auto-continue ${verdict.verdict}: status=${xhr.status} reason=${verdict.reason} retries=${errorRetryCount}/${MAX_ERROR_RETRIES}, stop loop`);
+                loopState.streamActive = false;
+                finishStepFlow();
+                loopDepth = 0;
+              } else if (verdict.verdict === "retryable") {
+                errorRetryCount += 1;
                 loopState.streamActive = false;
                 if (autoContinueTimer) clearTimeout(autoContinueTimer);
+                const delay = verdict.retryAfterMs ?? errorBackoffMs(errorRetryCount - 1);
+                d(`auto-continue retryable: status=${xhr.status} reason=${verdict.reason}, retry ${errorRetryCount}/${MAX_ERROR_RETRIES} in ${delay}ms`);
                 autoContinueTimer = setTimeout(() => {
                   autoContinueTimer = null;
                   autoContinueWithPow();
-                }, 8e3);
+                }, delay);
+              } else if (loopDepth >= MAX_LOOP) {
+                d("auto-continue reached MAX_LOOP, stop");
+                finishStepFlow();
+                loopDepth = 0;
               } else {
                 const replyForNudge = loopState.autoReplyText.trim();
                 const hasTaskComplete = !!extractTaskCompleteSignal(replyForNudge);
@@ -3242,15 +3369,7 @@ ${prompt}`;
                   autoContinueNudge(replyForNudge);
                 } else {
                   d(`auto-continue loop end: hadTools=${hadTools} taskComplete=${hasTaskComplete} shouldNudge=${replyForNudge ? shouldNudge(replyForNudge) : false} nudgeCount=${nudgeCount}/${MAX_NUDGES}`);
-                  if (stepFlow) {
-                    stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1e3));
-                    const sf = stepFlow;
-                    stepFlow = null;
-                    stepFlowStep = 0;
-                    stepFlowToolCount = 0;
-                    setTimeout(() => sf.destroy(), 3e3);
-                  }
-                  chatUI?.setBusy(false);
+                  finishStepFlow();
                   loopDepth = 0;
                 }
               }
@@ -3282,15 +3401,11 @@ ${prompt}`;
         } catch {
         }
         d(`auto-continue nudge loop=${loopDepth} count=${nudgeCount} computing PoW...`);
-        const filteredHeaders = {};
-        for (const [k, v2] of Object.entries(capturedHeaders)) {
-          const lower = k.toLowerCase();
-          if (lower === "content-type" || lower === "content-length" || lower === "x-ds-pow-response") continue;
-          filteredHeaders[k] = v2;
-        }
+        const filteredHeaders = filterReplayableHeaders(capturedHeaders);
         const powHeaders = await createPowHeaders(filteredHeaders);
         loopState.inAutoContinue = true;
         loopState.autoReplyText = "";
+        loopState.sseErrorSeen = null;
         await new Promise((resolve) => {
           const xhr = new XMLHttpRequest();
           xhr.open("POST", "/api/v0/chat/completion", true);
@@ -3330,14 +3445,23 @@ ${prompt}`;
                   d(`nudge turn had tools, not pushing to host`);
                 }
               }
-              if (xhr.status === 429 && loopDepth < MAX_LOOP) {
-                d("auto-continue nudge 429, retrying in 8s");
+              const httpVerdict = classifyResponse(xhr.status, xhr.responseText);
+              const verdict = loopState.sseErrorSeen ?? httpVerdict;
+              recordVerdict({ status: xhr.status, verdict: verdict.verdict, reason: verdict.reason, attempt: errorRetryCount });
+              if (verdict.verdict === "fatal" || verdict.verdict === "retryable" && errorRetryCount >= MAX_ERROR_RETRIES) {
+                d(`auto-continue nudge ${verdict.verdict}: status=${xhr.status} reason=${verdict.reason} retries=${errorRetryCount}, stop`);
+                loopState.streamActive = false;
+                loopDepth = 0;
+              } else if (verdict.verdict === "retryable") {
+                errorRetryCount += 1;
                 loopState.streamActive = false;
                 if (autoContinueTimer) clearTimeout(autoContinueTimer);
+                const delay = verdict.retryAfterMs ?? errorBackoffMs(errorRetryCount - 1);
+                d(`auto-continue nudge retryable: status=${xhr.status} reason=${verdict.reason}, retry ${errorRetryCount}/${MAX_ERROR_RETRIES} in ${delay}ms`);
                 autoContinueTimer = setTimeout(() => {
                   autoContinueTimer = null;
                   autoContinueNudge(previousReplyText);
-                }, 8e3);
+                }, delay);
               } else {
                 const replyForNudge = loopState.autoReplyText.trim();
                 const hasTaskComplete = !!extractTaskCompleteSignal(replyForNudge);
