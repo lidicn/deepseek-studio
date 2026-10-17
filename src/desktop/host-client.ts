@@ -42,6 +42,9 @@ export interface HostClientOptions {
   toolCallTimeoutMs?: number;
   /** v1.0：宿主推送记忆列表更新时的回调。 */
   onMemoriesUpdate?: (memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>) => void;
+  /** DCD 裁定 20261017：debug-eval 端点默认关闭。生产环境不允许 eval 任意 JS；
+   *  只有开发调试时显式传 true 才开。 */
+  enableDebugEval?: boolean;
 }
 
 /** 页端 → 宿主 的工具调用投递请求（与拦截器 ToolCallRequest 同构）。 */
@@ -232,6 +235,13 @@ export function createHostClient(options: HostClientOptions): HostClient {
     } else if (msg.type === 'memories-update') {
       options.onMemoriesUpdate?.(msg.memories);
     } else if (msg.type === 'debug-eval') {
+      // DCD 裁定 20261017：调试端点默认关闭。生产环境收到 debug-eval 直接拒，
+      // 不执行 eval。开发调试时显式传 enableDebugEval:true 才开。
+      if (!options.enableDebugEval) {
+        const { requestId } = msg as { requestId: string };
+        send({ type: 'debug-eval-result', requestId, ok: false, result: 'debug-eval disabled in production' });
+        return;
+      }
       // 调试端点：执行 JS 并返回结果
       const { requestId, code } = msg as { requestId: string; code: string };
       try {

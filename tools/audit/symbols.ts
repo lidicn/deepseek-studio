@@ -63,6 +63,10 @@ function walkTsFiles(dir: string): string[] {
     const full = join(dir, entry);
     const st = statSync(full);
     if (st.isDirectory() && entry !== 'node_modules' && entry !== '.git') {
+      // DCD 裁定 §1.1：尺子自排除 tools/audit/ 自身（常量表+判红代码在自己头上扫到红）。
+      // 注意：tools/eval/ 不排除——run.ts:198 是 eval harness 在测 shouldNudge，
+      //       M3 删完 shouldNudge 后这个 case 要跟着删，保留报警。
+      if (entry === 'audit') continue;
       results.push(...walkTsFiles(full));
     } else if (entry.endsWith('.ts')) {
       results.push(full);
