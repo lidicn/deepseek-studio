@@ -152,6 +152,10 @@ function firstString(params: Record<string, unknown>, keys: readonly string[]): 
 /**
  * 取出用于风险检测的命令文本。优先级：command > cmd > argv 数组（安全写法）。
  * argv 以空格拼接仅用于模式匹配，不改变真实执行方式（执行侧始终用 argv）。
+ *
+ * QD-R2-06 修复：mcp.test 的真实调用形状是 `{ config: { command | argv } }`
+ * （见 ui/studio-mcp-dialog.ts:257），原实现只读顶层 → missing-command 误杀合法用例，
+ * 或更糟：只拦不到的就放过。这里在顶层取不到时，再剥一层 params.config 嵌套对象。
  */
 function commandText(params: Record<string, unknown>): string | null {
   const direct = firstString(params, ['command', 'cmd']);
@@ -159,6 +163,17 @@ function commandText(params: Record<string, unknown>): string | null {
   const argv = params.argv;
   if (Array.isArray(argv) && argv.length > 0 && argv.every((a) => typeof a === 'string')) {
     return (argv as string[]).join(' ');
+  }
+  // 嵌套 config 形状（mcp.test 等）
+  const nested = params.config;
+  if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+    const n = nested as Record<string, unknown>;
+    const directN = firstString(n, ['command', 'cmd']);
+    if (directN) return directN;
+    const argvN = n.argv;
+    if (Array.isArray(argvN) && argvN.length > 0 && argvN.every((a) => typeof a === 'string')) {
+      return (argvN as string[]).join(' ');
+    }
   }
   return null;
 }

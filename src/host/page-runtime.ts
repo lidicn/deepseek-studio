@@ -166,9 +166,13 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
     }
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
   });
-  const clients = new Map<string, { ws: WebSocket; origin: string | null; untrusted: boolean; ready: boolean; botId: string | undefined; accountFingerprint: string | undefined; reqOrigin: string | null }>();
-  const pendingDispatch = new Map<string, { resolve: (r: ExecuteResult) => void; timer: ReturnType<typeof setTimeout> }>();
-  const pendingConsent = new Map<string, { resolve: (d: ConsentDecision) => void; timer: ReturnType<typeof setTimeout> }>();
+  const clients = new Map<string, { id: string; ws: WebSocket; origin: string | null; untrusted: boolean; ready: boolean; botId: string | undefined; accountFingerprint: string | undefined; reqOrigin: string | null }>();
+  // QD-R2-03：pending 表必须记录「这条等待是发给哪个连接的」。
+  // 否则任何已连上的连接（哪怕没握手、没 token、是恶意页）猜中 callId 就能替可信页
+  // 伪造 result / consent-decision，把宿主正在等的工具结果/同意决定直接 resolve 掉。
+  // ownerId 绑死连接后，跨连接的回执一律忽略。
+  const pendingDispatch = new Map<string, { ownerId: string; resolve: (r: ExecuteResult) => void; timer: ReturnType<typeof setTimeout> }>();
+  const pendingConsent = new Map<string, { ownerId: string; resolve: (d: ConsentDecision) => void; timer: ReturnType<typeof setTimeout> }>();
 
   /**
    * C4 修复：页端断开时立即结算所有待决请求，不干等 30s/60s 超时。
@@ -196,7 +200,7 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
     }
   }
 
-  function pickClient(botId?: string): { ws: WebSocket } | null {
+  function pickClient(botId?: string): { id: string; ws: WebSocket } | null {
     // v0.24：调用方给了 botId 才按 botId 路由到对应窗口的页（每窗口一个独立登录态）。
     // 兼容规则：调用方不传 botId → 完全沿用改造前的「任一可信页」行为，不做 botId 过滤。
     // 这样单窗口 / 旧脚本 / 遗留调用路径行为不变；而多 bot 引擎各自带 botId 调用即精确寻址。
@@ -214,7 +218,8 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
   wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     const id = crypto.randomUUID();
     // R2-02：ready 仅在 hello 成功后置 true；reqOrigin 用于校验自报 origin 与握手 Origin 一致。
-    const rec: { ws: WebSocket; origin: string | null; untrusted: boolean; ready: boolean; botId: string | undefined; accountFingerprint: string | undefined; reqOrigin: string | null } = {
+    const rec: { id: string; ws: WebSocket; origin: string | null; untrusted: boolean; ready: boolean; botId: string | undefined; accountFingerprint: string | undefined; reqOrigin: string | null } = {
+      id,
       ws,
       origin: null,
       untrusted: false,
@@ -274,8 +279,13 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           }
         }
       } else if (msg.type === 'result') {
+        // QD-R2-03 入站身份门：
+        // ① 未握手（!ready）或已被判定篡改（untrusted）的连接发的任何 result 一律忽略。
+        // ② callId 必须是「宿主发给本连接」那条等待的回执（ownerId 绑死连接），
+        //    否则恶意连接猜中别人的 callId 也不能替可信页伪造工具结果。
+        if (!rec.ready || rec.untrusted) return;
         const p = pendingDispatch.get(msg.callId);
-        if (p) {
+        if (p && p.ownerId === id) {
           clearTimeout(p.timer);
           pendingDispatch.delete(msg.callId);
           p.resolve({ ok: msg.ok, data: msg.data, error: msg.error });
@@ -345,8 +355,11 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           safeSend(ws, { type: 'runtime-envelope-result', requestId, response: { ok: false, error: `unknown-command: ${command}` } });
         }
       } else if (msg.type === 'consent-decision') {
+        // QD-R2-03：同 result 分支——未握手/不可信连接的同意决定一律忽略；
+        // 且必须是宿主发给本连接的那条 consent-required 的回执。
+        if (!rec.ready || rec.untrusted) return;
         const p = pendingConsent.get(msg.callId);
-        if (p) {
+        if (p && p.ownerId === id) {
           clearTimeout(p.timer);
           pendingConsent.delete(msg.callId);
           p.resolve(msg.decision);
@@ -428,8 +441,8 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
     },
     dispatch(tool, params, callId, botId) {
       return new Promise<ExecuteResult>((resolve) => {
-        const client = pickClient(botId);
-        if (!client) {
+        const picked = pickClient(botId);
+        if (!picked) {
           resolve({ ok: false, error: 'no-page-runtime' });
           return;
         }
@@ -437,15 +450,16 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           pendingDispatch.delete(callId);
           resolve({ ok: false, error: 'page-timeout' });
         }, dispatchTimeoutMs);
-        pendingDispatch.set(callId, { resolve, timer });
+        // QD-R2-03：记录这条等待属于哪个连接，回执时同连接才认。
+        pendingDispatch.set(callId, { ownerId: picked.id, resolve, timer });
         // v0.24：透传 botId，页端可据此区分调用来源（并回执 tool-call 时带回）。
-        safeSend(client.ws, { type: 'dispatch', callId, tool, params, botId });
+        safeSend(picked.ws, { type: 'dispatch', callId, tool, params, botId });
       });
     },
     requestConsent(callId, tool, params, meta, botId) {
       return new Promise<ConsentDecision>((resolve) => {
-        const client = pickClient(botId);
-        if (!client) {
+        const picked = pickClient(botId);
+        if (!picked) {
           resolve('deny');
           return;
         }
@@ -453,8 +467,8 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           pendingConsent.delete(callId);
           resolve('deny');
         }, consentTimeoutMs);
-        pendingConsent.set(callId, { resolve, timer });
-        safeSend(client.ws, { type: 'consent-required', callId, tool, params, meta, botId });
+        pendingConsent.set(callId, { ownerId: picked.id, resolve, timer });
+        safeSend(picked.ws, { type: 'consent-required', callId, tool, params, meta, botId });
       });
     },
     broadcastMemories(memories) {

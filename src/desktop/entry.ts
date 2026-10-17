@@ -86,8 +86,15 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
   // 不装 chromeShims——DeepSeek 反爬会检测 window.chrome 判定扩展环境拒登（见 v0.29 修复）。
   const capabilities = dedupeById([...defaultCapabilities(), ...(options.capabilities ?? [])]);
   const executable = capabilities as unknown as ExecutableCapability[];
+  // QD-R2-01 / H-2b：注入页连 /studio 必须带 host token。
+  // Rust 侧把 config.json 的 token 注入 window.__studioHostToken（main.rs:load_host_token_script）。
+  // 读不到时保持旧 URL（开发/测试环境允许无 token 起宿主）；生产有 token 就必须拼上 query。
+  const hostToken = (globalThis as { __studioHostToken?: string }).__studioHostToken;
+  const hostUrl = options.hostUrl ?? (hostToken
+    ? `${DEFAULT_HOST_URL}?token=${encodeURIComponent(hostToken)}`
+    : DEFAULT_HOST_URL);
   const host = createHostClient({
-    url: options.hostUrl ?? DEFAULT_HOST_URL,
+    url: hostUrl,
     capabilities: executable,
     reportError: options.reportError,
     botId,

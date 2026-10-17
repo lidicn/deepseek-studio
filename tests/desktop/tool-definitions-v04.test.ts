@@ -19,4 +19,13 @@ describe('v0.4 工具定义', () => {
     expect(reg.isOriginAllowed('chat-send', DEEPSEEK_ORIGIN)).toBe(true);
     expect(reg.isOriginAllowed('chat-send', 'https://evil.example.com')).toBe(false);
   });
+
+  // QD-R2-04：policy.set / workspace.set 原 risk:'read' 会被自动放行——
+  // 模型自调一次 policy.set=full 就能拆掉所有同意闸门，等于自授权。
+  // 修复后必须是 privileged（≥ insert 阈值 → needsConsent=true）。
+  it('QD-R2-04：policy.set / workspace.set 是 privileged，必须用户同意', () => {
+    const byId = Object.fromEntries(DEFAULT_TOOL_DEFINITIONS.map((d) => [d.id, d]));
+    expect(byId['policy.set'].risk).toBe('privileged');
+    expect(byId['workspace.set'].risk).toBe('privileged');
+  });
 });

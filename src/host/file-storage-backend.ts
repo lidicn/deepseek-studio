@@ -37,19 +37,31 @@ export function createFileStorageKvBackend(options: FileStorageKvBackendOptions)
   }
 
   async function writeBatch(batch: StorageKvWriteBatch): Promise<void> {
-    // 串行化写：避免并发写交错
-    // P0-4 修复：前一次写失败不得毒化后续所有写链（then 的第二个参数吞掉失败）
-    writeChain = writeChain.then(async () => {
-      const current = await readAll();
-      for (const key of batch.remove) delete current[key];
-      for (const [key, value] of Object.entries(batch.set)) current[key] = value;
-      await ensureDir();
-      const tmp = `${filePath}.tmp`;
-      await fs.writeFile(tmp, JSON.stringify(current, null, 2), 'utf8');
-      await fs.rename(tmp, filePath);
-    }, (err) => {
-      console.warn(`[storage] previous write failed, chain recovered: ${(err as Error).message}`);
-    });
+    // 串行化写：避免并发写交错。
+    //
+    // QD-R2-02 修复（写链静默丢数据）：
+    // 旧写法 `writeChain.then(work, onRejected)` 里，onRejected 只打 warn 不 rethrow——
+    // 这意味着「前一批失败」会让**当前这批的 work 根本不执行**，但 `await writeChain`
+    // 照样 resolve。调用方以为写成功了，实际数据没落盘。
+    //
+    // 新写法把两件事拆开：
+    //   1. 前一批失败 → `.catch()` 吞掉并告警，让当前批照样执行（不被毒化）；
+    //   2. 当前批自己失败 → 自然沿链 reject，`await writeChain` 抛给调用方。
+    // 这样调用方要么拿到确认（写成功），要么拿到 reject（写失败），二选一，
+    // 不再有「调用方拿到 resolve 但数据没写」的中间态。
+    writeChain = writeChain
+      .catch((err: unknown) => {
+        console.warn(`[storage] previous write failed, chain continues: ${(err as Error).message}`);
+      })
+      .then(async () => {
+        const current = await readAll();
+        for (const key of batch.remove) delete current[key];
+        for (const [key, value] of Object.entries(batch.set)) current[key] = value;
+        await ensureDir();
+        const tmp = `${filePath}.tmp`;
+        await fs.writeFile(tmp, JSON.stringify(current, null, 2), 'utf8');
+        await fs.rename(tmp, filePath);
+      });
     await writeChain;
   }
 

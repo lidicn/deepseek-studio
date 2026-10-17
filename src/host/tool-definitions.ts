@@ -172,21 +172,23 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },
-  // v1.1：设置工作区（配置管理，自动放行）。
+  // v1.1：设置工作区（改写后续文件工具的可信边界——高危，必须用户同意）。
+  // QD-R2-04 修复：原 risk:'read' 会被自动放行，模型自调即可把文件根指向任意目录。
   {
     id: 'workspace.set',
     title: '设置工作区',
-    description: '设置当前工作区根目录（配置管理，自动放行）。',
-    risk: 'read',
+    description: '设置当前工作区根目录（改写后续文件工具的可信边界，需用户同意）。',
+    risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },
-  // v1.1：设置策略模式（配置管理，自动放行）。
+  // v1.1：设置策略模式（直接改写同意闸门松紧——最高危，必须用户同意）。
+  // QD-R2-04 修复：原 risk:'read' 会被自动放行，模型自调一次 policy.set=full 即可拆掉所有闸。
   {
     id: 'policy.set',
     title: '设置策略模式',
-    description: '设置工具执行策略模式（workspace/ask/auto/full）（配置管理，自动放行）。',
-    risk: 'read',
+    description: '设置工具执行策略模式（workspace/ask/auto/full）（改写同意闸门松紧，需用户同意）。',
+    risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },

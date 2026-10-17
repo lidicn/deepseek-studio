@@ -188,6 +188,40 @@ describe('policy —— 三档判定矩阵', () => {
     expect(evaluatePolicy({ tool: 'shell.exec', params: {}, mode: 'full', workspace: ws() }).reason).toBe('missing-command');
   });
 
+  // QD-R2-06：mcp.test 的真实调用形状是 `{ config: { command | argv } }`（见 ui/studio-mcp-dialog.ts:257）。
+  // 旧 commandText 只读顶层 → missing-command 误杀合法用例；或更糟：该拦的没拦到。
+  it('QD-R2-06：mcp.test 嵌套 config.command 形状能被风险识别，不再 missing-command 误杀', () => {
+    // 普通命令（无风险）auto 档应放行（inside-workspace）
+    const ok = evaluatePolicy({
+      tool: 'mcp.test',
+      params: { config: { command: 'npm test' } },
+      mode: 'auto',
+      workspace: ws(),
+    });
+    expect(ok.reason).not.toBe('missing-command');
+    expect(ok.decision).toBe('allow');
+
+    // 高危命令（rm -rf）auto 档必须 require-consent
+    const bad = evaluatePolicy({
+      tool: 'mcp.test',
+      params: { config: { command: 'rm -rf /tmp/x' } },
+      mode: 'auto',
+      workspace: ws(),
+    });
+    expect(bad.decision).toBe('require-consent');
+    expect(bad.reason).toBe('risk-detected');
+    expect(bad.riskFlags).toContain('destructive-delete');
+
+    // 嵌套 argv 形状同样支持
+    const argv = evaluatePolicy({
+      tool: 'mcp.test',
+      params: { config: { argv: ['rm', '-rf', '/tmp/x'] } },
+      mode: 'auto',
+      workspace: ws(),
+    });
+    expect(argv.decision).toBe('require-consent');
+  });
+
   it('指定区外 cwd → 视同越界，auto 档需审批', () => {
     const v = evaluatePolicy({
       tool: 'shell.exec',

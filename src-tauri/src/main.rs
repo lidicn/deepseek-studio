@@ -184,6 +184,31 @@ fn load_studio_chat_config_script() -> String {
     )
 }
 
+/// QD-R2-01 / H-2b：把 config.json 里的 WS host token 注入 `window.__studioHostToken`。
+///
+/// 为什么独立成函数：load_studio_chat_config_script 在 chat_rooms 为空时整段 return 空串，
+/// 但 bot 窗口（无聊天室配置）同样要连 /studio 工具通道——它们必须也拿到 token，
+/// 否则注入页裸连 ws://127.0.0.1:8760/studio，服务端 upgrade 阶段就会 1008 拒连。
+fn load_host_token_script() -> String {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return String::new(),
+    };
+    let cfg_path = home.join(".config").join("deepseek-studio").join("config.json");
+    let s = match std::fs::read_to_string(&cfg_path) {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+    let cfg: StudioConfig = match serde_json::from_str(&s) {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+    if cfg.token.is_empty() {
+        return String::new();
+    }
+    format!("window.__studioHostToken = {};\n", serde_json::to_string(&cfg.token).unwrap())
+}
+
 fn bot_windows_path() -> std::path::PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -419,7 +444,10 @@ fn main() {
                 // v0.28：主窗口注入聊天室配置（token + roomId + members），供聊天室 UI 连 /agent-ws。
                 // 无配置时返回空串，不影响入口脚本。仅主窗口注入（bot 窗口不需要聊天室）。
                 let chat_config_script = load_studio_chat_config_script();
-                let init_script = format!("{}{}", chat_config_script, load_init_script());
+                // QD-R2-01：注入页连 /studio 工具通道也要带 token——单独一段常量，
+                // 不依赖 chat_rooms 配置（无聊天室的纯工具窗口同样要鉴权）。
+                let host_token_script = load_host_token_script();
+                let init_script = format!("{}{}{}", chat_config_script, host_token_script, load_init_script());
                 main_builder = main_builder.initialization_script(&init_script);
             }
 
@@ -475,9 +503,12 @@ fn main() {
                 .inner_size(1280.0, 800.0);
 
                 // 注入带 botId 的脚本（禁用注入时不注入）
+                // QD-R2-01：bot 窗口的注入页连 /studio 同样需要 host token——
+                // 拼在 botId 声明之前，entry.ts 的 createHostClient 即可读到。
                 if !disable_inject {
-                    let script = inject_with_bot_id(&base_script, &bot_id);
-                    builder = builder.initialization_script(&script);
+                    let host_token_script = load_host_token_script();
+                    let with_bot = inject_with_bot_id(&base_script, &bot_id);
+                    builder = builder.initialization_script(&format!("{}{}", host_token_script, with_bot));
                 }
 
                 // profile 隔离：独立 WebView2 user data folder → Cookie/localStorage 不串号
