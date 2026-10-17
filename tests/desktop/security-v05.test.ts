@@ -218,7 +218,7 @@ describe('5.4 完整性探测与宿主降级', () => {
     const host = await startHost();
     const port = Number(new URL(host.url).port);
     const ws = await new Promise<WebSocket>((resolve, reject) => {
-      const s = new WebSocket(`ws://127.0.0.1:${port}/studio?token=t`);
+      const s = new WebSocket(`ws://127.0.0.1:${port}/studio?token=tok-initial`);
       s.on('open', () => {
         s.send(JSON.stringify({ type: 'hello', origin: 'https://chat.deepseek.com', sessionId: 'p1' }));
         resolve(s);
@@ -231,9 +231,9 @@ describe('5.4 完整性探测与宿主降级', () => {
       try {
         const m = JSON.parse(raw.toString()) as { type: string; callId?: string };
         if (m.type === 'consent-required') {
-          ws.send(JSON.stringify({ type: 'consent-decision', callId: m.callId, decision: 'allow-once' }));
+          try { ws.send(JSON.stringify({ type: 'consent-decision', callId: m.callId, decision: 'allow-once' })); } catch { /* socket closed */ }
         } else if (m.type === 'dispatch') {
-          ws.send(JSON.stringify({ type: 'result', callId: m.callId, ok: true }));
+          try { ws.send(JSON.stringify({ type: 'result', callId: m.callId, ok: true })); } catch { /* socket closed */ }
         }
       } catch {
         /* ignore */
