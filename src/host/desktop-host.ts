@@ -1233,6 +1233,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       }
       hub = createPageRuntimeHub({
         server: server.rawServer,
+        token: options.config.token,
         onError: (m, e) => console.warn(`[page-runtime] ${m}`, e),
         // v0.6：页端 tool-call 的真实执行入口（走完整授权链 + 同意闸门 + 宿主侧能力）。
         // v0.24：botId 透传，工具按发起 bot 的窗口路由 + 其授权/白名单执行。

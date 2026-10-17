@@ -54,6 +54,8 @@ export interface PageClient {
 export interface PageRuntimeHubOptions {
   server: Server;
   path?: string;
+  /** P0-2 修复：WS 连接必须校验 query token，零鉴权时任意本地进程可连工具通道。 */
+  token?: string;
   dispatchTimeoutMs?: number;
   consentTimeoutMs?: number;
   onError?: (message: string, error?: unknown) => void;
@@ -143,6 +145,16 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
   options.server.on('upgrade', (req, socket, head) => {
     const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
     if (pathname !== path) return;
+    // P0-2 修复：WS 连接必须校验 query token，零鉴权时任意本地进程可连工具通道。
+    // 照抄 agent-channel.ts 的 fail-closed 模式：token 不一致直接 close(1008)。
+    if (options.token) {
+      const url = new URL(req.url ?? '/', 'http://localhost');
+      if (url.searchParams.get('token') !== options.token) {
+        options.onError?.(`ws upgrade rejected: invalid token`);
+        socket.destroy();
+        return;
+      }
+    }
     // R2-03：upgrade 阶段即校验 Origin。原实现只判路径，任意公网网页都能连上本机
     // 工具通道（浏览器同源策略不阻止 ws 建连）。带 Origin 但不在白名单 → 直接销毁。
     // 无 Origin 的非浏览器客户端（测试/本机脚本）放行，由 R2-02 的 hello-ready 闸门兜底。

@@ -136,30 +136,30 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },
-  // v1.1：MCP 连接测试（只读，自动放行）。
+  // v1.1：MCP 连接测试（R4-P0-1：会 spawn 任意命令，改为 privileged 级别）。
   {
     id: 'mcp.test',
     title: '测试 MCP 连接',
-    description: '测试 MCP 服务器配置是否能正常连接（只读，自动放行）。',
-    risk: 'read',
+    description: '测试 MCP 服务器配置是否能正常连接（会启动子进程，需要授权）。',
+    risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },
-  // v1.1：MCP 配置保存（配置管理，自动放行）。
+  // v1.1：MCP 配置保存（R4-P0-1：写配置文件，改为 privileged 级别）。
   {
     id: 'mcp.save',
     title: '保存 MCP 配置',
-    description: '保存 MCP 服务器配置到磁盘（配置管理，自动放行）。',
-    risk: 'read',
+    description: '保存 MCP 服务器配置到磁盘（会写入配置文件，需要授权）。',
+    risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },
-  // v1.1：删除 MCP 配置（配置管理，自动放行）。
+  // v1.1：删除 MCP 配置（R4-P0-1：删除配置文件，改为 privileged 级别）。
   {
     id: 'mcp.remove',
     title: '删除 MCP 配置',
-    description: '从配置中删除指定 MCP 服务器（配置管理，自动放行）。',
-    risk: 'read',
+    description: '从配置中删除指定 MCP 服务器（会删除配置条目，需要授权）。',
+    risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },

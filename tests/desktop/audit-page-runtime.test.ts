@@ -14,7 +14,7 @@ describe('R2-03 ws upgrade Origin 闸门', () => {
     const host = createDesktopHost({ config: { host: '127.0.0.1', port: 0, token: 't' }, secret: 's' });
     await host.start();
     try {
-      const ws = new WebSocket(`ws://127.0.0.1:${portOf(host)}/studio`, {
+      const ws = new WebSocket(`ws://127.0.0.1:${portOf(host)}/studio?token=t`, {
         headers: { Origin: 'https://evil.example.com' },
       });
       const closed = new Promise<number>((resolve) => {
@@ -37,7 +37,7 @@ describe('R2-02 pickClient 只派发 hello-ready 连接', () => {
     const host = createDesktopHost({ config: { host: '127.0.0.1', port: 0, token: 't' }, secret: 's' });
     await host.start();
     try {
-      const ws = new WebSocket(`ws://127.0.0.1:${portOf(host)}/studio`);
+      const ws = new WebSocket(`ws://127.0.0.1:${portOf(host)}/studio?token=t`);
       await new Promise<void>((resolve) => ws.on('open', () => resolve()));
       // 故意不发 hello：pickClient 跳过未握手连接，fail-closed
       const res = await host.invokeTool('chat-read', {});
@@ -53,7 +53,7 @@ describe('R2-02 pickClient 只派发 hello-ready 连接', () => {
     const host = createDesktopHost({ config: { host: '127.0.0.1', port: 0, token: 't' }, secret: 's' });
     await host.start();
     try {
-      const ws = new WebSocket(`ws://127.0.0.1:${portOf(host)}/studio`, {
+      const ws = new WebSocket(`ws://127.0.0.1:${portOf(host)}/studio?token=t`, {
         headers: { Origin: 'https://chat.deepseek.com' },
       });
       await new Promise<void>((resolve) => {

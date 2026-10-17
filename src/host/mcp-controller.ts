@@ -222,6 +222,14 @@ export class McpController {
       initialized: false,
     };
 
+    // P0-3 修复：spawn 失败（命令不存在 / 权限不足）必须监听 error，否则 uncaughtException 杀宿主
+    proc.on('error', (err) => {
+      console.error(`[mcp] spawn error for ${serverId}: ${err.message}`);
+      // 触发所有 pending 请求的 reject，避免调用方永久等待
+      for (const [, req] of conn.pendingRequests) req.reject(err);
+      conn.pendingRequests.clear();
+    });
+
     let buffer = '';
     proc.stdout?.on('data', (chunk: Buffer) => {
       buffer += chunk.toString('utf8');
@@ -558,6 +566,13 @@ export class McpController {
         tools: [],
         initialized: false,
       };
+
+      // P0-3 修复：testConnection 的 spawn 也要 error 监听，否则命令不存在直接杀宿主
+      proc.on('error', (err) => {
+        console.error(`[mcp] testConnection spawn error: ${err.message}`);
+        for (const [, req] of conn.pendingRequests) req.reject(err);
+        conn.pendingRequests.clear();
+      });
 
       let buffer = '';
       proc.stdout?.on('data', (chunk: Buffer) => {

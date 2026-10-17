@@ -38,6 +38,7 @@ export function createFileStorageKvBackend(options: FileStorageKvBackendOptions)
 
   async function writeBatch(batch: StorageKvWriteBatch): Promise<void> {
     // 串行化写：避免并发写交错
+    // P0-4 修复：前一次写失败不得毒化后续所有写链（then 的第二个参数吞掉失败）
     writeChain = writeChain.then(async () => {
       const current = await readAll();
       for (const key of batch.remove) delete current[key];
@@ -46,6 +47,8 @@ export function createFileStorageKvBackend(options: FileStorageKvBackendOptions)
       const tmp = `${filePath}.tmp`;
       await fs.writeFile(tmp, JSON.stringify(current, null, 2), 'utf8');
       await fs.rename(tmp, filePath);
+    }, (err) => {
+      console.warn(`[storage] previous write failed, chain recovered: ${(err as Error).message}`);
     });
     await writeChain;
   }
