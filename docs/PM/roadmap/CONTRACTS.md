@@ -125,3 +125,40 @@ interface MessageHistorySnapshot {
 5. 跑 `npm run typecheck && npx vitest run` 确认全绿
 
 **不允许只改代码不改白名单。** 上次 `empty-response` 就是因为没同步白名单导致 contract guard 红了一轮。
+
+---
+
+## 6. 辅助席工具包交付契约（主进程制，2026-10-18）
+
+> 适用：主进程派给豆包辅助开发席的独立纯函数包。辅助席只交付模块+单测，**不注册工具、不接线**。
+
+### 6.1 结果形状（统一，对齐 `src/capabilities/types.ts` 的 ExecuteResult）
+
+```typescript
+// 成功
+{ ok: true, data: { ... } }
+// 失败（用错误码字符串，不许抛异常给调用方）
+{ ok: false, error: '<snake_case-error-code>' }
+```
+
+错误码固定词表（包内新增错误码必须先在本节登记）：
+`missing-argument` / `invalid-argument` / `workspace-unconfigured` / `outside-workspace` / `not-found` / `io-error` / `limit-exceeded`。
+
+### 6.2 边界与安全（fail-closed，纵深防御）
+
+- 模块**不自己取工作区根**：root / fs 由调用方（主进程）注入；模块内只在注入 root 之内遍历。
+- **不跟随符号链接**（防越狱）；越出注入 root 的路径一律拒绝为 `outside-workspace`。
+- 未配置 root → `workspace-unconfigured`；参数缺失 → `missing-argument`；类型/取值非法 → `invalid-argument`。
+- 不读 `process.env` 密钥，不发起网络，不 spawn 子进程（纯本地文件/纯函数包）。
+
+### 6.3 可测性
+
+- 文件系统访问经注入的 fs 接口（默认 Node `fs/promises`），单测用临时目录或 mock，不依赖真实仓库树。
+- 每个导出函数配至少：正常路径 + 1 类错误路径 + 1 个边界（空目录/越界/超限）。
+- 模块内不 import `src/host/**`、不 import 既有能力；只允许 `node:fs`/`node:path` 与本包内文件。
+
+### 6.4 交付落点（工单逐单指定）
+
+- 新模块 + 新测试文件两个新文件；禁止修改任何既有文件。
+- 交付原始命令输出到 `docs/PM/progress/ORD-NNN-*.md`。
+
