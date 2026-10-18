@@ -750,8 +750,14 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     try {
       if (!mainBot) await mainBotReady;
       if (!mainBot) throw new Error('main bot not ready');
-      await mainBot.loop.send(`${AGENT_SENTINEL}${text}`);
-      return finalAnswer;
+      // TaskLoop 路径
+      const loop = createTaskLoop({
+        engine: mainBot.engine,
+        history: kernelHistory,
+        maxRounds: 25,
+      });
+      const result = await loop.run(`${AGENT_SENTINEL}${text}`);
+      return result.content || finalAnswer;
     } finally {
       agentListeners.delete(listener);
     }
