@@ -61,7 +61,7 @@ import { webFetch } from '../capabilities/web-fetch';
 import { webSearch } from '../capabilities/web-search';
 import { createMessageHistory } from './kernel/message-history';
 import { createHostToolsAdapter } from './kernel/host-tools-adapter';
-// 里程碑2 接开关时启用：import { createTaskLoop } from './kernel/task-loop';
+import { createTaskLoop } from './kernel/task-loop';
 import os from 'node:os';
 import path from 'node:path';
 import type { ConsentMeta } from './protocol';
@@ -718,12 +718,17 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       state?.sessionAllowlist.addPermanent('chat-send');
 
       if (useKernelLoop) {
-        // 新路径：TaskLoop 自驱（里程碑3 补工具执行链路）
-        return mainBotReady.then(() => {
+        // 新路径：TaskLoop 自驱（纯循环控制器，工具执行仍在 engine 内部）
+        return mainBotReady.then(async () => {
           if (!mainBot) throw new Error('main bot not ready');
-          // TODO 里程碑3：createTaskLoop({ engine: mainBot.engine, history: kernelHistory, executor: kernelExecutor })
-          // 先透传给老路径占位，确认开关不炸
-          return mainBot.loop.send(`${AGENT_SENTINEL}${text}`);
+          const loop = createTaskLoop({
+            engine: mainBot.engine,
+            history: kernelHistory,
+            maxRounds: 25,
+          });
+          const result = await loop.run(`${AGENT_SENTINEL}${text}`);
+          // content 已落 kernelHistory，签名是 Promise<void>
+          void result;
         });
       }
 
