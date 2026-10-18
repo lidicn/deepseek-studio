@@ -179,6 +179,11 @@ export function createTaskLoop(opts: TaskLoopOptions): TaskLoop {
         break;
       }
 
+      // M6：DeepSeek 网页端限流——每轮间隔 2 秒，避免"发送过于频繁"
+      if (round > 1) {
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+
       // 2. 拼上下文 → 3. send（套 abort + per-round timeout 竞速）
       let result;
       try {
