@@ -704,6 +704,10 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   // start() 里 await 它，确保 handleUserMessage 被调前成员 bot 就绪。
   let roomBotsReady: Promise<void> | null = null;
 
+  // M4-B 里程碑2：内核回路开关（默认 false，老路径优先）。
+  // true = agent.sendMessage 走 TaskLoop；false = 走老 mainBot.loop.send。
+  const useKernelLoop = false;
+
   const agent: AgentFacade = {
     sendMessage: (text) => {
       // 面板用户发起智能体任务 = 用户已委托宿主驱动聊天页（网页引擎的运作机制）。
@@ -712,6 +716,17 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       const state = botRegistry.getState('main');
       state?.sessionAllowlist.addPermanent('chat-insert');
       state?.sessionAllowlist.addPermanent('chat-send');
+
+      if (useKernelLoop) {
+        // 新路径：TaskLoop 自驱（里程碑3 补工具执行链路）
+        return mainBotReady.then(() => {
+          if (!mainBot) throw new Error('main bot not ready');
+          // TODO 里程碑3：createTaskLoop({ engine: mainBot.engine, history: kernelHistory, executor: kernelExecutor })
+          // 先透传给老路径占位，确认开关不炸
+          return mainBot.loop.send(`${AGENT_SENTINEL}${text}`);
+        });
+      }
+
       return mainBot?.loop.send(`${AGENT_SENTINEL}${text}`) ?? Promise.reject(new Error('main bot not ready'));
     },
     stop: () => mainBot?.loop.stop(),
