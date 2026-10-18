@@ -100,6 +100,15 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },
+  // ORD-001：本地文件检索（listFiles + grepFiles）。
+  {
+    id: 'search_files',
+    title: '搜索本地文件',
+    description: '在工作区内按文件名通配列出文件（operation=list），或按内容子串/正则检索（operation=grep）。只读，不写不改。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
   // v1.0：长期记忆（移植自 deepseek++）。
   {
     id: 'memory.save',

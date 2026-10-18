@@ -56,6 +56,7 @@ import { FileReportStore } from './bot/report-store';
 import { createOfflineRunExecutor } from './bot/offline-runner';
 import { createAuditDispatcher } from './bot/audit-meeting';
 import { createFileStorageKvBackend } from './file-storage-backend';
+import { listFiles, grepFiles } from '../capabilities/search-files';
 import os from 'node:os';
 import path from 'node:path';
 import type { ConsentMeta } from './protocol';
@@ -320,6 +321,31 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       options.hostTools ?? {
         'shell.exec': createShellCapability({ workspace: mutableWorkspace }),
         ...createFileTools({ workspace: mutableWorkspace }),
+        // ORD-001：本地文件检索（listFiles + grepFiles 合成一个 search_files 工具）
+        'search_files': {
+          id: 'search_files',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const operation = String(params.operation ?? 'list');
+            const root = typeof params.root === 'string' ? params.root : mutableWorkspace.root;
+            if (operation === 'grep') {
+              return grepFiles({
+                root,
+                query: String(params.query ?? ''),
+                regex: Boolean(params.regex),
+                caseInsensitive: Boolean(params.caseInsensitive),
+                glob: typeof params.glob === 'string' ? params.glob : undefined,
+                limit: typeof params.limit === 'number' ? params.limit : undefined,
+              });
+            }
+            // 默认 list
+            return listFiles({
+              root,
+              pattern: typeof params.pattern === 'string' ? params.pattern : undefined,
+              recursive: typeof params.recursive === 'boolean' ? params.recursive : undefined,
+              limit: typeof params.limit === 'number' ? params.limit : undefined,
+            });
+          },
+        },
         'skill.list': {
           id: 'skill.list',
           async execute(): Promise<ExecuteResult> {
