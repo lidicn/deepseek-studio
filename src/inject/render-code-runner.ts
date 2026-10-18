@@ -1,6 +1,6 @@
 /**
  * render-code-runner.ts — 代码块运行按钮（移植自 deepseek++ render-code-runner.ts）
- * @upstream-commit 187f6227 @upstream-path core/inline-agent/render-code-runner.ts
+ * @upstream-commit 187f6227 @upstream-path src/core/inline-agent/render-code-runner.ts
  *
  * 功能：
  * - 在 JS/TS/Python 代码块右上角添加"运行"按钮

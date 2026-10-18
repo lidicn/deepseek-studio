@@ -1,6 +1,6 @@
 /**
  * 流式 XML 工具调用解析器（v0.6，自包容，无上游依赖）
- * @upstream-commit 187f6227 @upstream-path core/interceptor/streaming-tool-call-parser.ts
+ * @upstream-commit 187f6227 @upstream-path src/core/interceptor/streaming-tool-call-parser.ts
  *
  * 上游 DeepSeek 以 XML 调用标签形式在流式响应中返回工具调用，例如：
  *   <shell_exec>{"command":"ls -la"}</shell_exec>
