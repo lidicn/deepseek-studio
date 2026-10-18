@@ -18,11 +18,8 @@ import { isSupportedUpstreamTool, SUPPORTED_INVOCATION_NAMES } from '../shared/t
 import { shouldSkipAutoContinue } from '../shared/tool-result-format';
 import {
   buildContinuationPrompt,
-  buildNudgePrompt,
-  shouldNudge,
   extractTaskCompleteSignal,
   MAX_LOOP,
-  MAX_NUDGES,
   MAX_ERROR_RETRIES,
   type PendingResult,
 } from '../shared/continuation-prompt';
@@ -117,14 +114,14 @@ interface LoopState {
   /** R0-R5：本轮流里检测到的 SSE 错误帧（200 内嵌错误），readyState===4 时据此分类。 */
   sseErrorSeen?: ClassifiedResponse | null;
   /** v1.6：用户原始任务（首轮请求 prompt 字段，augmentation 前）。XHR/fetch hook 在首条消息时写入，
-   *  autoContinueWithPow / autoContinueNudge 读它拼续跑 prompt。 */
+   *  autoContinueWithPow 读它拼续跑 prompt。 */
   originalTask: string;
   /** v0.19：检测到新用户消息时，把用户原始 prompt 传回给闭包（用于推送给 chat UI）。 */
   newUserPrompt?: string;
   /** v0.19：自建聊天 UI（由 installMainWorldInterceptor 传入，fetch/XHR hook 共用）。 */
   chatUI?: StudioChatUIHandle;
   /** v1.6：检测到新用户消息（parent_message_id === null）时触发，让 installMainWorldInterceptor
-   *  重置 collectedExecutions/nudgeCount/loopDepth（闭包状态，hook 函数访问不到）。 */
+   *  重置 collectedExecutions/loopDepth（闭包状态，hook 函数访问不到）。 */
   onNewUserMessage?: () => void;
   /** 竞态修复：流结束时回调，检查 pending 并触发续跑（由 installMainWorldInterceptor 设置） */
   onStreamEnd?: () => void;
@@ -709,10 +706,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   // 让续跑 prompt 带完整历史，模型不会从第 2 步起忘了之前做了什么。
   // originalTask 存在 loopState.originalTask（XHR/fetch hook 要写入，在闭包外访问）。
   const collectedExecutions: PendingResult[] = [];
-  // v1.6：nudge 计数（无工具断流纠偏次数上限 MAX_NUDGES）。
-  let nudgeCount = 0;
-  // R0-R2：独立错误重试计数（429/网络错误/5xx/200 错误体），与 loopDepth/nudgeCount 互不占用，
-  // 封顶 MAX_ERROR_RETRIES，防止服务器错误消耗整轮续跑预算并叠加 nudge 形成 33 连发。
+  // R0-R2：独立错误重试计数（429/网络错误/5xx/200 错误体），
+  // 封顶 MAX_ERROR_RETRIES，防止服务器错误消耗整轮续跑预算。
   let errorRetryCount = 0;
   // v0.9 POW：捕获页面正常请求的 headers（Authorization / X-App-Version 等）
   const capturedHeaders: Record<string, string> = {};
@@ -889,12 +884,11 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   // v0.19：同时把用户消息推送给 chat UI，并创建新的助手回复流式容器。
   loopState.onNewUserMessage = () => {
     collectedExecutions.length = 0;
-    nudgeCount = 0;
     loopDepth = 0;
     errorRetryCount = 0;
     loopState.sseErrorSeen = null;
     loopState.autoReplyHadTools = false;
-    d('new user message: reset collectedExecutions/nudgeCount/loopDepth/errorRetryCount');
+    d('new user message: reset collectedExecutions/loopDepth/errorRetryCount');
     if (chatUI) {
       if (loopState.newUserPrompt) {
         chatUI.addUserMessage(loopState.newUserPrompt);
@@ -1024,27 +1018,16 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               finishStepFlow();
               loopDepth = 0;
             } else {
-              // ok：v1.6 nudge 机制（移植自 deepseek-pp shouldNudge + buildNudgePrompt）。
-              // autoReplyHadTools = forward 在本轮 SSE 里检测到工具调用 → 有工具，走 scheduleAutoContinue
-              //   （由工具结果异步回调触发）。无工具且未 task_complete → 看 shouldNudge 决定是否 nudge。
+              // M3-1a：nudge 机制已删。无工具调用时不再逼模型再调工具，
+              // 直接结束循环——内核 TaskLoop 自驱（M2-3）取代了这个网页侧补丁。
               const replyForNudge = loopState.autoReplyText.trim();
               const hasTaskComplete = !!extractTaskCompleteSignal(replyForNudge);
               if (hadTools) {
-                // 本轮有工具调用：续跑结果回来后 scheduleAutoContinue 接管，nudge 预算复位。
-                nudgeCount = 0;
-              } else if (!hasTaskComplete && replyForNudge
-                  && shouldNudge(replyForNudge)
-                  && nudgeCount < MAX_NUDGES && loopDepth < MAX_LOOP) {
-                nudgeCount += 1;
-                d(`auto-continue nudge count=${nudgeCount} loop=${loopDepth}, sending nudge...`);
-                autoContinueNudge(replyForNudge);
+                // 本轮有工具调用：续跑结果回来后 scheduleAutoContinue 接管。
               } else {
-                // v1.8：循环真正结束（无工具、无 nudge、task_complete 或达上限）。
-                // 这里负责 stepFlow 的 finish+destroy —— onStreamEnd 在 loopDepth>0 时不销毁，
-                // 交给本分支。避免之前 stepFlow 反复创建销毁的闪烁。
-                d(`auto-continue loop end: hadTools=${hadTools} taskComplete=${hasTaskComplete} shouldNudge=${replyForNudge ? shouldNudge(replyForNudge) : false} nudgeCount=${nudgeCount}/${MAX_NUDGES}`);
+                // 循环真正结束（无工具、task_complete 或达上限）。
+                d(`auto-continue loop end: hadTools=${hadTools} taskComplete=${hasTaskComplete}`);
                 finishStepFlow();
-                // 循环结束：重置 loopDepth，让下次用户消息的 onStreamEnd 能正常销毁
                 loopDepth = 0;
               }
             }
@@ -1055,121 +1038,6 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       });
     } catch (e) {
       d(`auto-continue failed: ${(e as Error).message}`);
-      loopState.streamActive = false;
-    }
-  }
-
-  /**
-   * v1.6：nudge 续跑（移植自 deepseek-pp getSteeringMessages + buildNudgePrompt）。
-   * 模型本轮没调工具、也没 task_complete，但 shouldNudge 判定它"该继续"时触发。
-   * 复用与 autoContinueWithPow 相同的 POW + XHR 链路，只是 prompt 换成 buildNudgePrompt。
-   * 与 autoContinueWithPow 的区分：nudge 是「逼模型在『再调一个工具』和『输出 task_complete』之间二选一」，
-   * 正常续跑是「工具已执行完毕，基于结果继续」。
-   */
-  async function autoContinueNudge(previousReplyText: string): Promise<void> {
-    if (!loopState.lastChatBody || loopDepth >= MAX_LOOP) return;
-    loopDepth += 1;
-    loopState.streamActive = true;
-    loopState.autoReplyHadTools = false;
-    try {
-      const nudgePrompt = buildNudgePrompt(loopState.originalTask, previousReplyText, collectedExecutions, nudgeCount);
-
-      let bodyStr = loopState.lastChatBody;
-      try {
-        const parsed = JSON.parse(bodyStr) as Record<string, unknown>;
-        parsed.prompt = nudgePrompt;
-        if (loopState.lastResponseMsgId != null) {
-          parsed.parent_message_id = loopState.lastResponseMsgId;
-        }
-        bodyStr = JSON.stringify(parsed);
-      } catch { /* keep original */ }
-
-      d(`auto-continue nudge loop=${loopDepth} count=${nudgeCount} computing PoW...`);
-      // QD-R2-11：与 pow 路径共用同一黑名单（原走 filterReplayableHeaders 白名单，
-      // 缺一次性会话头 → 422 → fatal → UI 卡死）。
-      const filteredHeaders = replayHeaders(capturedHeaders);
-      const powHeaders = await createPowHeaders(filteredHeaders);
-
-      loopState.inAutoContinue = true;
-      loopState.autoReplyText = '';
-      loopState.sseErrorSeen = null;
-      await new Promise<void>((resolve) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', '/api/v0/chat/completion', true);
-        xhr.setRequestHeader('Content-Type', 'application/json');
-        for (const [k, v] of Object.entries(filteredHeaders)) {
-          try { xhr.setRequestHeader(k, v); } catch { /* ignore */ }
-        }
-        for (const [k, v] of Object.entries(powHeaders)) {
-          try { xhr.setRequestHeader(k, v); } catch { /* ignore */ }
-        }
-        xhr.onreadystatechange = () => {
-          if (xhr.readyState === 4) {
-            d(`auto-continue nudge loop=${loopDepth} status=${xhr.status} autoReplyLen=${loopState.autoReplyText.length}`);
-            loopState.inAutoContinue = false;
-            loopState.streamActive = false;
-            const reply = loopState.autoReplyText.trim();
-            const hadTools = loopState.autoReplyHadTools;
-            if (reply) {
-              // v0.32 修复：同 autoContinueWithPow——只在无工具回合推回复给宿主，
-              // 且推送前剥原始工具标签，避免宿主 AgentLoop 误判「未解析工具标签」。
-              if (!hadTools) {
-                const cleanReply = stripRawToolTags(reply).trim();
-                if (cleanReply) {
-                  try { onAssistantReply?.(cleanReply, loopDepth); } catch (e) { d(`nudge push failed: ${(e as Error).message}`); }
-                } else {
-                  d(`nudge reply all-tool-text (stripped to empty), skipping push`);
-                }
-              } else {
-                d(`nudge turn had tools, not pushing to host`);
-              }
-              // nudge 回复不重复渲染到 DOM（autoContinueWithPow 的渲染分支只在正常续跑触发，
-              // nudge 走同一 .ds-assistant-message-main-content 覆盖会混淆；面板经 onAssistantReply 已收到）。
-            }
-            // R0-R2：nudge 响应同样显式分类，错误走独立预算 + 退避，fatal 立即停止，
-            // 不再把断连/5xx/200错误体当「模型没说完」继续 nudge。
-            const httpVerdict = classifyResponse(xhr.status, xhr.responseText);
-            // R0-R5：流内 SSE 错误帧优先于 HTTP 状态分类（200 内嵌错误也按错误处理）。
-            const verdict = loopState.sseErrorSeen ?? httpVerdict;
-            recordVerdict({ status: xhr.status, verdict: verdict.verdict, reason: verdict.reason, attempt: errorRetryCount });
-            if (verdict.verdict === 'fatal' || (verdict.verdict === 'retryable' && errorRetryCount >= MAX_ERROR_RETRIES)) {
-              d(`auto-continue nudge ${verdict.verdict}: status=${xhr.status} reason=${verdict.reason} retries=${errorRetryCount}, stop`);
-              loopState.streamActive = false;
-              // QD-R2-10：nudge fatal 分支补 finishStepFlow（含 setBusy(false) + finishAssistantMessage）。
-              finishStepFlow();
-              loopDepth = 0;
-            } else if (verdict.verdict === 'retryable') {
-              errorRetryCount += 1;
-              loopState.streamActive = false;
-              if (autoContinueTimer) clearTimeout(autoContinueTimer);
-              const delay = verdict.retryAfterMs ?? errorBackoffMs(errorRetryCount - 1);
-              d(`auto-continue nudge retryable: status=${xhr.status} reason=${verdict.reason}, retry ${errorRetryCount}/${MAX_ERROR_RETRIES} in ${delay}ms`);
-              autoContinueTimer = setTimeout(() => { autoContinueTimer = null; autoContinueNudge(previousReplyText); }, delay);
-            } else {
-              // nudge 回复后再次判定：有工具调用 → 走正常续跑；无工具 + 无 task_complete → 再 nudge（受 MAX_NUDGES 限）
-              const replyForNudge = loopState.autoReplyText.trim();
-              const hasTaskComplete = !!extractTaskCompleteSignal(replyForNudge);
-              if (hadTools) {
-                // nudge 后模型终于调了工具：续跑结果回来后 scheduleAutoContinue 接管，nudge 预算复位。
-                nudgeCount = 0;
-                d('auto-continue nudge end: tools detected, handing to scheduleAutoContinue');
-              } else if (!hasTaskComplete && replyForNudge
-                  && shouldNudge(replyForNudge)
-                  && nudgeCount < MAX_NUDGES && loopDepth < MAX_LOOP) {
-                nudgeCount += 1;
-                d(`auto-continue nudge again count=${nudgeCount} loop=${loopDepth}`);
-                autoContinueNudge(replyForNudge);
-              } else {
-                d(`auto-continue nudge end: hadTools=${hadTools} taskComplete=${hasTaskComplete} shouldNudge=${replyForNudge ? shouldNudge(replyForNudge) : false} nudgeCount=${nudgeCount}/${MAX_NUDGES}`);
-              }
-            }
-            resolve();
-          }
-        };
-        xhr.send(bodyStr);
-      });
-    } catch (e) {
-      d(`auto-continue nudge failed: ${(e as Error).message}`);
       loopState.streamActive = false;
     }
   }
