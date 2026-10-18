@@ -76,6 +76,14 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },
   {
+    id: 'file.edit',
+    title: '局部修改文件',
+    description: '在工作区内对文件做局部字符串替换（唯一匹配，失败零写入）。小改用 file.edit，新建或整体重写用 file.write；改之前先 file.read 确认原文。特权级。',
+    risk: 'privileged',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
+  {
     id: 'file.list',
     title: '列出目录',
     description: '列出工作区内目录内容（特权级；工作区外需审批）。',

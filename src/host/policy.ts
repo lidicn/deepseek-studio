@@ -91,7 +91,7 @@ export interface PolicyInput {
 }
 
 /** 文件类工具（受工作区边界约束）。 */
-export const FILE_TOOLS: readonly string[] = ['file.read', 'file.write', 'file.list', 'file.stat'];
+export const FILE_TOOLS: readonly string[] = ['file.read', 'file.write', 'file.edit', 'file.list', 'file.stat'];
 /** 进程执行类工具（R4-P0-1：mcp.test 会 spawn 任意命令，纳入进程类）。 */
 export const PROCESS_TOOLS: readonly string[] = ['shell.exec', 'mcp.test'];
 /**

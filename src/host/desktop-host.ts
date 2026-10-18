@@ -86,6 +86,7 @@ import {
 import { statSync, existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { createShellCapability } from '../capabilities/shell';
 import { createFileTools } from '../capabilities/file';
+import { createFileEditCapability } from '../capabilities/edit-engine';
 import { getMemoryStore } from './memory-store';
 import { scanSkills, ensureSkillsDir } from './skill-store';
 import { getMcpController, ensureMcpConfig } from './mcp-controller';
@@ -326,6 +327,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       options.hostTools ?? {
         'shell.exec': createShellCapability({ workspace: mutableWorkspace }),
         ...createFileTools({ workspace: mutableWorkspace }),
+        'file.edit': createFileEditCapability({ workspace: mutableWorkspace }),
         // ORD-001：本地文件检索（listFiles + grepFiles 合成一个 search_files 工具）
         'search_files': {
           id: 'search_files',
