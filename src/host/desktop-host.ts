@@ -59,6 +59,9 @@ import { createFileStorageKvBackend } from './file-storage-backend';
 import { listFiles, grepFiles } from '../capabilities/search-files';
 import { webFetch } from '../capabilities/web-fetch';
 import { webSearch } from '../capabilities/web-search';
+import { createMessageHistory } from './kernel/message-history';
+import { createHostToolsAdapter } from './kernel/host-tools-adapter';
+// 里程碑2 接开关时启用：import { createTaskLoop } from './kernel/task-loop';
 import os from 'node:os';
 import path from 'node:path';
 import type { ConsentMeta } from './protocol';
@@ -676,6 +679,13 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         },
       }),
   });
+
+  // M4-B 里程碑1：TaskLoop 装配点（暂不启用，只落位）。
+  // 用 hostTools adapter 把宿主工具表接进 TaskLoop 的 ToolExecutor 接口。
+  const kernelHistory = createMessageHistory();
+  const kernelExecutor = createHostToolsAdapter(hostTools);
+  void kernelHistory; void kernelExecutor; // 里程碑2 接开关时启用
+
   // 主 bot：v0.23 全网页路径下共用 main 窗口（v0.24 起 per-window）。
   // create 是 async（引擎工厂），但 main bot 必须在 stop()/hub 装配前就绪——
   // 启动时同步等待（createDesktopHost 本身不被 await，start() 才对外暴露）。
