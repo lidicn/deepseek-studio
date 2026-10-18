@@ -109,6 +109,24 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },
+  // ORD-002：网页抓取。
+  {
+    id: 'web_fetch',
+    title: '抓取网页',
+    description: '抓取指定 URL 的正文内容，自动去 script/style/HTML 标签。生产未接真实通道，fail-closed。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
+  // ORD-003：网页搜索。
+  {
+    id: 'web_search',
+    title: '网页搜索',
+    description: '按查询词搜索网页，返回标题+摘要+链接。生产未接真实通道，fail-closed。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
   // v1.0：长期记忆（移植自 deepseek++）。
   {
     id: 'memory.save',

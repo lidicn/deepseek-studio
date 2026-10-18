@@ -57,6 +57,8 @@ import { createOfflineRunExecutor } from './bot/offline-runner';
 import { createAuditDispatcher } from './bot/audit-meeting';
 import { createFileStorageKvBackend } from './file-storage-backend';
 import { listFiles, grepFiles } from '../capabilities/search-files';
+import { webFetch } from '../capabilities/web-fetch';
+import { webSearch } from '../capabilities/web-search';
 import os from 'node:os';
 import path from 'node:path';
 import type { ConsentMeta } from './protocol';
@@ -342,6 +344,27 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
               root,
               pattern: typeof params.pattern === 'string' ? params.pattern : undefined,
               recursive: typeof params.recursive === 'boolean' ? params.recursive : undefined,
+              limit: typeof params.limit === 'number' ? params.limit : undefined,
+            });
+          },
+        },
+        // ORD-002：网页抓取（生产未接真实 transport，fail-closed 返 io-error）
+        'web_fetch': {
+          id: 'web_fetch',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            return webFetch({
+              url: String(params.url ?? ''),
+              timeoutMs: typeof params.timeoutMs === 'number' ? params.timeoutMs : undefined,
+              maxBytes: typeof params.maxBytes === 'number' ? params.maxBytes : undefined,
+            });
+          },
+        },
+        // ORD-003：网页搜索（生产未接真实通道，fail-closed 返 channel-not-configured）
+        'web_search': {
+          id: 'web_search',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            return webSearch({
+              query: String(params.query ?? ''),
               limit: typeof params.limit === 'number' ? params.limit : undefined,
             });
           },
