@@ -159,7 +159,7 @@ function loadConfig(): ResolvedConfig {
 }
 
 export async function main(): Promise<void> {
-  const { config, secret, workspaceRoot, policyMode, chatRooms, chatRoomMaxDepth } = loadConfig();
+  const { config, secret, workspaceRoot, policyMode, chatRooms, chatRoomMaxDepth, apiEngine } = loadConfig();
   const workspace = workspaceRoot ? createWorkspace(workspaceRoot) : null;
   // M1 智能体面板静态资源（esbuild 产物：src/ui/agent.html + dist/agent-panel.js）
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -170,7 +170,7 @@ export async function main(): Promise<void> {
   };
   const personas = new FilePersonaRegistry();
   const host = createDesktopHost({
-    config, secret, workspace, policyMode, agentPage,
+    config, secret, workspace, policyMode, agentPage, apiEngine,
     chatRooms: chatRooms.length > 0 ? chatRooms : undefined,
     chatRoomMaxDepth,
     personas,

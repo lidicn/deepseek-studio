@@ -33,6 +33,7 @@ import { AGENT_SENTINEL, type AgentLoopEvent } from './agent-loop';
 import { createAgentChannel, type AgentChannel } from './agent-channel';
 import { pickFolderViaDialog } from './folder-picker';
 import { createWebEngine } from './engine/web-engine';
+import { createApiEngine } from './engine/api-engine';
 import { createBotRegistry, SessionAllowlist } from './bot/registry';
 import type { BotInstance, ChatRoomEvent, PersonaRegistry, RoomConfig } from './bot/types';
 import { createSlotRuntime, type SlotRuntime } from './bot/slot-runtime';
@@ -130,6 +131,8 @@ export interface DesktopHostOptions {
   workspace?: WorkspaceContext | null;
   /** 命令审批档位（默认 ask 询问审批）。 */
   policyMode?: PolicyMode;
+  /** M7 D3：ApiEngine 配置（真实 API key，缺省走 WebEngine 网页拦截）。 */
+  apiEngine?: { baseURL: string; apiKey: string; model: string };
   /** 限流与并发（透传给 API server，默认串行 + 60/分钟）。 */
   rateLimit?: RateLimitOptions;
   /**
@@ -666,8 +669,19 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         }
       }
     },
-    createEngine: ({ botId, state }) =>
-      createWebEngine({
+    createEngine: ({ botId, state }) => {
+      // M7 D3：如果配置了 apiEngine，走真实 API；否则走 WebEngine（网页拦截）。
+      const apiCfg = options.apiEngine;
+      if (apiCfg?.apiKey) {
+        return createApiEngine({
+          config: {
+            baseURL: apiCfg.baseURL,
+            apiKey: apiCfg.apiKey,
+            model: apiCfg.model,
+          },
+        });
+      }
+      return createWebEngine({
         // v0.24：每个 bot 的引擎 dispatch 带上自己的 botId，
         // 使工具执行路由到该 bot 自己的窗口（多窗口寻址）。
         dispatch: (tool, params) => invokeTool(tool, params, botId),
@@ -679,7 +693,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           state.lastAutoReply.fresh = false;
           return r;
         },
-      }),
+      });
+    },
   });
 
   // M4-B 里程碑1：TaskLoop 装配点（暂不启用，只落位）。
