@@ -120,6 +120,8 @@ function sendWithAbort(
   signal?: AbortSignal,
 ): Promise<EngineSendResult> {
   if (!signal) return engine.send(text);
+  // 已 abort 直接 reject，避免 listener 挂晚了收不到事件
+  if (signal.aborted) return Promise.reject(new Error('AbortError'));
   return new Promise<EngineSendResult>((resolve, reject) => {
     const onAbort = () => reject(new Error('AbortError'));
     signal.addEventListener('abort', onAbort, { once: true });

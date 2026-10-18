@@ -64,6 +64,7 @@ import { createMessageHistory } from './kernel/message-history';
 import { createHostToolsAdapter } from './kernel/host-tools-adapter';
 import { createTaskLoop } from './kernel/task-loop';
 import os from 'node:os';
+import fs from 'node:fs';
 import path from 'node:path';
 import type { ConsentMeta } from './protocol';
 import {
@@ -76,6 +77,8 @@ import {
   riskLabel,
   type PolicyMode,
 } from './policy';
+import { routeConsent } from './consent-router';
+import { createWhitelistStore } from './consent-whitelist-store';
 import {
   createMutableWorkspace,
   createWorkspace,
@@ -322,6 +325,14 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   }
   const mutableWorkspace: MutableWorkspaceContext = createMutableWorkspace(initialWorkspace);
   let policyMode: PolicyMode = options.policyMode ?? DEFAULT_POLICY_MODE;
+
+  // M8-E1：持久白名单（E2 快照待接线）
+  const whitelistStore = createWhitelistStore({
+    homedir: os.homedir(),
+    readFile: (p) => fs.readFileSync(p, 'utf-8'),
+    writeFile: (p, d) => fs.writeFileSync(p, d, 'utf-8'),
+    mkdirp: (p) => fs.mkdirSync(p, { recursive: true }),
+  });
 
   // 宿主侧能力表（v0.5：shell / file）。与页端能力分表：
   // 它们没有 DOM 生命周期，强行塞进 ContentCapabilityController 会违反「资源所有权归上游」不变量。
@@ -1144,6 +1155,33 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         outside: verdict.reason === 'outside-workspace',
         riskFlagLabels: (verdict.riskFlags ?? []).map(riskLabel),
       };
+
+      // M8-E1：白名单命中则跳过人工 consent
+      if (requiresHumanConsent && !outsideApproved) {
+        const wsRoot = mutableWorkspace.current?.root ?? null;
+        const resolvedPath = typeof paramsBag.path === 'string' ? paramsBag.path : null;
+        const relPath = resolvedPath && wsRoot
+          ? path.relative(wsRoot, resolvedPath).replace(/\\/g, '/')
+          : null;
+        const wsHash = wsRoot ? require('crypto').createHash('sha1').update(wsRoot).digest('hex').slice(0, 12) : '';
+        const wlResult = routeConsent({
+          toolId: name,
+          params: paramsBag,
+          mode: policyMode,
+          policy: verdict.decision,
+          policyReason: verdict.reason,
+          resolvedPath,
+          relPath,
+          outside: verdict.reason === 'outside-workspace',
+          workspaceRoot: wsRoot,
+          workspaceHash: wsHash,
+          whitelist: whitelistStore.list(wsHash),
+          now: Date.now(),
+        });
+        if (wlResult.verdict === 'safe' && wlResult.reason === 'whitelist-hit') {
+          requiresHumanConsent = false;
+        }
+      }
     }
 
     //    同意闸门必须以「阈值比较」判定风险等级 ≥ insert，<｜hy_place▁holder▁no▁813｜>写成
