@@ -6,13 +6,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildContinuationPrompt,
-  buildNudgePrompt,
   shouldNudge,
   extractTaskCompleteSignal,
   renderWindowedToolResults,
   clampText,
   MAX_LOOP,
-  MAX_NUDGES,
   FULL_TOOL_RESULT_WINDOW,
   type PendingResult,
 } from '../../src/shared/continuation-prompt';
@@ -20,9 +18,6 @@ import {
 describe('continuation-prompt —— 常量', () => {
   it('MAX_LOOP 对齐 deepseek-pp 的 25 步', () => {
     expect(MAX_LOOP).toBe(25);
-  });
-  it('MAX_NUDGES 对齐 deepseek-pp 的 8 次', () => {
-    expect(MAX_NUDGES).toBe(8);
   });
   it('FULL_TOOL_RESULT_WINDOW = 4', () => {
     expect(FULL_TOOL_RESULT_WINDOW).toBe(4);
@@ -163,19 +158,5 @@ describe('buildContinuationPrompt', () => {
     const block = p.slice(p.indexOf('<original_task>'), p.indexOf('</original_task>'));
     const xs = block.match(/x/g)?.length ?? 0;
     expect(xs).toBeLessThanOrEqual(8000);
-  });
-});
-
-describe('buildNudgePrompt', () => {
-  it('含 <original_task>、<previous_assistant_text>、<tool_results_so_far>、nudge 计数', () => {
-    const p = buildNudgePrompt('原始任务', '上一轮回复', [
-      { invocationName: 'shell_exec', ok: true, result: { stdout: 'out' } },
-    ], 2);
-    expect(p).toContain('<original_task>');
-    expect(p).toContain('原始任务');
-    expect(p).toContain('<previous_assistant_text>');
-    expect(p).toContain('上一轮回复');
-    expect(p).toContain('<tool_results_so_far>');
-    expect(p).toContain('第 2 次无工具调用纠偏');
   });
 });

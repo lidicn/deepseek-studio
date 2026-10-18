@@ -43,19 +43,15 @@ interface NormalizedToolResult {
 
 /** 一个用户消息最多续跑步数（对齐 deepseek-pp INLINE_AGENT_MAX_STEPS）。 */
 export const MAX_LOOP = 25;
-/** 单回合最多 nudge 次数（防无限 nudge 死循环，对齐 deepseek-pp MAX_NUDGES）。 */
-export const MAX_NUDGES = 8;
 /**
  * R0-R2：独立的错误重试预算。原实现把 429/网络错误/200 空回复与「应续跑」混在同一个
- * MAX_LOOP=25 里，一次服务器错误能消耗整轮预算并叠加 nudge，形成 25 续跑 + 8 nudge = 33
- * 连发。错误重试单独封顶 3 次，与工具续跑步数、nudge 次数互不占用。
+ * MAX_LOOP=25 里，一次服务器错误能消耗整轮预算。错误重试单独封顶 3 次，与工具续跑步数互不占用。
  */
 export const MAX_ERROR_RETRIES = 3;
 /** 续跑 prompt 里带完整 detail/output 的最近结果条数；更早的压缩为 summary。 */
 export const FULL_TOOL_RESULT_WINDOW = 4;
 
 const ORIGINAL_TASK_MAX_CHARS = 8000;
-const PREVIOUS_TEXT_MAX_CHARS = 4000;
 const NUDGE_DECISION_TAIL_MAX_CHARS = 600;
 const PENDING_ACTION_AFTER_MAX_CHARS = 80;
 const SUMMARY_MAX_CHARS = 400;
@@ -90,13 +86,6 @@ const CONTINUATION_NO_PSEUDO =
   '不要要求用户点击继续，也不要输出伪工具调用 JSON；需要继续操作时只输出可执行 XML 工具标签。文件、HTML 页面与图表等交付物请直接用 Markdown 围栏代码块输出（如 ```html、```mermaid），不要使用 artifact XML 标签。';
 const FAILURE_RECOVERY =
   '至少一个工具执行失败。不要因为可恢复错误就停止；先阅读 summary/detail/error，并修正参数或改用合适的下一步继续完成任务。';
-
-const NUDGE_NO_TOOLS =
-  '上一轮回复没有包含任何可执行工具 XML，因此自动化续跑无法继续执行。';
-const NUDGE_CHOICE = '请根据原始任务和工具结果二选一：';
-const NUDGE_NEXT_TOOL = '1. 如果任务仍未完成，本轮必须直接输出下一步可执行工具 XML。';
-const NUDGE_COMPLETE =
-  '2. 如果任务已经完成，输出 <task_complete>{"summary":"..."}</task_complete>。文件、HTML 页面与图表等交付物用 Markdown 围栏代码块输出。';
 
 // ---------------------------------------------------------------- task_complete
 
@@ -297,38 +286,6 @@ export function buildContinuationPrompt(
     JSON.stringify(results, null, 2),
     '</tool_results>',
     ...(toolCatalog ? ['', '### Available Tools', toolCatalog] : []),
-  ].join('\n');
-}
-
-/**
- * Nudge prompt：模型本轮没调工具、也没 task_complete 时，逼它二选一。
- * 含原始任务、上一轮可见文本、窗口化历史结果。
- */
-export function buildNudgePrompt(
-  originalTask: string,
-  previousText: string,
-  executions: readonly PendingResult[],
-  nudgeCount: number,
-): string {
-  const results = renderWindowedToolResults(executions);
-  return [
-    NUDGE_NO_TOOLS,
-    NUDGE_CHOICE,
-    NUDGE_NEXT_TOOL,
-    NUDGE_COMPLETE,
-    `这是第 ${nudgeCount} 次无工具调用纠偏。`,
-    '',
-    '<original_task>',
-    clampText(originalTask, ORIGINAL_TASK_MAX_CHARS) ?? '',
-    '</original_task>',
-    '',
-    '<previous_assistant_text>',
-    clampText(previousText, PREVIOUS_TEXT_MAX_CHARS) ?? '',
-    '</previous_assistant_text>',
-    '',
-    '<tool_results_so_far>',
-    JSON.stringify(results, null, 2),
-    '</tool_results_so_far>',
   ].join('\n');
 }
 
