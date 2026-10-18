@@ -71,6 +71,8 @@ interface StoredConfig extends Partial<ApiConfig> {
   chatRooms?: Array<{ roomId: string; roomName: string; hostPersona?: string; memberPersonas: string[] }>;
   /** v0.27：聊天室编排波数（默认 1）。 */
   chatRoomMaxDepth?: number;
+  /** v0.30：ApiEngine 配置（真实 API key，切 provider）。 */
+  apiEngine?: { baseURL: string; apiKey: string; model: string };
 }
 interface ResolvedConfig {
   config: ApiConfig;
@@ -79,6 +81,7 @@ interface ResolvedConfig {
   policyMode: PolicyMode;
   chatRooms: ReadonlyArray<RoomConfig>;
   chatRoomMaxDepth?: number;
+  apiEngine?: { baseURL: string; apiKey: string; model: string };
 }
 
 function randomToken(): string {
@@ -152,7 +155,7 @@ function loadConfig(): ResolvedConfig {
     }
   }
 
-  return { config: { host, port, token }, secret, workspaceRoot, policyMode, chatRooms, chatRoomMaxDepth };
+  return { config: { host, port, token }, secret, workspaceRoot, policyMode, chatRooms, chatRoomMaxDepth, apiEngine: stored.apiEngine };
 }
 
 export async function main(): Promise<void> {
