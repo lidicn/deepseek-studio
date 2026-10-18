@@ -26,6 +26,7 @@
 import type { ModelEngine, ToolCallRecord, EngineSendResult } from '../engine/model-engine';
 import type { MessageHistory } from './message-history';
 import type { HistoryStore } from './history-store';
+import { detectPlanRequest } from '../plan-gate';
 
 // ---------------------------------------------------------------- 类型
 
@@ -163,6 +164,10 @@ export function createTaskLoop(opts: TaskLoopOptions): TaskLoop {
   const roundTimeoutMs = opts.roundTimeoutMs ?? 120000;
 
   async function run(userText: string): Promise<TaskLoopRoundResult> {
+    // M8-E3：Plan 模式——只跑一轮，禁止工具调用
+    const isPlan = detectPlanRequest(userText);
+    const effectiveMaxRounds = isPlan ? 1 : maxRounds;
+
     // S11：可选 checkpoint —— 启动时从 store 恢复历史
     if (store) {
       const snap = await store.load();
@@ -174,7 +179,7 @@ export function createTaskLoop(opts: TaskLoopOptions): TaskLoop {
 
     let last: TaskLoopRoundResult | undefined;
 
-    for (let round = 1; round <= maxRounds; round += 1) {
+    for (let round = 1; round <= effectiveMaxRounds; round += 1) {
       // S9：本轮开始前已 abort → 以 aborted 收尾（user 已落库不回滚）
       if (signal?.aborted) {
         last = { round, content: '', toolCalls: 0, stopReason: 'aborted' };
@@ -212,7 +217,8 @@ export function createTaskLoop(opts: TaskLoopOptions): TaskLoop {
       onDelta?.(result.content);
 
       // 5. 逐条落 tool 记录（toolCallRecords 可选，缺省则跳过、不崩）
-      if (result.toolCallRecords) {
+      // M8-E3：plan 模式下禁止工具调用，不落 tool 记录
+      if (result.toolCallRecords && !isPlan) {
         for (const rec of result.toolCallRecords) {
           history.append({
             role: 'tool',

@@ -79,6 +79,7 @@ import {
 } from './policy';
 import { routeConsent } from './consent-router';
 import { createWhitelistStore } from './consent-whitelist-store';
+import { createShadowStore } from './shadow-store';
 import {
   createMutableWorkspace,
   createWorkspace,
@@ -332,6 +333,16 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     readFile: (p) => fs.readFileSync(p, 'utf-8'),
     writeFile: (p, d) => fs.writeFileSync(p, d, 'utf-8'),
     mkdirp: (p) => fs.mkdirSync(p, { recursive: true }),
+  });
+  const shadowStore = createShadowStore({
+    homedir: os.homedir(),
+    readFile: (p) => fs.readFileSync(p),
+    writeFile: (p, d) => fs.writeFileSync(p, d),
+    readJson: (p) => JSON.parse(fs.readFileSync(p, 'utf-8')),
+    writeJson: (p, d) => fs.writeFileSync(p, JSON.stringify(d, null, 2), 'utf-8'),
+    exists: (p) => fs.existsSync(p),
+    mkdirp: (p) => fs.mkdirSync(p, { recursive: true }),
+    unlink: (p) => fs.unlinkSync(p),
   });
 
   // 宿主侧能力表（v0.5：shell / file）。与页端能力分表：
@@ -1249,6 +1260,16 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     if (executionSide(def) === 'host') {
       const tool = hostTools.get(name);
       if (!tool) return { ok: false, reason: 'unknown-capability' };
+      // M8-E2：写前快照（file.edit / file.write）
+      if ((name === 'file.edit' || name === 'file.write') && typeof (params as Record<string, unknown>)?.path === 'string') {
+        const p = (params as Record<string, unknown>).path as string;
+        const wsRoot = mutableWorkspace.current?.root;
+        if (wsRoot) {
+          const relPath = path.relative(wsRoot, p).replace(/\\/g, '/');
+          const wsHash = require('crypto').createHash('sha1').update(wsRoot).digest('hex').slice(0, 12);
+          shadowStore.capture({ absPath: p, relPath, workspaceHash: wsHash, source: name === 'file.edit' ? 'file.edit' : 'file.write' });
+        }
+      }
       const r = await tool.execute(params as Record<string, unknown>, { allowOutsideWorkspace: outsideApproved });
       return {
         ok: r.ok,
