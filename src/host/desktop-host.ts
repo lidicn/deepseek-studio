@@ -704,9 +704,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   // start() 里 await 它，确保 handleUserMessage 被调前成员 bot 就绪。
   let roomBotsReady: Promise<void> | null = null;
 
-  // M4-B 里程碑2：内核回路开关（默认 false，老路径优先）。
-  // true = agent.sendMessage 走 TaskLoop；false = 走老 mainBot.loop.send。
-  const useKernelLoop = false;
+  // M4-B 里程碑4：内核回路默认 true（老路径已切，保留代码待下轮删）。
+  const useKernelLoop = true;
 
   const agent: AgentFacade = {
     sendMessage: (text) => {
