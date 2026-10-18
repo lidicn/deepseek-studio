@@ -279,8 +279,10 @@ export function createFileEditCapability(options: EditCapabilityOptions = {}): E
         const detail: Record<string, unknown> = { path: resolved, reason: result.reason };
         if (result.reason === 'match-ambiguous') {
           detail.occurrences = result.occurrences;
+          return fail('invalid-argument', result.reason, detail);
         }
-        return fail('invalid-argument', result.reason, detail);
+        // old-string-not-found 走 not-found
+        return fail('not-found', result.reason, detail);
       }
 
       if (dryRun) {
