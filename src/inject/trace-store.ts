@@ -1,5 +1,6 @@
 /**
  * trace-store.ts — 执行追踪存储（移植自 deepseek++ trace-store.ts + trace-codec.ts）
+ * @upstream-commit 187f6227 @upstream-path core/inline-agent/trace-store.ts
  *
  * 功能：
  * - 记录每次代理运行的步骤、工具调用、耗时

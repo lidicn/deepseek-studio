@@ -1,5 +1,6 @@
 /**
  * execution-policy.ts — 工具执行策略（移植自 deepseek++ execution-policy.ts）
+ * @upstream-commit 187f6227 @upstream-path core/inline-agent/execution-policy.ts
  *
  * 功能：
  * - 工具风险评估

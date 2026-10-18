@@ -1,5 +1,6 @@
 /**
  * message-anchor.ts — 助手消息 DOM 定位（移植自 deepseek++ message-anchor.ts）
+ * @upstream-commit 187f6227 @upstream-path core/inline-agent/message-anchor.ts
  *
  * 功能：
  * - 排除扩展注入 UI 后获取消息自身文本

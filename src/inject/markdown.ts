@@ -1,5 +1,6 @@
 /**
  * markdown.ts — Markdown 渲染（基于 marked 库，参考 cuckoo-code）
+ * @upstream-commit 187f6227 @upstream-path core/inline-agent/markdown.ts
  *
  * 用 marked 库渲染（GFM + breaks），支持表格、嵌套列表、删除线、任务列表、
  * 代码块语言标签等。比自建正则渲染器更完整可靠。

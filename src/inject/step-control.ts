@@ -1,5 +1,6 @@
 /**
  * step-control.ts — 步骤级控制（移植自 deepseek++ step-control.ts）
+ * @upstream-commit 187f6227 @upstream-path core/inline-agent/step-control.ts
  *
  * 功能：
  * - 步骤超时（120s）+ AbortSignal

@@ -1,5 +1,6 @@
 /**
  * 续跑 / nudge prompt 构建器（v1.6，纯模块，无 DOM / 运行时依赖）
+ * @upstream-commit 187f6227 @upstream-path core/inline-agent/prompt.ts
  *
  * 移植自 deepseek-pp `core/inline-agent/prompt.ts`，适配 studio 的扁平
  * `PendingResult`（宿主原始返回：shell 的 `{stdout,stderr,exitCode}` / 文件内容 / MCP 结果）。
