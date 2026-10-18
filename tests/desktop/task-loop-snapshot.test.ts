@@ -25,10 +25,12 @@ function makeResult(content: string): EngineSendResult {
   return { content, toolCalls: 0, toolCallRecords: [] } as EngineSendResult;
 }
 
+import type { PersistedLoopState } from '../../src/host/kernel/history-store';
+
 describe('TaskLoop 快照恢复', () => {
   it('跑一轮 → save → 新 loop load → history 恢复', async () => {
     // 内存 store
-    let saved: { version: number; history: ReturnType<typeof createMessageHistory>['snapshot']; round: number } | null = null;
+    let saved: PersistedLoopState | null = null;
     const memStore = {
       async load() { return saved; },
       async save(snap: typeof saved) { saved = snap; },
