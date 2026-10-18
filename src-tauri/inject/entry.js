@@ -763,7 +763,7 @@
     title.textContent = "\u26A0\uFE0F \u8D26\u53F7\u51B2\u7A81 \u2014 \u672C\u7A97\u53E3\u5DF2\u505C\u7528";
     const body = doc.createElement("div");
     body.className = "ds-account-block-body";
-    body.innerHTML = "";
+    body.replaceChildren();
     const p1 = doc.createElement("div");
     p1.textContent = reason;
     const p2 = doc.createElement("div");
@@ -907,6 +907,11 @@
       } else if (msg.type === "memories-update") {
         options.onMemoriesUpdate?.(msg.memories);
       } else if (msg.type === "debug-eval") {
+        if (!options.enableDebugEval) {
+          const { requestId: requestId2 } = msg;
+          send({ type: "debug-eval-result", requestId: requestId2, ok: false, result: "debug-eval disabled in production" });
+          return;
+        }
         const { requestId, code } = msg;
         try {
           const result = eval(code);
@@ -1571,28 +1576,17 @@ ${cleanStderr}`);
 
   // src/shared/continuation-prompt.ts
   var MAX_LOOP = 25;
-  var MAX_NUDGES = 8;
   var MAX_ERROR_RETRIES = 3;
   var FULL_TOOL_RESULT_WINDOW = 4;
   var ORIGINAL_TASK_MAX_CHARS = 8e3;
-  var PREVIOUS_TEXT_MAX_CHARS = 4e3;
-  var NUDGE_DECISION_TAIL_MAX_CHARS = 600;
-  var PENDING_ACTION_AFTER_MAX_CHARS = 80;
   var SUMMARY_MAX_CHARS = 400;
   var DETAIL_MAX_CHARS = 4e3;
   var OUTPUT_MAX_CHARS = 8e3;
-  var PENDING_ACTION_RE = /(?:我(?:将|会|想|要|先|让|再|直接|现在|继续|尝试|开始|需要|还需要|仍需|打算|计划|马上|随后|稍后|先去|先来|接下来).{0,48}(?:调用|创建|编辑|检查|验证|生成|保存|尝试|搜索|获取|打开|执行|查看|访问|读取|抓取|下载|上传|修改|更新|删除|写入|分析|比对|比较|监控|查询|发送|提交|安装|启动|停止|清理|转换|解析|提取|汇总|整理|核对|核实|扫描|截屏|渲染)|(?:接下来|下一步|然后|让我|先让我).{0,48}(?:调用|创建|编辑|检查|验证|生成|保存|尝试|搜索|获取|打开|执行|查看|访问|读取|抓取|下载|上传|修改|更新|删除|写入|分析|比对|比较|监控|查询|发送|提交|安装|启动|停止|清理|转换|解析|提取|汇总|整理|核对|核实|扫描|截屏|渲染)|(?:(?:现在|这就|马上|随后|稍后|立即|立刻|先|直接))?(?:为|帮)(?:你|您)(?:创建|生成|制作|输出|编写|绘制|渲染)(?!了|好|完|成|过|的)|(?:i(?:'ll| will|'m| am|'d| would| want to| should| have to| (?:still\s+)?need to|'m going to| am going to|'m about to| am about to|'ve got to| have got to)|let me|let's|next,? (?:i|we)|we(?:'ll| will| need to| can)|(?:my|the) next step is to).{0,64}(?:call|create|edit|inspect|validate|generate|save|try|search|fetch|open|run|browse|read|check|look|use|verify|test|download|write|update|review|analyze|extract|query|send|post|investigate|monitor|compare|install|start|stop|convert|parse|list|collect|request|retry|scroll|click|type|navigate))/gi;
-  var COMPLETION_MARKER_RE = /(?:已经|已为|已完成|完毕|创建了|生成了|制作了|编写了|保存了|写好了|完成了|总结一下|总结如下|总结|结论是|综上所述|总的来看|这是|报告如下|如下所示|final answer|in summary|to summarize|summarize|here is|here's|the answer is|as you can see|i'?ve already|we'?ve already|created|generated|saved|completed|done)/i;
-  var ENDS_WITH_SENTENCE_TERMINAL_RE = /[。！？.!?…]\s*$/;
   var TASK_COMPLETE_RE = /<task_complete>\s*([\s\S]*?)\s*<\/task_complete>/;
   var CONTINUATION_INTRO = "\u4EE5\u4E0B\u662F\u5DE5\u5177\u7EED\u8DD1\u4EFB\u52A1\u521A\u521A\u6267\u884C\u7684\u5DE5\u5177\u7ED3\u679C\u3002\u8BF7\u50CF\u771F\u6B63\u7684 Agent \u4E00\u6837\uFF0C\u57FA\u4E8E\u539F\u59CB\u4EFB\u52A1\u548C\u8FD9\u4E9B\u5DE5\u5177\u7ED3\u679C\u7EE7\u7EED\u63A8\u8FDB\u3002";
   var CONTINUATION_ENOUGH = "\u5982\u679C\u7ED3\u679C\u5DF2\u7ECF\u8DB3\u591F\uFF0C\u8BF7\u8F93\u51FA\u6700\u7EC8\u7ED3\u8BBA\uFF1B\u53EA\u6709\u786E\u5B9E\u9700\u8981\u66F4\u591A\u4FE1\u606F\u3001\u9A8C\u8BC1\u6216\u6587\u4EF6\u4FEE\u6539\u65F6\u624D\u7EE7\u7EED\u8C03\u7528\u5DE5\u5177\u3002";
   var CONTINUATION_NO_PSEUDO = "\u4E0D\u8981\u8981\u6C42\u7528\u6237\u70B9\u51FB\u7EE7\u7EED\uFF0C\u4E5F\u4E0D\u8981\u8F93\u51FA\u4F2A\u5DE5\u5177\u8C03\u7528 JSON\uFF1B\u9700\u8981\u7EE7\u7EED\u64CD\u4F5C\u65F6\u53EA\u8F93\u51FA\u53EF\u6267\u884C XML \u5DE5\u5177\u6807\u7B7E\u3002\u6587\u4EF6\u3001HTML \u9875\u9762\u4E0E\u56FE\u8868\u7B49\u4EA4\u4ED8\u7269\u8BF7\u76F4\u63A5\u7528 Markdown \u56F4\u680F\u4EE3\u7801\u5757\u8F93\u51FA\uFF08\u5982 ```html\u3001```mermaid\uFF09\uFF0C\u4E0D\u8981\u4F7F\u7528 artifact XML \u6807\u7B7E\u3002";
   var FAILURE_RECOVERY = "\u81F3\u5C11\u4E00\u4E2A\u5DE5\u5177\u6267\u884C\u5931\u8D25\u3002\u4E0D\u8981\u56E0\u4E3A\u53EF\u6062\u590D\u9519\u8BEF\u5C31\u505C\u6B62\uFF1B\u5148\u9605\u8BFB summary/detail/error\uFF0C\u5E76\u4FEE\u6B63\u53C2\u6570\u6216\u6539\u7528\u5408\u9002\u7684\u4E0B\u4E00\u6B65\u7EE7\u7EED\u5B8C\u6210\u4EFB\u52A1\u3002";
-  var NUDGE_NO_TOOLS = "\u4E0A\u4E00\u8F6E\u56DE\u590D\u6CA1\u6709\u5305\u542B\u4EFB\u4F55\u53EF\u6267\u884C\u5DE5\u5177 XML\uFF0C\u56E0\u6B64\u81EA\u52A8\u5316\u7EED\u8DD1\u65E0\u6CD5\u7EE7\u7EED\u6267\u884C\u3002";
-  var NUDGE_CHOICE = "\u8BF7\u6839\u636E\u539F\u59CB\u4EFB\u52A1\u548C\u5DE5\u5177\u7ED3\u679C\u4E8C\u9009\u4E00\uFF1A";
-  var NUDGE_NEXT_TOOL = "1. \u5982\u679C\u4EFB\u52A1\u4ECD\u672A\u5B8C\u6210\uFF0C\u672C\u8F6E\u5FC5\u987B\u76F4\u63A5\u8F93\u51FA\u4E0B\u4E00\u6B65\u53EF\u6267\u884C\u5DE5\u5177 XML\u3002";
-  var NUDGE_COMPLETE = '2. \u5982\u679C\u4EFB\u52A1\u5DF2\u7ECF\u5B8C\u6210\uFF0C\u8F93\u51FA <task_complete>{"summary":"..."}</task_complete>\u3002\u6587\u4EF6\u3001HTML \u9875\u9762\u4E0E\u56FE\u8868\u7B49\u4EA4\u4ED8\u7269\u7528 Markdown \u56F4\u680F\u4EE3\u7801\u5757\u8F93\u51FA\u3002';
   function extractTaskCompleteSignal(text) {
     const match = TASK_COMPLETE_RE.exec(text);
     if (!match) return null;
@@ -1605,29 +1599,6 @@ ${cleanStderr}`);
     } catch {
       return { summary: match[1].trim(), artifacts: [] };
     }
-  }
-  function shouldNudge(visibleText) {
-    if (extractTaskCompleteSignal(visibleText)) return false;
-    if (!visibleText) return true;
-    const tail = getNudgeDecisionText(visibleText);
-    if (tail.includes("```")) return false;
-    if (hasPendingActionAtTail(tail)) return true;
-    if (COMPLETION_MARKER_RE.test(tail)) return false;
-    if (ENDS_WITH_SENTENCE_TERMINAL_RE.test(tail)) return false;
-    return true;
-  }
-  function getNudgeDecisionText(text) {
-    const trimmed = text.trim();
-    return trimmed.length > NUDGE_DECISION_TAIL_MAX_CHARS ? trimmed.slice(-NUDGE_DECISION_TAIL_MAX_CHARS) : trimmed;
-  }
-  function hasPendingActionAtTail(text) {
-    const matches = [...text.matchAll(PENDING_ACTION_RE)];
-    const lastMatch = matches[matches.length - 1];
-    if (!lastMatch || lastMatch.index === void 0) return false;
-    const afterPendingAction = text.slice(lastMatch.index + lastMatch[0].length).trim();
-    if (afterPendingAction.length > PENDING_ACTION_AFTER_MAX_CHARS) return false;
-    if (afterPendingAction.includes("```")) return false;
-    return true;
   }
   function renderToolResult(p) {
     const detail = clampText(resultToDetailText(p), DETAIL_MAX_CHARS);
@@ -1723,28 +1694,6 @@ ${stderr.trimEnd()}
       ...toolCatalog ? ["", "### Available Tools", toolCatalog] : []
     ].join("\n");
   }
-  function buildNudgePrompt(originalTask, previousText, executions, nudgeCount) {
-    const results = renderWindowedToolResults(executions);
-    return [
-      NUDGE_NO_TOOLS,
-      NUDGE_CHOICE,
-      NUDGE_NEXT_TOOL,
-      NUDGE_COMPLETE,
-      `\u8FD9\u662F\u7B2C ${nudgeCount} \u6B21\u65E0\u5DE5\u5177\u8C03\u7528\u7EA0\u504F\u3002`,
-      "",
-      "<original_task>",
-      clampText(originalTask, ORIGINAL_TASK_MAX_CHARS) ?? "",
-      "</original_task>",
-      "",
-      "<previous_assistant_text>",
-      clampText(previousText, PREVIOUS_TEXT_MAX_CHARS) ?? "",
-      "</previous_assistant_text>",
-      "",
-      "<tool_results_so_far>",
-      JSON.stringify(results, null, 2),
-      "</tool_results_so_far>"
-    ].join("\n");
-  }
   function clampText(value, maxLen) {
     if (!value) return value;
     return value.length > maxLen ? `${value.slice(0, maxLen)}
@@ -1812,29 +1761,6 @@ ${stderr.trimEnd()}
   function errorBackoffMs(attempt, jitterMs = 300) {
     const base = Math.min(2e3 * 2 ** Math.max(0, Math.min(attempt, 2)), 8e3);
     return base + Math.round(Math.random() * jitterMs);
-  }
-  var REPLAYABLE_HEADER_ALLOWLIST = /* @__PURE__ */ new Set([
-    "content-type",
-    "accept",
-    "user-agent",
-    "authorization",
-    "lang",
-    // 设备 / 客户端标识（PoW 挑战必需）
-    "x-device-id",
-    "x-device-model",
-    "x-client-build",
-    "x-client-bundle-id",
-    "x-client-platform",
-    "x-client-version",
-    "x-client-locale",
-    "x-client-timezone-offset"
-  ]);
-  function filterReplayableHeaders(headers) {
-    const out = {};
-    for (const [k, v2] of Object.entries(headers)) {
-      if (REPLAYABLE_HEADER_ALLOWLIST.has(k.toLowerCase())) out[k] = v2;
-    }
-    return out;
   }
   var TELEMETRY_CAP = 50;
   var ring = [];
@@ -3105,9 +3031,32 @@ ${prompt}`;
     let autoContinueTimer = null;
     let loopDepth = 0;
     const collectedExecutions = [];
-    let nudgeCount = 0;
     let errorRetryCount = 0;
     const capturedHeaders = {};
+    const finishStepFlow = () => {
+      if (stepFlow) {
+        stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1e3));
+        const sf = stepFlow;
+        stepFlow = null;
+        stepFlowStep = 0;
+        stepFlowToolCount = 0;
+        setTimeout(() => sf.destroy(), 3e3);
+      }
+      chatUI?.setBusy(false);
+      try {
+        chatUI?.finishAssistantMessage();
+      } catch {
+      }
+    };
+    const replayHeaders = (src) => {
+      const out = {};
+      for (const [k, v2] of Object.entries(src)) {
+        const lower = k.toLowerCase();
+        if (lower === "content-type" || lower === "content-length" || lower === "x-ds-pow-response") continue;
+        out[k] = v2;
+      }
+      return out;
+    };
     const forward = (call) => {
       console.log("[interceptor] forward:", call.invocationName, JSON.stringify(call.params).slice(0, 150));
       d(`forward: ${call.invocationName} params=${JSON.stringify(call.params).slice(0, 200)}`);
@@ -3231,12 +3180,11 @@ ${prompt}`;
     };
     loopState.onNewUserMessage = () => {
       collectedExecutions.length = 0;
-      nudgeCount = 0;
       loopDepth = 0;
       errorRetryCount = 0;
       loopState.sseErrorSeen = null;
       loopState.autoReplyHadTools = false;
-      d("new user message: reset collectedExecutions/nudgeCount/loopDepth/errorRetryCount");
+      d("new user message: reset collectedExecutions/loopDepth/errorRetryCount");
       if (chatUI) {
         if (loopState.newUserPrompt) {
           chatUI.addUserMessage(loopState.newUserPrompt);
@@ -3269,12 +3217,7 @@ ${prompt}`;
         } catch {
         }
         d(`auto-continue loop=${loopDepth} computing PoW... capturedHeaders=${JSON.stringify(Object.keys(capturedHeaders))}`);
-        const filteredHeaders = {};
-        for (const [k, v2] of Object.entries(capturedHeaders)) {
-          const lower = k.toLowerCase();
-          if (lower === "content-type" || lower === "content-length" || lower === "x-ds-pow-response") continue;
-          filteredHeaders[k] = v2;
-        }
+        const filteredHeaders = replayHeaders(capturedHeaders);
         const powHeaders = await createPowHeaders(filteredHeaders);
         d(`auto-continue loop=${loopDepth} PoW done, sending...`);
         loopState.inAutoContinue = true;
@@ -3296,17 +3239,6 @@ ${prompt}`;
             } catch {
             }
           }
-          const finishStepFlow = () => {
-            if (stepFlow) {
-              stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1e3));
-              const sf = stepFlow;
-              stepFlow = null;
-              stepFlowStep = 0;
-              stepFlowToolCount = 0;
-              setTimeout(() => sf.destroy(), 3e3);
-            }
-            chatUI?.setBusy(false);
-          };
           xhr.onreadystatechange = () => {
             if (xhr.readyState === 4) {
               d(`auto-continue loop=${loopDepth} status=${xhr.status} autoReplyLen=${loopState.autoReplyText.length} inAuto=${loopState.inAutoContinue}`);
@@ -3365,13 +3297,8 @@ ${prompt}`;
                 const replyForNudge = loopState.autoReplyText.trim();
                 const hasTaskComplete = !!extractTaskCompleteSignal(replyForNudge);
                 if (hadTools) {
-                  nudgeCount = 0;
-                } else if (!hasTaskComplete && replyForNudge && shouldNudge(replyForNudge) && nudgeCount < MAX_NUDGES && loopDepth < MAX_LOOP) {
-                  nudgeCount += 1;
-                  d(`auto-continue nudge count=${nudgeCount} loop=${loopDepth}, sending nudge...`);
-                  autoContinueNudge(replyForNudge);
                 } else {
-                  d(`auto-continue loop end: hadTools=${hadTools} taskComplete=${hasTaskComplete} shouldNudge=${replyForNudge ? shouldNudge(replyForNudge) : false} nudgeCount=${nudgeCount}/${MAX_NUDGES}`);
+                  d(`auto-continue loop end: hadTools=${hadTools} taskComplete=${hasTaskComplete}`);
                   finishStepFlow();
                   loopDepth = 0;
                 }
@@ -3383,109 +3310,6 @@ ${prompt}`;
         });
       } catch (e) {
         d(`auto-continue failed: ${e.message}`);
-        loopState.streamActive = false;
-      }
-    }
-    async function autoContinueNudge(previousReplyText) {
-      if (!loopState.lastChatBody || loopDepth >= MAX_LOOP) return;
-      loopDepth += 1;
-      loopState.streamActive = true;
-      loopState.autoReplyHadTools = false;
-      try {
-        const nudgePrompt = buildNudgePrompt(loopState.originalTask, previousReplyText, collectedExecutions, nudgeCount);
-        let bodyStr = loopState.lastChatBody;
-        try {
-          const parsed = JSON.parse(bodyStr);
-          parsed.prompt = nudgePrompt;
-          if (loopState.lastResponseMsgId != null) {
-            parsed.parent_message_id = loopState.lastResponseMsgId;
-          }
-          bodyStr = JSON.stringify(parsed);
-        } catch {
-        }
-        d(`auto-continue nudge loop=${loopDepth} count=${nudgeCount} computing PoW...`);
-        const filteredHeaders = filterReplayableHeaders(capturedHeaders);
-        const powHeaders = await createPowHeaders(filteredHeaders);
-        loopState.inAutoContinue = true;
-        loopState.autoReplyText = "";
-        loopState.sseErrorSeen = null;
-        await new Promise((resolve) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open("POST", "/api/v0/chat/completion", true);
-          xhr.setRequestHeader("Content-Type", "application/json");
-          for (const [k, v2] of Object.entries(filteredHeaders)) {
-            try {
-              xhr.setRequestHeader(k, v2);
-            } catch {
-            }
-          }
-          for (const [k, v2] of Object.entries(powHeaders)) {
-            try {
-              xhr.setRequestHeader(k, v2);
-            } catch {
-            }
-          }
-          xhr.onreadystatechange = () => {
-            if (xhr.readyState === 4) {
-              d(`auto-continue nudge loop=${loopDepth} status=${xhr.status} autoReplyLen=${loopState.autoReplyText.length}`);
-              loopState.inAutoContinue = false;
-              loopState.streamActive = false;
-              const reply = loopState.autoReplyText.trim();
-              const hadTools = loopState.autoReplyHadTools;
-              if (reply) {
-                if (!hadTools) {
-                  const cleanReply = stripRawToolTags(reply).trim();
-                  if (cleanReply) {
-                    try {
-                      onAssistantReply?.(cleanReply, loopDepth);
-                    } catch (e) {
-                      d(`nudge push failed: ${e.message}`);
-                    }
-                  } else {
-                    d(`nudge reply all-tool-text (stripped to empty), skipping push`);
-                  }
-                } else {
-                  d(`nudge turn had tools, not pushing to host`);
-                }
-              }
-              const httpVerdict = classifyResponse(xhr.status, xhr.responseText);
-              const verdict = loopState.sseErrorSeen ?? httpVerdict;
-              recordVerdict({ status: xhr.status, verdict: verdict.verdict, reason: verdict.reason, attempt: errorRetryCount });
-              if (verdict.verdict === "fatal" || verdict.verdict === "retryable" && errorRetryCount >= MAX_ERROR_RETRIES) {
-                d(`auto-continue nudge ${verdict.verdict}: status=${xhr.status} reason=${verdict.reason} retries=${errorRetryCount}, stop`);
-                loopState.streamActive = false;
-                loopDepth = 0;
-              } else if (verdict.verdict === "retryable") {
-                errorRetryCount += 1;
-                loopState.streamActive = false;
-                if (autoContinueTimer) clearTimeout(autoContinueTimer);
-                const delay = verdict.retryAfterMs ?? errorBackoffMs(errorRetryCount - 1);
-                d(`auto-continue nudge retryable: status=${xhr.status} reason=${verdict.reason}, retry ${errorRetryCount}/${MAX_ERROR_RETRIES} in ${delay}ms`);
-                autoContinueTimer = setTimeout(() => {
-                  autoContinueTimer = null;
-                  autoContinueNudge(previousReplyText);
-                }, delay);
-              } else {
-                const replyForNudge = loopState.autoReplyText.trim();
-                const hasTaskComplete = !!extractTaskCompleteSignal(replyForNudge);
-                if (hadTools) {
-                  nudgeCount = 0;
-                  d("auto-continue nudge end: tools detected, handing to scheduleAutoContinue");
-                } else if (!hasTaskComplete && replyForNudge && shouldNudge(replyForNudge) && nudgeCount < MAX_NUDGES && loopDepth < MAX_LOOP) {
-                  nudgeCount += 1;
-                  d(`auto-continue nudge again count=${nudgeCount} loop=${loopDepth}`);
-                  autoContinueNudge(replyForNudge);
-                } else {
-                  d(`auto-continue nudge end: hadTools=${hadTools} taskComplete=${hasTaskComplete} shouldNudge=${replyForNudge ? shouldNudge(replyForNudge) : false} nudgeCount=${nudgeCount}/${MAX_NUDGES}`);
-                }
-              }
-              resolve();
-            }
-          };
-          xhr.send(bodyStr);
-        });
-      } catch (e) {
-        d(`auto-continue nudge failed: ${e.message}`);
         loopState.streamActive = false;
       }
     }
@@ -5679,7 +5503,10 @@ Please report this to https://github.com/markedjs/marked.`, e) {
       currentRawText = "";
       currentReasoning = "";
       thinkUserToggled = false;
-      streamRenderTimer = null;
+      if (streamRenderTimer) {
+        clearTimeout(streamRenderTimer);
+        streamRenderTimer = null;
+      }
       scrollToBottom(true);
     }
     let streamRenderTimer = null;
@@ -6394,7 +6221,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
       if (e.key === "Escape" && isOpen) hide();
     });
     function renderProjects(projects, currentId) {
-      projectList.innerHTML = "";
+      projectList.replaceChildren();
       for (const p of projects) {
         const item = el("div", { className: `studio-project-item${p.id === currentId ? " active" : ""}` }, [
           icon(Icons.folder, 14),
@@ -6696,7 +6523,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     mcpTab.appendChild(mcpServerList);
     mcpTab.appendChild(mcpAddBtn);
     function renderMcpServers() {
-      mcpServerList.innerHTML = "";
+      mcpServerList.replaceChildren();
       if (globalState.mcpServers.length === 0) {
         mcpServerList.appendChild(el("div", { className: "studio-empty-state", text: "\u6682\u65E0\u914D\u7F6E\u7684 MCP \u670D\u52A1\u5668" }));
         return;
@@ -6745,7 +6572,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     const skillsList = el("div", { className: "studio-skills-list" });
     skillsTab.appendChild(skillsList);
     function renderSkillsList() {
-      skillsList.innerHTML = "";
+      skillsList.replaceChildren();
       if (globalState.skills.length === 0) {
         skillsList.appendChild(el("div", { className: "studio-empty-state", text: "\u6682\u65E0\u6280\u80FD\uFF0C\u70B9\u51FB\u626B\u63CF\u6309\u94AE\u626B\u63CF\u6280\u80FD\u76EE\u5F55" }));
         return;
@@ -6768,7 +6595,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     const memoryList = el("div", { className: "studio-memory-list" });
     memoryTab.appendChild(memoryList);
     function renderMemories() {
-      memoryList.innerHTML = "";
+      memoryList.replaceChildren();
       if (globalState.memories.length === 0) {
         memoryList.appendChild(el("div", { className: "studio-empty-state", text: "\u6682\u65E0\u4FDD\u5B58\u7684\u8BB0\u5FC6" }));
         return;
@@ -6809,7 +6636,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         const h2 = await fetch("http://127.0.0.1:8762/healthz").then((r) => r.json());
         leverTab.querySelector("#lh-status").textContent = h2.ok ? "\u8FD0\u884C\u4E2D" : "\u5F02\u5E38";
         const data = await fetch("http://127.0.0.1:8762/v1/applications").then((r) => r.json());
-        lhAppList.innerHTML = "";
+        lhAppList.replaceChildren();
         for (const app of data.applications.slice(0, 20)) {
           const row = el("div", { className: "studio-memory-item" });
           row.innerHTML = `<div class="studio-memory-content"><div class="studio-memory-name">${app.name}</div><div class="studio-memory-text">${Math.round(app.size / 10) / 100} KB</div></div>`;
@@ -6976,7 +6803,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
       renderProjectList();
     }
     function renderProjectList() {
-      projectList.innerHTML = "";
+      projectList.replaceChildren();
       const filtered = projects.filter(
         (p) => !searchQuery || p.name.toLowerCase().includes(searchQuery) || p.path.toLowerCase().includes(searchQuery)
       );
@@ -7157,7 +6984,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
       return "\uFF08\u65E0\u6CD5\u52A0\u8F7D SKILL.md \u5185\u5BB9\uFF09";
     }
     function renderSkills() {
-      skillList.innerHTML = "";
+      skillList.replaceChildren();
       const filtered = skills.filter(
         (s) => !searchQuery || s.name.toLowerCase().includes(searchQuery) || s.description.toLowerCase().includes(searchQuery)
       );
@@ -7477,9 +7304,9 @@ Please report this to https://github.com/markedjs/marked.`, e) {
       nameInput.value = serverId ?? "";
       cmdInput.value = "";
       urlInput.value = "";
-      argsList.innerHTML = "";
-      envList.innerHTML = "";
-      headersList.innerHTML = "";
+      argsList.replaceChildren();
+      envList.replaceChildren();
+      headersList.replaceChildren();
       transportType = "stdio";
       transportSelect.value = "stdio";
       updateTransportFields();
@@ -7629,7 +7456,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
       isOpen ? hide() : show();
     });
     function renderArtifacts() {
-      artifactList.innerHTML = "";
+      artifactList.replaceChildren();
       if (artifacts.length === 0) {
         artifactList.appendChild(el("div", { className: "studio-right-empty", text: "\u6682\u65E0\u4EA7\u7269" }));
         return;
@@ -7648,7 +7475,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
       artifactTitle.querySelector("#artifact-count").textContent = String(artifacts.length);
     }
     function renderTasks() {
-      taskList.innerHTML = "";
+      taskList.replaceChildren();
       if (tasks.length === 0) {
         taskList.appendChild(el("div", { className: "studio-right-empty", text: "\u6682\u65E0\u4EFB\u52A1" }));
         return;
@@ -7662,7 +7489,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
       taskTitle.querySelector("#task-count").textContent = String(tasks.length);
     }
     function renderSkills() {
-      skillTags.innerHTML = "";
+      skillTags.replaceChildren();
       if (globalState.skills.length === 0) {
         skillTags.appendChild(el("span", { className: "studio-right-empty", text: "\u6682\u65E0", style: { padding: "0" } }));
         return;
@@ -7675,7 +7502,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
       }
     }
     function renderRecent() {
-      recentList.innerHTML = "";
+      recentList.replaceChildren();
       if (artifacts.length === 0) {
         recentList.appendChild(el("div", { className: "studio-right-empty", text: "\u6682\u65E0\u6700\u8FD1\u6587\u4EF6" }));
         return;
@@ -8865,8 +8692,10 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     const botId = options2.botId ?? globalThis.__studioBotId ?? "main";
     const capabilities2 = dedupeById([...defaultCapabilities(), ...options2.capabilities ?? []]);
     const executable = capabilities2;
+    const hostToken = globalThis.__studioHostToken;
+    const hostUrl = options2.hostUrl ?? (hostToken ? `${DEFAULT_HOST_URL}?token=${encodeURIComponent(hostToken)}` : DEFAULT_HOST_URL);
     const host = createHostClient({
-      url: options2.hostUrl ?? DEFAULT_HOST_URL,
+      url: hostUrl,
       capabilities: executable,
       reportError: options2.reportError,
       botId
