@@ -181,7 +181,15 @@ export function createSkillsPanel(): { container: HTMLElement; open: () => void;
       const skillIcon = el('div', { className: 'studio-skill-icon' });
       skillIcon.appendChild(icon(Icons.book, 18));
       const skillInfo = el('div', { className: 'studio-skill-info' });
-      skillInfo.innerHTML = `<div class="studio-skill-name">${skill.name}</div><div class="studio-skill-desc">${skill.description}</div>`;
+      // W4：skill.name / skill.description 走 textContent，不进 innerHTML 插值
+      const nameEl = document.createElement('div');
+      nameEl.className = 'studio-skill-name';
+      nameEl.textContent = skill.name ?? '';
+      const descEl = document.createElement('div');
+      descEl.className = 'studio-skill-desc';
+      descEl.textContent = skill.description ?? '';
+      skillInfo.appendChild(nameEl);
+      skillInfo.appendChild(descEl);
       const toggle = el('div', { className: `studio-switch${skill.enabled ? ' on' : ''}` });
       toggle.addEventListener('click', (e) => {
         e.stopPropagation();

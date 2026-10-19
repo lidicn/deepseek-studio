@@ -1,9 +1,12 @@
-/** 对话框基元（焦点陷阱 + Esc + 遮罩） */
+/** 对话框基元（焦点陷阱 + Esc + 遮罩关闭） */
 
 export interface DialogHandle {
   el: HTMLDivElement;
   close(): void;
 }
+
+const FOCUSABLE =
+  'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
 export function dialog(title: string, content: HTMLElement, options?: { closable?: boolean }): DialogHandle {
   const closable = options?.closable ?? true;
@@ -24,6 +27,7 @@ export function dialog(title: string, content: HTMLElement, options?: { closable
   box.setAttribute('role', 'dialog');
   box.setAttribute('aria-modal', 'true');
   box.setAttribute('aria-label', title);
+  box.tabIndex = -1;
   box.style.cssText = [
     'background: var(--studio-bg-panel, #fff)',
     'border-radius: 12px',
@@ -42,18 +46,52 @@ export function dialog(title: string, content: HTMLElement, options?: { closable
   overlay.appendChild(box);
   document.body.appendChild(overlay);
 
+  function collectFocusable(): HTMLElement[] {
+    return Array.from(box.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+      (n) => !n.hasAttribute('disabled'),
+    );
+  }
+
+  function trapTab(e: KeyboardEvent): void {
+    if (e.key !== 'Tab') return;
+    const nodes = collectFocusable();
+    if (nodes.length === 0) {
+      e.preventDefault();
+      box.focus();
+      return;
+    }
+    const first = nodes[0];
+    const last = nodes[nodes.length - 1];
+    const current = document.activeElement as HTMLElement | null;
+    if (e.shiftKey && (current === first || current === box)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && current === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
+  function onKey(e: KeyboardEvent): void {
+    if (e.key === 'Escape' && closable) {
+      e.stopPropagation();
+      close();
+      return;
+    }
+    trapTab(e);
+  }
+
   function close(): void {
     if (!overlay.parentNode) return;
     overlay.parentNode.removeChild(overlay);
-    if (activeElement) activeElement.focus();
+    document.removeEventListener('keydown', onKey);
+    if (activeElement && typeof activeElement.focus === 'function') activeElement.focus();
   }
 
   if (closable) {
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-    document.addEventListener('keydown', function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); }
-    });
   }
+  document.addEventListener('keydown', onKey);
 
   box.focus();
   return { el: box, close };

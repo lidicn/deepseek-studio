@@ -143,6 +143,8 @@ export function el<K extends keyof HTMLElementTagNameMap>(
   const element = document.createElement(tag);
   if (props?.className) element.className = props.className;
   if (props?.text) element.textContent = props.text;
+  // W4：props.html 仅接受「静态模板」或「已经过 DOMPurify.sanitize 的安全 HTML」，
+  // 禁止直接拼接用户输入/工具输出；不可信文本请用 props.text（textContent）。
   if (props?.html) element.innerHTML = props.html;
   if (props?.attrs) {
     for (const [k, v] of Object.entries(props.attrs)) element.setAttribute(k, v);

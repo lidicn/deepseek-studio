@@ -131,8 +131,15 @@ export function createChatRoom(config: ChatRoomRuntimeConfig): ChatRoomHandle {
   // 消息列表
   const messages = el('div', { className: 'studio-chat-messages' });
   const welcome = el('div', { className: 'studio-chat-welcome' });
-  welcome.innerHTML = `<div class="studio-chat-welcome-title">聊天室 · ${config.roomName}</div>`
-    + '<div class="studio-chat-welcome-sub">在下方输入消息，用 @all 或 @成员名 指定回复者</div>';
+  // W4：roomName 走 textContent，不进 innerHTML 插值（防 XSS）
+  const welcomeTitle = document.createElement('div');
+  welcomeTitle.className = 'studio-chat-welcome-title';
+  welcomeTitle.textContent = `聊天室 · ${config.roomName ?? ''}`;
+  welcome.appendChild(welcomeTitle);
+  const welcomeSub = document.createElement('div');
+  welcomeSub.className = 'studio-chat-welcome-sub';
+  welcomeSub.textContent = '在下方输入消息，用 @all 或 @成员名 指定回复者';
+  welcome.appendChild(welcomeSub);
   messages.appendChild(welcome);
 
   // 输入区

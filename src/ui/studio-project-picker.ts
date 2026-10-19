@@ -10,6 +10,7 @@
  */
 
 import { el, icon, Icons, injectStyles, createShadowContainer, globalEvents, globalState, callHostTool } from './studio-ui-core';
+import { escapeHtml } from './sanitizer';
 
 const pickerStyles = `
   .studio-picker-modal { width: 520px; }
@@ -171,11 +172,12 @@ export function createProjectPicker(): { container: HTMLElement; open: () => voi
     for (const p of filtered) {
       const isActive = p.id === globalState.currentProject;
       const item = el('div', { className: `studio-picker-item${isActive ? ' active' : ''}` });
+      // W4：p.name / p.path 经 escapeHtml 转义后再进 innerHTML
       item.innerHTML = `
         <span class="studio-picker-item-icon"></span>
         <div class="studio-picker-item-info">
-          <div class="studio-picker-item-name">${p.name}</div>
-          <div class="studio-picker-item-path">${p.path}</div>
+          <div class="studio-picker-item-name">${escapeHtml(p.name)}</div>
+          <div class="studio-picker-item-path">${escapeHtml(p.path)}</div>
         </div>
       `;
       item.querySelector('.studio-picker-item-icon')!.appendChild(icon(Icons.folder, 18));

@@ -11,6 +11,7 @@
  */
 
 import { el, icon, Icons, injectStyles, createShadowContainer, globalEvents, globalState, callHostTool } from './studio-ui-core';
+import { escapeHtml } from './sanitizer';
 
 const panelStyles = `
   .studio-settings-modal { width: 640px; }
@@ -146,7 +147,7 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
   ];
   for (const pDef of policyDefs) {
     const option = el('div', { className: `studio-policy-option${pDef.id === globalState.policyMode ? ' selected' : ''}` });
-    option.innerHTML = `<div class="studio-policy-radio"></div><div><div class="studio-policy-title">${pDef.title}</div><div class="studio-policy-desc">${pDef.desc}</div></div>`;
+    option.innerHTML = `<div class="studio-policy-radio"></div><div><div class="studio-policy-title">${escapeHtml(pDef.title)}</div><div class="studio-policy-desc">${escapeHtml(pDef.desc)}</div></div>`;
     option.addEventListener('click', async () => {
       policyOptions.querySelectorAll('.studio-policy-option').forEach((o) => o.classList.remove('selected'));
       option.classList.add('selected');
@@ -175,9 +176,10 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
     }
     for (const serverId of globalState.mcpServers) {
       const item = el('div', { className: 'studio-mcp-server-item' });
+      // W4：serverId 经 escapeHtml 转义
       item.innerHTML = `
         <div class="studio-mcp-server-info">
-          <div class="studio-mcp-server-name">${serverId}</div>
+          <div class="studio-mcp-server-name">${escapeHtml(serverId)}</div>
           <div class="studio-mcp-server-cmd">stdio</div>
         </div>
         <div class="studio-mcp-server-actions"></div>
@@ -227,10 +229,11 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
     }
     for (const skill of globalState.skills) {
       const item = el('div', { className: 'studio-mcp-server-item' });
+      // W4：skill.name / description 经 escapeHtml 转义
       item.innerHTML = `
         <div class="studio-mcp-server-info">
-          <div class="studio-mcp-server-name">${skill.name}</div>
-          <div class="studio-mcp-server-cmd">${skill.description}</div>
+          <div class="studio-mcp-server-name">${escapeHtml(skill.name)}</div>
+          <div class="studio-mcp-server-cmd">${escapeHtml(skill.description)}</div>
         </div>
       `;
       skillsList.appendChild(item);
@@ -253,11 +256,12 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
     }
     for (const mem of globalState.memories) {
       const item = el('div', { className: 'studio-memory-item' });
+      // W4：mem.type / name / content 经 escapeHtml 转义
       item.innerHTML = `
-        <span class="studio-memory-type ${mem.type}">${mem.type}</span>
+        <span class="studio-memory-type ${escapeHtml(mem.type)}">${escapeHtml(mem.type)}</span>
         <div class="studio-memory-content">
-          <div class="studio-memory-name">${mem.name}</div>
-          <div class="studio-memory-text">${mem.content}</div>
+          <div class="studio-memory-name">${escapeHtml(mem.name)}</div>
+          <div class="studio-memory-text">${escapeHtml(mem.content)}</div>
         </div>
       `;
       const delBtn = el('button', { className: 'studio-btn sm danger' }, [icon(Icons.trash, 12)]);
@@ -294,7 +298,18 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
       lhAppList.replaceChildren();
       for (const app of data.applications.slice(0, 20)) {
         const row = el('div', { className: 'studio-memory-item' });
-        row.innerHTML = `<div class="studio-memory-content"><div class="studio-memory-name">${app.name}</div><div class="studio-memory-text">${Math.round(app.size / 10) / 100} KB</div></div>`;
+        // W4：app.name 走 textContent，不进 innerHTML 插值
+        const content = document.createElement('div');
+        content.className = 'studio-memory-content';
+        const nameEl = document.createElement('div');
+        nameEl.className = 'studio-memory-name';
+        nameEl.textContent = app.name ?? '';
+        const sizeEl = document.createElement('div');
+        sizeEl.className = 'studio-memory-text';
+        sizeEl.textContent = `${Math.round(app.size / 10) / 100} KB`;
+        content.appendChild(nameEl);
+        content.appendChild(sizeEl);
+        row.appendChild(content);
         lhAppList.appendChild(row);
       }
     } catch {

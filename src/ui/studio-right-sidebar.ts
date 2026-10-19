@@ -191,7 +191,15 @@ export function createRightSidebar(): { container: HTMLElement; toggle: HTMLElem
       const iconEl = el('span', { className: 'studio-right-item-icon' });
       iconEl.appendChild(icon(item.type === 'folder' ? Icons.folder : Icons.file, 14));
       const info = el('div', { className: 'studio-right-item-info' });
-      info.innerHTML = `<div class="studio-right-item-name">${item.name}</div><div class="studio-right-item-meta">${item.modified}</div>`;
+      // W4：item.name / item.modified 走 textContent，不进 innerHTML 插值
+      const nameEl = document.createElement('div');
+      nameEl.className = 'studio-right-item-name';
+      nameEl.textContent = item.name ?? '';
+      const metaEl = document.createElement('div');
+      metaEl.className = 'studio-right-item-meta';
+      metaEl.textContent = item.modified ?? '';
+      info.appendChild(nameEl);
+      info.appendChild(metaEl);
       row.appendChild(iconEl);
       row.appendChild(info);
       row.addEventListener('click', () => globalEvents.emit('ui:open-file', item.path));

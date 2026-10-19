@@ -12,9 +12,32 @@ import DOMPurify from 'dompurify';
 
 marked.setOptions({ gfm: true, breaks: true });
 
+let securityHookInstalled = false;
+
+/**
+ * W4：惰性安装安全 hook——剥离 javascript:/data:/vbscript: 链接 href。
+ * node 测试环境 DOMPurify 无 addHook，故先判类型；浏览器/jsdom 首次渲染时注册一次。
+ */
+function ensureSecurityHook(): void {
+  if (securityHookInstalled) return;
+  if (typeof DOMPurify.addHook !== 'function') return;
+  securityHookInstalled = true;
+  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+    if (node.tagName === 'A') {
+      const href = node.getAttribute('href');
+      if (href && /^\s*(javascript|data|vbscript):/i.test(href)) {
+        node.removeAttribute('href');
+        node.removeAttribute('target');
+        node.removeAttribute('rel');
+      }
+    }
+  });
+}
+
 /** 渲染 markdown 文本为安全 HTML 字符串（同步） */
 export function renderMarkdown(text: string): string {
   try {
+    ensureSecurityHook();
     const src = String(text == null ? '' : text);
     if (!src) return '';
     const html = marked.parse(src, { async: false }) as string;
