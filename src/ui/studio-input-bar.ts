@@ -137,14 +137,6 @@ export function createInputBar(): { container: HTMLElement } {
   skillsBtn.addEventListener('click', () => globalEvents.emit('ui:skills-panel'));
   bar.appendChild(skillsBtn);
 
-  // 插件按钮（预留）
-  const pluginsBtn = el('div', { className: 'studio-bar-item' }, [
-    icon(Icons.puzzle, 14),
-    el('span', { className: 'studio-bar-label', text: '插件' }),
-  ]);
-  pluginsBtn.addEventListener('click', () => globalEvents.emit('ui:plugins'));
-  bar.appendChild(pluginsBtn);
-
   shadow.appendChild(bar);
 
   // 监听项目切换更新显示

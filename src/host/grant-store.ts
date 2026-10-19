@@ -79,7 +79,7 @@ export function createInMemoryGrantStore(defaultTtlMs = 5 * 60_000): GrantStore 
     get(requestId) {
       purgeExpired();
       const g = grants.get(requestId);
-      return g && !g.consumed ? g : g ?? null;
+      return g && !g.consumed ? g : null;
     },
     revoke(requestId) {
       grants.delete(requestId);

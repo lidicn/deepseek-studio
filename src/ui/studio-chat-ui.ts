@@ -493,6 +493,7 @@ export function createStudioChatUI(): StudioChatUIHandle {
   function destroy(): void {
     bottomObserver.disconnect();
     if (streamRenderTimer) { clearTimeout(streamRenderTimer); streamRenderTimer = null; }
+    for (const t of adjustTimers) clearTimeout(t);
     window.removeEventListener('resize', tryAdjust);
     window.removeEventListener('scroll', tryAdjust, { capture: true } as EventListenerOptions);
     window.removeEventListener('keydown', onToggleKey);
@@ -557,9 +558,7 @@ export function createStudioChatUI(): StudioChatUIHandle {
   } else {
     document.addEventListener('DOMContentLoaded', startObserver, { once: true });
   }
-  setTimeout(tryAdjust, 500);
-  setTimeout(tryAdjust, 1500);
-  setTimeout(tryAdjust, 3000);
+  const adjustTimers = [setTimeout(tryAdjust, 500), setTimeout(tryAdjust, 1500), setTimeout(tryAdjust, 3000)];
   // observer 常驻，不再定时断开（SPA 布局会持续变化）
   window.addEventListener('resize', tryAdjust);
   window.addEventListener('scroll', tryAdjust, { passive: true, capture: true });
