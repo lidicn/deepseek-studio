@@ -38,6 +38,8 @@ export interface AgentChannelHost {
   onAgentEvent(cb: (event: AgentLoopEvent) => void): () => void;
   /** v0.28：聊天室结构化事件订阅（ChatRoomEvent → {type:'chat-room-event'} broadcast）。 */
   onChatRoomEvent?: (cb: (event: ChatRoomEvent) => void) => () => void;
+  /** C3：结构化工具运行事件订阅（ToolRunEvent → {type:'tool-run'} broadcast）。 */
+  onToolRunEvent?: (cb: (event: import('../shared/tool-run-event').ToolRunEvent) => void) => () => void;
   readonly policyMode: PolicyMode;
   setPolicyMode(mode: PolicyMode): void;
   readonly workspaceRoot: string | null;
@@ -128,14 +130,18 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
   }
 
   // v0.28：聊天室结构化事件单独广播（与 AgentLoopEvent 的 {type:'event'} 区分）。
-  // UI 据此渲染 bot 回复气泡/摘要，按 roomId 过滤当前房间。
   function broadcastChatRoomEvent(event: ChatRoomEvent): void {
     for (const ws of sockets) safeSend(ws, { type: 'chat-room-event', event });
   }
 
+  // C3：工具运行事件广播
+  function broadcastToolRunEvent(event: import('../shared/tool-run-event').ToolRunEvent): void {
+    for (const ws of sockets) safeSend(ws, { type: 'tool-run', event });
+  }
+
   const unsubscribe = options.host.onAgentEvent(broadcast);
-  // onChatRoomEvent 可选（无 chatRooms 配置时 host 不提供）；缺省不订阅。
   const unsubscribeChatRoom = options.host.onChatRoomEvent?.(broadcastChatRoomEvent);
+  const unsubscribeToolRun = options.host.onToolRunEvent?.(broadcastToolRunEvent);
 
   wss.on('connection', (ws: WebSocket, req) => {
     // 鉴权：query token 必须与当前 accepted 集合之一匹配（QD-R2-12：接轮换环 + 常数时间比较）。
@@ -252,6 +258,7 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
     dispose() {
       unsubscribe();
       unsubscribeChatRoom?.();
+      unsubscribeToolRun?.();
       // F-L1：移除 upgrade 监听器，避免泄漏
       (options.server as unknown as { removeListener: (e: string, fn: unknown) => void })
         .removeListener('upgrade', onUpgrade as never);

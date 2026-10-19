@@ -236,6 +236,8 @@ export interface DesktopHost {
   onAgentEvent(cb: (event: AgentLoopEvent) => void): () => void;
   /** v0.28：订阅聊天室结构化事件（ChatRoomEvent → agent-channel broadcast / UI 渲染）；返回退订函数。 */
   onChatRoomEvent(cb: (event: ChatRoomEvent) => void): () => void;
+  /** C3：订阅结构化工具运行事件（ToolRunEvent → Workbench UI）；返回退订函数。 */
+  onToolRun(cb: (event: import('../shared/tool-run-event').ToolRunEvent) => void): () => void;
 }
 
 export interface AgentFacade {
@@ -297,6 +299,17 @@ function createHostResourceScope(): ContentResourceScope {
 const DEFAULT_SESSION_GRANT_TTL_MS = DEFAULT_SECRET_GRACE_MS;
 
 export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
+  // C3：tool run 事件追踪（Workbench UI 投影）
+  const pendingRuns = new Map<string, { tool: string; botId: string; startedAt: number }>();
+  const toolRunListeners = new Set<(event: import('../shared/tool-run-event').ToolRunEvent) => void>();
+  function emitToolRun(event: import('../shared/tool-run-event').ToolRunEvent): void {
+    for (const cb of toolRunListeners) { try { cb(event); } catch { /* ignore */ } }
+  }
+  function onToolRun(cb: (event: import('../shared/tool-run-event').ToolRunEvent) => void): () => void {
+    toolRunListeners.add(cb);
+    return () => toolRunListeners.delete(cb);
+  }
+
   // 密钥环：轮换期新密钥立即生效、旧密钥在宽限期内仍被接受，
   // 避免「轮换瞬间已签发的 grant 全部失效」把正在跑的 agent 链路打断。
   const hostSecretRing: SecretRing = createSecretRing(options.secret);
@@ -1388,6 +1401,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
               chatRoomListeners.add(cb);
               return () => chatRoomListeners.delete(cb);
             },
+            // C3：工具运行事件订阅（ToolRunEvent → agent-channel broadcast）
+            onToolRunEvent: (cb) => onToolRun(cb),
             get policyMode() {
               return policyMode;
             },
@@ -1416,10 +1431,36 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         },
         // M1：AgentLoop 依据该计数决定「工具执行完毕 → 请求模型续跑」。
         // v0.24：按发起 botId 累加对应 bot 的独立 counter（main 缺省保持 v0.23 行为）。
-        onToolCall: ({ botId }) => {
+        onToolCall: ({ callId, tool, botId }) => {
           const state = botRegistry.getState(botId ?? 'main');
           if (state) state.toolCallCounter.current += 1;
+          // C3：记录 tool run started 事件
+          pendingRuns.set(callId, { tool, botId: botId ?? 'main', startedAt: Date.now() });
+          emitToolRun({ type: 'tool-run', runId: callId, tool, phase: 'started', botId });
         },
+        onToolResult: ({ callId, tool, ok, error, botId }) => {
+          // C3：根据结果发终态事件
+          const pending = pendingRuns.get(callId);
+          const durationMs = pending ? Date.now() - pending.startedAt : undefined;
+          let phase: 'succeeded' | 'failed' | 'denied' | 'cancelled' = 'succeeded';
+          let errorCode: string | undefined;
+          if (!ok) {
+            if (error && /consent-denied|policy-denied|denied/.test(error)) {
+              phase = 'denied';
+              errorCode = error;
+            } else if (error && /cancel|abort|stopped/.test(error)) {
+              phase = 'cancelled';
+              errorCode = error;
+            } else {
+              phase = 'failed';
+              errorCode = error;
+            }
+          }
+          pendingRuns.delete(callId);
+          emitToolRun({ type: 'tool-run', runId: callId, tool, phase, durationMs, errorCode, botId });
+        },
+        // T5：页端断开 → pendingRuns 全部未完成 runId 标 failed/page-disconnected 并清空（无定时器）。
+        onDisconnect: () => failPendingRunsOnDisconnect(pendingRuns, emitToolRun),
         // v0.9：页端 auto-continue 推送的模型回复（不渲染到 DOM）。
         // v0.24：写入发起 bot 的 lastAutoReply 缓冲。
         onAssistantReply: (text, loop, botId) => {
@@ -1509,7 +1550,31 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       chatRoomListeners.add(cb);
       return () => chatRoomListeners.delete(cb);
     },
+    // C3：结构化工具运行事件订阅（供 Workbench UI 消费）
+    onToolRun,
   };
+}
+
+/**
+ * T5：页端断线兜底——把 pendingRuns 中所有未完成 runId 统一标 failed / page-disconnected，再清空。
+ * 纯函数：原地消费传入的 Map，不新建定时器；供 hub onDisconnect 接线与单测复用。
+ */
+export function failPendingRunsOnDisconnect(
+  pending: Map<string, { tool: string; botId: string; startedAt: number }>,
+  emit: (event: import('../shared/tool-run-event').ToolRunEvent) => void,
+): void {
+  for (const [callId, entry] of pending) {
+    emit({
+      type: 'tool-run',
+      runId: callId,
+      tool: entry.tool,
+      phase: 'failed',
+      errorCode: 'page-disconnected',
+      botId: entry.botId,
+      durationMs: Date.now() - entry.startedAt,
+    });
+  }
+  pending.clear();
 }
 
 /** 目录校验：不存在或不是目录返回 null（供 setWorkspaceRoot fail-closed）。 */

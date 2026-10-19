@@ -91,6 +91,11 @@ export interface PageRuntimeHubOptions {
   onMemoriesUpdate?: (memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>) => void;
   onToolResult?: (info: { callId: string; tool: string; ok: boolean; error?: string; botId?: string }) => void;
   /**
+   * 页端连接断开（ws close / error）观察钩子。观察者，不影响 hub 自身的 pending 失败逻辑。
+   * T5：宿主据此把本侧 pendingRuns 中未完成 runId 统一标 failed / page-disconnected 并清空。
+   */
+  onDisconnect?: (info: { id: string; botId?: string }) => void;
+  /**
    * v0.31 账号身份锁：hello 上报的 accountFingerprint 与已登记页重复（同账号双窗口）。
    * 防封号铁律「1 槽位 : 1 账号 : 1 窗口」的违例告警。命中后该连接已被标记 untrusted
    * + 推 account-duplicate-block（fail-closed），本回调仅用于告警/落事件。
@@ -429,8 +434,8 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           });
       }
     });
-    ws.on('close', () => { clients.delete(id); failAllPending('page-disconnected'); });
-    ws.on('error', () => { clients.delete(id); failAllPending('page-disconnected'); });
+    ws.on('close', () => { clients.delete(id); failAllPending('page-disconnected'); options.onDisconnect?.({ id, botId: rec.botId }); });
+    ws.on('error', () => { clients.delete(id); failAllPending('page-disconnected'); options.onDisconnect?.({ id, botId: rec.botId }); });
   });
 
   return {
