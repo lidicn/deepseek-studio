@@ -45,6 +45,18 @@ export class EventBus {
       try { h(payload); } catch { /* ignore */ }
     });
   }
+
+  handlerCount(event?: string): number {
+    if (event) return this.handlers.get(event)?.size ?? 0;
+    let total = 0;
+    for (const set of this.handlers.values()) total += set.size;
+    return total;
+  }
+
+  clear(event?: string): void {
+    if (event) { this.handlers.delete(event); return; }
+    this.handlers.clear();
+  }
 }
 
 /** 全局事件总线实例 */
@@ -54,7 +66,7 @@ export const globalEvents = new EventBus();
 export const globalState: UIState = {
   currentProject: null,
   workspaceRoot: null,
-  policyMode: 'full',
+  policyMode: 'auto',
   localToolsEnabled: true,
   skills: [],
   mcpServers: [],
