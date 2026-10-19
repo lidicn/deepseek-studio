@@ -85,6 +85,8 @@ export interface PageRuntimeHubOptions {
   onToolCall?: (info: { callId: string; invocationName: string; tool: string; params: unknown; botId?: string }) => void;
   /** v0.9：页端 auto-continue 收到模型最终回复时的回调。v0.24：带 botId 定位写入哪个 bot 的缓冲。 */
   onAssistantReply?: (text: string, loop: number, botId?: string) => void;
+  /** M9：流式 delta 回调。 */
+  onStreamDelta?: (text: string, botId?: string) => void;
   /** v1.0：宿主推送记忆列表更新时的回调。 */
   onMemoriesUpdate?: (memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>) => void;
   onToolResult?: (info: { callId: string; tool: string; ok: boolean; error?: string; botId?: string }) => void;
@@ -302,6 +304,9 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
       } else if (msg.type === 'assistant-reply') {
         // v0.24：以 hello 登记的 rec.botId 为准定位是哪个 bot 的 auto-continue 回复。
         options.onAssistantReply?.(msg.text, msg.loop, rec.botId);
+      } else if (msg.type === 'stream-delta') {
+        // M9：流式 delta 推给宿主（web-engine onDelta）
+        options.onStreamDelta?.(msg.text, rec.botId);
       } else if (msg.type === 'kv-get') {
         const store = options.kvStore;
         if (!store) { safeSend(ws, { type: 'kv-result', requestId: msg.requestId, ok: false, error: 'no-kv-store' }); return; }

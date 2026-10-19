@@ -71,6 +71,8 @@ export interface MainWorldInterceptorOptions {
   onMemoriesUpdate?: (memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>) => void;
   /** v0.19：自建聊天 UI overlay。SSE 文本推送到此 UI，不再写入 DeepSeek DOM。 */
   chatUI?: StudioChatUIHandle;
+  /** M9：流式 delta 推送——每收到一段可见文本就推给宿主（用于 web-engine onDelta）。 */
+  onStreamDelta?: (text: string) => void;
 }
 
 export interface MainWorldInterceptorHandle {
@@ -490,6 +492,7 @@ function installXhrHooks(
   diag: InterceptorDiag = () => {},
   loopState?: LoopState,
   capturedHeaders?: Record<string, string>,
+  onStreamDelta?: (text: string) => void,
 ): () => void {
   if (typeof XMLHttpRequest === 'undefined') return () => {};
   const proto = XMLHttpRequest.prototype;
@@ -666,6 +669,8 @@ function installXhrHooks(
             if (loopState?.chatUI) {
               loopState.chatUI.appendToAssistantMessage(visible);
             }
+            // M9：流式 delta 推给宿主（web-engine onDelta）
+            onStreamDelta?.(visible);
             // v1.5：工具解析走原始 data 文本（不经过显示用改写），保住转义引号
             const { calls } = parser.feed(rawDataText || visible);
             for (const c of calls) forward(c);
@@ -689,7 +694,7 @@ function installXhrHooks(
  */
 export function installMainWorldInterceptor(options: MainWorldInterceptorOptions): MainWorldInterceptorHandle {
   console.log('[interceptor] installed, fetch hook + XHR hook ready');
-  const { sender, diag, onAssistantReply, onMemoriesUpdate, chatUI } = options;
+  const { sender, diag, onAssistantReply, onMemoriesUpdate, chatUI, onStreamDelta } = options;
   const pending: PendingResult[] = [];
   const d: InterceptorDiag = diag ?? (() => {});
   // v1.0：从全局变量读取初始记忆（entry.ts 在连接建立时设置）
@@ -1044,7 +1049,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
 
   const origFetch = window.fetch ? window.fetch.bind(window) : undefined;
   const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending, d, loopState) : undefined;
-  const stopXhr = installXhrHooks(forward, pending, d, loopState, capturedHeaders);
+  const stopXhr = installXhrHooks(forward, pending, d, loopState, capturedHeaders, onStreamDelta);
 
   // v1.0：设置记忆更新回调
   if (onMemoriesUpdate) {

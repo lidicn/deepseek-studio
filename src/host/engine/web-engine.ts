@@ -26,6 +26,7 @@ export function decideCompletion(opts: {
   timedOut: boolean;
   dispatchFailed: boolean;
   stopped: boolean;
+  partial?: boolean;
 }): CompletionStatus {
   if (opts.dispatchFailed) return 'disconnected';
   if (opts.timedOut) return 'truncated';
@@ -111,6 +112,8 @@ export interface WebEngine extends ModelEngine {
   getReconnectAttempts(): number;
   /** S15：完整清理（metrics dispose、缓冲清空）。 */
   destroy(): void;
+  /** M9：外部推流式 delta（页端 SSE 逐 token 推送），转发给 onDelta。 */
+  pushStreamDelta(text: string): void;
 }
 
 export function createWebEngine(options: WebEngineOptions): WebEngine {
@@ -204,8 +207,18 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
       metrics?.dispose();
       currentRecords = null;
     },
+    pushStreamDelta(text: string): void {
+      // M9：外部推流式 delta，转发给 onDelta（UI 打字机效果）
+      options.onDelta?.(text);
+    },
     async health() {
-      const r = await options.dispatch('chat-read', {});
+      // M9：health 探测加 5 秒超时，避免页端无响应时挂死
+      const r = await Promise.race([
+        options.dispatch('chat-read', {}),
+        new Promise<{ ok: false; error: string }>((resolve) =>
+          setTimeout(() => resolve({ ok: false, error: 'health-timeout' }), 5000),
+        ),
+      ]);
       if (r.ok) return { ok: true };
       return { ok: false, reason: r.error ?? 'chat-read-failed' };
     },

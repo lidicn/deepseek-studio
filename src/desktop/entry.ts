@@ -144,6 +144,7 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
         sender: (req) => host.sendToolCall(req),
         diag: (msg) => host.log(`[interceptor] ${msg}`),
         onAssistantReply: (text, loop) => host.assistantReply(text, loop),
+        onStreamDelta: (text) => host.streamDelta(text),
         onMemoriesUpdate: (memories) => {
           (globalThis as { __studioMemories?: unknown }).__studioMemories = memories;
         },

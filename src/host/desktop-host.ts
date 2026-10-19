@@ -1431,6 +1431,13 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           state.lastAutoReply.updatedAt = Date.now();
           state.lastAutoReply.fresh = true;
         },
+        // M9：流式 delta 转发给对应 bot 的 engine（UI 打字机效果）
+        onStreamDelta: (text, botId) => {
+          const bot = botId ? botRegistry.get(botId) : mainBot;
+          if (bot && 'pushStreamDelta' in bot.engine) {
+            (bot.engine as { pushStreamDelta(text: string): void }).pushStreamDelta(text);
+          }
+        },
         // v0.31 账号身份锁：hello 上报指纹与已登记页重复（同账号双窗口 = 必封）。
         // 该连接已被 page-runtime 标 untrusted + 推阻塞覆盖层（fail-closed）；
         // 本回调仅告警（center 已配 onError 打 warn）。聊天室告警事件待 system-alert kind 落地再加。

@@ -90,6 +90,8 @@ export type PageToHostMessage =
   | { type: 'runtime-envelope'; envelope: { command: string; requestId: string; payload: unknown } }
   /** v0.9：页端 auto-continue（POW 直连 API）收到模型最终回复后，推送给宿主。 */
   | { type: 'assistant-reply'; text: string; loop: number }
+  /** M9：页端 SSE 流式 delta 推送（逐 token）。 */
+  | { type: 'stream-delta'; text: string }
   /** 调试：debug-eval 结果。 */
   | { type: 'debug-eval-result'; requestId: string; ok: boolean; result: string };
 

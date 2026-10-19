@@ -66,6 +66,8 @@ export interface HostClient {
   log(text: string): void;
   /** v0.9：auto-continue 收到模型最终回复时推送给宿主。 */
   assistantReply(text: string, loop: number): void;
+  /** M9：流式 delta 推送——页端每收到一段模型输出就推给宿主。 */
+  streamDelta(text: string): void;
   /** v1.0：宿主推送记忆列表更新时的回调。 */
   onMemoriesUpdate?: (memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>) => void;
   /** v0.7：KV 读写（宿主侧落盘 backend）。 */
@@ -347,6 +349,9 @@ export function createHostClient(options: HostClientOptions): HostClient {
     },
     assistantReply(text: string, loop: number) {
       send({ type: 'assistant-reply', text, loop });
+    },
+    streamDelta(text: string) {
+      send({ type: 'stream-delta', text });
     },
     kvGet(key) {
       return new Promise((resolve, reject) => {
