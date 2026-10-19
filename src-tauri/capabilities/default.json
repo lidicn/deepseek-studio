@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "DeepSeek++ Studio 默认能力（窗口 main 的权限集合）",
-  "windows": ["main"],
+  "windows": ["main", "workbench"],
   "permissions": ["core:default"]
 }

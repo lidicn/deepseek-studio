@@ -377,15 +377,57 @@ fn sanitize_window_label(raw: &str) -> String {
     if out.is_empty() { "bot".to_string() } else { out }
 }
 
-/// C5：打开 Workbench 窗口（前端 Workbench 壳的 Tauri 入口）。
+/// W1：工作台窗口 URL（`http://host:port/agent`），与 sidecar 读同一份 config.json 的
+/// host/port；缺文件/解析失败回落 127.0.0.1:8760。不 panic。
+fn workbench_url() -> String {
+    let (host, port) = dirs::home_dir()
+        .map(|h| h.join(".config").join("deepseek-studio").join("config.json"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<StudioConfig>(&s).ok())
+        .map(|c| {
+            (
+                c.host.unwrap_or_else(|| "127.0.0.1".to_string()),
+                c.port.unwrap_or(8760),
+            )
+        })
+        .unwrap_or_else(|| ("127.0.0.1".to_string(), 8760));
+    format!("http://{}:{}/agent", host, port)
+}
+
+/// W1：打开 Workbench 窗口。已存在则 show + unminimize + set_focus，不重复建窗；
+/// 否则按 workbench_url() 新建 External 窗口。URL 解析/建窗失败返回 Err，不 unwrap/expect。
 #[tauri::command]
-fn open_workbench() -> Result<(), String> {
+fn open_workbench(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("workbench") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    let url = Url::parse(&workbench_url()).map_err(|e| format!("invalid workbench url: {}", e))?;
+    WebviewWindowBuilder::new(&app, "workbench", WebviewUrl::External(url))
+        .title("DeepSeek++ Studio · 工作台")
+        .inner_size(1440.0, 900.0)
+        .min_inner_size(1024.0, 720.0)
+        .build()
+        .map_err(|e| format!("failed to create workbench window: {}", e))?;
+    Ok(())
+}
+
+/// W1：聚焦主窗口（show + unminimize + set_focus）。
+#[tauri::command]
+fn focus_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+    }
     Ok(())
 }
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![open_workbench])
+        .invoke_handler(tauri::generate_handler![open_workbench, focus_main_window])
         // v0.30 单实例锁：第二个 deepseek-studio.exe 进程不再创建窗口，
         // 而是聚焦到已有主窗口（根治多实例 × N bot 窗口 = 窗口爆炸）。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -534,10 +576,25 @@ fn main() {
             // v0.12 Phase 3：系统托盘
             #[cfg(feature = "tray-icon")]
             {
+                use tauri::menu::{MenuBuilder, MenuItemBuilder};
                 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+                // W1：扩展现有 main-tray（不建第二托盘），四项菜单：打开工作台 / 显示 / 隐藏 / 退出。
+                let tray_menu = MenuBuilder::new(app)
+                    .item(MenuItemBuilder::with_id("open-workbench", "打开工作台").build(app)?)
+                    .separator()
+                    .item(MenuItemBuilder::with_id("show", "显示主窗口").build(app)?)
+                    .item(MenuItemBuilder::with_id("hide", "隐藏主窗口").build(app)?)
+                    .separator()
+                    .item(MenuItemBuilder::with_id("quit", "退出").build(app)?)
+                    .build()?;
                 let tray = TrayIconBuilder::with_id("main-tray")
                     .tooltip("DeepSeek++ Studio")
+                    .menu(&tray_menu)
                     .on_menu_event(|app, event| match event.id().as_ref() {
+                        "open-workbench" => {
+                            // W1：托盘唯一新增入口 → 调 open_workbench（已存在则聚焦，否则建窗）。
+                            let _ = open_workbench(app.clone());
+                        }
                         "show" => {
                             if let Some(win) = app.get_webview_window("main") {
                                 let _ = win.show();

@@ -118,6 +118,34 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
   // 跳过 chat overlay 与 sidebar UI，避免遮挡 DeepSeek 登录框/输入框。
   const isBotWindow = botId !== 'main';
   if (typeof globalThis.document !== 'undefined') {
+    // W1：主窗口暴露 Tauri 工作台/聚焦入口。调用时求值（document_start 时
+    // __TAURI_INTERNALS__ 可能尚未就绪）；非 Tauri 环境只 warn，不抛异常、不影响既有装配。
+    if (!isBotWindow) {
+      const g = globalThis as {
+        __studioOpenWorkbench?: () => void;
+        __studioFocusMain?: () => void;
+      };
+      g.__studioOpenWorkbench = () => {
+        try {
+          const internals = (globalThis as {
+            __TAURI_INTERNALS__?: { invoke?: (cmd: string) => unknown };
+          }).__TAURI_INTERNALS__;
+          internals?.invoke?.('open_workbench');
+        } catch {
+          console.warn('[StudioUI] open_workbench unavailable (not running under Tauri)');
+        }
+      };
+      g.__studioFocusMain = () => {
+        try {
+          const internals = (globalThis as {
+            __TAURI_INTERNALS__?: { invoke?: (cmd: string) => unknown };
+          }).__TAURI_INTERNALS__;
+          internals?.invoke?.('focus_main_window');
+        } catch {
+          console.warn('[StudioUI] focus_main_window unavailable (not running under Tauri)');
+        }
+      };
+    }
     const isLoginPage = location.pathname.includes('/login') || location.pathname.includes('/signin');
     if (!isBotWindow && !isLoginPage) {
       // C4：Focus 模式待 C5 托盘菜单项触发，本期不自动挂载
