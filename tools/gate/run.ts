@@ -31,6 +31,7 @@ const blockingSteps: Step[] = [
   { name: 'boundary-audit', cmd: 'npx tsx tools/audit/boundary.ts' },
   { name: 'contract-guard', cmd: 'npx tsx tools/contract/check.ts' },
   { name: 'coverage-check', cmd: 'npx tsx tools/coverage/check.ts' },
+  { name: 'empty-files', cmd: 'npx tsx tools/audit/empty-files.ts' },
 ];
 
 /** 信息级：红了照常合，输出进 logs/gate-info.log。 */
