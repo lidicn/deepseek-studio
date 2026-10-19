@@ -66,6 +66,7 @@ import { createTaskLoop } from './kernel/task-loop';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import type { ConsentMeta } from './protocol';
 import {
   DEFAULT_POLICY_MODE,
@@ -1174,7 +1175,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         const relPath = resolvedPath && wsRoot
           ? path.relative(wsRoot, resolvedPath).replace(/\\/g, '/')
           : null;
-        const wsHash = wsRoot ? require('crypto').createHash('sha1').update(wsRoot).digest('hex').slice(0, 12) : '';
+        const wsHash = wsRoot ? createHash('sha1').update(wsRoot).digest('hex').slice(0, 12) : '';
         const wlResult = routeConsent({
           toolId: name,
           params: paramsBag,
@@ -1266,7 +1267,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         const wsRoot = mutableWorkspace.current?.root;
         if (wsRoot) {
           const relPath = path.relative(wsRoot, p).replace(/\\/g, '/');
-          const wsHash = require('crypto').createHash('sha1').update(wsRoot).digest('hex').slice(0, 12);
+          const wsHash = createHash('sha1').update(wsRoot).digest('hex').slice(0, 12);
           shadowStore.capture({ absPath: p, relPath, workspaceHash: wsHash, source: name === 'file.edit' ? 'file.edit' : 'file.write' });
         }
       }
