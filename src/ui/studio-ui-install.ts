@@ -1,4 +1,6 @@
 /**
+ * @deprecated C4 起不再作为默认入口，保留至 C7 收口
+ *
  * StudioUI 整合入口（v1.0）
  *
  * 将所有 UI 组件挂载到 deepseek 网页：

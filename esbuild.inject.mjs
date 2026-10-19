@@ -16,6 +16,7 @@ await build({
   target: 'es2020',
   outfile: 'src-tauri/inject/entry.js',
   logLevel: 'info',
+  minify: true,
 });
 
 // 自动同步到 Tauri debug 运行时目录（工作目录是 target/debug/）
@@ -34,4 +35,5 @@ await build({
   target: 'es2020',
   outfile: 'dist/agent-panel.js',
   logLevel: 'info',
+  minify: true,
 });

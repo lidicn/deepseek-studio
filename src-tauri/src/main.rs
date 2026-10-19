@@ -377,8 +377,15 @@ fn sanitize_window_label(raw: &str) -> String {
     if out.is_empty() { "bot".to_string() } else { out }
 }
 
+/// C5：打开 Workbench 窗口（前端 Workbench 壳的 Tauri 入口）。
+#[tauri::command]
+fn open_workbench() -> Result<(), String> {
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![open_workbench])
         // v0.30 单实例锁：第二个 deepseek-studio.exe 进程不再创建窗口，
         // 而是聚焦到已有主窗口（根治多实例 × N bot 窗口 = 窗口爆炸）。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {

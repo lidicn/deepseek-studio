@@ -20,10 +20,9 @@ import { createChatInsertCapability } from '../capabilities/chat-insert';
 import { createChatSendCapability } from '../capabilities/chat-send';
 import { createHostClient, type HostClient } from './host-client';
 import { installMainWorldInterceptor } from '../inject/main-world-interceptor';
+import { createChatRoom, type ChatRoomRuntimeConfig } from '../ui/studio-chat-room';
 import { freezeStudioObject, startIntegrityProbe } from './integrity';
 import type { ExecutableCapability } from '../capabilities/types';
-import { createStudioChatUI } from '../ui/studio-chat-ui';
-import { installStudioUI } from '../ui/studio-ui-install';
 
 const DEFAULT_HOST_URL = 'ws://127.0.0.1:8760/studio';
 
@@ -119,26 +118,23 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
   // 跳过 chat overlay 与 sidebar UI，避免遮挡 DeepSeek 登录框/输入框。
   const isBotWindow = botId !== 'main';
   if (typeof globalThis.document !== 'undefined') {
-    // v0.19：创建自建聊天 UI overlay，在拦截器之前挂载到 DOM。
-    // SSE 文本由拦截器推送到此 UI，不再写入 DeepSeek DOM。
-    // initialization_script 在 document_start 执行，document.body 可能尚不存在，
-    // 延迟到 DOMContentLoaded 再 append。
-    let chatUI;
-    // M9：登录页不注入 chatUI overlay，避免遮挡二维码和登录表单
     const isLoginPage = location.pathname.includes('/login') || location.pathname.includes('/signin');
     if (!isBotWindow && !isLoginPage) {
+      // C4：Focus 模式待 C5 托盘菜单项触发，本期不自动挂载
+
+      // T4：聊天室最小挂载（仅 chat-room；不恢复 sidebar/input-bar/settings/project/skills/mcp/right-sidebar）。
+      // 无 window.__studioChatConfig（config.json 无 chatRooms）→ warn 不挂载，向后兼容。
       try {
-        chatUI = createStudioChatUI();
-        const mount = () => {
-          try { document.body.appendChild(chatUI!.container); } catch { /* body 不可用，忽略 */ }
-        };
-        if (document.body) {
-          mount();
+        const chatCfg = (globalThis as { __studioChatConfig?: ChatRoomRuntimeConfig }).__studioChatConfig;
+        if (chatCfg && chatCfg.token && chatCfg.roomId) {
+          const chatRoom = createChatRoom(chatCfg);
+          document.body.appendChild(chatRoom.container);
+          console.log('[StudioUI] chat room installed:', chatCfg.roomName);
         } else {
-          document.addEventListener('DOMContentLoaded', mount, { once: true });
+          console.warn('[StudioUI] chat room skipped: no __studioChatConfig (config.json missing chatRooms?)');
         }
-      } catch (err) {
-        options.reportError?.('failed to create studio chat UI', err);
+      } catch (e) {
+        options.reportError?.('failed to mount chat room', e);
       }
     }
     try {
@@ -150,7 +146,7 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
         onMemoriesUpdate: (memories) => {
           (globalThis as { __studioMemories?: unknown }).__studioMemories = memories;
         },
-        chatUI,
+        chatUI: undefined,
       });
     } catch (err) {
       options.reportError?.('failed to install main-world interceptor', err);
@@ -180,27 +176,7 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
     });
   }
 
-  // v0.20 wire StudioUI（仅主窗口；bot 窗口不需要 sidebar）
-  if (!isBotWindow && typeof globalThis.document !== 'undefined') {
-    const mountStudioUI = () => {
-      try {
-        installStudioUI({
-          host: {
-            sendToolCall: (req) => host.sendToolCall(req),
-            log: (t) => host.log(t),
-          },
-        });
-        console.log('[StudioUI] installed');
-      } catch (err) {
-        console.error('[StudioUI] install failed', err);
-      }
-    };
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', mountStudioUI, { once: true });
-    } else {
-      mountStudioUI();
-    }
-  }
+  // C4：installStudioUI 调用点已删除，保留至 C7 收口
   return { bridge, origin, sessionId, host };
 }
 

@@ -14,6 +14,9 @@ declare global {
 /** 让本文件成为 ES 模块（declare global 的前置条件）。 */
 export {};
 
+import { toolRunCard } from './primitives/tool-run-card';
+import type { ToolRunEvent } from '../shared/tool-run-event';
+
 import { createStepFlowContainer, type StepFlowHandle } from '../inject/step-flow-ui';
 
 type PolicyMode = 'workspace' | 'ask' | 'auto' | 'full';
@@ -142,6 +145,15 @@ function renderEvent(event: AgentEvent): void {
   }
 }
 
+function renderToolRun(event: ToolRunEvent): void {
+  if (!event || !event.tool) return;
+  try {
+    stream.querySelectorAll('.welcome').forEach((n) => n.remove());
+    stream.appendChild(toolRunCard(event));
+    stream.scrollTop = stream.scrollHeight;
+  } catch { /* 未知工具不抛错 */ }
+}
+
 function setRunning(value: boolean): void {
   running = value;
   btnSend.disabled = value || !connected;
@@ -191,6 +203,8 @@ function connect(): void {
       renderEvent(msg.event as AgentEvent);
     } else if (msg.type === 'ack') {
       handleAck(msg);
+    } else if (msg.type === 'tool-run') {
+      renderToolRun(msg.event as ToolRunEvent);
     }
   };
 }
