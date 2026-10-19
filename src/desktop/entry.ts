@@ -124,7 +124,9 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
     // initialization_script 在 document_start 执行，document.body 可能尚不存在，
     // 延迟到 DOMContentLoaded 再 append。
     let chatUI;
-    if (!isBotWindow) {
+    // M9：登录页不注入 chatUI overlay，避免遮挡二维码和登录表单
+    const isLoginPage = location.pathname.includes('/login') || location.pathname.includes('/signin');
+    if (!isBotWindow && !isLoginPage) {
       try {
         chatUI = createStudioChatUI();
         const mount = () => {
