@@ -21,6 +21,7 @@
 | M4 内核并入生产：TaskLoop 接管 `/v1/agent/send`、real-tool-executor 全量接 hostTools、consent 对齐、去续感、快照恢复 | M4 | 改主路径/授权链/共享文件，强耦合 |
 | edit-engine / test-runner 接线进 hostTools | M5 | 碰 desktop-host 注册与授权 |
 | D3 ApiEngine 真实 API key 注入、一行切 provider | M7 | 配置/密钥/接线 |
+| **上游同步治理**（M1 移植文件补 @upstream-commit 锚点 + M2 漂移检测脚本） | **M7 间隙** | 低耦合，顺手做；M3 门禁缓做 |
 | E1 审批三级（safe/ask/deny + 白名单）、E2 git shadow 回滚、E3 Plan/Act | M8 | 安全核心，碰 policy/consent |
 | F1 health 真校验、F3 SSE 直转 onDelta、F4 truncated 口径、F2 冷启动预热 | M9 | 碰 web-engine/interceptor 真机层 |
 | 每单合流：跑 gate、挂工具、补接线测试 | 全程 | 共享文件单写者 |
