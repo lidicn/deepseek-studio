@@ -1,8 +1,9 @@
 /**
- * 智能体面板前端（M1，原生 TS，esbuild 打包为 dist/agent-panel.js）
+ * 智能体面板前端（/agent，原生 TS，esbuild 打包为 dist/agent-panel.js）
  *
  * 经 WS /agent-ws 驱动宿主 AgentLoop：send / stop / set-policy / set-workspace / pick-folder。
- * 会话流渲染 AgentLoop 事件（user/assistant/tool/status/error/done）。
+ * W2：三栏 Workbench —— 消息进中栏画布，tool-run 卡片进右栏 Inspector（复用 tool-run-card），
+ * 连接/运行状态进状态条；禁用态只由 WorkbenchState 的 canSend/canStop 决定。
  */
 
 declare global {
@@ -14,27 +15,23 @@ declare global {
 /** 让本文件成为 ES 模块（declare global 的前置条件）。 */
 export {};
 
-import { toolRunCard } from './primitives/tool-run-card';
 import type { ToolRunEvent } from '../shared/tool-run-event';
-
 import { createStepFlowContainer, type StepFlowHandle } from '../inject/step-flow-ui';
-
-type PolicyMode = 'workspace' | 'ask' | 'auto' | 'full';
-
-interface AgentEvent {
-  type: 'user' | 'assistant' | 'tool' | 'status' | 'error' | 'done';
-  text?: string;
-  step?: number;
-  toolCalls?: number;
-}
-
-interface StatePayload {
-  type: 'state';
-  policyMode: PolicyMode;
-  panelModes: PolicyMode[];
-  workspaceRoot: string | null;
-  running: boolean;
-}
+import {
+  createInitialState,
+  applySocketOpen,
+  applySocketClose,
+  applyState,
+  applyLoopEvent,
+  applyToolRun,
+  canSend,
+  canStop,
+  type WorkbenchState,
+} from './workbench/workbench-state';
+import { appendMessage, getCenterBody } from './workbench/workbench-center';
+import { appendToolRun } from './workbench/workbench-inspector';
+import { renderStatusbar } from './workbench/workbench-statusbar';
+import type { StatePayload, AgentLoopEvent } from './workbench/workbench-types';
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -42,36 +39,62 @@ const $ = <T extends HTMLElement>(id: string): T => {
   return el as T;
 };
 
-const stream = $('stream');
+const canvas = $('center-canvas');
+const inspector = $('right-inspector');
+const statusbar = $('statusbar');
 const input = $<HTMLTextAreaElement>('input');
 const btnSend = $<HTMLButtonElement>('btn-send');
 const btnStop = $<HTMLButtonElement>('btn-stop');
 const btnFolder = $<HTMLButtonElement>('btn-open-folder');
+const btnFocus = $<HTMLButtonElement>('btn-open-focus');
 const wsPath = $('ws-path');
 const connDot = $('conn-dot');
 const connText = $('conn-text');
 const hint = $('hint');
 
 let ws: WebSocket | null = null;
-let running = false;
 let reconnectTimer: number | null = null;
 let reqSeq = 0;
 let currentFlow: StepFlowHandle | null = null;
 let tickTimer: number | null = null;
 let flowStep = 0;
 let flowTools = 0;
+let state: WorkbenchState = createInitialState();
 
-/* ---------- 会话流渲染 ---------- */
+/* ---------- 状态 → DOM ---------- */
 
-function addEl(cls: string, text?: string): HTMLElement {
-  stream.querySelectorAll('.welcome').forEach((n) => n.remove());
-  const el = document.createElement('div');
-  el.className = cls;
-  if (text !== undefined) el.textContent = text;
-  stream.appendChild(el);
-  stream.scrollTop = stream.scrollHeight;
-  return el;
+function syncFromState(): void {
+  renderStatusbar(statusbar, state);
+  btnSend.disabled = !canSend(state);
+  input.disabled = state.running;
+  btnStop.classList.toggle('hidden', !canStop(state));
+  connDot.className = `conn-dot ${state.connection === 'connected' ? 'ok' : state.connection === 'connecting' ? '' : 'bad'}`;
+  connText.textContent = state.connection === 'connected'
+    ? '已连接'
+    : state.connection === 'auth-failed'
+      ? '鉴权失败（请重启应用）'
+      : state.connection === 'disconnected'
+        ? '连接断开，重试中…'
+        : '连接中…';
+  hint.textContent = state.running ? '智能体执行中…' : '';
+  document.querySelectorAll<HTMLButtonElement>('.seg').forEach((b) => {
+    b.classList.toggle('active', b.dataset.mode === state.policyMode);
+  });
+  if (state.workspaceRoot) {
+    wsPath.textContent = state.workspaceRoot;
+    wsPath.classList.add('configured');
+  } else {
+    wsPath.textContent = '未选择工作区（文件能力不可用）';
+    wsPath.classList.remove('configured');
+  }
 }
+
+function commit(next: WorkbenchState): void {
+  state = next;
+  syncFromState();
+}
+
+/* ---------- 中栏步骤流 ---------- */
 
 function startTick(): void {
   stopTick();
@@ -83,15 +106,14 @@ function stopTick(): void {
   if (tickTimer !== null) { window.clearInterval(tickTimer); tickTimer = null; }
 }
 
-function renderEvent(event: AgentEvent): void {
+function renderEvent(event: AgentLoopEvent): void {
   switch (event.type) {
     case 'user':
-      addEl('msg msg-user', event.text);
-      // 创建步骤流容器并启动实时状态栏
+      appendMessage(canvas, 'user', event.text ?? '');
       if (currentFlow) { try { currentFlow.destroy(); } catch { /* */ } }
       flowStep = 0; flowTools = 0;
       currentFlow = createStepFlowContainer(() => call({ type: 'stop' }));
-      stream.appendChild(currentFlow.container);
+      canvas.appendChild(currentFlow.container);
       currentFlow.setPhase('running', 0, 0);
       startTick();
       break;
@@ -102,13 +124,13 @@ function renderEvent(event: AgentEvent): void {
         currentFlow.finish(flowStep + 1, flowTools, 0);
         currentFlow = null;
       } else {
-        addEl('msg msg-assistant', event.text ?? '');
+        appendMessage(canvas, 'assistant', event.text ?? '');
       }
       break;
     case 'status':
       if (event.step !== undefined) flowStep = event.step - 1;
       if (currentFlow) currentFlow.setPhase('running', flowStep, flowTools);
-      addEl('msg msg-status', event.text);
+      appendMessage(canvas, 'status', event.text ?? '');
       break;
     case 'error':
       if (currentFlow) {
@@ -116,12 +138,13 @@ function renderEvent(event: AgentEvent): void {
         currentFlow.setPhase('error', flowStep, flowTools);
         currentFlow = null;
       }
-      addEl('msg msg-error', event.text);
+      appendMessage(canvas, 'error', event.text ?? '');
       break;
     case 'tool': {
       flowTools += event.toolCalls ?? 0;
       if (currentFlow) currentFlow.setPhase('running', flowStep, flowTools);
-      const card = addEl('msg msg-tool');
+      const card = document.createElement('div');
+      card.className = 'msg msg-tool';
       const badge = document.createElement('span');
       badge.className = 'tool-badge';
       badge.textContent = `⚙ 工具执行完成（${event.toolCalls ?? 0} 次）`;
@@ -132,6 +155,7 @@ function renderEvent(event: AgentEvent): void {
         tag.textContent = `第 ${event.step} 步`;
         card.appendChild(tag);
       }
+      getCenterBody(canvas).appendChild(card);
       break;
     }
     case 'done':
@@ -140,26 +164,8 @@ function renderEvent(event: AgentEvent): void {
         currentFlow.finish(flowStep + 1, flowTools, 0);
         currentFlow = null;
       }
-      setRunning(false);
       break;
   }
-}
-
-function renderToolRun(event: ToolRunEvent): void {
-  if (!event || !event.tool) return;
-  try {
-    stream.querySelectorAll('.welcome').forEach((n) => n.remove());
-    stream.appendChild(toolRunCard(event));
-    stream.scrollTop = stream.scrollHeight;
-  } catch { /* 未知工具不抛错 */ }
-}
-
-function setRunning(value: boolean): void {
-  running = value;
-  btnSend.disabled = value || !connected;
-  input.disabled = value;
-  btnStop.classList.toggle('hidden', !value);
-  hint.textContent = value ? '智能体执行中…' : '';
 }
 
 /* ---------- WS 通道 ---------- */
@@ -170,18 +176,10 @@ function connect(): void {
   const socket = new WebSocket(`${proto}://${location.host}/agent-ws?token=${encodeURIComponent(token)}`);
   ws = socket;
 
-  socket.onopen = () => {
-    connDot.className = 'conn-dot ok';
-    connText.textContent = '已连接';
-    connected = true;
-    setRunning(running);
-  };
+  socket.onopen = () => commit(applySocketOpen(state));
+
   socket.onclose = (ev) => {
-    connDot.className = 'conn-dot bad';
-    // 1008 = 服务端鉴权拒绝（令牌不匹配）：提示重启宿主而非盲目重试
-    connText.textContent = ev.code === 1008 ? '鉴权失败（请重启应用）' : '连接断开，重试中…';
-    connected = false;
-    setRunning(false);
+    commit(applySocketClose(state, ev.code));
     if (ev.code !== 1008 && reconnectTimer === null) {
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null;
@@ -190,6 +188,7 @@ function connect(): void {
     }
   };
   socket.onerror = () => socket.close();
+
   socket.onmessage = (ev) => {
     let msg: Record<string, unknown>;
     try {
@@ -198,18 +197,21 @@ function connect(): void {
       return;
     }
     if (msg.type === 'state') {
-      applyState(msg as unknown as StatePayload);
+      commit(applyState(state, msg as unknown as StatePayload));
     } else if (msg.type === 'event') {
-      renderEvent(msg.event as AgentEvent);
+      const ev = msg.event as AgentLoopEvent;
+      commit(applyLoopEvent(state, ev));
+      renderEvent(ev);
     } else if (msg.type === 'ack') {
       handleAck(msg);
     } else if (msg.type === 'tool-run') {
-      renderToolRun(msg.event as ToolRunEvent);
+      const toolEvent = msg.event as ToolRunEvent;
+      commit(applyToolRun(state, toolEvent));
+      // 右栏复用已有 tool-run-card（appendToolRun 内部），不重造。
+      appendToolRun(inspector, toolEvent);
     }
   };
 }
-
-let connected = false;
 
 function call(payload: Record<string, unknown>): string {
   const reqId = `r${++reqSeq}`;
@@ -217,42 +219,24 @@ function call(payload: Record<string, unknown>): string {
   return reqId;
 }
 
-/* ---------- 状态与交互 ---------- */
-
-function applyState(state: StatePayload): void {
-  if (state.workspaceRoot) {
-    wsPath.textContent = state.workspaceRoot;
-    wsPath.classList.add('configured');
-  } else {
-    wsPath.textContent = '未选择工作区（文件能力不可用）';
-    wsPath.classList.remove('configured');
-  }
-  document.querySelectorAll<HTMLButtonElement>('.seg').forEach((b) => {
-    b.classList.toggle('active', b.dataset.mode === state.policyMode);
-  });
-  if (state.running !== running) setRunning(state.running);
-}
+/* ---------- 交互 ---------- */
 
 function handleAck(msg: Record<string, unknown>): void {
   const ok = msg.ok === true;
   const data = msg.data as { path?: string | null } | undefined;
   const error = typeof msg.error === 'string' ? msg.error : undefined;
-  if (!ok && error) addEl('msg msg-error', `操作失败：${error}`);
-  if (ok && data && 'path' in data) {
-    // pick-folder 的响应：选到目录则立即设为工作区
-    if (typeof data.path === 'string' && data.path.length > 0) {
-      call({ type: 'set-workspace', path: data.path });
-      addEl('msg msg-status', `工作区已切换：${data.path}`);
-    }
+  if (!ok && error) appendMessage(canvas, 'error', `操作失败：${error}`);
+  if (ok && data && typeof data.path === 'string' && data.path.length > 0) {
+    call({ type: 'set-workspace', path: data.path });
+    appendMessage(canvas, 'status', `工作区已切换：${data.path}`);
   }
 }
 
 btnSend.addEventListener('click', () => {
   const text = input.value.trim();
-  if (!text || running || !connected) return;
+  if (!text || !canSend(state)) return;
   input.value = '';
   call({ type: 'send', text });
-  setRunning(true);
 });
 
 input.addEventListener('keydown', (e) => {
@@ -262,13 +246,8 @@ input.addEventListener('keydown', (e) => {
   }
 });
 
-btnStop.addEventListener('click', () => {
-  call({ type: 'stop' });
-});
-
-btnFolder.addEventListener('click', () => {
-  call({ type: 'pick-folder' });
-});
+btnStop.addEventListener('click', () => call({ type: 'stop' }));
+btnFolder.addEventListener('click', () => call({ type: 'pick-folder' }));
 
 document.querySelectorAll<HTMLButtonElement>('.seg').forEach((btn) => {
   btn.addEventListener('click', () => {
@@ -276,5 +255,11 @@ document.querySelectorAll<HTMLButtonElement>('.seg').forEach((btn) => {
   });
 });
 
+// Focus 模式本期无自动挂载/快捷键：按钮降级为提示，不造假入口。
+btnFocus.addEventListener('click', () => {
+  appendMessage(canvas, 'status', '专注模式将由托盘菜单触发，本期不自动打开。');
+});
+
 connect();
+syncFromState();
 input.focus();

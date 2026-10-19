@@ -3,18 +3,18 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DeepSeek Studio · 智能体</title>
+  <title>DeepSeek Studio · 工作台</title>
   <link rel="stylesheet" href="/agent.css" />
 </head>
 <body>
   <script>window.__STUDIO_TOKEN__ = "__STUDIO_API_TOKEN__";</script>
 
   <div id="app">
-    <!-- 顶栏：工作区 / 权限档位 / 连接状态 -->
+    <!-- 顶栏：品牌 / 工作区 / 权限档位 / 连接状态 / Focus 入口（降级提示） -->
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark">DS</span>
-        <span class="brand-name">Studio 智能体</span>
+        <span class="brand-name">Studio 工作台</span>
       </div>
 
       <div class="workspace" id="workspace-box" title="打开的目录即智能体的权限边界">
@@ -29,23 +29,31 @@
         <button class="seg" data-mode="full"><span class="dot dot-red"></span>完全放开</button>
       </div>
 
-      <div class="conn" id="conn" title="模型引擎连接状态">
+      <div class="connection" id="conn" title="模型引擎连接状态">
         <span class="conn-dot" id="conn-dot"></span>
         <span class="conn-text" id="conn-text">连接中…</span>
       </div>
+
+      <button class="btn btn-ghost open-focus" id="btn-open-focus" type="button">专注模式</button>
     </header>
 
-    <!-- 会话流 -->
-    <main class="stream" id="stream">
-      <div class="welcome">
-        <div class="welcome-title">把任务交给我</div>
-        <div class="welcome-sub">
-          用自然语言下指令，例如：<br />
-          「读取 package.json 并总结项目结构」 ·
-          「新建 notes/TODO.md 写入今天的计划」 ·
-          「运行 npm test 并分析失败原因」
-        </div>
-      </div>
+    <!-- 三栏布局：左 rail / 左面板 / 中栏画布 / 右 Inspector / 窄屏抽屉 -->
+    <main class="workbench-layout" id="studio-workbench-root">
+      <aside class="left-rail" aria-label="导航栏"></aside>
+
+      <section class="left-panel" aria-label="会话列表">
+        <div class="pane-body"></div>
+      </section>
+
+      <section class="center-canvas" id="center-canvas" aria-label="对话流">
+        <div class="pane-body canvas-body"></div>
+      </section>
+
+      <aside class="right-inspector" id="right-inspector" aria-label="工具运行">
+        <div class="pane-body inspector-body"></div>
+      </aside>
+
+      <aside class="inspector-drawer" id="inspector-drawer" aria-label="工具运行抽屉" aria-hidden="true"></aside>
     </main>
 
     <!-- 输入区 -->
@@ -53,12 +61,15 @@
       <textarea id="input" rows="2" placeholder="描述任务…（Enter 发送，Shift+Enter 换行）"></textarea>
       <div class="composer-actions">
         <span class="hint" id="hint"></span>
-        <button class="btn btn-danger hidden" id="btn-stop">■ 停止</button>
-        <button class="btn btn-primary" id="btn-send">发送</button>
+        <button class="btn btn-danger hidden" id="btn-stop" type="button">■ 停止</button>
+        <button class="btn btn-primary" id="btn-send" type="button">发送</button>
       </div>
     </footer>
+
+    <!-- 状态条 -->
+    <footer class="statusbar" id="statusbar" role="status" aria-live="polite"></footer>
   </div>
 
-  <script src="/agent.js?v=20261012b"></script>
+  <script src="/agent.js?v=20261020w2"></script>
 </body>
 </html>
