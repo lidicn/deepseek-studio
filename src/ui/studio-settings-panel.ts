@@ -4,7 +4,7 @@
  * 模态弹窗，Tab 切换：
  * - 通用：版本信息、日志路径
  * - 工作区：当前工作区路径、修改
- * - 策略：full/auto/ask 三选一
+ * - 策略：workspace/auto/full 三选一（档位来自共享契约 PANEL_POLICY_MODES）
  * - MCP：服务器列表、添加/编辑/删除
  * - 技能：技能目录、扫描
  * - 记忆：记忆列表、删除
@@ -12,6 +12,7 @@
 
 import { el, icon, Icons, injectStyles, createShadowContainer, globalEvents, globalState, callHostTool } from './studio-ui-core';
 import { escapeHtml } from './sanitizer';
+import { PANEL_POLICY_MODES, POLICY_MODE_LABELS, type PolicyMode } from '../shared/policy-contract';
 
 const panelStyles = `
   .studio-settings-modal { width: 640px; }
@@ -140,19 +141,22 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
   // Policy tab
   const policyTab = el('div', { className: 'studio-tab-content' });
   const policyOptions = el('div', { className: 'studio-policy-options' });
-  const policyDefs = [
-    { id: 'full', title: '全部允许', desc: '所有工具调用自动执行，无需确认。适合信任的环境。' },
-    { id: 'auto', title: '自动审批', desc: '低风险操作自动执行，高风险操作需要确认。' },
-    { id: 'ask', title: '每次询问', desc: '所有工具调用都需要手动确认。最安全但最繁琐。' },
-  ];
-  for (const pDef of policyDefs) {
-    const option = el('div', { className: `studio-policy-option${pDef.id === globalState.policyMode ? ' selected' : ''}` });
-    option.innerHTML = `<div class="studio-policy-radio"></div><div><div class="studio-policy-title">${escapeHtml(pDef.title)}</div><div class="studio-policy-desc">${escapeHtml(pDef.desc)}</div></div>`;
+  // 档位只遍历共享契约 PANEL_POLICY_MODES（workspace/auto/full），标题取 POLICY_MODE_LABELS；
+  // 后端旧档「询问审批」不在面板暴露。desc 为面板侧说明文案。
+  const policyDesc: Record<(typeof PANEL_POLICY_MODES)[number], string> = {
+    workspace: '文件读写与命令执行仅限工作区根目录，越界一律拒绝。最收敛。',
+    auto: '低风险操作自动执行，高风险操作弹出确认。默认档。',
+    full: '所有工具调用自动执行，无需确认。适合完全信任的环境。',
+  };
+  for (const mode of PANEL_POLICY_MODES) {
+    const option = el('div', { className: `studio-policy-option${mode === globalState.policyMode ? ' selected' : ''}` });
+    option.innerHTML = `<div class="studio-policy-radio"></div><div><div class="studio-policy-title">${escapeHtml(POLICY_MODE_LABELS[mode])}</div><div class="studio-policy-desc">${escapeHtml(policyDesc[mode])}</div></div>`;
     option.addEventListener('click', async () => {
       policyOptions.querySelectorAll('.studio-policy-option').forEach((o) => o.classList.remove('selected'));
       option.classList.add('selected');
-      globalState.policyMode = pDef.id as 'full' | 'auto' | 'ask';
-      await callHostTool('policy.set', { mode: pDef.id });
+      const chosen: PolicyMode = mode;
+      globalState.policyMode = chosen;
+      await callHostTool('policy.set', { mode: chosen });
     });
     policyOptions.appendChild(option);
   }

@@ -4,11 +4,12 @@
  * 注入到 deepseek 输入框上方，提供：
  * - 本地电脑开关（控制是否启用本地工具）
  * - 项目选择（显示当前项目，点击弹出项目选择器）
- * - 权限模式（全部允许/每次询问）
+ * - 权限模式（档位派生自共享契约 PANEL_POLICY_MODES：workspace/auto/full）
  * - 技能按钮（弹出技能管理面板）
  */
 
 import { el, icon, Icons, injectStyles, createShadowContainer, globalEvents, globalState } from './studio-ui-core';
+import { PANEL_POLICY_MODES, POLICY_MODE_LABELS, type PolicyMode } from '../shared/policy-contract';
 
 const barStyles = `
   .studio-input-bar {
@@ -92,25 +93,26 @@ export function createInputBar(): { container: HTMLElement } {
 
   bar.appendChild(el('div', { className: 'studio-bar-divider' }));
 
-  // 权限模式
-  const modeLabels: Record<string, string> = { full: '全部允许', auto: '自动审批', ask: '每次询问' };
+  // 权限模式：档位与文案全部派生自共享契约 PANEL_POLICY_MODES / POLICY_MODE_LABELS，不硬编码
   const modeBtn = el('div', { className: 'studio-bar-item', style: { position: 'relative' as const } }, [
     icon(Icons.check, 14),
-    el('span', { className: 'studio-bar-label', text: modeLabels[globalState.policyMode] ?? '全部允许' }),
+    el('span', { className: 'studio-bar-label', text: POLICY_MODE_LABELS[globalState.policyMode] ?? globalState.policyMode }),
     icon(Icons.chevronDown, 12),
   ]);
 
   const modeDropdown = el('div', { className: 'studio-mode-dropdown', style: { display: 'none' } });
-  for (const [mode, label] of Object.entries(modeLabels)) {
+  for (const mode of PANEL_POLICY_MODES) {
+    const label = POLICY_MODE_LABELS[mode];
     const option = el('div', { className: `studio-mode-option${mode === globalState.policyMode ? ' selected' : ''}` }, [
       mode === globalState.policyMode ? icon(Icons.check, 12) : el('span', { style: { width: '12px', display: 'inline-block' } }),
       el('span', { text: label }),
     ]);
     option.addEventListener('click', () => {
-      globalState.policyMode = mode as 'full' | 'auto' | 'ask';
+      const chosen: PolicyMode = mode;
+      globalState.policyMode = chosen;
       modeBtn.querySelector('.studio-bar-label')!.textContent = label;
       modeDropdown.style.display = 'none';
-      globalEvents.emit('ui:policy-changed', mode);
+      globalEvents.emit('ui:policy-changed', chosen);
       // 更新选中状态
       modeDropdown.querySelectorAll('.studio-mode-option').forEach((o) => o.classList.remove('selected'));
       option.classList.add('selected');

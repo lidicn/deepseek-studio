@@ -5,6 +5,8 @@
  * 所有 UI 组件使用同一套工具，确保样式隔离和一致性。
  */
 
+import type { PolicyMode } from '../shared/policy-contract';
+
 export interface StudioUIContext {
   /** 宿主桥接对象，用于调用宿主 API */
   host: StudioHostBridge;
@@ -22,7 +24,7 @@ export interface StudioHostBridge {
 export interface UIState {
   currentProject: string | null;
   workspaceRoot: string | null;
-  policyMode: 'full' | 'auto' | 'ask';
+  policyMode: PolicyMode;
   localToolsEnabled: boolean;
   skills: Array<{ id: string; name: string; description: string }>;
   mcpServers: string[];
