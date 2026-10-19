@@ -82,6 +82,8 @@ interface ResolvedConfig {
   chatRooms: ReadonlyArray<RoomConfig>;
   chatRoomMaxDepth?: number;
   apiEngine?: { baseURL: string; apiKey: string; model: string };
+  /** W9：config.json 绝对路径，供 EADDRINUSE 错误提示回指。 */
+  configPath: string;
 }
 
 function randomToken(): string {
@@ -155,11 +157,11 @@ function loadConfig(): ResolvedConfig {
     }
   }
 
-  return { config: { host, port, token }, secret, workspaceRoot, policyMode, chatRooms, chatRoomMaxDepth, apiEngine: stored.apiEngine };
+  return { config: { host, port, token }, secret, workspaceRoot, policyMode, chatRooms, chatRoomMaxDepth, apiEngine: stored.apiEngine, configPath: cfgPath };
 }
 
 export async function main(): Promise<void> {
-  const { config, secret, workspaceRoot, policyMode, chatRooms, chatRoomMaxDepth, apiEngine } = loadConfig();
+  const { config, secret, workspaceRoot, policyMode, chatRooms, chatRoomMaxDepth, apiEngine, configPath } = loadConfig();
   const workspace = workspaceRoot ? createWorkspace(workspaceRoot) : null;
   // M1 智能体面板静态资源（esbuild 产物：src/ui/agent.html + dist/agent-panel.js）
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -178,7 +180,21 @@ export async function main(): Promise<void> {
   if (chatRooms.length > 0) {
     console.log(`[deepseek-studio] 聊天室模式启用：${chatRooms.map((r) => r.roomName).join(', ')}`);
   }
-  await host.start();
+  // W9：EADDRINUSE 明确报错（端口号 + 当前 host/port + config.json 路径），
+  // 不做静默换端口；退出码非 0。
+  try {
+    await host.start();
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e?.code === 'EADDRINUSE') {
+      console.error('[deepseek-studio] 端口冲突（EADDRINUSE）：无法绑定本地 API。');
+      console.error(`  当前配置：host=${config.host} port=${config.port}`);
+      console.error(`  配置文件：${configPath}（可修改其中 port，或先关闭占用 ${config.port} 的进程后重启）`);
+      console.error('  本进程不自动换端口，以免聊天室按旧 wsUrl 连到不存在的地址。');
+      process.exit(2);
+    }
+    throw err;
+  }
   console.log(`[deepseek-studio] 本地 HTTP API on ${host.url}`);
   console.log('[deepseek-studio] token 取自 DEEPSEEK_STUDIO_TOKEN 或 ~/.config/deepseek-studio/config.json');
   console.log(

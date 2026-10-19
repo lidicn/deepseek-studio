@@ -619,8 +619,31 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     },
     start() {
       return new Promise((resolve, reject) => {
-        server.once('error', reject);
+        // W9：EADDRINUSE 明确报错，不做静默换端口。
+        // 静默换端口会让 main.rs / 页端按 config.json 的旧 wsUrl 连到不存在的地址，
+        // 静默失败比明确失败更糟，因此这里只结构化报错并 reject，退出码由 main.ts 决定。
+        const onError = (err: NodeJS.ErrnoException) => {
+          if (err.code === 'EADDRINUSE') {
+            const detailed = new Error(
+              `端口 ${options.config.port}（host=${options.config.host}）已被占用，无法绑定。` +
+                '本进程不自动换端口（避免聊天室按旧 wsUrl 连到不存在的地址）。' +
+                '请关闭占用该端口的进程，或在配置文件中修改 port 后重启。',
+            ) as Error & {
+              code: string;
+              eaddrHost: string;
+              eaddrPort: number;
+            };
+            detailed.code = 'EADDRINUSE';
+            detailed.eaddrHost = options.config.host;
+            detailed.eaddrPort = options.config.port;
+            reject(detailed);
+            return;
+          }
+          reject(err);
+        };
+        server.once('error', onError);
         server.listen(options.config.port, options.config.host, () => {
+          server.off('error', onError);
           const addr = server.address();
           if (addr && typeof addr === 'object') {
             resolvedUrl = `http://${options.config.host}:${addr.port}`;
