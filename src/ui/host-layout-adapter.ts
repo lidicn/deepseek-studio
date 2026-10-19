@@ -29,6 +29,8 @@ export function createHostLayoutAdapter(): HostLayoutAdapter {
   let disposed = false;
   const observers: ResizeObserver[] = [];
   const listeners: Array<[string, EventListener]> = [];
+  // M12：降级可观测，按 degradeReason 去重，避免 resize 高频刷屏
+  const warned = new Set<string>();
 
   function findComposer(): HTMLElement | null {
     const candidates = document.querySelectorAll<HTMLElement>(
@@ -57,13 +59,22 @@ export function createHostLayoutAdapter(): HostLayoutAdapter {
     return rect.right > 0 && rect.right < window.innerWidth * 0.3 ? rect.right : 0;
   }
 
+  function warnDegrade(level: LayoutDegradeLevel, reason: string | null): void {
+    if (level === 'L0' || !reason || warned.has(reason)) return;
+    warned.add(reason);
+    // M12：降级必须可观测，不得静默；带 level 与 degradeReason
+    console.warn('[host-layout] degraded', { level, degradeReason: reason });
+  }
+
   function getSnapshot(): HostLayoutSnapshot {
     if (disposed) {
-      return {
+      const snap: HostLayoutSnapshot = {
         level: 'L2', degradeReason: 'disposed',
         viewport: { width: 0, height: 0 },
         composerRect: null, composerTop: null, sidebarRight: 0, railLeft: 12,
       };
+      warnDegrade(snap.level, snap.degradeReason);
+      return snap;
     }
 
     const composer = findComposer();
@@ -71,17 +82,19 @@ export function createHostLayoutAdapter(): HostLayoutAdapter {
     const viewport = { width: window.innerWidth, height: window.innerHeight };
 
     if (!composer) {
-      return {
+      const snap: HostLayoutSnapshot = {
         level: 'L2', degradeReason: 'composer-not-found',
         viewport, composerRect: null, composerTop: null,
         sidebarRight, railLeft: 12,
       };
+      warnDegrade(snap.level, snap.degradeReason);
+      return snap;
     }
 
     const rect = composer.getBoundingClientRect();
     const hasSidebar = sidebarRight > 0;
 
-    return {
+    const snap: HostLayoutSnapshot = {
       level: hasSidebar ? 'L0' : 'L1',
       degradeReason: hasSidebar ? null : 'sidebar-not-found',
       viewport,
@@ -90,6 +103,8 @@ export function createHostLayoutAdapter(): HostLayoutAdapter {
       sidebarRight,
       railLeft: hasSidebar ? sidebarRight + 8 : 12,
     };
+    warnDegrade(snap.level, snap.degradeReason);
+    return snap;
   }
 
   function getComposerMountPoint(): HTMLElement | null {
