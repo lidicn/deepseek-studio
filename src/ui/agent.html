@@ -35,6 +35,8 @@
       </div>
 
       <button class="btn btn-ghost open-focus" id="btn-open-focus" type="button">专注模式</button>
+      <button class="btn btn-ghost inspector-toggle" id="btn-inspector" type="button"
+              aria-controls="inspector-drawer" aria-expanded="false">工具</button>
     </header>
 
     <!-- 三栏布局：左 rail / 左面板 / 中栏画布 / 右 Inspector / 窄屏抽屉 -->
@@ -53,7 +55,13 @@
         <div class="pane-body inspector-body"></div>
       </aside>
 
-      <aside class="inspector-drawer" id="inspector-drawer" aria-label="工具运行抽屉" aria-hidden="true"></aside>
+      <aside class="inspector-drawer" id="inspector-drawer" aria-label="工具运行抽屉" aria-hidden="true">
+        <div class="drawer-header">
+          <span class="drawer-title">工具运行</span>
+          <button class="btn btn-ghost" id="btn-drawer-close" type="button" aria-label="关闭工具抽屉">✕</button>
+        </div>
+        <div class="pane-body inspector-body"></div>
+      </aside>
     </main>
 
     <!-- 输入区 -->

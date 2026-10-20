@@ -23,6 +23,7 @@ import {
   type WorkbenchState,
 } from './workbench/workbench-state';
 import { createWorkbenchSocket, type WorkbenchSocket } from './workbench/workbench-ws';
+import { mountInspectorDrawer } from './workbench/inspector-drawer';
 import type { WorkbenchRequest, AckPayload, AgentLoopEvent } from './workbench/workbench-types';
 import { appendMessage, getCenterBody } from './workbench/workbench-center';
 import { appendToolRun } from './workbench/workbench-inspector';
@@ -42,6 +43,9 @@ const btnSend = $<HTMLButtonElement>('btn-send');
 const btnStop = $<HTMLButtonElement>('btn-stop');
 const btnFolder = $<HTMLButtonElement>('btn-open-folder');
 const btnFocus = $<HTMLButtonElement>('btn-open-focus');
+const btnInspector = $<HTMLButtonElement>('btn-inspector');
+const drawer = $('inspector-drawer');
+const btnDrawerClose = $<HTMLButtonElement>('btn-drawer-close');
 const wsPath = $('ws-path');
 const connDot = $('conn-dot');
 const connText = $('conn-text');
@@ -226,6 +230,9 @@ document.querySelectorAll<HTMLButtonElement>('.seg').forEach((btn) => {
 btnFocus.addEventListener('click', () => {
   appendMessage(canvas, 'status', '专注模式将由托盘菜单触发，本期不自动打开。');
 });
+
+// 窄屏（<1200px）Inspector 抽屉开关；宽屏按钮由 CSS 隐藏，不影响常驻右栏。
+mountInspectorDrawer({ drawer, toggleButton: btnInspector, closeButton: btnDrawerClose });
 
 startSocket();
 syncFromState();

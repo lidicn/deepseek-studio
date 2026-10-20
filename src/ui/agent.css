@@ -130,6 +130,13 @@ body {
   display: flex; flex-direction: column; overflow-y: auto;
 }
 .inspector-drawer { display: none; }
+/* 窄屏抽屉开关：宽屏隐藏，<1200 由媒体查询显示。 */
+.inspector-toggle { display: none; }
+.drawer-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--studio-border);
+}
+.drawer-title { font-size: 12px; font-weight: 600; color: var(--studio-text-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
 
 .pane-header {
   padding: 12px 16px; font-size: 12px; font-weight: 600;
@@ -158,6 +165,7 @@ body {
     z-index: 30; overflow-y: auto;
   }
   .inspector-drawer.open { transform: translateX(0); }
+  .inspector-toggle { display: inline-flex; }
   .center-canvas { min-width: 0; }
 }
 
