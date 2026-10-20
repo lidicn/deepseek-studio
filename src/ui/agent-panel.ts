@@ -30,6 +30,8 @@ import { appendToolRun } from './workbench/workbench-inspector';
 import { renderStatusbar } from './workbench/workbench-statusbar';
 import { mountThemeToggle } from './workbench/theme-toggle';
 import { mountDesktopHint } from './workbench/desktop-hint';
+import { mountLayoutBreakpoints } from './workbench/layout-breakpoints';
+import { createWidthObserver } from './workbench/width-observer';
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -56,6 +58,8 @@ const hint = $('hint');
 
 // 桌面提示挂载点：与 #app 同级容器，避免被三栏布局的 display:none 牵连。
 const appRoot = document.getElementById('app') ?? document.body;
+// 布局根节点：断点档位 class 写在这里，CSS 只认 class 不再有 @media。
+const layoutRoot = document.getElementById('studio-workbench-root') ?? document.body;
 
 let socket: WorkbenchSocket | null = null;
 let reqSeq = 0;
@@ -249,8 +253,12 @@ mountInspectorDrawer({ drawer, toggleButton: btnInspector, closeButton: btnDrawe
 // 面板随窗口生命周期，不注册卸载清理（与 inspector-drawer 一致）。
 mountThemeToggle({ toggleButton: btnTheme });
 
-// <900 显示桌面提示：阈值取 WORKBENCH_BREAKPOINTS.compact，与 layoutForWidth 同源。
-mountDesktopHint({ parent: appRoot });
+// 断点：WORKBENCH_BREAKPOINTS 为唯一真相源。桌面提示与断点档位共用同一个
+// resize 监听（width-observer），不建两份。
+const widthObserver = createWidthObserver(window.innerWidth);
+mountLayoutBreakpoints({ root: layoutRoot, observer: widthObserver });
+// <900 显示桌面提示：阈值同样取 WORKBENCH_BREAKPOINTS.compact。
+mountDesktopHint({ parent: appRoot, observer: widthObserver });
 
 startSocket();
 syncFromState();

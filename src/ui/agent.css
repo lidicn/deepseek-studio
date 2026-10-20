@@ -152,9 +152,6 @@ body {
   border-left: 1px solid var(--studio-border);
   display: flex; flex-direction: column; overflow-y: auto;
 }
-.inspector-drawer { display: none; }
-/* 窄屏抽屉开关：宽屏隐藏，<1200 由媒体查询显示。 */
-.inspector-toggle { display: none; }
 .drawer-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 12px 16px; border-bottom: 1px solid var(--studio-border);
@@ -170,45 +167,49 @@ body {
 .pane-body { flex: 1; overflow-y: auto; padding: 12px; }
 .canvas-body { display: flex; flex-direction: column; gap: 12px; }
 
-/* 1200–1439：右栏收窄到 320 */
-@media (max-width: 1439px) and (min-width: 1200px) {
-  .right-inspector { width: 320px; }
+/* ---------- 响应式（唯一真相源：WORKBENCH_BREAKPOINTS，P3） ----------
+ * 断点档位由 layout-breakpoints.ts 写进 #studio-workbench-root 的 class，
+ * 这里只认 class、不再有 @media——避免"CSS 一套断点、JS 一套断点"两份真相源。
+ *   is-wide        ≥1440
+ *   is-medium      1200–1439
+ *   is-compact     900–1199
+ *   is-desktop-only <900
+ */
+
+/* medium：右栏收窄到 320 */
+.workbench-layout.is-medium .right-inspector { width: 320px; }
+
+/* compact：右栏变抽屉，左面板折叠为 rail */
+.workbench-layout.is-compact .left-panel { display: none; }
+.workbench-layout.is-compact .right-inspector { display: none; }
+.workbench-layout.is-compact .center-canvas { min-width: 0; }
+
+/* 抽屉：宽屏隐藏，compact 起由 JS 的 .open 控制显隐。
+ * 抽屉本身不随 is-compact 之外的档位变化，故默认隐藏、仅 compact 档启用。 */
+.inspector-drawer { display: none; }
+.workbench-layout.is-compact .inspector-drawer {
+  display: flex; flex-direction: column;
+  position: fixed; top: 48px; right: 0; bottom: 28px; width: 320px;
+  background: var(--studio-bg-panel);
+  border-left: 1px solid var(--studio-border);
+  transform: translateX(100%); transition: transform 0.18s ease;
+  z-index: 30; overflow-y: auto;
+}
+.workbench-layout.is-compact .inspector-drawer.open { transform: translateX(0); }
+.workbench-layout.is-compact .inspector-toggle { display: inline-flex; }
+
+/* desktop-only：隐藏工作台主体，只显示桌面提示（语义化，可被读屏读到）。
+ * 提示节点的创建/移除由 desktop-hint.ts 负责，CSS 只管样式不管显隐。 */
+.workbench-layout.is-desktop-only,
+.workbench-layout.is-desktop-only ~ .composer,
+.workbench-layout.is-desktop-only ~ .statusbar { display: none; }
+.desktop-hint {
+  display: flex; align-items: center; justify-content: center;
+  height: 100%; padding: 24px; text-align: center;
+  color: var(--studio-text-secondary);
 }
 
-/* <1200：右栏变抽屉，左面板折叠为 rail */
-@media (max-width: 1199px) {
-  .left-panel { display: none; }
-  .right-inspector { display: none; }
-  .inspector-drawer {
-    display: flex; flex-direction: column;
-    position: fixed; top: 48px; right: 0; bottom: 28px; width: 320px;
-    background: var(--studio-bg-panel);
-    border-left: 1px solid var(--studio-border);
-    transform: translateX(100%); transition: transform 0.18s ease;
-    z-index: 30; overflow-y: auto;
-  }
-  .inspector-drawer.open { transform: translateX(0); }
-  .inspector-toggle { display: inline-flex; }
-  .center-canvas { min-width: 0; }
-}
-
-/* <900：隐藏工作台主体，只显示桌面提示（语义化，可被读屏读到）。
- * 提示节点的创建/移除由 desktop-hint.ts 按断点负责，CSS 只管样式不管显隐：
- * 这里不能再写 .desktop-hint { display: none }，否则节点建了也看不见。 */
-@media (max-width: 899px) {
-  .workbench-layout, .composer { display: none; }
-  .desktop-hint {
-    display: flex; align-items: center; justify-content: center;
-    height: 100%; padding: 24px; text-align: center;
-    color: var(--studio-text-secondary);
-  }
-}
-
-/* ≥900：提示节点已被 JS 移除；这条仅兜底，防止 CSS 单独加载时残留可见。 */
-.desktop-hint { display: none; }
-@media (max-width: 899px) {
-  .desktop-hint { display: flex; }
-}
+/* 顶栏在桌面提示档仍保留：用户需要看到应用标识与关闭途径，不做全裸提示。 */
 
 /* ---------- 对话流 ---------- */
 .welcome { margin: auto; text-align: center; padding: 40px 20px; }

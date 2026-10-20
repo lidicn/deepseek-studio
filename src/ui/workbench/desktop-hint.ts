@@ -9,6 +9,8 @@
 import { renderDesktopHint } from './workbench-shell';
 import { WORKBENCH_BREAKPOINTS } from '../ui-contract';
 import type { Disposer } from '../disposer';
+import type { WidthObserver } from './width-observer';
+import { createWidthObserver } from './width-observer';
 
 export interface DesktopHintControl {
   /** 当前是否显示提示（宽度 < compact 断点）。 */
@@ -21,17 +23,16 @@ export interface DesktopHintControl {
 export interface DesktopHintOptions {
   /** 提示挂载点（`#app`）。 */
   parent: HTMLElement;
-  /** 初始宽度；缺省 `window.innerWidth`。 */
-  width?: number;
-  /** 是否监听 window resize；缺省 true。测试可关掉。 */
-  observeResize?: boolean;
+  /** 共享宽度观察者。传入则复用同一个 resize 监听；缺省自建一个（仅测试用）。 */
+  observer?: WidthObserver;
 }
 
 export function mountDesktopHint(options: DesktopHintOptions): DesktopHintControl {
   const { parent } = options;
-  const observeResize = options.observeResize ?? true;
-  let width = options.width
-    ?? (typeof window !== 'undefined' ? window.innerWidth : WORKBENCH_BREAKPOINTS.compact);
+  const observer = options.observer ?? createWidthObserver(
+    typeof window !== 'undefined' ? window.innerWidth : WORKBENCH_BREAKPOINTS.compact,
+  );
+  let width = observer.width;
   let shown = false;
 
   const sync = (next: number): boolean => {
@@ -43,15 +44,7 @@ export function mountDesktopHint(options: DesktopHintOptions): DesktopHintContro
   };
 
   let disposeResize: Disposer = () => {};
-  if (observeResize && typeof window !== 'undefined') {
-    const onResize = () => {
-      const next = window.innerWidth;
-      if (next === width) return;
-      sync(next);
-    };
-    window.addEventListener('resize', onResize);
-    disposeResize = () => window.removeEventListener('resize', onResize);
-  }
+  disposeResize = observer.subscribe((next) => sync(next));
 
   sync(width);
 
