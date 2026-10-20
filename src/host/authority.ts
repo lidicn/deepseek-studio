@@ -64,7 +64,9 @@ export function createToolAuthority(options: ToolAuthorityOptions): ToolAuthorit
       const env = parsePayload(parts.payload);
       if (!env) return { ok: false, reason: 'malformed' };
       if (typeof env.expiresAt === 'number' && Date.now() > env.expiresAt) return { ok: false, reason: 'expired' };
-      const grant = store.get(env.requestId);
+      // peek 原样取记录（含已消费），区分「真不存在 not-found」与「已消费 consumed」，
+      // 不能用 get()——它对已消费返回 null，会把 consumed 误判成 not-found。
+      const grant = store.peek(env.requestId);
       if (!grant) return { ok: false, reason: 'not-found' };
       if (grant.consumed) return { ok: false, reason: 'consumed' };
       if (grant.scope !== env.scope) return { ok: false, reason: 'scope-mismatch' };

@@ -32,7 +32,13 @@ export interface GrantStore {
   issue(input: IssueGrantInput): ToolGrant;
   /** 一次性消费：成功置 consumed=true 并返回；已消费/不存在/过期返回 null。 */
   consume(requestId: string): ToolGrant | null;
+  /** 仅返回可消费（未消费、未过期）的 grant；已消费/不存在返回 null。 */
   get(requestId: string): ToolGrant | null;
+  /**
+   * 原样读取记录（含已消费），供校验层区分「不存在」与「已消费」。
+   * 过期记录已被 purgeExpired 移除，故返回 null 即代表真不存在。
+   */
+  peek(requestId: string): ToolGrant | null;
   revoke(requestId: string): void;
   size(): number;
 }
@@ -80,6 +86,10 @@ export function createInMemoryGrantStore(defaultTtlMs = 5 * 60_000): GrantStore 
       purgeExpired();
       const g = grants.get(requestId);
       return g && !g.consumed ? g : null;
+    },
+    peek(requestId) {
+      purgeExpired();
+      return grants.get(requestId) ?? null;
     },
     revoke(requestId) {
       grants.delete(requestId);

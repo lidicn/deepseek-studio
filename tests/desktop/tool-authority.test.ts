@@ -22,6 +22,16 @@ describe('tool authority (resident host)', () => {
     expect(c2.reason).toBe('consumed');
   });
 
+  it('已消费后 verifyGrant 返回 consumed 而非 not-found（区分不存在与已用过）', async () => {
+    const host = createPlatformDesktop({ secret: 's3cr3t' });
+    const token = await host.requestToolExecution({ documentId: 'd', sessionId: 's', requestId: 'req-consume', scope: 'x' });
+    await host.consume(token);
+    const v = await host.verify(token);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toBe('consumed');
+    expect(v.reason).not.toBe('not-found');
+  });
+
   it('grant 绑定 document/session/requestId', async () => {
     const host = createPlatformDesktop({ secret: 's3cr3t' });
     const token = await host.requestToolExecution({ documentId: 'd', sessionId: 's', requestId: 'r', scope: 'x' });
