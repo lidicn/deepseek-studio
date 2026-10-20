@@ -256,9 +256,9 @@ mountThemeToggle({ toggleButton: btnTheme });
 // 断点：WORKBENCH_BREAKPOINTS 为唯一真相源。桌面提示与断点档位共用同一个
 // resize 监听（width-observer），不建两份。
 const widthObserver = createWidthObserver(window.innerWidth);
-mountLayoutBreakpoints({ root: layoutRoot, observer: widthObserver });
+const breakpoints = mountLayoutBreakpoints({ root: layoutRoot, observer: widthObserver });
 // <900 显示桌面提示：阈值同样取 WORKBENCH_BREAKPOINTS.compact。
-mountDesktopHint({ parent: appRoot, observer: widthObserver });
+mountDesktopHint({ parent: appRoot, observer: widthObserver, mobile: breakpoints.mobile });
 
 startSocket();
 syncFromState();

@@ -29,6 +29,11 @@ export type ToolExecutor = (
 import type { OfficialBackend } from './official-backend';
 import { chunksToResponse, emptyDelta, formatSSE, isUnimplementedPath, SSE_DONE } from './compat';
 import { DEEPSEEK_ORIGIN } from '../host/tool-definitions';
+import {
+  decideAgentAccess,
+  agentAccessDeniedBody,
+  clientHostOf,
+} from './agent-lan-access';
 import type { ApiConfig, ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, QueueStatus } from './types';
 
 /** 审计条目（结构化最小视图，避免 api 层反向依赖 host 内部类型）。 */
@@ -91,7 +96,33 @@ export interface ApiServerOptions {
    *   GET /agent.js 面板脚本
    * 两个路由**免鉴权**：HTML 里已内嵌令牌，威胁模型与 v0.5 一致（本地进程本就能读 config.json）。
    */
-  agentPage?: { htmlPath: string; jsPath: string; cssPath: string };
+  /**
+   * M1 智能体面板静态资源（磁盘路径）。提供后开放：
+   *   GET /agent    面板 HTML（服务端把 __STUDIO_TOKEN__ 占位符替换为真实 API 令牌）
+   *   GET /agent.js 面板脚本
+   * P2 追加：/agent.css、/agent.webmanifest、/agent-sw.js、/agent-icon-{192,512}.png
+   */
+  agentPage?: {
+    htmlPath: string;
+    jsPath: string;
+    cssPath: string;
+    /** PWA manifest（P2）。 */
+    manifestPath?: string;
+    /** Service Worker 脚本（P2）。 */
+    swPath?: string;
+    /** PWA 图标 192（P2）。 */
+    icon192Path?: string;
+    /** PWA 图标 512（P2）。 */
+    icon512Path?: string;
+  };
+  /**
+   * P2：/agent 的局域网访问闸门。不提供时默认只放行 loopback（与历史行为一致）。
+   * 提供 lanEnabled=true 后，非 loopback 请求必须带正确配对码，否则 403 且不返回内嵌令牌的 HTML。
+   */
+  agentLanAccess?: {
+    lanEnabled: boolean;
+    pairingCode: string;
+  };
 }
 
 export interface ApiServer {
@@ -244,8 +275,29 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       if (
         options.agentPage &&
         req.method === 'GET' &&
-        (pathname === '/agent' || pathname === '/agent.js' || pathname === '/agent.css')
+        (
+          pathname === '/agent' ||
+          pathname === '/agent.js' ||
+          pathname === '/agent.css' ||
+          // P2：PWA 附属资源。都不含令牌，但为一致起见同样过闸门——
+          // 未开启局域网时非回环一律拿不到，避免把图标/manifest 当探测探针。
+          pathname === '/agent.webmanifest' ||
+          pathname === '/agent-sw.js' ||
+          pathname === '/agent-icon-192.png' ||
+          pathname === '/agent-icon-512.png'
+        )
       ) {
+        // P2：/agent 内嵌真实令牌。服务一旦绑到非回环地址，同局域网任何人都能
+        // 拿到令牌控制 agent。因此非 loopback 请求必须过配对码闸门（fail-closed）。
+        if (options.agentLanAccess) {
+          const clientHost = clientHostOf(req.socket?.remoteAddress);
+          const providedCode = url.searchParams.get('pair') ?? undefined;
+          const decision = decideAgentAccess(options.agentLanAccess, clientHost, providedCode);
+          if (!decision.allowed) {
+            sendJson(403, agentAccessDeniedBody(decision));
+            return;
+          }
+        }
         try {
           if (pathname === '/agent') {
             // 只替换带引号的字面量占位符（replaceAll 防止多实例遗漏）；
@@ -260,6 +312,24 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
             const css = readFileSync(options.agentPage.cssPath, 'utf8');
             res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8' });
             res.end(css);
+          } else if (pathname === '/agent.webmanifest' && options.agentPage.manifestPath) {
+            // PWA manifest：可被缓存（不含令牌）。
+            const manifest = readFileSync(options.agentPage.manifestPath, 'utf8');
+            res.writeHead(200, { 'Content-Type': 'application/manifest+json; charset=utf-8' });
+            res.end(manifest);
+          } else if (pathname === '/agent-sw.js' && options.agentPage.swPath) {
+            // Service Worker 脚本：必须能被同源 GET 到，且 scope 覆盖 /agent。
+            const sw = readFileSync(options.agentPage.swPath, 'utf8');
+            res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache' });
+            res.end(sw);
+          } else if (pathname === '/agent-icon-192.png' && options.agentPage.icon192Path) {
+            const icon = readFileSync(options.agentPage.icon192Path);
+            res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' });
+            res.end(icon);
+          } else if (pathname === '/agent-icon-512.png' && options.agentPage.icon512Path) {
+            const icon = readFileSync(options.agentPage.icon512Path);
+            res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' });
+            res.end(icon);
           } else {
             const js = readFileSync(options.agentPage.jsPath, 'utf8');
             res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' });

@@ -17,9 +17,33 @@ import { createWidthObserver, type WidthObserver } from './width-observer';
 
 const LAYOUT_CLASSES = ['is-wide', 'is-medium', 'is-compact', 'is-desktop-only'] as const;
 
+/**
+ * 是否按"移动端浏览器"对待。
+ *
+ * 需要区分两种窄宽度：
+ *   - 桌面窗口被拖窄 → 显示"请在桌面窗口使用"提示（is-desktop-only）
+ *   - 手机/PWA 浏览器 → 本来就窄，应当按 compact 正常使用（P2）
+ * 判定用 pointer:coarse + 无 hover 能力（触摸设备），叠加 UA 里的 Mobile 关键词兜底。
+ * jsdom 下 matchMedia 返回 matches=false，测试需显式 stub。
+ */
+export function isMobileViewport(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+  try {
+    const coarse = window.matchMedia('(pointer: coarse)').matches;
+    const noHover = window.matchMedia('(hover: none)').matches;
+    if (coarse && noHover) return true;
+  } catch {
+    /* ignore：探测失败时退回 UA 判断 */
+  }
+  if (typeof navigator === 'undefined') return false;
+  return /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent ?? '');
+}
+
 export interface LayoutBreakpointControl {
   /** 当前断点档位。 */
   readonly mode: string;
+  /** 是否为移动端视口（窄宽度按 compact 处理，不降级桌面提示）。 */
+  readonly mobile: boolean;
   /** 按指定宽度刷新 class，返回档位。幂等。 */
   sync(width: number): string;
   dispose(): void;
@@ -40,6 +64,15 @@ export function mountLayoutBreakpoints(options: LayoutBreakpointOptions): Layout
   let width = observer.width;
   let mode = layoutForWidth(width);
 
+  // 移动端：窄是常态，不降级到 desktop-only（P2）。
+  const mobile = isMobileViewport();
+  // 写 .is-mobile 到 <html>：移动端专用样式（16px 输入框、安全区、触控尺寸）
+  // 由 CSS 消费，不在 JS 里逐条改样式。
+  if (mobile && typeof document !== 'undefined') {
+    document.documentElement.classList.add('is-mobile');
+  }
+  if (mobile && mode === 'desktop-only') mode = 'compact';
+
   const apply = (next: string): void => {
     // 先全清再单开：避免档位切换时残留上一个档位的 class。
     for (const cls of LAYOUT_CLASSES) root.classList.remove(cls);
@@ -49,7 +82,8 @@ export function mountLayoutBreakpoints(options: LayoutBreakpointOptions): Layout
 
   const sync = (next: number): string => {
     width = next;
-    mode = layoutForWidth(next);
+    const raw = layoutForWidth(next);
+    mode = mobile && raw === 'desktop-only' ? 'compact' : raw;
     apply(mode);
     return mode;
   };
@@ -64,6 +98,10 @@ export function mountLayoutBreakpoints(options: LayoutBreakpointOptions): Layout
       return mode;
     },
     sync,
+    /** 是否为移动端视口（窄宽度不降级为桌面提示）。 */
+    get mobile() {
+      return mobile;
+    },
     dispose() {
       disposeResize();
       disposeResize = () => {};

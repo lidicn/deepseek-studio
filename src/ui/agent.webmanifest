@@ -1,0 +1,16 @@
+{
+  "name": "DeepSeek Studio 工作台",
+  "short_name": "Studio",
+  "description": "DeepSeek Studio 智能体工作台：对话、工具运行与权限档位控制。",
+  "start_url": "/agent",
+  "scope": "/agent",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#F7F8FA",
+  "theme_color": "#4D6BFE",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "/agent-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/agent-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

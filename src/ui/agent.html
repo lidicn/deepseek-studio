@@ -2,9 +2,27 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- P2：手机端可用。viewport-fit=cover 适配刘海屏；user-scalable=no 避免双击缩放干扰输入。 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#4D6BFE" />
+  <!-- P2：PWA manifest。scope 限制在 /agent，不把整个域都变成 PWA。 -->
+  <link rel="manifest" href="/agent.webmanifest" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/agent-icon-192.png" />
+  <link rel="apple-touch-icon" href="/agent-icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Studio" />
   <title>DeepSeek Studio · 工作台</title>
   <link rel="stylesheet" href="/agent.css" />
+  <!-- P2：Service Worker 只缓存静态壳；/agent HTML 含令牌，SW 内显式 network-only。 -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('/agent-sw.js').catch(function () {
+          /* SW 不可用（http 非安全上下文等）时静默降级，不影响面板功能 */
+        });
+      });
+    }
+  </script>
 </head>
 <body>
   <script>window.__STUDIO_TOKEN__ = "__STUDIO_API_TOKEN__";</script>

@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import type { ApiConfig } from './types';
 import type { RoomConfig } from '../host/bot/types';
 import { FilePersonaRegistry } from '../host/bot/persona-registry';
+import { generatePairingCode } from './agent-lan-access';
 
 // ── v0.12 Phase 1：孤儿防护（DCD 修正条件 3）──────────────────────────────
 // 父进程（Tauri 主进程）消失 → self-exit，不留孤儿 Node。
@@ -162,6 +163,14 @@ function loadConfig(): ResolvedConfig {
 
 export async function main(): Promise<void> {
   const { config, secret, workspaceRoot, policyMode, chatRooms, chatRoomMaxDepth, apiEngine, configPath } = loadConfig();
+  // P2：局域网访问模式。默认关闭（只放行 loopback，与历史行为一致）。
+  // 开启后非 loopback 请求必须带配对码，否则 /agent 返回 403 且不下发内嵌令牌的页面。
+  const lanEnabled = /^(1|true|yes|on)$/i.test(process.env.DEEPSEEK_STUDIO_LAN ?? '');
+  const pairingCode = (process.env.DEEPSEEK_STUDIO_PAIR_CODE ?? '').trim();
+  // 未显式配置配对码却开了局域网：生成一个随机的并真正启用它。
+  // 不能只在日志里显示——服务端若仍收到空串，decideAgentAccess 会 fail-closed
+  // 拒绝所有非回环请求，日志就成了骗人的摆设。
+  const effectivePairingCode = pairingCode || (lanEnabled ? generatePairingCode() : '');
   const workspace = workspaceRoot ? createWorkspace(workspaceRoot) : null;
   // M1 智能体面板静态资源（esbuild 产物：src/ui/agent.html + dist/agent-panel.js）
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -169,6 +178,11 @@ export async function main(): Promise<void> {
     htmlPath: path.join(repoRoot, 'src', 'ui', 'agent.html'),
     jsPath: path.join(repoRoot, 'dist', 'agent-panel.js'),
     cssPath: path.join(repoRoot, 'src', 'ui', 'agent.css'),
+    // P2：PWA 附属资源。
+    manifestPath: path.join(repoRoot, 'src', 'ui', 'agent.webmanifest'),
+    swPath: path.join(repoRoot, 'src', 'ui', 'agent-sw.js'),
+    icon192Path: path.join(repoRoot, 'src', 'ui', 'icon-192.png'),
+    icon512Path: path.join(repoRoot, 'src', 'ui', 'icon-512.png'),
   };
   const personas = new FilePersonaRegistry();
   const host = createDesktopHost({
@@ -176,6 +190,7 @@ export async function main(): Promise<void> {
     chatRooms: chatRooms.length > 0 ? chatRooms : undefined,
     chatRoomMaxDepth,
     personas,
+    agentLanAccess: { lanEnabled, pairingCode: effectivePairingCode },
   });
   if (chatRooms.length > 0) {
     console.log(`[deepseek-studio] 聊天室模式启用：${chatRooms.map((r) => r.roomName).join(', ')}`);
@@ -196,6 +211,14 @@ export async function main(): Promise<void> {
     throw err;
   }
   console.log(`[deepseek-studio] 本地 HTTP API on ${host.url}`);
+  if (lanEnabled) {
+    console.warn('[deepseek-studio] ⚠️  局域网访问已开启（DEEPSEEK_STUDIO_LAN=1）：服务监听非回环地址。');
+    console.warn('[deepseek-studio] ⚠️  /agent 页面内嵌完整 API 令牌，同局域网设备拿到即可控制 agent。');
+    console.warn(`[deepseek-studio] ⚠️  手机访问必须带配对码：http://<本机局域网IP>:${config.port}/agent?pair=${effectivePairingCode}`);
+    if (!pairingCode) {
+      console.warn('[deepseek-studio] ⚠️  未配置 DEEPSEEK_STUDIO_PAIR_CODE，本次使用随机配对码（重启后失效）。');
+    }
+  }
   console.log('[deepseek-studio] token 取自 DEEPSEEK_STUDIO_TOKEN 或 ~/.config/deepseek-studio/config.json');
   console.log(
     workspace

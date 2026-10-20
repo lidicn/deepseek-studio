@@ -144,7 +144,21 @@ export interface DesktopHostOptions {
    * M1 智能体面板静态资源（磁盘路径）。提供后开放 GET /agent 与 GET /agent.js，
    * 并挂载 /agent-ws 通道；缺省则面板路由整体不可用（fail-closed）。
    */
-  agentPage?: { htmlPath: string; jsPath: string; cssPath: string };
+  agentPage?: {
+    htmlPath: string;
+    jsPath: string;
+    cssPath: string;
+    /** P2 PWA 附属资源路径（可选，缺省则对应路由不可用）。 */
+    manifestPath?: string;
+    swPath?: string;
+    icon192Path?: string;
+    icon512Path?: string;
+  };
+  /** P2：/agent 局域网访问闸门（透传给 API server）。缺省则只放行 loopback。 */
+  agentLanAccess?: {
+    lanEnabled: boolean;
+    pairingCode: string;
+  };
   /**
    * v0.25：SlotRuntime（人设工具白名单）。
    * hub 收到页端 tool-call 时，先取发起 bot 的 per-persona executor 执行——
@@ -1058,6 +1072,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     })),
     rateLimit: options.rateLimit,
     agentPage: options.agentPage,
+    agentLanAccess: options.agentLanAccess,
     agentSender,
     automationManager: automationManager as NonNullable<import('../api/server').ApiServerOptions['automationManager']>,
     debugEval: (code) => new Promise((resolve) => {

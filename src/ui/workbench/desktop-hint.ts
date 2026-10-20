@@ -25,10 +25,13 @@ export interface DesktopHintOptions {
   parent: HTMLElement;
   /** 共享宽度观察者。传入则复用同一个 resize 监听；缺省自建一个（仅测试用）。 */
   observer?: WidthObserver;
+  /** 移动端视口：窄宽度不显示桌面提示（P2，手机/PWA 窄是常态）。 */
+  mobile?: boolean;
 }
 
 export function mountDesktopHint(options: DesktopHintOptions): DesktopHintControl {
   const { parent } = options;
+  const mobile = options.mobile ?? false;
   const observer = options.observer ?? createWidthObserver(
     typeof window !== 'undefined' ? window.innerWidth : WORKBENCH_BREAKPOINTS.compact,
   );
@@ -37,7 +40,8 @@ export function mountDesktopHint(options: DesktopHintOptions): DesktopHintContro
 
   const sync = (next: number): boolean => {
     width = next;
-    shown = next < WORKBENCH_BREAKPOINTS.compact;
+    // 移动端窄是常态，不提示"请用桌面窗口"（P2）。
+    shown = !mobile && next < WORKBENCH_BREAKPOINTS.compact;
     // renderDesktopHint 幂等：show=false 时移除，true 时已存在则直接返回。
     renderDesktopHint(parent, shown);
     return shown;

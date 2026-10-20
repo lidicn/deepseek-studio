@@ -211,6 +211,26 @@ body {
 
 /* 顶栏在桌面提示档仍保留：用户需要看到应用标识与关闭途径，不做全裸提示。 */
 
+/* ---------- 移动端（P2：手机/PWA） ----------
+ * 由 isMobileViewport() 判定后写 .is-mobile 到 <html>（见 layout-breakpoints），
+ * 不依赖 @media——与断点统一，避免第二套判断。
+ */
+html.is-mobile .desktop-hint { display: none; }
+/* iOS 自动放大：聚焦输入框时字号 <16px 会触发视口缩放，故移动端固定 16px。 */
+html.is-mobile #input { font-size: 16px; }
+/* 安全区：刘海/手势条。 */
+html.is-mobile .topbar { padding-top: env(safe-area-inset-top); }
+html.is-mobile .composer { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+html.is-mobile .statusbar { padding-bottom: env(safe-area-inset-bottom); }
+/* 触控目标不小于 44px，避免误点。 */
+html.is-mobile .btn { min-height: 44px; padding: 10px 18px; }
+html.is-mobile .seg { min-height: 44px; }
+/* 顶栏在窄屏可能溢出：允许换行并压低高度。 */
+html.is-mobile .topbar { height: auto; min-height: 48px; flex-wrap: wrap; row-gap: 6px; padding-left: max(14px, env(safe-area-inset-left)); padding-right: max(14px, env(safe-area-inset-right)); }
+html.is-mobile .policy-switch { order: 3; width: 100%; }
+/* 抽屉在移动端接近全宽。 */
+html.is-mobile .workbench-layout.is-compact .inspector-drawer { width: min(320px, 88vw); }
+
 /* ---------- 对话流 ---------- */
 .welcome { margin: auto; text-align: center; padding: 40px 20px; }
 .welcome-title { font-size: 20px; font-weight: 600; margin-bottom: 10px; }
