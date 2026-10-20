@@ -94,7 +94,7 @@ import { createShellCapability } from '../capabilities/shell';
 import { createFileTools } from '../capabilities/file';
 import { createFileEditCapability } from '../capabilities/edit-engine';
 import { getMemoryStore } from './memory-store';
-import { scanSkills, ensureSkillsDir } from './skill-store';
+import { scanSkills, ensureSkillsDir, resolveSkillsDir } from './skill-store';
 import { getMcpController, ensureMcpConfig } from './mcp-controller';
 import { createAutomationManager, type AutomationManager } from './automation';
 import { execPythonInSandbox } from './sandbox-executor';
@@ -429,11 +429,14 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         },
         'skill.list': {
           id: 'skill.list',
-          async execute(): Promise<ExecuteResult> {
-            const skills = scanSkills();
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            // dir 可选：面板输入框传路径时按该路径扫描；缺省按 resolveSkillsDir 优先级解析。
+            const dir = typeof params.dir === 'string' && params.dir.trim() ? params.dir.trim() : undefined;
+            const skills = scanSkills(dir);
             return {
               ok: true,
               data: {
+                dir: resolveSkillsDir(dir),
                 skills: skills.map((s) => ({
                   id: s.id,
                   name: s.name,

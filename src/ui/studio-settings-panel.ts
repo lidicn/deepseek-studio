@@ -209,16 +209,21 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
   // Skills tab
   const skillsTab = el('div', { className: 'studio-tab-content' });
   const skillsDirRow = el('div', { className: 'studio-workspace-row' });
-  const skillsDirInput = el('input', { className: 'studio-input studio-workspace-input', attrs: { value: '~/.config/deepseek-studio/skills/', placeholder: '技能目录路径' } });
+  const skillsDirInput = el('input', { className: 'studio-input studio-workspace-input', attrs: { placeholder: '技能目录路径（留空用默认 ~/.agents/skills）' } });
   const skillsScanBtn = el('button', { className: 'studio-btn primary sm', text: '扫描' });
-  skillsScanBtn.addEventListener('click', async () => {
-    const result = await callHostTool('skill.list', {});
+
+  async function loadSkills(): Promise<void> {
+    const dir = (skillsDirInput as HTMLInputElement).value.trim();
+    const result = await callHostTool('skill.list', dir ? { dir } : {});
     if (result.ok && result.data) {
-      const skills = (result.data as { skills: Array<{ id: string; name: string; description: string }> }).skills;
-      globalState.skills = skills;
+      const data = result.data as { dir?: string; skills: Array<{ id: string; name: string; description: string }> };
+      // 回填解析后的真实目录，让用户看到扫描的是哪里。
+      if (typeof data.dir === 'string' && data.dir) (skillsDirInput as HTMLInputElement).value = data.dir;
+      globalState.skills = data.skills ?? [];
       renderSkillsList();
     }
-  });
+  }
+  skillsScanBtn.addEventListener('click', () => void loadSkills());
   skillsDirRow.appendChild(skillsDirInput);
   skillsDirRow.appendChild(skillsScanBtn);
   skillsTab.appendChild(skillsDirRow);
@@ -334,14 +339,15 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
   modal.appendChild(footer);
 
   overlay.appendChild(modal);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  // 点击弹窗外空白处**不**关闭：面板里有输入框/多 Tab，误点即关会丢操作。
+  // 关闭只走右上角 × 或底部「完成」。
   shadow.appendChild(overlay);
 
   function open(): void {
     isOpen = true;
     overlay.style.display = 'flex';
     renderMcpServers();
-    renderSkillsList();
+    void loadSkills();
     renderMemories();
     void loadLeverHub();
   }

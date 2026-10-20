@@ -113,14 +113,16 @@ export function createSkillsPanel(): { container: HTMLElement; open: () => void;
   refreshBtn.addEventListener('click', loadSkills);
   const openDirBtn = el('button', { className: 'studio-btn' }, [icon(Icons.folder, 14), el('span', { text: '打开目录' })]);
   openDirBtn.addEventListener('click', async () => {
-    await callHostTool('shell.exec', { command: 'explorer "%USERPROFILE%\\.config\\deepseek-studio\\skills"' });
+    // 打开上次扫描到的真实目录（skill.list 回传的 dir），缺省回落项目默认目录。
+    const target = skillsDir || '%USERPROFILE%\\.config\\deepseek-studio\\skills';
+    await callHostTool('shell.exec', { command: `explorer "${target}"` });
   });
   footer.appendChild(refreshBtn);
   footer.appendChild(openDirBtn);
   panel.appendChild(footer);
 
   overlay.appendChild(panel);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  // 遮罩点击不关闭（与设置弹窗一致）：避免误点丢操作，关闭只走 × 按钮。
   shadow.appendChild(overlay);
 
   interface SkillWithContent {
@@ -133,12 +135,15 @@ export function createSkillsPanel(): { container: HTMLElement; open: () => void;
   }
 
   let skills: SkillWithContent[] = [];
+  let skillsDir = '';
 
   async function loadSkills(): Promise<void> {
     try {
       const result = await callHostTool('skill.list', {});
       if (result.ok && result.data) {
-        const list = (result.data as { skills: Array<{ id: string; name: string; description: string; skillMdPath: string }> }).skills;
+        const data = result.data as { dir?: string; skills: Array<{ id: string; name: string; description: string; skillMdPath: string }> };
+        if (typeof data.dir === 'string' && data.dir) skillsDir = data.dir;
+        const list = data.skills ?? [];
         skills = list.map((s) => ({ ...s, enabled: true }));
         globalState.skills = list;
       }

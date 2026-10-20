@@ -25,8 +25,29 @@ export interface SkillInfo {
   readonly skillMdPath: string;
 }
 
+/**
+ * 解析技能目录，优先级：
+ *   1. 显式传入（面板扫描时输入框里的路径）
+ *   2. STUDIO_SKILLS_DIR 环境变量
+ *   3. ~/.agents/skills（通用/Codex 技能根，存在则用）
+ *   4. ~/.config/deepseek-studio/skills（本项目默认）
+ */
+export function resolveSkillsDir(explicit?: string): string {
+  const trimmed = explicit?.trim();
+  if (trimmed) return trimmed;
+  const envDir = process.env.STUDIO_SKILLS_DIR?.trim();
+  if (envDir) return envDir;
+  const agentsDir = path.join(os.homedir(), '.agents', 'skills');
+  try {
+    if (fs.existsSync(agentsDir)) return agentsDir;
+  } catch {
+    // 访问失败则回落默认
+  }
+  return path.join(os.homedir(), '.config', 'deepseek-studio', 'skills');
+}
+
 function defaultSkillsDir(): string {
-  return process.env.STUDIO_SKILLS_DIR ?? path.join(os.homedir(), '.config', 'deepseek-studio', 'skills');
+  return resolveSkillsDir();
 }
 
 /**
@@ -106,22 +127,13 @@ export function scanSkills(skillsDir?: string): SkillInfo[] {
 }
 
 /**
- * 确保技能目录存在（如果不存在则创建，并添加一个示例技能）。
+ * 确保技能目录存在（不存在则创建空目录）。
+ * 不写入任何示例技能——目录内容应完全来自用户，避免"假技能"混进列表。
  */
 export function ensureSkillsDir(skillsDir?: string): string {
   const dir = skillsDir ?? defaultSkillsDir();
   try {
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-      // 创建示例技能
-      const exampleDir = path.join(dir, 'example-skill');
-      fs.mkdirSync(exampleDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(exampleDir, 'SKILL.md'),
-        `# 示例技能\n\n这是一个示例技能。把你的技能目录放在这里，每个技能一个子目录，包含 SKILL.md。\n\n## 使用方式\n\n当用户请求涉及本技能时，先读取本文件了解技能的 SOP 和约束，然后按照指引执行。\n`,
-        'utf8',
-      );
-    }
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   } catch {
     // 创建失败忽略
   }

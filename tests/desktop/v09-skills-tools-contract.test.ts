@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { scanSkills, ensureSkillsDir } from '../../src/host/skill-store';
+import { scanSkills, ensureSkillsDir, resolveSkillsDir } from '../../src/host/skill-store';
 import { DEFAULT_TOOL_DEFINITIONS, DEEPSEEK_ORIGIN } from '../../src/host/tool-definitions';
 import {
   mapUpstreamToolInvocation,
@@ -58,6 +58,29 @@ describe('v0.9: 本地技能系统（skill-store）', () => {
 
     const skills = scanSkills(tmpDir);
     expect(skills).toEqual([]);
+  });
+
+  it('resolveSkillsDir 优先级：显式 > 环境变量 > 默认', () => {
+    expect(resolveSkillsDir('/tmp/explicit')).toBe('/tmp/explicit');
+    const prev = process.env.STUDIO_SKILLS_DIR;
+    try {
+      process.env.STUDIO_SKILLS_DIR = '/tmp/env-skills';
+      expect(resolveSkillsDir()).toBe('/tmp/env-skills');
+      expect(resolveSkillsDir('/tmp/explicit2')).toBe('/tmp/explicit2');
+    } finally {
+      if (prev === undefined) delete process.env.STUDIO_SKILLS_DIR;
+      else process.env.STUDIO_SKILLS_DIR = prev;
+    }
+  });
+
+  it('ensureSkillsDir 创建空目录，不写入示例技能', () => {
+    const dir = path.join(tmpDir, 'fresh-skills');
+    const returned = ensureSkillsDir(dir);
+    expect(returned).toBe(dir);
+    expect(fs.existsSync(dir)).toBe(true);
+    // 目录应为空（旧实现会塞入 example-skill，属"假技能"）
+    expect(fs.readdirSync(dir)).toEqual([]);
+    expect(scanSkills(dir)).toEqual([]);
   });
 
   it('scanSkills 按名称排序', () => {
@@ -113,18 +136,6 @@ description: 自定义描述
     expect(skills[0].description).toContain('第一段描述');
   });
 
-  it('ensureSkillsDir 创建目录并添加示例技能', () => {
-    const dir = path.join(tmpDir, 'skills');
-    const result = ensureSkillsDir(dir);
-    expect(result).toBe(dir);
-    expect(fs.existsSync(dir)).toBe(true);
-    expect(fs.existsSync(path.join(dir, 'example-skill', 'SKILL.md'))).toBe(true);
-
-    // 再次调用不覆盖
-    const skills = scanSkills(dir);
-    expect(skills).toHaveLength(1);
-    expect(skills[0].id).toBe('example-skill');
-  });
 });
 
 describe('v0.9: 工具目录（tool-definitions）', () => {
