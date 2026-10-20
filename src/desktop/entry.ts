@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 注入入口（initialization_script）
  *
  * 在 document_start 按顺序装配：
@@ -21,6 +21,7 @@ import { createChatSendCapability } from '../capabilities/chat-send';
 import { createHostClient, type HostClient } from './host-client';
 import { installMainWorldInterceptor } from '../inject/main-world-interceptor';
 import { createChatRoom, type ChatRoomRuntimeConfig } from '../ui/studio-chat-room';
+import { installStudioSettingsEntry } from '../ui/studio-settings-entry';
 import { freezeStudioObject, startIntegrityProbe } from './integrity';
 import type { ExecutableCapability } from '../capabilities/types';
 
@@ -163,6 +164,17 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
         }
       } catch (e) {
         options.reportError?.('failed to mount chat room', e);
+      }
+      // F4：Studio 设置入口。先接宿主桥（面板调后端工具的唯一前提），
+      // 再在 DeepSeek 账号菜单的「系统设置」旁追加「Studio 设置」兄弟项。
+      // 官方弹窗保持原样，不冒充；定位失败只 warn，不影响页面功能。
+      try {
+        installStudioSettingsEntry({
+          sendToolCall: (req) => host.sendToolCall(req),
+          log: (text) => host.log(`[settings-ui] ${text}`),
+        });
+      } catch (e) {
+        options.reportError?.('failed to mount studio settings entry', e);
       }
     }
     try {

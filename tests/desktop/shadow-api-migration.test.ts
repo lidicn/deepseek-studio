@@ -34,22 +34,26 @@ describe('旧 Shadow API 迁移清单与源码一致（W5）', () => {
     expect(importers).toHaveLength(0);
   });
 
-  it('7 个旧面板仅被 studio-ui-install 引用（仅统计 import 语句）', () => {
-    const panels = [
-      'studio-sidebar',
-      'studio-input-bar',
-      'studio-settings-panel',
-      'studio-project-picker',
-      'studio-skills-panel',
-      'studio-mcp-dialog',
-      'studio-right-sidebar',
-    ];
-    for (const panel of panels) {
+  // F4 变更：settings/skills/mcp/project 四个面板经 studio-settings-entry 重新可达
+  // （挂进 DeepSeek 账号菜单的「Studio 设置」兄弟项）。其余三个（sidebar /
+  // input-bar / right-sidebar）仍保持 deprecated-unreachable。
+  it('7 个旧面板的引用方收敛在白名单内（F4 后 4 个经 settings-entry 可达）', () => {
+    const allowed: Record<string, string[]> = {
+      'studio-sidebar': ['/ui/studio-ui-install.ts'],
+      'studio-input-bar': ['/ui/studio-ui-install.ts'],
+      'studio-settings-panel': ['/ui/studio-ui-install.ts', '/ui/studio-settings-entry.ts'],
+      'studio-project-picker': ['/ui/studio-ui-install.ts', '/ui/studio-settings-entry.ts'],
+      'studio-skills-panel': ['/ui/studio-ui-install.ts', '/ui/studio-settings-entry.ts'],
+      'studio-mcp-dialog': ['/ui/studio-ui-install.ts', '/ui/studio-settings-entry.ts'],
+      'studio-right-sidebar': ['/ui/studio-ui-install.ts'],
+    };
+    for (const [panel, expected] of Object.entries(allowed)) {
       // 只认相对 import：from './<panel>'，排除 CSS 类名、注释、选择器命中
       const re = new RegExp(`from ['"]\\./${panel}['"]`);
-      const importers = files.filter((f) => !f.endsWith(`${panel}.ts`) && re.test(textOf(f)));
-      expect(importers.map((f) => f.replace(SRC, '')), panel).toHaveLength(1);
-      expect(importers[0]).toContain('studio-ui-install.ts');
+      const importers = files
+        .filter((f) => !f.endsWith(`${panel}.ts`) && re.test(textOf(f)))
+        .map((f) => f.replace(SRC, '').split(String.fromCharCode(92)).join('/'));
+      expect(importers.sort(), panel).toEqual([...expected].sort());
     }
   });
 
@@ -60,7 +64,7 @@ describe('旧 Shadow API 迁移清单与源码一致（W5）', () => {
 
   it('真 Shadow mountShadowRoot 仅被 focus-mode 使用（定义在 shadow-root）', () => {
     const users = files.filter((f) => textOf(f).includes('mountShadowRoot('));
-    const names = users.map((f) => f.replace(SRC, ''));
+    const names = users.map((f) => f.replace(SRC, '').split(String.fromCharCode(92)).join('/'));
     expect(names.some((n) => n.includes('focus-mode.ts'))).toBe(true);
     expect(names.every((n) => n.includes('shadow-root.ts') || n.includes('focus-mode.ts'))).toBe(true);
   });
