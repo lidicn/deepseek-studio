@@ -546,6 +546,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
               transport: String(config.transport ?? 'stdio') as 'stdio' | 'http' | 'sse',
               url: typeof config.url === 'string' ? config.url : undefined,
               cwd: typeof config.cwd === 'string' ? config.cwd : undefined,
+              // HTTP/SSE 测试要带自定义 Headers（如 Authorization），否则鉴权服务器会 401。
+              headers: config.headers && typeof config.headers === 'object' ? (config.headers as Record<string, string>) : undefined,
             });
             return { ok: result.ok, data: { tools: result.tools ?? [] }, error: result.error };
           },

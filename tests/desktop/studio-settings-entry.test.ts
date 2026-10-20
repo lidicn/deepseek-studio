@@ -72,6 +72,17 @@ describe('F4: Studio 设置入口', () => {
     expect(injected.parentElement?.id).toBe('menu');
   });
 
+  it('注入项保留官方菜单项的图标（不再是无图标纯文字）', () => {
+    buildAccountMenu();
+    expect(injectSettingsMenuItem()).toBe(true);
+    const injected = document.querySelector('[data-studio-settings-entry="1"]') as HTMLElement;
+    // 克隆锚点整项：图标（svg）随文字一起保留
+    expect(injected.querySelector('svg')).toBeTruthy();
+    expect(injected.textContent).toBe('Studio 设置');
+    // 不应带上锚点的 id（避免与官方项重复）
+    expect(injected.id).toBe('');
+    expect(injected.querySelectorAll('span').length).toBe(1);
+  });
   it('点击账号后（菜单异步出现）也能注入', () => {
     document.body.innerHTML = '<div id="app"></div>';
     handle = installStudioSettingsEntry(host);

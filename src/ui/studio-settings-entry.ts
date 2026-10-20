@@ -58,6 +58,17 @@ function normalize(text: string): string {
   return text.replace(/\s+/g, '').trim();
 }
 
+/** 把子树里所有等于 from 的文本节点改为 to（替换菜单文案但保留图标等结构）。 */
+function replaceLabelText(root: HTMLElement, from: string, to: string): void {
+  const target = normalize(from);
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node: Node | null = walker.nextNode();
+  while (node) {
+    if (normalize(node.nodeValue ?? '') === target) node.nodeValue = to;
+    node = walker.nextNode();
+  }
+}
+
 /**
  * 判断某节点是否位于 DeepSeek 的**账号下拉菜单**内。
  * 关键区分：官方「系统设置」弹窗标题也叫「系统设置」，但它同组没有
@@ -98,12 +109,17 @@ export function injectSettingsMenuItem(root: ParentNode = document): boolean {
   const anchor = findSystemSettingsAnchor(root);
   if (!anchor || !anchor.parentElement) return false;
 
-  const item = document.createElement('div');
+  // 克隆锚点整项：官方菜单项的图标是文字前的第一个子节点，只复制 className +
+  // 设 textContent 会丢掉图标（用户反馈「Studio 设置没有图标」）。克隆后把文案
+  // 从「系统设置」改成 MENU_LABEL，图标与布局一并保留。
+  const item = anchor.cloneNode(true) as HTMLElement;
   item.setAttribute(ENTRY_ATTR, '1');
   item.setAttribute('role', 'menuitem');
-  // 复用锚点的 class 以继承菜单外观；不复制内联定位样式（会破坏布局）。
-  if (typeof anchor.className === 'string' && anchor.className) item.className = anchor.className;
-  item.textContent = MENU_LABEL;
+  // 克隆体会带上锚点的 id / 导航属性；清掉避免与官方项冲突或被点击跳转。
+  item.removeAttribute('id');
+  item.removeAttribute('href');
+  item.removeAttribute('target');
+  replaceLabelText(item, ANCHOR_TEXT, MENU_LABEL);
   item.style.cursor = 'pointer';
   item.addEventListener('click', (e) => {
     e.preventDefault();

@@ -177,6 +177,21 @@ function commandText(params: Record<string, unknown>): string | null {
 }
 
 /**
+ * mcp.test 的 http/sse 形状：`{ config: { transport: 'http'|'sse', url } }`。
+ * 返回非空 url 表示这是一次网络连接测试（无本地进程 / 无命令文本），
+ * 供 evaluatePolicy 区分「缺命令」与「合法的 HTTP/SSE 测试」，避免 missing-command 误杀。
+ */
+function mcpTestHttpUrl(params: Record<string, unknown>): string | null {
+  const nested = params.config;
+  if (!nested || typeof nested !== 'object' || Array.isArray(nested)) return null;
+  const n = nested as Record<string, unknown>;
+  const transport = typeof n.transport === 'string' ? n.transport : 'stdio';
+  if (transport !== 'http' && transport !== 'sse') return null;
+  const url = typeof n.url === 'string' ? n.url.trim() : '';
+  return url || null;
+}
+
+/**
  * 策略判定入口。纯函数、无副作用，便于单测覆盖整张矩阵。
  */
 export function evaluatePolicy(input: PolicyInput): PolicyVerdict {
@@ -213,12 +228,16 @@ export function evaluatePolicy(input: PolicyInput): PolicyVerdict {
     // 必须同时支持 argv 数组：那是最安全的调用形式，
     // 若只认 command 字符串，最安全的用法反而会被 missing-command 拦掉。
     const command = commandText(params);
-    if (!command) return { decision: 'deny', reason: 'missing-command' };
+    // mcp.test 支持 http/sse：这类配置没有 command，只有 url（见 ui/studio-mcp-dialog.ts）。
+    // 若因缺 command 直接判 missing-command，合法的 HTTP/SSE 连接测试会被误杀。
+    const mcpHttpUrl = !command && tool === 'mcp.test' ? mcpTestHttpUrl(params) : null;
+    if (!command && !mcpHttpUrl) return { decision: 'deny', reason: 'missing-command' };
 
     // 显式指定 cwd 且落在工作区外 → 视同越界文件访问。
     const cwd = firstString(params, ['cwd', 'workdir']);
     const outsideCwd = cwd && workspace && !workspace.contains(cwd);
-    const risks = detectRisks(command);
+    // HTTP/SSE 连接测试没有命令文本，风险模式只作用于命令行，故此处 risks 为空。
+    const risks = command ? detectRisks(command) : [];
 
     if (mode === 'workspace') {
       // 仅工作区档：shell 一律硬拒绝——该档位的承诺是「只动工作区内的文件」。

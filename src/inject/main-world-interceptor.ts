@@ -88,6 +88,9 @@ let currentMemories: Array<{ id: string; type: string; name: string; content: st
 // v1.0：MCP 工具列表缓存（启动时从宿主拉取，用于动态注入提示词，让 agent 知道有哪些 MCP 工具可用）
 let currentMcpTools: Array<{ serverId: string; name: string; description: string }> = [];
 
+// v1.9：技能列表缓存（启动时从宿主 skill.list 拉取，注入提示词，让 agent 知道有哪些技能、SKILL.md 在哪）。
+let currentSkills: Array<{ id: string; name: string; description: string; skillMdPath: string }> = [];
+
 // v1.3：步骤流 UI 句柄（分布思考状态栏 + 工具分组）
 let stepFlow: StepFlowHandle | null = null;
 let stepFlowStep = 0;
@@ -290,9 +293,37 @@ function formatMcpToolsBlock(): string {
 /* function extractThinkingPreface(reply: string): { thinking: string; answer: string } {
    -- v0.19 deleted, see comment above */
 
+/**
+ * v1.9：技能块。把可用技能（id/名称/描述/SKILL.md 路径）注入提示词，
+ * 让 agent 在用户以「/技能名」或技能名请求时，能先读 SKILL.md 再按 SOP 执行，
+ * 而不是靠猜路径反复试探（用户反馈「试了几次都完不成探测」的根因）。
+ */
+function formatSkillsBlock(): string {
+  const lines = [
+    '## 技能（Skills）',
+    '当用户以「/技能名」（如 /adm-auditkit）或以技能名提到某个技能时，表示要使用该技能：',
+    '1. 先用 local_file_read 读取该技能的 SKILL.md（路径见下方列表）；',
+    '2. 严格按 SKILL.md 里的 SOP / 约束 / 依赖执行，不要只凭名称猜测；',
+    '3. 技能依赖的外部资源（脚本、SSH 目标、容器名、其他文档路径）一律以 SKILL.md 为准。',
+  ];
+  if (currentSkills.length === 0) {
+    lines.push('（当前未扫描到任何技能。技能目录：~/.agents/skills）');
+    return lines.join('\n');
+  }
+  lines.push('', '可用技能：');
+  for (const sk of currentSkills) {
+    lines.push(`- ${sk.id}（${sk.name}）— ${sk.description}｜SKILL.md: ${sk.skillMdPath}`);
+  }
+  lines.push('', '读取示例：<local_file_read>{"path":"<上面的 SKILL.md 路径>"}</local_file_read>');
+  return lines.join('\n');
+}
+
 function buildCapabilityPrompt(): string {
+  const blocks = [TOOL_CAPABILITY_PROMPT];
   const mcpBlock = formatMcpToolsBlock();
-  return mcpBlock ? `${TOOL_CAPABILITY_PROMPT}\n\n${mcpBlock}` : TOOL_CAPABILITY_PROMPT;
+  if (mcpBlock) blocks.push(mcpBlock);
+  blocks.push(formatSkillsBlock());
+  return blocks.join('\n\n');
 }
 
 function injectInstructionIntoMessages(messages: unknown[]): unknown[] {
@@ -1126,6 +1157,28 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     d(`mcp tools load failed after ${maxRetries} attempts, agent will not see MCP tools in prompt`);
+  })();
+
+  // v1.9：启动时异步加载技能列表，注入提示词让 agent 知道有哪些技能、SKILL.md 在哪。
+  // 与 MCP 一样：installMainWorldInterceptor 可能早于 WS 连接建立，sender 会先返回
+  // no-host，需要重试直到成功或达到最大次数。
+  (async () => {
+    const maxRetries = 10;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const r = await sender({ callId: 'skills-init', invocationName: 'skill.list', params: {} });
+        if (r.ok && r.data && Array.isArray((r.data as { skills?: unknown[] }).skills)) {
+          currentSkills = (r.data as { skills: Array<{ id: string; name: string; description: string; skillMdPath: string }> }).skills;
+          d(`loaded ${currentSkills.length} skills for prompt injection (attempt ${attempt + 1})`);
+          return;
+        }
+        d(`skills load attempt ${attempt + 1} failed: ok=${r.ok} error=${r.error ?? 'none'}`);
+      } catch (e) {
+        d(`skills load attempt ${attempt + 1} error: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    d(`skills load failed after ${maxRetries} attempts, agent will not see skills in prompt`);
   })();
 
   return {

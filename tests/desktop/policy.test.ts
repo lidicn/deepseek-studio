@@ -222,6 +222,42 @@ describe('policy —— 三档判定矩阵', () => {
     expect(argv.decision).toBe('require-consent');
   });
 
+  it('v1.9：mcp.test HTTP/SSE 配置（无 command、有 url）不再被 missing-command 误杀', () => {
+    const http = evaluatePolicy({
+      tool: 'mcp.test',
+      params: { config: { transport: 'http', url: 'http://192.168.2.200:8090/mcp' } },
+      mode: 'auto',
+      workspace: ws(),
+    });
+    expect(http.reason).not.toBe('missing-command');
+    expect(http.decision).toBe('allow');
+
+    const sse = evaluatePolicy({
+      tool: 'mcp.test',
+      params: { config: { transport: 'sse', url: 'http://x/mcp' } },
+      mode: 'auto',
+      workspace: ws(),
+    });
+    expect(sse.decision).toBe('allow');
+
+    // http 但缺 url → 仍 fail-closed
+    const noUrl = evaluatePolicy({
+      tool: 'mcp.test',
+      params: { config: { transport: 'http' } },
+      mode: 'auto',
+      workspace: ws(),
+    });
+    expect(noUrl.reason).toBe('missing-command');
+
+    // stdio 缺 command → 仍 fail-closed
+    const noCmd = evaluatePolicy({
+      tool: 'mcp.test',
+      params: { config: { transport: 'stdio' } },
+      mode: 'auto',
+      workspace: ws(),
+    });
+    expect(noCmd.reason).toBe('missing-command');
+  });
   it('指定区外 cwd → 视同越界，auto 档需审批', () => {
     const v = evaluatePolicy({
       tool: 'shell.exec',
