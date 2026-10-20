@@ -47,6 +47,11 @@ const panelStyles = `
   }
   .studio-mcp-server-info { flex: 1; min-width: 0; }
   .studio-mcp-server-name { font-weight: 500; font-size: 13px; color: #333; }
+  .studio-mcp-transport {
+    display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px;
+    font-size: 10px; font-weight: 600; vertical-align: middle;
+    background: #eef2ff; color: #4D6BFE; border: 1px solid #dbe3ff;
+  }
   .studio-mcp-server-cmd { font-size: 11px; color: #999; font-family: monospace; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .studio-mcp-server-actions { display: flex; gap: 4px; }
   .studio-mcp-add-btn { width: 100%; padding: 10px; border: 1px dashed #d0d0d0; border-radius: 8px; background: transparent; cursor: pointer; color: #888; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 6px; }
@@ -202,11 +207,16 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
     }
     for (const serverId of globalState.mcpServers) {
       const item = el('div', { className: 'studio-mcp-server-item' });
-      // W4：serverId 经 escapeHtml 转义
+      // 传输类型与目标取自宿主回传的真实配置。原实现把这段写死成 "stdio"，
+      // 所以 HTTP 服务器在列表里永远显示 stdio。
+      const cfg = globalState.mcpConfigs.find((c) => c.id === serverId);
+      const transport = (cfg?.transport ?? 'stdio').toUpperCase();
+      const target = cfg?.url || cfg?.command || '';
+      // W4：全部经 escapeHtml 转义
       item.innerHTML = `
         <div class="studio-mcp-server-info">
-          <div class="studio-mcp-server-name">${escapeHtml(serverId)}</div>
-          <div class="studio-mcp-server-cmd">stdio</div>
+          <div class="studio-mcp-server-name">${escapeHtml(serverId)} <span class="studio-mcp-transport">${escapeHtml(transport)}</span></div>
+          <div class="studio-mcp-server-cmd">${escapeHtml(target)}</div>
         </div>
         <div class="studio-mcp-server-actions"></div>
       `;
@@ -395,6 +405,17 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
     }
     if (Array.isArray(data.mcpServers)) {
       globalState.mcpServers = [...data.mcpServers];
+      renderMcpServers();
+    }
+    // 单独再拉一次带 configs 的列表（settings.get 只给 id 列表）。
+    const mcp = await callHostTool('mcp.list', {});
+    if (mcp.ok && mcp.data) {
+      const md = mcp.data as {
+        servers?: string[];
+        configs?: Array<{ id: string; transport: 'stdio' | 'http' | 'sse'; url?: string; command?: string; args?: string[] }>;
+      };
+      if (Array.isArray(md.servers)) globalState.mcpServers = [...md.servers];
+      if (Array.isArray(md.configs)) globalState.mcpConfigs = md.configs;
       renderMcpServers();
     }
   }

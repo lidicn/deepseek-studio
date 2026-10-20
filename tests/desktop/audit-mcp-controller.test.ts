@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { McpController, removeMcpServer } from '../../src/host/mcp-controller';
+import { McpController, getMcpServer, removeMcpServer } from '../../src/host/mcp-controller';
 
 function fakeConn(over: Record<string, unknown> = {}) {
   return {
@@ -68,5 +68,46 @@ describe('v1.9：removeMcpServer 支持嵌套 servers 结构', () => {
     const r = removeMcpServer('nope', cfgPath);
     expect(r.ok).toBe(false);
     expect(r.error).toContain('server not found');
+  });
+});
+describe('v1.9：MCP 配置读回（HTTP 存了再开不能变 stdio）', () => {
+  it('getMcpServer 返回真实 transport/url/headers', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-get-'));
+    const cfgPath = path.join(dir, 'mcp-servers.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      servers: { TVPilot: { command: '', args: [], env: {}, transport: 'http', url: 'http://x/mcp', headers: { A: 'b' } } },
+    }), 'utf8');
+    const cfg = getMcpServer('TVPilot', cfgPath);
+    expect(cfg?.transport).toBe('http');
+    expect(cfg?.url).toBe('http://x/mcp');
+    expect(cfg?.headers).toEqual({ A: 'b' });
+  });
+
+  it('不存在 → null（不伪造默认 stdio）', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-get-none-'));
+    const cfgPath = path.join(dir, 'mcp-servers.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({ servers: {} }), 'utf8');
+    expect(getMcpServer('nope', cfgPath)).toBeNull();
+  });
+
+  it('saveServer 与 loadMcpServers 用同一路径（STUDIO_CONFIG_DIR 下 round-trip）', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-rt-'));
+    const prevCfg = process.env.STUDIO_CONFIG_DIR;
+    const prevMcp = process.env.STUDIO_MCP_CONFIG;
+    try {
+      delete process.env.STUDIO_MCP_CONFIG;
+      process.env.STUDIO_CONFIG_DIR = dir;
+      const ctl = new McpController();
+      expect(ctl.saveServer('X', { command: 'x', transport: 'http', url: 'http://y/mcp' }).ok).toBe(true);
+      // 同一控制器 reload 后必须读得到——原实现 load 读 ~/.config、save 写 STUDIO_CONFIG_DIR，读不回来
+      ctl.reload();
+      expect(ctl.listServerIds()).toContain('X');
+      const cfg = getMcpServer('X');
+      expect(cfg?.transport).toBe('http');
+      expect(cfg?.url).toBe('http://y/mcp');
+    } finally {
+      if (prevCfg === undefined) delete process.env.STUDIO_CONFIG_DIR; else process.env.STUDIO_CONFIG_DIR = prevCfg;
+      if (prevMcp === undefined) delete process.env.STUDIO_MCP_CONFIG; else process.env.STUDIO_MCP_CONFIG = prevMcp;
+    }
   });
 });

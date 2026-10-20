@@ -96,7 +96,7 @@ import { createFileTools } from '../capabilities/file';
 import { createFileEditCapability } from '../capabilities/edit-engine';
 import { getMemoryStore } from './memory-store';
 import { scanSkills, ensureSkillsDir, resolveSkillsDir } from './skill-store';
-import { getMcpController, ensureMcpConfig, removeMcpServer } from './mcp-controller';
+import { getMcpController, ensureMcpConfig, getMcpServer, removeMcpServer } from './mcp-controller';
 import { createAutomationManager, type AutomationManager } from './automation';
 import { execPythonInSandbox } from './sandbox-executor';
 import {
@@ -502,14 +502,38 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           async execute(): Promise<ExecuteResult> {
             const controller = getMcpController();
             const serverIds = controller.listServerIds();
+            // 回传每台服务器的真实传输配置：UI 列表原来把 transport 写死成 stdio，
+            // 编辑弹窗也无处回填，表现为「存的是 HTTP，再打开变成 stdio」。
+            const configs = serverIds.map((id) => {
+              const cfg = getMcpServer(id);
+              return {
+                id,
+                transport: cfg?.transport ?? 'stdio',
+                url: cfg?.url,
+                command: cfg?.command,
+                args: cfg?.args ?? [],
+              };
+            });
             const tools = await controller.getAllTools();
             return {
               ok: true,
               data: {
                 servers: serverIds,
+                configs,
                 tools: tools.map((t) => ({ serverId: t.serverId, name: t.name, description: t.description })),
               },
             };
+          },
+        },
+        // v1.9：读取单台 MCP 服务器完整配置（编辑弹窗回填）。
+        'mcp.get': {
+          id: 'mcp.get',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const serverId = String(params.serverId ?? '');
+            if (!serverId) return { ok: false, error: 'serverId is required' };
+            const cfg = getMcpServer(serverId);
+            if (!cfg) return { ok: false, error: `server not found: ${serverId}` };
+            return { ok: true, data: { id: serverId, config: cfg } };
           },
         },
         // v1.0：调用 MCP 工具。

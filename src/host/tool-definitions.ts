@@ -189,6 +189,15 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },
+  // v1.9：读取单台 MCP 服务器配置（只读，自动放行）。
+  {
+    id: 'mcp.get',
+    title: '读取 MCP 配置',
+    description: '读取指定 MCP 服务器的完整配置（只读，自动放行）。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
   // v1.1：删除 MCP 配置（R4-P0-1：删除配置文件，改为 privileged 级别）。
   {
     id: 'mcp.remove',

@@ -120,6 +120,7 @@ const UPSTREAM_TO_STUDIO: Record<string, UpstreamToolMapping> = Object.assign(
   },
   // v1.1：UI 点号直调（无需适配，透传参数）。
   'mcp.remove': { id: 'mcp.remove', adapt: (p) => p },
+  'mcp.get': { id: 'mcp.get', adapt: (p) => p },
   'memory.delete': { id: 'memory.delete', adapt: (p) => p },
   'workspace.set': { id: 'workspace.set', adapt: (p) => p },
   'policy.set': { id: 'policy.set', adapt: (p) => p },

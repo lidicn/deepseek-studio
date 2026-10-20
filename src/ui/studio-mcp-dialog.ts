@@ -289,13 +289,7 @@ export function createMcpConfigDialog(): { container: HTMLElement; open: (server
     }
   }
 
-  function open(serverId?: string): void {
-    editingServerId = serverId ?? null;
-    header.querySelector('.studio-modal-title')!.textContent = serverId ? '编辑 MCP 服务器' : '添加 MCP 服务器';
-    overlay.style.display = 'flex';
-    testResult.className = 'studio-mcp-test-result';
-    testResult.textContent = '';
-    // 重置表单
+  function resetForm(serverId?: string): void {
     (nameInput as HTMLInputElement).value = serverId ?? '';
     (cmdInput as HTMLInputElement).value = '';
     (urlInput as HTMLInputElement).value = '';
@@ -305,6 +299,69 @@ export function createMcpConfigDialog(): { container: HTMLElement; open: (server
     transportType = 'stdio';
     (transportSelect as HTMLSelectElement).value = 'stdio';
     updateTransportFields();
+  }
+
+  /** 用宿主回传的配置回填表单（编辑已有服务器时）。 */
+  function fillForm(config: {
+    transport?: 'stdio' | 'http' | 'sse';
+    command?: string;
+    args?: string[];
+    env?: Record<string, string>;
+    url?: string;
+    headers?: Record<string, string>;
+  }): void {
+    transportType = config.transport ?? 'stdio';
+    (transportSelect as HTMLSelectElement).value = transportType;
+    (cmdInput as HTMLInputElement).value = config.command ?? '';
+    (urlInput as HTMLInputElement).value = config.url ?? '';
+    for (const a of config.args ?? []) {
+      addKvRow(argsList, '参数值');
+      const inputs = argsList.querySelectorAll('input');
+      (inputs[inputs.length - 1] as HTMLInputElement).value = a;
+    }
+    for (const [k, v] of Object.entries(config.env ?? {})) {
+      addKvPairRow(envList, '变量名', '变量值');
+      const rows = envList.querySelectorAll('.studio-kv-row');
+      const inputs = rows[rows.length - 1].querySelectorAll('input');
+      (inputs[0] as HTMLInputElement).value = k;
+      (inputs[1] as HTMLInputElement).value = v;
+    }
+    for (const [k, v] of Object.entries(config.headers ?? {})) {
+      addKvPairRow(headersList, 'Header 名', 'Header 值');
+      const rows = headersList.querySelectorAll('.studio-kv-row');
+      const inputs = rows[rows.length - 1].querySelectorAll('input');
+      (inputs[0] as HTMLInputElement).value = k;
+      (inputs[1] as HTMLInputElement).value = v;
+    }
+    updateTransportFields();
+  }
+
+  function open(serverId?: string): void {
+    editingServerId = serverId ?? null;
+    header.querySelector('.studio-modal-title')!.textContent = serverId ? '编辑 MCP 服务器' : '添加 MCP 服务器';
+    overlay.style.display = 'flex';
+    testResult.className = 'studio-mcp-test-result';
+    testResult.textContent = '';
+    resetForm(serverId);
+    // 编辑已有服务器：从宿主读回真实配置。
+    // 原实现无条件把表单重置成 stdio，于是「存的是 HTTP，再打开变成 stdio」。
+    if (serverId) void loadExisting(serverId);
+  }
+
+  async function loadExisting(serverId: string): Promise<void> {
+    try {
+      const r = await callHostTool('mcp.get', { serverId });
+      if (!r.ok || !r.data) {
+        testResult.className = 'studio-mcp-test-result error';
+        testResult.textContent = `读取配置失败：${r.error ?? '未知错误'}`;
+        return;
+      }
+      const cfg = (r.data as { config?: Parameters<typeof fillForm>[0] }).config;
+      if (cfg) fillForm(cfg);
+    } catch (e) {
+      testResult.className = 'studio-mcp-test-result error';
+      testResult.textContent = `读取配置失败：${e instanceof Error ? e.message : String(e)}`;
+    }
   }
 
   function close(): void {

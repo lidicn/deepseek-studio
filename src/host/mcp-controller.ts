@@ -73,7 +73,13 @@ interface McpServerConnection {
 }
 
 function defaultConfigPath(): string {
-  return process.env.STUDIO_MCP_CONFIG ?? path.join(os.homedir(), '.config', 'deepseek-studio', 'mcp-servers.json');
+  if (process.env.STUDIO_MCP_CONFIG) return process.env.STUDIO_MCP_CONFIG;
+  // 与 saveServer 保持同一口径：先看 STUDIO_CONFIG_DIR，再回落 ~/.config。
+  // 原实现只认 STUDIO_MCP_CONFIG，导致 saveServer 写到 STUDIO_CONFIG_DIR、
+  // 而 loadMcpServers 从 ~/.config 读——写进去的配置永远读不回来。
+  const configDir = process.env.STUDIO_CONFIG_DIR?.trim();
+  if (configDir) return path.join(configDir, 'mcp-servers.json');
+  return path.join(os.homedir(), '.config', 'deepseek-studio', 'mcp-servers.json');
 }
 
 /** 读取 MCP 服务器配置 */
@@ -106,6 +112,15 @@ export function loadMcpServers(configPath?: string): Record<string, McpServerCon
   }
 }
 
+/**
+ * 读取服务器完整配置（供 UI 编辑弹窗回填）。
+ * 不带 configPath 时按 defaultConfigPath() 解析；不存在返回 null。
+ */
+export function getMcpServer(serverId: string, configPath?: string): McpServerConfig | null {
+  const all = loadMcpServers(configPath);
+  const cfg = all[serverId];
+  return cfg ? { ...cfg } : null;
+}
 /**
  * 从配置文件删除一台 MCP 服务器。
  * 兼容两种形状：标准嵌套式 { servers: {...} } 与历史平铺式 { id: {...} }。

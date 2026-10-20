@@ -28,6 +28,8 @@ export interface UIState {
   localToolsEnabled: boolean;
   skills: Array<{ id: string; name: string; description: string }>;
   mcpServers: string[];
+  /** v1.9：每台 MCP 服务器的真实传输配置（列表展示与编辑回填用）。 */
+  mcpConfigs: Array<{ id: string; transport: 'stdio' | 'http' | 'sse'; url?: string; command?: string; args?: string[] }>;
   memories: Array<{ id: string; type: string; name: string; content: string }>;
 }
 
@@ -72,6 +74,7 @@ export const globalState: UIState = {
   localToolsEnabled: true,
   skills: [],
   mcpServers: [],
+  mcpConfigs: [],
   memories: [],
 };
 
