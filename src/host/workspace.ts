@@ -65,6 +65,10 @@ const defaultDeps: WorkspaceDeps = {
 };
 
 export function defaultConfigPath(homedir: string = os.homedir()): string {
+  // STUDIO_CONFIG_DIR 是宿主配置目录的唯一覆盖入口（mcp/memories/projects 都认它）。
+  // 这里若不认，面板改的设置会写到 ~/.config 而宿主从别处读——表现为"设置了但没生效"。
+  const override = process.env.STUDIO_CONFIG_DIR?.trim();
+  if (override) return path.join(override, 'config.json');
   return path.join(homedir, '.config', 'deepseek-studio', 'config.json');
 }
 

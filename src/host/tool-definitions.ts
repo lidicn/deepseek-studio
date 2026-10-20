@@ -227,6 +227,15 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },
+  // v1.9：读取当前生效设置（只读，自动放行）。
+  {
+    id: 'settings.get',
+    title: '读取设置',
+    description: '读取当前生效的工作区、策略档位、MCP 服务器与技能目录（只读，自动放行）。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
   // v1.1：项目列表（只读，自动放行）。
   {
     id: 'project.list',

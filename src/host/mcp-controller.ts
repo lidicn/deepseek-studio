@@ -106,6 +106,28 @@ export function loadMcpServers(configPath?: string): Record<string, McpServerCon
   }
 }
 
+/**
+ * 从配置文件删除一台 MCP 服务器。
+ * 兼容两种形状：标准嵌套式 { servers: {...} } 与历史平铺式 { id: {...} }。
+ * 原实现直接 delete all[serverId]：对嵌套式永远删不到，界面表现为「点删除没反应，
+ * 重启又回来」。抽成纯函数便于单测（工具层是 privileged，测试里过不了同意闸门）。
+ */
+export function removeMcpServer(serverId: string, configPath?: string): { ok: boolean; error?: string } {
+  const p = configPath ?? defaultConfigPath();
+  try {
+    const all = JSON.parse(fs.readFileSync(p, 'utf8')) as Record<string, unknown>;
+    const bag = (all.servers && typeof all.servers === 'object' && !Array.isArray(all.servers))
+      ? (all.servers as Record<string, unknown>)
+      : all;
+    if (!(serverId in bag)) return { ok: false, error: `server not found: ${serverId}` };
+    delete bag[serverId];
+    fs.writeFileSync(p, JSON.stringify(all, null, 2), 'utf8');
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 /** 确保配置文件存在（如果不存在则创建示例配置） */
 export function ensureMcpConfig(configPath?: string): string {
   const p = configPath ?? defaultConfigPath();

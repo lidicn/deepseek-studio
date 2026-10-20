@@ -123,6 +123,7 @@ const UPSTREAM_TO_STUDIO: Record<string, UpstreamToolMapping> = Object.assign(
   'memory.delete': { id: 'memory.delete', adapt: (p) => p },
   'workspace.set': { id: 'workspace.set', adapt: (p) => p },
   'policy.set': { id: 'policy.set', adapt: (p) => p },
+  'settings.get': { id: 'settings.get', adapt: (p) => p },
   'project.list': { id: 'project.list', adapt: (p) => p },
   'project.create': { id: 'project.create', adapt: (p) => p },
   'folder.pick': { id: 'folder.pick', adapt: (p) => p },

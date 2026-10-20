@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import { createDesktopHost } from '../../src/host/desktop-host';
 import {
   createMutableWorkspace,
   createWorkspace,
+  defaultConfigPath,
   isWorkspaceConfigured,
   persistConfigPatch,
 } from '../../src/host/workspace';
@@ -94,6 +96,92 @@ describe('persistConfigPatch —— 配置持久化', () => {
   });
 });
 
+describe('v1.9：配置目录解析与写盘', () => {
+  it('STUDIO_CONFIG_DIR 覆盖时，defaultConfigPath 指向该目录（否则面板设置写错地方）', () => {
+    const prev = process.env.STUDIO_CONFIG_DIR;
+    try {
+      process.env.STUDIO_CONFIG_DIR = 'D:/custom-cfg';
+      expect(defaultConfigPath('C:/Users/x')).toBe(path.join('D:/custom-cfg', 'config.json'));
+    } finally {
+      if (prev === undefined) delete process.env.STUDIO_CONFIG_DIR;
+      else process.env.STUDIO_CONFIG_DIR = prev;
+    }
+  });
+
+  it('未设置 STUDIO_CONFIG_DIR 时回落到 ~/.config/deepseek-studio', () => {
+    const prev = process.env.STUDIO_CONFIG_DIR;
+    try {
+      delete process.env.STUDIO_CONFIG_DIR;
+      expect(defaultConfigPath('C:/Users/x')).toBe(path.join('C:/Users/x', '.config', 'deepseek-studio', 'config.json'));
+    } finally {
+      if (prev !== undefined) process.env.STUDIO_CONFIG_DIR = prev;
+    }
+  });
+
+  it('persistConfigPatch 实际写到 STUDIO_CONFIG_DIR 下（round-trip）', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-'));
+    const prev = process.env.STUDIO_CONFIG_DIR;
+    try {
+      process.env.STUDIO_CONFIG_DIR = dir;
+      const r = persistConfigPatch({ policyMode: 'full' });
+      expect(r.ok).toBe(true);
+      const written = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')) as Record<string, unknown>;
+      expect(written.policyMode).toBe('full');
+    } finally {
+      if (prev === undefined) delete process.env.STUDIO_CONFIG_DIR;
+      else process.env.STUDIO_CONFIG_DIR = prev;
+    }
+  });
+});
+describe('v1.9：settings.get / workspace.set / policy.set 落盘链路', () => {
+  it('workspace.set 与 policy.set 会把值写进 STUDIO_CONFIG_DIR 的 config.json', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-rt-'));
+    const wsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ws-rt-'));
+    const prev = process.env.STUDIO_CONFIG_DIR;
+    process.env.STUDIO_CONFIG_DIR = dir;
+    const host = createDesktopHost({
+      config: { host: '127.0.0.1', port: 0, token: 't' },
+      secret: 's',
+      workspace: null,
+      policyMode: 'auto',
+    });
+    try {
+      // 走宿主导出的 setter（与 workspace.set / policy.set 工具内部同一实现）。
+      // 工具层是 privileged，无页连接时会被同意闸门 fail-closed 拦下，不适合做落盘断言。
+      const setWs = host.setWorkspaceRoot(wsDir);
+      expect(setWs.ok).toBe(true);
+      host.setPolicyMode('full');
+
+      const written = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')) as Record<string, unknown>;
+      expect(written.policyMode).toBe('full');
+      expect(String(written.workspaceRoot)).toBe(path.resolve(wsDir));
+
+      const got = await host.invokeTool('settings.get', {});
+      expect(got.ok).toBe(true);
+      const data = got.data as { workspaceRoot: string; policyMode: string };
+      expect(data.policyMode).toBe('full');
+      expect(data.workspaceRoot).toBe(path.resolve(wsDir));
+    } finally {
+      if (prev === undefined) delete process.env.STUDIO_CONFIG_DIR;
+      else process.env.STUDIO_CONFIG_DIR = prev;
+    }
+  });
+
+  it('workspace.set 指向不存在的目录 → 失败且不落盘（fail-closed）', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-bad-'));
+    const prev = process.env.STUDIO_CONFIG_DIR;
+    process.env.STUDIO_CONFIG_DIR = dir;
+    const host = createDesktopHost({ config: { host: '127.0.0.1', port: 0, token: 't' }, secret: 's', workspace: null });
+    try {
+      const r = host.setWorkspaceRoot(path.join(dir, 'does-not-exist'));
+      expect(r.ok).toBe(false);
+      expect(r.error).toBe('not-a-directory');
+    } finally {
+      if (prev === undefined) delete process.env.STUDIO_CONFIG_DIR;
+      else process.env.STUDIO_CONFIG_DIR = prev;
+    }
+  });
+});
 describe('lexicallyInside —— 路径逃逸判定（v0.19 双点前缀修复）', () => {
   // 用依赖注入构造 Windows 路径场景，避免真机文件系统依赖
   const winDeps = {

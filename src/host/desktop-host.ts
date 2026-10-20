@@ -84,6 +84,7 @@ import { createShadowStore } from './shadow-store';
 import {
   createMutableWorkspace,
   createWorkspace,
+  defaultConfigPath,
   persistConfigPatch,
   resolveWorkspaceRoot,
   type MutableWorkspaceContext,
@@ -95,7 +96,7 @@ import { createFileTools } from '../capabilities/file';
 import { createFileEditCapability } from '../capabilities/edit-engine';
 import { getMemoryStore } from './memory-store';
 import { scanSkills, ensureSkillsDir, resolveSkillsDir } from './skill-store';
-import { getMcpController, ensureMcpConfig } from './mcp-controller';
+import { getMcpController, ensureMcpConfig, removeMcpServer } from './mcp-controller';
 import { createAutomationManager, type AutomationManager } from './automation';
 import { execPythonInSandbox } from './sandbox-executor';
 import {
@@ -581,15 +582,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             const configPath = process.env.STUDIO_CONFIG_DIR
               ? path.join(process.env.STUDIO_CONFIG_DIR, 'mcp-servers.json')
               : path.join(os.homedir(), '.config', 'deepseek-studio', 'mcp-servers.json');
-            try {
-              const all = JSON.parse(readFileSync(configPath, 'utf8'));
-              delete all[serverId];
-              writeFileSync(configPath, JSON.stringify(all, null, 2), 'utf8');
-              getMcpController().reload();
-              return { ok: true };
-            } catch (e) {
-              return { ok: false, error: e instanceof Error ? e.message : String(e) };
-            }
+            const result = removeMcpServer(serverId, configPath);
+            if (result.ok) getMcpController().reload();
+            return result.ok ? { ok: true } : { ok: false, error: result.error };
           },
         },
         // v1.1：删除记忆。
@@ -607,12 +602,13 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         'workspace.set': {
           id: 'workspace.set',
           async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
-            const root = String(params.root ?? '');
+            const root = String(params.root ?? '').trim();
             if (!root) return { ok: false, error: 'root is required' };
-            if (!existsSync(root)) return { ok: false, error: `path not found: ${root}` };
-            mutableWorkspace.setRoot(root);
-            process.env.STUDIO_WORKSPACE_ROOT = root;
-            return { ok: true, data: { root } };
+            // 统一走 setWorkspaceRoot：目录校验 fail-closed、作废旧会话授权、落盘 config.json。
+            // 原实现只改内存 + process.env，宿主重启即丢——这是「设置保存不了」的根因之一。
+            const r = setWorkspaceRoot(root);
+            if (!r.ok) return { ok: false, error: r.error ?? 'workspace-set-failed' };
+            return { ok: true, data: { root: mutableWorkspace.root } };
           },
         },
         // v1.1：设置策略模式。
@@ -620,12 +616,32 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           id: 'policy.set',
           async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
             const mode = String(params.mode ?? 'auto') as 'workspace' | 'ask' | 'auto' | 'full';
-            if (!['workspace', 'ask', 'auto', 'full'].includes(mode)) {
-              return { ok: false, error: `invalid policy mode: ${mode}` };
+            // 统一走 setPolicyMode：非法值抛错、作废旧会话授权、落盘 config.json。
+            // 原实现只改内存 + process.env，宿主重启即丢。
+            try {
+              setPolicyMode(mode);
+            } catch (e) {
+              return { ok: false, error: e instanceof Error ? e.message : String(e) };
             }
-            policyMode = mode;
-            process.env.STUDIO_POLICY_MODE = mode;
-            return { ok: true, data: { mode } };
+            return { ok: true, data: { mode: policyMode } };
+          },
+        },
+        // v1.9：读取当前生效设置。面板打开时必须读这里，否则只会显示 globalState 的
+        // 出厂默认值（工作区 E:\、策略 auto），看起来像「设置没保存」。
+        'settings.get': {
+          id: 'settings.get',
+          async execute(): Promise<ExecuteResult> {
+            const controller = getMcpController();
+            return {
+              ok: true,
+              data: {
+                workspaceRoot: mutableWorkspace.configured ? mutableWorkspace.root : null,
+                policyMode,
+                mcpServers: controller.listServerIds(),
+                skillsDir: resolveSkillsDir(),
+                configPath: defaultConfigPath(),
+              },
+            };
           },
         },
         // v1.1：项目列表（从配置文件读取）。
