@@ -181,7 +181,12 @@ function startSocket(): void {
       onState: (next) => commit(next),
       onAck: (ack) => handleAck(ack),
       onLoopEvent: (ev) => renderEvent(ev),
-      onToolRun: (toolEvent) => appendToolRun(inspector, toolEvent),
+      onToolRun: (toolEvent) => {
+        // 窄屏抽屉与宽屏右栏是同一份数据的两个出口，各自走 appendToolRun，
+        // runId 去重语义天然一致（同一函数），不会出现两边卡片数不一致。
+        appendToolRun(inspector, toolEvent);
+        appendToolRun(drawer, toolEvent);
+      },
     },
   });
 }
