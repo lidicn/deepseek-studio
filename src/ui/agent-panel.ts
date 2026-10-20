@@ -29,6 +29,7 @@ import { appendMessage, getCenterBody } from './workbench/workbench-center';
 import { appendToolRun } from './workbench/workbench-inspector';
 import { renderStatusbar } from './workbench/workbench-statusbar';
 import { mountThemeToggle } from './workbench/theme-toggle';
+import { mountDesktopHint } from './workbench/desktop-hint';
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -52,6 +53,9 @@ const wsPath = $('ws-path');
 const connDot = $('conn-dot');
 const connText = $('conn-text');
 const hint = $('hint');
+
+// 桌面提示挂载点：与 #app 同级容器，避免被三栏布局的 display:none 牵连。
+const appRoot = document.getElementById('app') ?? document.body;
 
 let socket: WorkbenchSocket | null = null;
 let reqSeq = 0;
@@ -244,6 +248,9 @@ mountInspectorDrawer({ drawer, toggleButton: btnInspector, closeButton: btnDrawe
 // 主题：默认浅色，点 🌗 切深色并记忆；用户选过后不跟随系统。
 // 面板随窗口生命周期，不注册卸载清理（与 inspector-drawer 一致）。
 mountThemeToggle({ toggleButton: btnTheme });
+
+// <900 显示桌面提示：阈值取 WORKBENCH_BREAKPOINTS.compact，与 layoutForWidth 同源。
+mountDesktopHint({ parent: appRoot });
 
 startSocket();
 syncFromState();

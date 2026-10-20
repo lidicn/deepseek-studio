@@ -192,7 +192,9 @@ body {
   .center-canvas { min-width: 0; }
 }
 
-/* <900：隐藏工作台主体，只显示桌面提示（语义化，可被读屏读到） */
+/* <900：隐藏工作台主体，只显示桌面提示（语义化，可被读屏读到）。
+ * 提示节点的创建/移除由 desktop-hint.ts 按断点负责，CSS 只管样式不管显隐：
+ * 这里不能再写 .desktop-hint { display: none }，否则节点建了也看不见。 */
 @media (max-width: 899px) {
   .workbench-layout, .composer { display: none; }
   .desktop-hint {
@@ -201,7 +203,12 @@ body {
     color: var(--studio-text-secondary);
   }
 }
+
+/* ≥900：提示节点已被 JS 移除；这条仅兜底，防止 CSS 单独加载时残留可见。 */
 .desktop-hint { display: none; }
+@media (max-width: 899px) {
+  .desktop-hint { display: flex; }
+}
 
 /* ---------- 对话流 ---------- */
 .welcome { margin: auto; text-align: center; padding: 40px 20px; }
