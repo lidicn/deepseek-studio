@@ -15,23 +15,18 @@ declare global {
 /** 让本文件成为 ES 模块（declare global 的前置条件）。 */
 export {};
 
-import type { ToolRunEvent } from '../shared/tool-run-event';
 import { createStepFlowContainer, type StepFlowHandle } from '../inject/step-flow-ui';
 import {
   createInitialState,
-  applySocketOpen,
-  applySocketClose,
-  applyState,
-  applyLoopEvent,
-  applyToolRun,
   canSend,
   canStop,
   type WorkbenchState,
 } from './workbench/workbench-state';
+import { createWorkbenchSocket, type WorkbenchSocket } from './workbench/workbench-ws';
+import type { WorkbenchRequest, AckPayload, AgentLoopEvent } from './workbench/workbench-types';
 import { appendMessage, getCenterBody } from './workbench/workbench-center';
 import { appendToolRun } from './workbench/workbench-inspector';
 import { renderStatusbar } from './workbench/workbench-statusbar';
-import type { StatePayload, AgentLoopEvent } from './workbench/workbench-types';
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -52,8 +47,7 @@ const connDot = $('conn-dot');
 const connText = $('conn-text');
 const hint = $('hint');
 
-let ws: WebSocket | null = null;
-let reconnectTimer: number | null = null;
+let socket: WorkbenchSocket | null = null;
 let reqSeq = 0;
 let currentFlow: StepFlowHandle | null = null;
 let tickTimer: number | null = null;
@@ -168,63 +162,36 @@ function renderEvent(event: AgentLoopEvent): void {
   }
 }
 
-/* ---------- WS 通道 ---------- */
+/* ---------- WS 通道（workbench-ws 统一连接/1008 不重连/分发） ---------- */
 
-function connect(): void {
+function startSocket(): void {
   const token = window.__STUDIO_TOKEN__ ?? '';
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const socket = new WebSocket(`${proto}://${location.host}/agent-ws?token=${encodeURIComponent(token)}`);
-  ws = socket;
-
-  socket.onopen = () => commit(applySocketOpen(state));
-
-  socket.onclose = (ev) => {
-    commit(applySocketClose(state, ev.code));
-    if (ev.code !== 1008 && reconnectTimer === null) {
-      reconnectTimer = window.setTimeout(() => {
-        reconnectTimer = null;
-        connect();
-      }, 2000);
-    }
-  };
-  socket.onerror = () => socket.close();
-
-  socket.onmessage = (ev) => {
-    let msg: Record<string, unknown>;
-    try {
-      msg = JSON.parse(ev.data as string) as Record<string, unknown>;
-    } catch {
-      return;
-    }
-    if (msg.type === 'state') {
-      commit(applyState(state, msg as unknown as StatePayload));
-    } else if (msg.type === 'event') {
-      const ev = msg.event as AgentLoopEvent;
-      commit(applyLoopEvent(state, ev));
-      renderEvent(ev);
-    } else if (msg.type === 'ack') {
-      handleAck(msg);
-    } else if (msg.type === 'tool-run') {
-      const toolEvent = msg.event as ToolRunEvent;
-      commit(applyToolRun(state, toolEvent));
-      // 右栏复用已有 tool-run-card（appendToolRun 内部），不重造。
-      appendToolRun(inspector, toolEvent);
-    }
-  };
+  const url = `${proto}://${location.host}/agent-ws?token=${encodeURIComponent(token)}`;
+  socket = createWorkbenchSocket({
+    url,
+    initial: state,
+    handlers: {
+      onState: (next) => commit(next),
+      onAck: (ack) => handleAck(ack),
+      onLoopEvent: (ev) => renderEvent(ev),
+      onToolRun: (toolEvent) => appendToolRun(inspector, toolEvent),
+    },
+  });
 }
 
 function call(payload: Record<string, unknown>): string {
   const reqId = `r${++reqSeq}`;
-  ws?.send(JSON.stringify({ ...payload, reqId }));
+  socket?.send({ ...payload, reqId } as WorkbenchRequest);
   return reqId;
 }
 
 /* ---------- 交互 ---------- */
 
-function handleAck(msg: Record<string, unknown>): void {
-  const ok = msg.ok === true;
-  const data = msg.data as { path?: string | null } | undefined;
-  const error = typeof msg.error === 'string' ? msg.error : undefined;
+function handleAck(ack: AckPayload): void {
+  const ok = ack.ok === true;
+  const data = ack.data as { path?: string | null } | undefined;
+  const error = typeof ack.error === 'string' ? ack.error : undefined;
   if (!ok && error) appendMessage(canvas, 'error', `操作失败：${error}`);
   if (ok && data && typeof data.path === 'string' && data.path.length > 0) {
     call({ type: 'set-workspace', path: data.path });
@@ -260,6 +227,6 @@ btnFocus.addEventListener('click', () => {
   appendMessage(canvas, 'status', '专注模式将由托盘菜单触发，本期不自动打开。');
 });
 
-connect();
+startSocket();
 syncFromState();
 input.focus();

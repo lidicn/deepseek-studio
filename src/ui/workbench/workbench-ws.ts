@@ -21,6 +21,10 @@ import type { ToolRunEvent } from '../../shared/tool-run-event';
 export interface WorkbenchSocketHandlers {
   onState(state: WorkbenchState): void;
   onAck(ack: AckPayload): void;
+  /** 可选：原始 loop 事件副作用（步骤流渲染等），state 已先经 applyLoopEvent 更新。 */
+  onLoopEvent?(event: AgentLoopEvent): void;
+  /** 可选：原始 tool-run 副作用（右栏卡片渲染等），state 已先经 applyToolRun 更新。 */
+  onToolRun?(event: ToolRunEvent): void;
 }
 
 export interface WorkbenchSocket {
@@ -83,12 +87,18 @@ export function createWorkbenchSocket(options: WorkbenchSocketOptions): Workbenc
         case 'state':
           emit(applyState(state, msg as unknown as StatePayload));
           break;
-        case 'event':
-          emit(applyLoopEvent(state, msg.event as AgentLoopEvent));
+        case 'event': {
+          const loopEvent = msg.event as AgentLoopEvent;
+          emit(applyLoopEvent(state, loopEvent));
+          options.handlers.onLoopEvent?.(loopEvent);
           break;
-        case 'tool-run':
-          emit(applyToolRun(state, msg.event as ToolRunEvent));
+        }
+        case 'tool-run': {
+          const toolEvent = msg.event as ToolRunEvent;
+          emit(applyToolRun(state, toolEvent));
+          options.handlers.onToolRun?.(toolEvent);
           break;
+        }
         case 'ack':
           options.handlers.onAck(msg as unknown as AckPayload);
           break;
