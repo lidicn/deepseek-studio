@@ -3,6 +3,9 @@
   "version": "0.4.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "description": "deepseek-studio 的桌面化（WebView 容器）改造：MV3 桥接层 / 同域桥 / 注入加载器 / 工具执行授权 / 本地 HTTP API。v0.4 起为可用 MVP（加载真实聊天页 + 注入常驻宿主 + 同意闸门）。",
   "scripts": {
     "typecheck": "tsc --noEmit",
