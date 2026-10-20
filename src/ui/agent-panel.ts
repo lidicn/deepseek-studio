@@ -28,6 +28,7 @@ import type { WorkbenchRequest, AckPayload, AgentLoopEvent } from './workbench/w
 import { appendMessage, getCenterBody } from './workbench/workbench-center';
 import { appendToolRun } from './workbench/workbench-inspector';
 import { renderStatusbar } from './workbench/workbench-statusbar';
+import { mountThemeToggle } from './workbench/theme-toggle';
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -43,6 +44,7 @@ const btnSend = $<HTMLButtonElement>('btn-send');
 const btnStop = $<HTMLButtonElement>('btn-stop');
 const btnFolder = $<HTMLButtonElement>('btn-open-folder');
 const btnFocus = $<HTMLButtonElement>('btn-open-focus');
+const btnTheme = $<HTMLButtonElement>('btn-theme');
 const btnInspector = $<HTMLButtonElement>('btn-inspector');
 const drawer = $('inspector-drawer');
 const btnDrawerClose = $<HTMLButtonElement>('btn-drawer-close');
@@ -233,6 +235,10 @@ btnFocus.addEventListener('click', () => {
 
 // 窄屏（<1200px）Inspector 抽屉开关；宽屏按钮由 CSS 隐藏，不影响常驻右栏。
 mountInspectorDrawer({ drawer, toggleButton: btnInspector, closeButton: btnDrawerClose });
+
+// 主题：默认浅色，点 🌗 切深色并记忆；用户选过后不跟随系统。
+// 面板随窗口生命周期，不注册卸载清理（与 inspector-drawer 一致）。
+mountThemeToggle({ toggleButton: btnTheme });
 
 startSocket();
 syncFromState();

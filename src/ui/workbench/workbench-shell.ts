@@ -133,7 +133,3 @@ export function mountWorkbenchShell(container?: HTMLElement): WorkbenchHandle {
   return handle;
 }
 
-/** 兼容旧导出：等价于 mountWorkbenchShell。 */
-export function createWorkbench(): WorkbenchHandle {
-  return mountWorkbenchShell();
-}

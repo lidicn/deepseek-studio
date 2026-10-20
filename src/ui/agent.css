@@ -1,22 +1,42 @@
 /* DeepSeek Studio 工作台（/agent，Light DOM，不进 Shadow）
- * 颜色一律消费 --studio-* 变量（由 workbench-theme 写入 documentElement），
- * 括号内为 fallback，token 缺失时仍可读。 */
+ * 颜色一律消费 --studio-* 变量。真源是 design-tokens.ts 的 color.light / color.dark，
+ * 由 workbench-theme 在启动与主题切换时写入 documentElement.style。
+ * 此处 :root / :root[data-theme] 提供与 token 一致的静态兜底：
+ * 即使 JS 未执行（或执行失败），界面仍是可读的浅色，不会白屏或黑屏。 */
 
 :root {
-  /* --studio-* 由 workbench-theme 注入；以下为缺省 fallback（深色工具风）。 */
-  --studio-bg-page: var(--wb-bg-0, #0f1115);
-  --studio-bg-panel: var(--wb-bg-1, #171a21);
-  --studio-bg-subtle: var(--wb-bg-2, #1e222b);
-  --studio-text-primary: var(--wb-text-0, #e6e8ec);
-  --studio-text-secondary: var(--wb-text-1, #9aa3b2);
-  --studio-text-weak: #6b7280;
-  --studio-border: var(--wb-border, #2a3040);
-  --studio-primary-fill: var(--wb-primary, #4d6bfe);
-  --studio-primary-hover: var(--wb-primary-soft, #6e8bff);
-  --studio-success: #22c55e;
-  --studio-warning: #eab308;
-  --studio-danger: #ef4444;
+  /* 默认浅色，与 design-tokens.ts color.light 逐值一致。 */
+  --studio-bg-page: #F7F8FA;
+  --studio-bg-panel: #FFFFFF;
+  --studio-bg-subtle: #F5F6F8;
+  --studio-text-primary: #16181D;
+  --studio-text-secondary: #5B6170;
+  --studio-text-weak: #6B7280;
+  --studio-border: rgba(16, 24, 40, 0.08);
+  --studio-primary-fill: #4D6BFE;
+  --studio-primary-hover: #3B5BDB;
+  --studio-primary-soft: rgba(77, 107, 254, 0.08);
+  --studio-success: #1F7A52;
+  --studio-warning: #8A5A00;
+  --studio-danger: #C43A3A;
   --wb-radius: 10px;
+}
+
+/* 深色：与 design-tokens.ts color.dark 逐值一致。用户点击主题图标时写入 data-theme="dark"。 */
+:root[data-theme="dark"] {
+  --studio-bg-page: #111318;
+  --studio-bg-panel: #181B21;
+  --studio-bg-subtle: #1E222B;
+  --studio-text-primary: #E6E8EC;
+  --studio-text-secondary: #A7ADB8;
+  --studio-text-weak: #858B96;
+  --studio-border: rgba(255, 255, 255, 0.10);
+  --studio-primary-fill: #6E8BFF;
+  --studio-primary-hover: #8DA3FF;
+  --studio-primary-soft: rgba(110, 139, 255, 0.12);
+  --studio-success: #55C995;
+  --studio-warning: #E8B45A;
+  --studio-danger: #FF7A7A;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -98,6 +118,9 @@ body {
 .conn-dot.bad { background: var(--studio-danger); animation: none; }
 .conn-text { color: var(--studio-text-secondary); font-size: 12px; }
 .open-focus { flex-shrink: 0; }
+.theme-toggle { flex-shrink: 0; font-size: 14px; line-height: 1; padding: 6px 9px; }
+/* 深色激活态：用主色描边提示当前不是默认浅色。 */
+.theme-toggle[aria-pressed="true"] { color: var(--studio-primary-fill); }
 
 @keyframes wb-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 

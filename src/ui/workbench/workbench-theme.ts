@@ -4,11 +4,14 @@
  */
 import { tokensToCssVars } from '../design-tokens';
 
+/** 主题名。与 host-theme-adapter.StudioTheme 同值域，此处为 UI 侧权威命名。 */
+export type WorkbenchTheme = 'light' | 'dark';
+
 /**
  * 应用主题：解析 tokensToCssVars 产出的 `key: value; ...` 声明并逐条 setProperty。
  * 不覆盖未在 token 表内的既有变量。
  */
-export function applyWorkbenchTheme(theme: 'light' | 'dark'): void {
+export function applyWorkbenchTheme(theme: WorkbenchTheme): void {
   const declarations = tokensToCssVars(theme);
   for (const raw of declarations.split(';')) {
     const colon = raw.indexOf(':');
