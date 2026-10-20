@@ -720,7 +720,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       }
     },
     createEngine: ({ botId, state }) => {
-      // M7 D3：如果配置了 apiEngine，走真实 API；否则走 WebEngine（网页拦截）。
+      // F1：apiEngine 已在 main.ts 启动前完成健康探测；失效 key 在此处已被清空。
       const apiCfg = options.apiEngine;
       if (apiCfg?.apiKey) {
         return createApiEngine({

@@ -7,6 +7,7 @@
  */
 
 import { createDesktopHost } from '../host/desktop-host';
+import { createApiEngine } from '../host/engine/api-engine';
 import { createWorkspace } from '../host/workspace';
 import { DEFAULT_POLICY_MODE, isPolicyMode, POLICY_MODE_LABELS, type PolicyMode } from '../host/policy';
 import { randomBytes } from 'node:crypto';
@@ -158,11 +159,29 @@ function loadConfig(): ResolvedConfig {
     }
   }
 
-  return { config: { host, port, token }, secret, workspaceRoot, policyMode, chatRooms, chatRoomMaxDepth, apiEngine: stored.apiEngine, configPath: cfgPath };
+  // F2：环境变量 DEEPSEEK_STUDIO_API_KEY 优先于 config.json 的 apiKey；
+  // 用户可临时覆盖，也可清空变量走 WebEngine。
+  let apiEngine = stored.apiEngine;
+  const envKey = process.env.DEEPSEEK_STUDIO_API_KEY?.trim();
+  if (envKey !== undefined) {
+    if (envKey === '') {
+      // 显式空串 = 强制禁用 ApiEngine（走 WebEngine）
+      apiEngine = undefined;
+    } else {
+      apiEngine = {
+        baseURL: apiEngine?.baseURL ?? 'https://api.deepseek.com',
+        apiKey: envKey,
+        model: apiEngine?.model ?? 'deepseek-chat',
+      };
+    }
+  }
+  return { config: { host, port, token }, secret, workspaceRoot, policyMode, chatRooms, chatRoomMaxDepth, apiEngine, configPath: cfgPath };
 }
 
 export async function main(): Promise<void> {
-  const { config, secret, workspaceRoot, policyMode, chatRooms, chatRoomMaxDepth, apiEngine, configPath } = loadConfig();
+  const { config, secret, workspaceRoot, policyMode, chatRooms, chatRoomMaxDepth, apiEngine: configuredApiEngine, configPath } = loadConfig();
+  // F1/F2：apiEngine 在探测中可能被置空，用 let。
+  let apiEngine = configuredApiEngine;
   // P2：局域网访问模式。默认关闭（只放行 loopback，与历史行为一致）。
   // 开启后非 loopback 请求必须带配对码，否则 /agent 返回 403 且不下发内嵌令牌的页面。
   const lanEnabled = /^(1|true|yes|on)$/i.test(process.env.DEEPSEEK_STUDIO_LAN ?? '');
@@ -185,6 +204,28 @@ export async function main(): Promise<void> {
     icon512Path: path.join(repoRoot, 'src', 'ui', 'icon-512.png'),
   };
   const personas = new FilePersonaRegistry();
+  // F1：ApiEngine 启动前健康探测。key 失效或网络不通时清空 apiEngine，
+  // 让 createDesktopHost 走 WebEngine（网页拦截），避免 AgentLoop 静默收空回复。
+  // createDesktopHost 是同步工厂，探测必须在它构造 main bot 引擎前完成。
+  if (apiEngine?.apiKey) {
+    const probeEngine = createApiEngine({
+      config: {
+        baseURL: apiEngine.baseURL,
+        apiKey: apiEngine.apiKey,
+        model: apiEngine.model,
+      },
+    });
+    const probeHealth = await probeEngine.health();
+    if (!probeHealth.ok) {
+      console.warn(
+        `[deepseek-studio] F1: ApiEngine health probe failed (${probeHealth.reason ?? "unknown"}) — ` +
+        "falling back to WebEngine. Fix or remove apiEngine.apiKey in ~/.config/deepseek-studio/config.json",
+      );
+      apiEngine = undefined;
+    } else {
+      console.log("[deepseek-studio] F1: ApiEngine health probe OK, using API engine");
+    }
+  }
   const host = createDesktopHost({
     config, secret, workspace, policyMode, agentPage, apiEngine,
     chatRooms: chatRooms.length > 0 ? chatRooms : undefined,
