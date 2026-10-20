@@ -150,6 +150,7 @@ export function el<K extends keyof HTMLElementTagNameMap>(
   if (props?.text) element.textContent = props.text;
   // W4：props.html 仅接受「静态模板」或「已经过 DOMPurify.sanitize 的安全 HTML」，
   // 禁止直接拼接用户输入/工具输出；不可信文本请用 props.text（textContent）。
+  // security-ok: 公共构造器契约，调用方只可传静态模板或已消毒 HTML
   if (props?.html) element.innerHTML = props.html;
   if (props?.attrs) {
     for (const [k, v] of Object.entries(props.attrs)) element.setAttribute(k, v);

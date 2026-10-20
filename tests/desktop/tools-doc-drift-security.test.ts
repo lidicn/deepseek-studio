@@ -35,4 +35,20 @@ describe('S21 security', () => {
     const v = checkFile(join(root, 'src/x.ts'), '// eval example', root);
     expect(v.length).toBe(0);
   });
+  it('7. 未消毒的动态 innerHTML 是阻断项', () => {
+    const v = checkFile(join(root, 'src/x.ts'), 'el.innerHTML = `<p>${userInput}</p>`;', root);
+    expect(v).toHaveLength(1);
+    expect(v[0]?.severity).toBe('error');
+  });
+  it('8. escapeHtml 包装的动态 innerHTML 是提示项', () => {
+    const v = checkFile(join(root, 'src/x.ts'), 'el.innerHTML = `<p>${escapeHtml(userInput)}</p>`;', root);
+    expect(v).toHaveLength(1);
+    expect(v[0]?.severity).toBe('warn');
+  });
+  it('9. security-ok 可把人工确认项降为提示', () => {
+    const content = '// security-ok: 测试调试端点已默认关闭\nconst result = eval(code);';
+    const v = checkFile(join(root, 'src/x.ts'), content, root);
+    expect(v).toHaveLength(1);
+    expect(v[0]?.severity).toBe('warn');
+  });
 });

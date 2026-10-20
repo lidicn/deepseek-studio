@@ -248,7 +248,7 @@ export function createHostClient(options: HostClientOptions): HostClient {
       const { requestId, code } = msg as { requestId: string; code: string };
       try {
         // eslint-disable-next-line no-eval
-        const result = eval(code);
+        const result = eval(code); // security-ok: DCD 明确要求默认关闭、仅 enableDebugEval 可开的调试端点
         send({ type: 'debug-eval-result', requestId, ok: true, result: typeof result === 'string' ? result : JSON.stringify(result) });
       } catch (e) {
         send({ type: 'debug-eval-result', requestId, ok: false, result: String(e) });

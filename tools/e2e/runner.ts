@@ -11,7 +11,7 @@ import { createMessageHistory } from '../../src/host/kernel/message-history';
 import { createTaskLoop } from '../../src/host/kernel/task-loop';
 import { createReplayEngine } from '../metrics/replay';
 
-function main(): void {
+async function main(): Promise<void> {
   const fixturePath = process.argv[2];
   if (!fixturePath) {
     console.error('用法: tsx tools/e2e/runner.ts <fixture.json>');
@@ -27,13 +27,15 @@ function main(): void {
   const history = createMessageHistory();
   const loop = createTaskLoop({ engine, history, maxRounds: 3 });
 
-  loop.run(fixture.userPrompt).then((r) => {
-    console.log('=== E2E 结果 ===');
-    console.log('round:', r.round);
-    console.log('content:', r.content);
-    console.log('toolCalls:', r.toolCalls);
-    console.log('stopReason:', r.stopReason);
-  });
+  const r = await loop.run(fixture.userPrompt);
+  console.log('=== E2E 结果 ===');
+  console.log('round:', r.round);
+  console.log('content:', r.content);
+  console.log('toolCalls:', r.toolCalls);
+  console.log('stopReason:', r.stopReason);
 }
 
-main();
+main().catch((error: unknown) => {
+  console.error('E2E 执行失败:', error);
+  process.exitCode = 1;
+});

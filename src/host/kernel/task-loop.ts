@@ -193,12 +193,13 @@ export function createTaskLoop(opts: TaskLoopOptions): TaskLoop {
 
       // 2. 拼上下文 → 3. send（套 abort + per-round timeout 竞速）
       let result;
+      let roundTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         result = await Promise.race([
           sendWithAbort(engine, buildPrompt(history), signal),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new RoundTimeoutError()), roundTimeoutMs),
-          ),
+          new Promise<never>((_, reject) => {
+            roundTimer = setTimeout(() => reject(new RoundTimeoutError()), roundTimeoutMs);
+          }),
         ]);
       } catch (cause) {
         if (cause instanceof RoundTimeoutError) {
@@ -210,6 +211,9 @@ export function createTaskLoop(opts: TaskLoopOptions): TaskLoop {
           break;
         }
         throw new TaskLoopError(`engine.send failed at round ${round}`, round, cause);
+      } finally {
+        // 成功轮次也必须清掉超时器，否则 CLI / 宿主会因悬空 timer 多存活 120s。
+        if (roundTimer !== undefined) clearTimeout(roundTimer);
       }
 
       // 4. 落 assistant + S15 透传 delta

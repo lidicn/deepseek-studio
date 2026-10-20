@@ -474,6 +474,7 @@ export function createStudioChatUI(): StudioChatUIHandle {
       const html = renderMarkdown(currentRawText);
       const markdownDiv = document.createElement('div');
       markdownDiv.className = 'ds-sc-markdown';
+      // security-ok: html 来自上方 renderMarkdown() 的 DOMPurify 输出
       markdownDiv.innerHTML = html;
       enhanceCodeBlocks(markdownDiv);
       streaming.replaceWith(markdownDiv);
