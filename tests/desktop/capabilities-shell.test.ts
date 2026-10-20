@@ -64,7 +64,10 @@ describe('shell.exec —— argv 执行与安全红线', () => {
   // tokenizeCommand 剥离双引号 → argv=['echo','x&calc'] → cmd /c echo x&calc →
   // cmd 二次解释 & → 先 echo x 再执行 calc → 命令注入成立。
   // v1.8 只堵了单引号路径（单引号在 shell:false 下不是引号），双引号路径漏了。
-  it('双引号包裹的元字符在内建命令中被拒绝（命令注入修复）', async () => {
+  // CMD_BUILTINS 与 cmd /c 只存在于 Windows；POSIX 的 echo 是外部程序，
+  // shell:false 下引号内元字符只是普通 argv，不能把 Windows 安全用例套到 POSIX。
+  const cmdBuiltinIt = process.platform === 'win32' ? it : it.skip;
+  cmdBuiltinIt('双引号包裹的元字符在内建命令中被拒绝（命令注入修复）', async () => {
     const cap = createShellCapability();
     // echo 是 CMD_BUILTINS，走 cmd /c 路径，双引号内 & 会被 cmd 二次解释
     const r1 = await cap.execute({ command: 'echo "hello & whoami"' });

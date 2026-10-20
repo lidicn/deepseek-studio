@@ -112,35 +112,48 @@ export function resolveWorkspaceRoot(options: {
  * 会让根目录作为工作区时包含判定失真。归一化时若结果为空串或裸盘符（如 C:），
  * 保留根自身（补回分隔符），否则正常削尾。
  */
-function normalizeForCompare(p: string, caseSensitive: boolean): string {
-  let normalized = path.normalize(p).replace(/[\\/]+$/, '');
+type PathApi = Pick<typeof path, 'sep' | 'normalize' | 'relative' | 'isAbsolute' | 'join'>;
+
+/**
+ * 工作区依赖可注入 Windows 路径（测试会传 path.win32.resolve）。
+ * 路径运算必须使用同一套平台实现，否则在 Linux CI 上会出现
+ * “resolved root 是 Windows 路径，但 relative/sep 仍用 POSIX”的假越界。
+ */
+function pathApiFor(rootAbs: string): PathApi {
+  if (/^[A-Za-z]:[\\/]/.test(rootAbs) || rootAbs.startsWith('\\\\')) return path.win32;
+  return path.posix;
+}
+
+function normalizeForCompare(p: string, pathApi: PathApi, caseSensitive: boolean): string {
+  let normalized = pathApi.normalize(p).replace(/[\\/]+$/, '');
   // 归一化后为空串（输入是 / 或 /）或裸盘符（Windows C:\ → C:）→ 补回分隔符
   if (normalized === '' || /^[A-Za-z]:$/.test(normalized)) {
-    normalized = normalized + path.sep;
+    normalized = normalized + pathApi.sep;
   }
   return caseSensitive ? normalized : normalized.toLowerCase();
 }
 
 /** 词法包含判定：rootReal / child 均为大小写归一化后的绝对路径。 */
-function lexicallyInside(rootNorm: string, childNorm: string): boolean {
+function lexicallyInside(rootNorm: string, childNorm: string, pathApi: PathApi): boolean {
   if (childNorm === rootNorm) return true;
-  const rel = path.relative(rootNorm, childNorm);
+  const rel = pathApi.relative(rootNorm, childNorm);
   if (rel === '') return true;
   // rel 是 '..' 或以 '../' 开头 → 逃逸。
   // 之前用 rel.startsWith('..') 会把工作区内合法的「双点前缀」条目
   //（如 ..foo、..cache、..env）误判为越界——这些文件/目录名确实以两个点开头，
   // 但不是父目录引用。末尾的 split(sep).includes('..') 本就是正确写法，
   // 但被前面那行 startsWith 抢先 return false，永远走不到。
-  if (rel === '..' || rel.startsWith('..' + path.sep)) return false;
-  if (path.isAbsolute(rel)) return false;
+  if (rel === '..' || rel.startsWith('..' + pathApi.sep)) return false;
+  if (pathApi.isAbsolute(rel)) return false;
   // Windows 盘符不同（如 C: vs D:）时 relative 会给出绝对路径，已在上一步拦截
-  return !rel.split(path.sep).includes('..');
+  return !rel.split(pathApi.sep).includes('..');
 }
 
 export function createWorkspace(root: string, deps: Partial<WorkspaceDeps> = {}): WorkspaceContext {
   const d: WorkspaceDeps = { ...defaultDeps, ...deps };
-  const caseSensitive = path.sep === '/' && process.platform !== 'win32';
   const rootAbs = d.resolve(root);
+  const pathApi = pathApiFor(rootAbs);
+  const caseSensitive = pathApi !== path.win32;
   // 根自身也做 realpath：工作区根若本身就是软链接，其内部所有文件的真实前缀会与之不同。
   let rootReal = rootAbs;
   try {
@@ -148,23 +161,23 @@ export function createWorkspace(root: string, deps: Partial<WorkspaceDeps> = {})
   } catch {
     rootReal = rootAbs;
   }
-  const rootNorm = normalizeForCompare(rootReal, caseSensitive);
+  const rootNorm = normalizeForCompare(rootReal, pathApi, caseSensitive);
 
   // R1-02：相对路径一律以工作区根 root 为基准解析，而不是进程 cwd。
   // 否则同一工具调用的语义随宿主启动目录漂移（cwd 在工作区内时可用、在外时报越界）。
   const resolveTarget = (target: string): string => {
-    const candidate = path.isAbsolute(target) ? target : path.join(rootAbs, target);
+    const candidate = pathApi.isAbsolute(target) ? target : pathApi.join(rootAbs, target);
     return d.resolve(candidate);
   };
 
   function containsRaw(target: string): boolean {
     const abs = resolveTarget(target);
-    if (!lexicallyInside(rootNorm, normalizeForCompare(abs, caseSensitive))) return false;
+    if (!lexicallyInside(rootNorm, normalizeForCompare(abs, pathApi, caseSensitive), pathApi)) return false;
     // 目标已存在 → 必须再验真实路径，防止「工作区内的软链接指向外部」
     if (d.statSync(abs) !== undefined) {
       try {
         const real = d.realpath(abs);
-        return lexicallyInside(rootNorm, normalizeForCompare(real, caseSensitive));
+        return lexicallyInside(rootNorm, normalizeForCompare(real, pathApi, caseSensitive), pathApi);
       } catch {
         // fail-closed：无法确定真实路径就当作不在工作区内
         return false;
