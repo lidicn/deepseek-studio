@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 import type { ToolRunEvent } from '../../src/shared/tool-run-event';
-import { failPendingRunsOnDisconnect } from '../../src/host/desktop-host';
+import { failPendingRunsOnDisconnect, extractArtifactPaths } from '../../src/host/desktop-host';
 
 describe('ToolRunEvent 契约', () => {
   it('started → succeeded 流转', () => {
@@ -68,5 +68,29 @@ describe('T5 pendingRuns 断线兜底', () => {
     expect(pending.size).toBe(2);
     failPendingRunsOnDisconnect(pending, () => {});
     expect(pending.size).toBe(0);
+  });
+});
+
+describe('X2 artifactPaths 数据源', () => {
+  it('file.edit 成功且 details.path 为真实路径 → artifactPaths=[该路径]', () => {
+    const paths = extractArtifactPaths('file.edit', {
+      path: 'src/host/authority.ts',
+      replacements: 2,
+      bytesBefore: 120,
+      bytesAfter: 132,
+      sha256Before: 'a',
+      sha256After: 'b',
+    });
+    expect(paths).toEqual(['src/host/authority.ts']);
+  });
+
+  it('shell 成功（无产物 details.path）→ artifactPaths 为 undefined', () => {
+    expect(extractArtifactPaths('shell', { exitCode: 0, cwd: '/tmp', argv: ['ls'] })).toBeUndefined();
+  });
+
+  it('file.edit 但 details.path 缺失/空白 → artifactPaths 为 undefined（不猜）', () => {
+    expect(extractArtifactPaths('file.edit', { replacements: 0 })).toBeUndefined();
+    expect(extractArtifactPaths('file.edit', { path: '   ' })).toBeUndefined();
+    expect(extractArtifactPaths('file.edit')).toBeUndefined();
   });
 });

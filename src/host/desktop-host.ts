@@ -1438,7 +1438,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           pendingRuns.set(callId, { tool, botId: botId ?? 'main', startedAt: Date.now() });
           emitToolRun({ type: 'tool-run', runId: callId, tool, phase: 'started', botId });
         },
-        onToolResult: ({ callId, tool, ok, error, botId }) => {
+        onToolResult: ({ callId, tool, ok, error, botId, details }) => {
           // C3：根据结果发终态事件
           const pending = pendingRuns.get(callId);
           const durationMs = pending ? Date.now() - pending.startedAt : undefined;
@@ -1457,7 +1457,18 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             }
           }
           pendingRuns.delete(callId);
-          emitToolRun({ type: 'tool-run', runId: callId, tool, phase, durationMs, errorCode, botId });
+          // X2：仅 file.edit 从 details.path 收产物路径；shell/read/write 等无源不填，不猜。
+          const artifactPaths = extractArtifactPaths(tool, details);
+          emitToolRun({
+            type: 'tool-run',
+            runId: callId,
+            tool,
+            phase,
+            durationMs,
+            errorCode,
+            botId,
+            ...(artifactPaths ? { artifactPaths } : {}),
+          });
         },
         // T5：页端断开 → pendingRuns 全部未完成 runId 标 failed/page-disconnected 并清空（无定时器）。
         onDisconnect: () => failPendingRunsOnDisconnect(pendingRuns, emitToolRun),
@@ -1575,6 +1586,18 @@ export function failPendingRunsOnDisconnect(
     });
   }
   pending.clear();
+}
+
+/**
+ * X2：从工具结果 details 提取产物路径，供 ToolRunEvent.artifactPaths。
+ * 仅 file.edit 有 details.path（EditEngineData）；shell / file.read / file.write 等
+ * 无产物路径源，返回 undefined（不猜、不填 data.path）。纯函数，供单测复用。
+ */
+export function extractArtifactPaths(tool: string, details?: Record<string, unknown>): string[] | undefined {
+  if (tool !== 'file.edit') return undefined;
+  const p = details?.path;
+  if (typeof p === 'string' && p.trim()) return [p.trim()];
+  return undefined;
 }
 
 /** 目录校验：不存在或不是目录返回 null（供 setWorkspaceRoot fail-closed）。 */

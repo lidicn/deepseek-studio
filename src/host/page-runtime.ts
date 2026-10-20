@@ -89,7 +89,7 @@ export interface PageRuntimeHubOptions {
   onStreamDelta?: (text: string, botId?: string) => void;
   /** v1.0：宿主推送记忆列表更新时的回调。 */
   onMemoriesUpdate?: (memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>) => void;
-  onToolResult?: (info: { callId: string; tool: string; ok: boolean; error?: string; botId?: string }) => void;
+  onToolResult?: (info: { callId: string; tool: string; ok: boolean; error?: string; botId?: string; details?: Record<string, unknown> }) => void;
   /**
    * 页端连接断开（ws close / error）观察钩子。观察者，不影响 hub 自身的 pending 失败逻辑。
    * T5：宿主据此把本侧 pendingRuns 中未完成 runId 统一标 failed / page-disconnected 并清空。
@@ -408,7 +408,7 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         options.onToolCall?.({ callId: msg.callId, invocationName: msg.invocationName, tool: mapped.id, params: mapped.params, botId: callBotId });
         void exec(mapped.id, mapped.params, callBotId)
           .then((r) => {
-            options.onToolResult?.({ callId: msg.callId, tool: mapped.id, ok: r.ok, error: r.reason, botId: callBotId });
+            options.onToolResult?.({ callId: msg.callId, tool: mapped.id, ok: r.ok, error: r.reason, botId: callBotId, ...(r.details !== undefined ? { details: r.details as Record<string, unknown> } : {}) });
             safeSend(ws, {
               type: 'tool-call-result',
               callId: msg.callId,
