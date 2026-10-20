@@ -10,7 +10,12 @@ import type { ContentCapabilityController, ContentDocumentLifecycle } from '../.
 
 describe('注入装配（entry + shims）', () => {
   beforeEach(() => {
-    (globalThis as { location?: { origin: string } }).location = { origin: 'https://chat.deepseek.com' };
+    // entry.ts:149 读 location.pathname 判登录页，stub 必须同时给 origin 与 pathname，
+    // 否则 'Cannot read properties of undefined (reading includes)'（历史既有红灯）。
+    (globalThis as { location?: { origin: string; pathname: string } }).location = {
+      origin: 'https://chat.deepseek.com',
+      pathname: '/chat',
+    };
     // 幂等 shim：entry.ts 在 readyState==='loading' 时会挂 DOMContentLoaded 监听。
     // 测试环境是 node（非 jsdom），document 是纯 mock，这里补一个 no-op addEventListener，
     // 不触发真实 DOM 回调，也不影响其他测试文件的 jsdom 环境。
