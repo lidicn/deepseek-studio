@@ -8,16 +8,16 @@ import {
 import { createStudioControlsStore } from '../../src/ui/studio-controls-store';
 import { globalEvents } from '../../src/ui/studio-ui-core';
 
-function installNativeComposer(): { deepThink: HTMLButtonElement; smartSearch: HTMLButtonElement } {
+function installNativeComposer(): { deepThink: HTMLElement; smartSearch: HTMLElement } {
   document.body.innerHTML = `
     <div id="composer">
-      <button id="deep"><span>深度思考</span></button>
-      <button id="smart"><span>智能搜索</span></button>
+      <div id="deep" tabindex="0" class="ds-toggle-button"><span>深度思考</span></div>
+      <div id="smart" tabindex="0" class="ds-toggle-button"><span>智能搜索</span></div>
       <button id="attach">附件</button>
       <button id="send">发送</button>
     </div>`;
-  const deepThink = document.getElementById('deep') as HTMLButtonElement;
-  const smartSearch = document.getElementById('smart') as HTMLButtonElement;
+  const deepThink = document.getElementById('deep') as HTMLElement;
+  const smartSearch = document.getElementById('smart') as HTMLElement;
   Object.defineProperty(deepThink, 'getBoundingClientRect', {
     value: () => ({ left: 20, right: 100, top: 700, bottom: 732, width: 80, height: 32, x: 20, y: 700, toJSON() {} }),
   });
@@ -64,7 +64,7 @@ afterEach(() => {
 });
 
 describe('Studio composer quick actions', () => {
-  it('按可见文本找到原生锚点，不修改原生按钮', () => {
+  it('支持 DeepSeek 实际的 div.ds-toggle-button 锚点，不修改原生节点', () => {
     const native = installNativeComposer();
     const deepAttrs = native.deepThink.getAttributeNames().map((name) => [name, native.deepThink.getAttribute(name)]);
     const smartAttrs = native.smartSearch.getAttributeNames().map((name) => [name, native.smartSearch.getAttribute(name)]);
@@ -74,6 +74,16 @@ describe('Studio composer quick actions', () => {
     expect(anchor?.smartSearch).toBe(native.smartSearch);
     expect(native.deepThink.getAttributeNames().map((name) => [name, native.deepThink.getAttribute(name)])).toEqual(deepAttrs);
     expect(native.smartSearch.getAttributeNames().map((name) => [name, native.smartSearch.getAttribute(name)])).toEqual(smartAttrs);
+  });
+
+  it('兼容旧版真实 button 锚点', () => {
+    document.body.innerHTML = `
+      <div id="composer">
+        <button id="deep"><span>深度思考</span></button>
+        <button id="smart"><span>智能搜索</span></button>
+      </div>`;
+    expect(findComposerActionAnchor(document)?.deepThink.id).toBe('deep');
+    expect(findComposerActionAnchor(document)?.smartSearch.id).toBe('smart');
   });
 
   it('只保留一个快捷条实例，并在智能搜索右侧定位', () => {

@@ -146,7 +146,11 @@ function ensureStyles(doc: Document): void {
 }
 
 export function findComposerActionAnchor(root: ParentNode = document): ComposerActionAnchor | null {
-  const candidates = Array.from(root.querySelectorAll<HTMLElement>('button,[role="button"]'));
+  // DeepSeek currently renders both toggles as div.ds-toggle-button[tabindex="0"],
+  // while older builds used real buttons. Keep both shapes supported.
+  const candidates = Array.from(
+    root.querySelectorAll<HTMLElement>('button,[role="button"],.ds-toggle-button,[tabindex="0"]'),
+  );
   const findLast = (label: string): HTMLElement | null => {
     for (let i = candidates.length - 1; i >= 0; i -= 1) {
       if (normalize(candidates[i].textContent) === label) return candidates[i];
