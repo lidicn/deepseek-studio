@@ -47,6 +47,7 @@ const pickerStyles = `
   }
   .studio-picker-action-btn:hover { background: #f5f7ff; color: #4D6BFE; }
   .studio-picker-empty { text-align: center; padding: 40px 20px; color: #aaa; font-size: 13px; }
+  .studio-picker-hint { margin: 0 0 10px; font-size: 12px; color: #b42318; }
 `;
 
 export interface ProjectInfo {
@@ -109,6 +110,9 @@ export function createProjectPicker(): { container: HTMLElement; open: () => voi
   // Project list
   const projectList = el('div', { className: 'studio-picker-list' });
   body.appendChild(projectList);
+  const pickerHint = el('p', { className: 'studio-picker-hint', text: '' });
+  pickerHint.hidden = true;
+  body.appendChild(pickerHint);
 
   // Actions
   const actions = el('div', { className: 'studio-picker-actions' });
@@ -186,9 +190,19 @@ export function createProjectPicker(): { container: HTMLElement; open: () => voi
         check.appendChild(icon(Icons.check, 16));
         item.appendChild(check);
       }
-      item.addEventListener('click', () => {
+      item.addEventListener('click', async () => {
+        pickerHint.hidden = true;
+        const result = await callHostTool('workspace.set', { root: p.path });
+        if (!result.ok) {
+          pickerHint.hidden = false;
+          pickerHint.textContent = `切换工作区失败：${result.error ?? '未知错误'}`;
+          return;
+        }
+        const saved = (result.data as { root?: string } | undefined)?.root ?? p.path;
         globalState.currentProject = p.id;
+        globalState.workspaceRoot = saved;
         globalEvents.emit('ui:project-switched', p);
+        globalEvents.emit('ui:workspace-changed', saved);
         close();
       });
       projectList.appendChild(item);

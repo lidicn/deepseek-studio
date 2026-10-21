@@ -13,15 +13,24 @@
 import { el, icon, Icons, injectStyles, createShadowContainer, globalEvents, globalState, callHostTool } from './studio-ui-core';
 import { escapeHtml } from './sanitizer';
 import { PANEL_POLICY_MODES, POLICY_MODE_LABELS, type PolicyMode } from '../shared/policy-contract';
+import { createStudioControlsStore, type StudioControlsStore } from './studio-controls-store';
+import type { ComposerSettingsTab } from './studio-composer-actions';
 
 const panelStyles = `
-  .studio-settings-modal { width: 640px; }
-  .studio-settings-tabs { display: flex; gap: 2px; border-bottom: 1px solid #f0f0f0; margin-bottom: 20px; }
-  .studio-settings-tab {
-    padding: 10px 16px; border: none; background: transparent; cursor: pointer;
-    font-size: 13px; color: #666; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  .studio-settings-modal { width: 760px; max-width: min(92vw, 760px); }
+  .studio-settings-body { display: flex; min-height: 420px; padding: 0; }
+  .studio-settings-tabs {
+    width: 172px; flex: 0 0 172px; display: flex; flex-direction: column; gap: 3px;
+    padding: 14px 10px; border-right: 1px solid #f0f0f0; background: #fafbfe;
   }
-  .studio-settings-tab.active { color: #4D6BFE; border-bottom-color: #4D6BFE; font-weight: 500; }
+  .studio-settings-tab {
+    width: 100%; padding: 10px 12px; border: none; border-radius: 8px;
+    background: transparent; cursor: pointer; text-align: left;
+    font-size: 13px; color: #666;
+  }
+  .studio-settings-tab:hover { background: #f0f3ff; color: #4059d6; }
+  .studio-settings-tab.active { color: #4D6BFE; background: #e9eeff; font-weight: 600; }
+  .studio-settings-content { flex: 1; min-width: 0; padding: 20px; overflow-y: auto; }
   .studio-tab-content { display: none; }
   .studio-tab-content.active { display: block; }
   .studio-info-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #f5f5f5; font-size: 13px; }
@@ -66,11 +75,26 @@ const panelStyles = `
   .studio-empty-state { text-align: center; padding: 40px 20px; color: #aaa; font-size: 13px; }
 `;
 
-export function createSettingsPanel(): { container: HTMLElement; open: () => void; close: () => void } {
+export interface StudioSettingsPanelOptions {
+  controls?: StudioControlsStore;
+}
+
+export interface StudioSettingsPanelHandle {
+  container: HTMLElement;
+  open(tab?: ComposerSettingsTab): void;
+  close(): void;
+  destroy(): void;
+}
+
+export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): StudioSettingsPanelHandle {
   const { container, shadow } = createShadowContainer('studio-settings-root');
   injectStyles(shadow, panelStyles);
 
   let isOpen = false;
+  const ownsControls = !options.controls;
+  const controls = options.controls ?? createStudioControlsStore({
+    call: (invocationName, params) => callHostTool(invocationName, params),
+  });
 
   const overlay = el('div', { className: 'studio-modal-overlay', style: { display: 'none' } });
   const modal = el('div', { className: 'studio-modal studio-settings-modal' });
@@ -85,35 +109,48 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
   modal.appendChild(header);
 
   // Body
-  const body = el('div', { className: 'studio-modal-body' });
+  const body = el('div', { className: 'studio-modal-body studio-settings-body' });
 
-  // Tabs
+  // Left navigation
   const tabs = el('div', { className: 'studio-settings-tabs' });
   const tabDefs = [
-    { id: 'general', label: '通用' },
-    { id: 'workspace', label: '工作区' },
-    { id: 'policy', label: '策略' },
-    { id: 'mcp', label: 'MCP' },
+    { id: 'general', label: '通用 / 连接' },
+    { id: 'workspace', label: '工作区与项目' },
+    { id: 'policy', label: '审批与安全' },
     { id: 'skills', label: '技能' },
-    { id: 'memory', label: '记忆' },
-    { id: 'leverhub', label: '投喂' },
-  ];
+    { id: 'mcp', label: 'MCP' },
+    { id: 'memory', label: '记忆与执行记录' },
+    { id: 'diagnostics', label: '诊断与关于' },
+  ] as const satisfies ReadonlyArray<{ id: ComposerSettingsTab; label: string }>;
   const tabContents: Record<string, HTMLElement> = {};
+  const tabButtons = new Map<ComposerSettingsTab, HTMLButtonElement>();
+  const contentPane = el('div', { className: 'studio-settings-content' });
+
+  function selectTab(tabId: ComposerSettingsTab): void {
+    for (const [id, button] of tabButtons) {
+      button.classList.toggle('active', id === tabId);
+    }
+    for (const [id, content] of Object.entries(tabContents)) {
+      content.classList.toggle('active', id === tabId);
+    }
+  }
 
   for (const tabDef of tabDefs) {
-    const tabBtn = el('button', { className: `studio-settings-tab${tabDef.id === 'general' ? ' active' : ''}`, text: tabDef.label });
-    tabBtn.addEventListener('click', () => {
-      tabs.querySelectorAll('.studio-settings-tab').forEach((t) => t.classList.remove('active'));
-      tabBtn.classList.add('active');
-      Object.values(tabContents).forEach((c) => c.classList.remove('active'));
-      tabContents[tabDef.id].classList.add('active');
+    const tabBtn = el('button', {
+      className: `studio-settings-tab${tabDef.id === 'general' ? ' active' : ''}`,
+      text: tabDef.label,
+      attrs: { 'data-tab-id': tabDef.id },
     });
+    tabBtn.addEventListener('click', () => selectTab(tabDef.id));
+    tabButtons.set(tabDef.id, tabBtn);
     tabs.appendChild(tabBtn);
   }
   body.appendChild(tabs);
+  body.appendChild(contentPane);
 
   // General tab
   const generalTab = el('div', { className: 'studio-tab-content active' });
+  generalTab.dataset.tabPanel = 'general';
   generalTab.innerHTML = `
     <div class="studio-info-row"><span class="studio-info-label">版本</span><span class="studio-info-value">v1.0.0</span></div>
     <div class="studio-info-row"><span class="studio-info-label">日志路径</span><span class="studio-info-value">E:\\NAS\\deepseek-studio\\tauri-real.log</span></div>
@@ -121,19 +158,20 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
     <div class="studio-info-row"><span class="studio-info-label">宿主端口</span><span class="studio-info-value">8760</span></div>
   `;
   tabContents['general'] = generalTab;
-  body.appendChild(generalTab);
+  contentPane.appendChild(generalTab);
 
   // Workspace tab
   const workspaceTab = el('div', { className: 'studio-tab-content' });
+  workspaceTab.dataset.tabPanel = 'workspace';
   const workspaceRow = el('div', { className: 'studio-workspace-row' });
   const workspaceInput = el('input', { className: 'studio-input studio-workspace-input', attrs: { value: globalState.workspaceRoot ?? '', placeholder: '工作区根目录路径，如 E:/NAS' } });
   const workspaceSaveBtn = el('button', { className: 'studio-btn primary sm', text: '保存' });
   const workspaceHint = el('p', { className: 'studio-form-hint', text: '工作区是工具操作的根目录。文件读写和命令执行默认限制在此目录内。' });
   workspaceSaveBtn.addEventListener('click', async () => {
     const root = (workspaceInput as HTMLInputElement).value.trim();
-    const result = await callHostTool('workspace.set', { root });
-    if (result.ok) {
-      const saved = (result.data as { root?: string } | undefined)?.root ?? root;
+    const ok = await controls.setWorkspace(root);
+    if (ok) {
+      const saved = controls.getSnapshot().workspaceRoot ?? root;
       (workspaceInput as HTMLInputElement).value = saved;
       globalState.workspaceRoot = saved;
       workspaceHint.textContent = '已保存到配置文件，重启后仍然生效。';
@@ -141,20 +179,24 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
       setTimeout(() => { workspaceSaveBtn.textContent = '保存'; }, 1500);
     } else {
       // 失败必须可见：原实现只在 ok 分支更新按钮，失败时界面毫无反应，看起来像"点了没反应"。
-      workspaceHint.textContent = `保存失败：${result.error ?? '未知错误'}`;
+      workspaceHint.textContent = `保存失败：${controls.getSnapshot().error ?? '未知错误'}`;
       workspaceSaveBtn.textContent = '保存失败';
       setTimeout(() => { workspaceSaveBtn.textContent = '保存'; }, 2000);
     }
   });
+  const projectPickerBtn = el('button', { className: 'studio-btn sm', text: '选择项目' });
+  projectPickerBtn.addEventListener('click', () => globalEvents.emit('ui:project-picker'));
   workspaceRow.appendChild(workspaceInput);
   workspaceRow.appendChild(workspaceSaveBtn);
   workspaceTab.appendChild(workspaceRow);
+  workspaceTab.appendChild(projectPickerBtn);
   workspaceTab.appendChild(workspaceHint);
   tabContents['workspace'] = workspaceTab;
-  body.appendChild(workspaceTab);
+  contentPane.appendChild(workspaceTab);
 
   // Policy tab
   const policyTab = el('div', { className: 'studio-tab-content' });
+  policyTab.dataset.tabPanel = 'policy';
   const policyOptions = el('div', { className: 'studio-policy-options' });
   // 档位只遍历共享契约 PANEL_POLICY_MODES（workspace/auto/full），标题取 POLICY_MODE_LABELS；
   // 后端旧档「询问审批」不在面板暴露。desc 为面板侧说明文案。
@@ -167,16 +209,11 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
     const option = el('div', { className: `studio-policy-option${mode === globalState.policyMode ? ' selected' : ''}`, attrs: { 'data-mode': mode } });
     option.innerHTML = `<div class="studio-policy-radio"></div><div><div class="studio-policy-title">${escapeHtml(POLICY_MODE_LABELS[mode])}</div><div class="studio-policy-desc">${escapeHtml(policyDesc[mode])}</div></div>`;
     option.addEventListener('click', async () => {
-      policyOptions.querySelectorAll('.studio-policy-option').forEach((o) => o.classList.remove('selected'));
-      option.classList.add('selected');
       const chosen: PolicyMode = mode;
-      globalState.policyMode = chosen;
-      const r = await callHostTool('policy.set', { mode: chosen });
-      if (!r.ok) {
-        // 回滚选中态并提示，避免"看着选上了其实没存"
-        option.classList.remove('selected');
-        policyHint.textContent = `保存失败：${r.error ?? '未知错误'}`;
-        globalState.policyMode = (r.data as { mode?: PolicyMode } | undefined)?.mode ?? globalState.policyMode;
+      const ok = await controls.setPolicy(chosen);
+      if (!ok) {
+        policyHint.textContent = `保存失败：${controls.getSnapshot().error ?? '未知错误'}`;
+        syncControls();
       } else {
         policyHint.textContent = `已保存：${POLICY_MODE_LABELS[chosen]}。重启后仍然生效。`;
       }
@@ -187,10 +224,11 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
   const policyHint = el('p', { className: 'studio-form-hint', text: '' });
   policyTab.appendChild(policyHint);
   tabContents['policy'] = policyTab;
-  body.appendChild(policyTab);
+  contentPane.appendChild(policyTab);
 
   // MCP tab
   const mcpTab = el('div', { className: 'studio-tab-content' });
+  mcpTab.dataset.tabPanel = 'mcp';
   const mcpServerList = el('div', { className: 'studio-mcp-server-list' });
   const mcpError = el('p', { className: 'studio-form-hint', text: '' });
   const mcpAddBtn = el('button', { className: 'studio-mcp-add-btn' }, [icon(Icons.plus, 16), el('span', { text: '添加 MCP 服务器' })]);
@@ -241,10 +279,11 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
   }
   renderMcpServers();
   tabContents['mcp'] = mcpTab;
-  body.appendChild(mcpTab);
+  contentPane.appendChild(mcpTab);
 
   // Skills tab
   const skillsTab = el('div', { className: 'studio-tab-content' });
+  skillsTab.dataset.tabPanel = 'skills';
   const skillsDirRow = el('div', { className: 'studio-workspace-row' });
   const skillsDirInput = el('input', { className: 'studio-input studio-workspace-input', attrs: { placeholder: '技能目录路径（留空用默认 ~/.agents/skills）' } });
   const skillsScanBtn = el('button', { className: 'studio-btn primary sm', text: '扫描' });
@@ -287,10 +326,11 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
   }
   renderSkillsList();
   tabContents['skills'] = skillsTab;
-  body.appendChild(skillsTab);
+  contentPane.appendChild(skillsTab);
 
   // Memory tab
   const memoryTab = el('div', { className: 'studio-tab-content' });
+  memoryTab.dataset.tabPanel = 'memory';
   const memoryList = el('div', { className: 'studio-memory-list' });
   memoryTab.appendChild(memoryList);
 
@@ -322,49 +362,19 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
   }
   renderMemories();
   tabContents['memory'] = memoryTab;
-  body.appendChild(memoryTab);
+  contentPane.appendChild(memoryTab);
 
-  // Lever-Hub tab（v0.15：MiMo 投喂）
-  const leverTab = el('div', { className: 'studio-tab-content' });
-  leverTab.innerHTML = `
-    <div class="studio-info-row"><span class="studio-info-label">服务</span><span class="studio-info-value">http://127.0.0.1:8762</span></div>
-    <div class="studio-info-row"><span class="studio-info-label">状态</span><span class="studio-info-value" id="lh-status">检测中…</span></div>
+  // Diagnostics and archive information.
+  const diagnosticsTab = el('div', { className: 'studio-tab-content' });
+  diagnosticsTab.dataset.tabPanel = 'diagnostics';
+  diagnosticsTab.innerHTML = `
+    <div class="studio-info-row"><span class="studio-info-label">日志路径</span><span class="studio-info-value">E:\\NAS\\deepseek-studio\\tauri-real.log</span></div>
+    <div class="studio-info-row"><span class="studio-info-label">配置路径</span><span class="studio-info-value">~/.config/deepseek-studio/</span></div>
+    <div class="studio-info-row"><span class="studio-info-label">归档位置</span><span class="studio-info-value">archive/legacy/</span></div>
+    <p class="studio-form-hint">旧外部集成入口已归档；安全执行审计和聊天室审计会议仍保留。</p>
   `;
-  const lhAppList = el('div', { className: 'studio-memory-list', attrs: { style: 'max-height:240px;overflow:auto;margin:12px 0' } });
-  leverTab.appendChild(lhAppList);
-
-  const lhRefresh = el('button', { className: 'studio-btn sm', text: '刷新申请单' });
-  leverTab.appendChild(lhRefresh);
-
-  async function loadLeverHub(): Promise<void> {
-    try {
-      const h = await fetch('http://127.0.0.1:8762/healthz').then((r) => r.json());
-      leverTab.querySelector('#lh-status')!.textContent = h.ok ? '运行中' : '异常';
-      const data = await fetch('http://127.0.0.1:8762/v1/applications').then((r) => r.json());
-      lhAppList.replaceChildren();
-      for (const app of data.applications.slice(0, 20)) {
-        const row = el('div', { className: 'studio-memory-item' });
-        // W4：app.name 走 textContent，不进 innerHTML 插值
-        const content = document.createElement('div');
-        content.className = 'studio-memory-content';
-        const nameEl = document.createElement('div');
-        nameEl.className = 'studio-memory-name';
-        nameEl.textContent = app.name ?? '';
-        const sizeEl = document.createElement('div');
-        sizeEl.className = 'studio-memory-text';
-        sizeEl.textContent = `${Math.round(app.size / 10) / 100} KB`;
-        content.appendChild(nameEl);
-        content.appendChild(sizeEl);
-        row.appendChild(content);
-        lhAppList.appendChild(row);
-      }
-    } catch {
-      leverTab.querySelector('#lh-status')!.textContent = '未启动';
-    }
-  }
-  lhRefresh.addEventListener('click', () => void loadLeverHub());
-  tabContents['leverhub'] = leverTab;
-  body.appendChild(leverTab);
+  tabContents['diagnostics'] = diagnosticsTab;
+  contentPane.appendChild(diagnosticsTab);
 
   modal.appendChild(body);
 
@@ -380,33 +390,20 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
   // 关闭只走右上角 × 或底部「完成」。
   shadow.appendChild(overlay);
 
-  /**
-   * 从宿主读回**真实生效**的设置。
-   * 原实现只渲染 globalState（出厂默认值），面板每次打开都显示 "E:\" + "auto"，
-   * 用户改完再打开又看到旧值，看起来就是"设置没保存"。真相源在宿主，必须每次读。
-   */
-  async function loadSettings(): Promise<void> {
-    const r = await callHostTool('settings.get', {});
-    if (!r.ok || !r.data) return;
-    const data = r.data as {
-      workspaceRoot?: string | null;
-      policyMode?: PolicyMode;
-      mcpServers?: string[];
-    };
-    if (typeof data.workspaceRoot === 'string' && data.workspaceRoot) {
-      (workspaceInput as HTMLInputElement).value = data.workspaceRoot;
-      globalState.workspaceRoot = data.workspaceRoot;
-    }
-    if (data.policyMode) {
-      globalState.policyMode = data.policyMode;
-      policyOptions.querySelectorAll<HTMLElement>('.studio-policy-option').forEach((o) => {
-        o.classList.toggle('selected', o.dataset.mode === data.policyMode);
-      });
-    }
-    if (Array.isArray(data.mcpServers)) {
-      globalState.mcpServers = [...data.mcpServers];
-      renderMcpServers();
-    }
+  function syncControls(): void {
+    const snapshot = controls.getSnapshot();
+    (workspaceInput as HTMLInputElement).value = snapshot.workspaceRoot ?? '';
+    globalState.workspaceRoot = snapshot.workspaceRoot;
+    globalState.policyMode = snapshot.policyMode;
+    policyOptions.querySelectorAll<HTMLElement>('.studio-policy-option').forEach((option) => {
+      option.classList.toggle('selected', option.dataset.mode === snapshot.policyMode);
+    });
+  }
+
+  const unsubscribeControls = controls.subscribe(syncControls);
+  syncControls();
+
+  async function loadMcp(): Promise<void> {
     // 单独再拉一次带 configs 的列表（settings.get 只给 id 列表）。
     const mcp = await callHostTool('mcp.list', {});
     if (mcp.ok && mcp.data) {
@@ -420,14 +417,18 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
     }
   }
 
-  function open(): void {
+  function open(tab: ComposerSettingsTab = 'general'): void {
     isOpen = true;
     overlay.style.display = 'flex';
+    selectTab(tab);
+    workspaceHint.textContent = '工作区是工具操作的根目录。文件读写和命令执行默认限制在此目录内。';
+    policyHint.textContent = '';
+    mcpError.textContent = '';
     renderMcpServers();
-    void loadSettings();
+    void controls.refresh();
+    void loadMcp();
     void loadSkills();
     renderMemories();
-    void loadLeverHub();
   }
 
   function close(): void {
@@ -436,7 +437,20 @@ export function createSettingsPanel(): { container: HTMLElement; open: () => voi
   }
 
   // 监听全局事件
-  globalEvents.on('ui:settings', () => { isOpen ? close() : open(); });
+  const unsubscribeSettings = globalEvents.on('ui:settings', () => {
+    if (isOpen) close();
+    else open('general');
+  });
 
-  return { container, open, close };
+  return {
+    container,
+    open,
+    close,
+    destroy() {
+      unsubscribeControls();
+      unsubscribeSettings();
+      if (ownsControls) controls.destroy();
+      container.remove();
+    },
+  };
 }

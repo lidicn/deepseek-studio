@@ -29,6 +29,12 @@ import { createSettingsPanel } from './studio-settings-panel';
 import { createSkillsPanel } from './studio-skills-panel';
 import { createMcpConfigDialog } from './studio-mcp-dialog';
 import { createProjectPicker } from './studio-project-picker';
+import { createStudioControlsStore } from './studio-controls-store';
+import {
+  installComposerActions,
+  type ComposerActionsHandle,
+  type ComposerSettingsTab,
+} from './studio-composer-actions';
 
 /** 入口在账号菜单中显示的文案。 */
 const MENU_LABEL = 'Studio 设置';
@@ -48,7 +54,7 @@ const CLICK_DELAYS_MS = [60, 300, 900];
 
 export interface StudioSettingsEntryHandle {
   /** 打开 Studio 设置面板（幂等）。 */
-  open(): void;
+  open(tab?: ComposerSettingsTab): void;
   /** 移除注入的菜单项、面板容器，并解绑监听。 */
   destroy(): void;
 }
@@ -155,6 +161,15 @@ export function installStudioSettingsEntry(host: StudioHostBridge): StudioSettin
   setHostBridge(host);
 
   const containers: HTMLElement[] = [];
+  const controls = createStudioControlsStore({
+    call: (invocationName, params) => host.sendToolCall({
+      callId: `controls-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      invocationName,
+      params,
+    }),
+  });
+  let settingsPanel: ReturnType<typeof createSettingsPanel> | null = null;
+  let composerActions: ComposerActionsHandle | null = null;
   let pollTimer: number | null = null;
   let pollCount = 0;
   const clickDelays: number[] = [];
@@ -178,10 +193,26 @@ export function installStudioSettingsEntry(host: StudioHostBridge): StudioSettin
   }
 
   function start(): void {
-    mountPanel('settings panel', createSettingsPanel);
+    try {
+      settingsPanel = createSettingsPanel({ controls });
+      document.body.appendChild(settingsPanel.container);
+      containers.push(settingsPanel.container);
+      console.log('[StudioUI] settings panel mounted');
+    } catch (e) {
+      console.error('[StudioUI] settings panel failed:', e);
+    }
     mountPanel('skills panel', createSkillsPanel);
     mountPanel('mcp dialog', createMcpConfigDialog);
     mountPanel('project picker', createProjectPicker);
+    try {
+      composerActions = installComposerActions({
+        store: controls,
+        openSettings: (tab) => settingsPanel?.open(tab),
+      });
+      console.log('[StudioUI] composer actions installed');
+    } catch (e) {
+      console.error('[StudioUI] composer actions failed:', e);
+    }
 
     // 主触发：账号菜单只在点击后渲染，所以以 click 为准，延时多点尝试。
     document.addEventListener('click', onAnyClick, true);
@@ -200,14 +231,19 @@ export function installStudioSettingsEntry(host: StudioHostBridge): StudioSettin
   onBodyReady(start);
 
   return {
-    open() {
-      globalEvents.emit('ui:settings');
+    open(tab = 'general') {
+      settingsPanel?.open(tab);
     },
     destroy() {
       if (pollTimer !== null) { window.clearInterval(pollTimer); pollTimer = null; }
       for (const t of clickDelays) window.clearTimeout(t);
       clickDelays.length = 0;
       document.removeEventListener('click', onAnyClick, true);
+      composerActions?.destroy();
+      composerActions = null;
+      settingsPanel?.destroy();
+      settingsPanel = null;
+      controls.destroy();
       document.querySelectorAll(`[${ENTRY_ATTR}="1"]`).forEach((n) => n.remove());
       for (const c of containers) c.remove();
       containers.length = 0;

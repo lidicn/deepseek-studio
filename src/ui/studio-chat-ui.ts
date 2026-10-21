@@ -515,6 +515,9 @@ export function createStudioChatUI(): StudioChatUIHandle {
     } else {
       container.classList.add('ds-studio-chat-hidden');
     }
+    window.dispatchEvent(new CustomEvent('studio:visibility-changed', {
+      detail: { visible },
+    }));
     console.log('[studio-chat-ui] overlay', visible ? 'shown' : 'hidden');
     return visible;
   }
