@@ -7,6 +7,8 @@
  * 样式内联注入（适配注入式 IIFE，不依赖外部 css 文件）；明暗跟随系统。
  */
 
+import { POLICY_MODE_LABELS, isPolicyMode } from '../shared/policy-contract';
+
 export type ConsentDecision = 'allow-once' | 'deny' | 'allow-session';
 
 export interface ConsentRequest {
@@ -31,6 +33,14 @@ export type ConsentCallback = (decision: ConsentDecision) => void;
 export interface ConsentHandle {
   decide(decision: ConsentDecision): void;
   dispose(): void;
+}
+
+interface ConsentPresentation {
+  title: string;
+  headline: string;
+  summary: string;
+  allowOnceLabel: string;
+  allowSessionLabel: string;
 }
 
 const STYLE_ID = 'ds-consent-style';
@@ -118,24 +128,25 @@ export function showConsent(request: ConsentRequest, onDecision: ConsentCallback
 
   const title = doc.createElement('div');
   title.className = 'ds-consent-title';
-  title.textContent = 'DeepSeek++ Studio 请求执行工具';
+  const presentation = describeConsentRequest(request);
+  title.textContent = presentation.title;
 
   const tool = doc.createElement('div');
   tool.className = 'ds-consent-tool';
-  tool.textContent = request.tool;
+  tool.textContent = presentation.headline;
 
   const badges = buildBadges(request.meta);
 
   const summary = doc.createElement('div');
   summary.className = 'ds-consent-summary';
-  summary.textContent = summarizeParams(request.params);
+  summary.textContent = presentation.summary;
 
   const actions = doc.createElement('div');
   actions.className = 'ds-consent-actions';
 
-  const btnAllowOnce = mkButton('允许一次', 'ds-consent-allow-once');
+  const btnAllowOnce = mkButton(presentation.allowOnceLabel, 'ds-consent-allow-once');
   const btnDeny = mkButton('拒绝', 'ds-consent-deny');
-  const btnAllowSession = mkButton('本次会话允许', 'ds-consent-allow-session');
+  const btnAllowSession = mkButton(presentation.allowSessionLabel, 'ds-consent-allow-session');
 
   actions.append(btnAllowOnce, btnDeny, btnAllowSession);
   card.append(title, tool, ...(badges ? [badges] : []), summary, actions);
@@ -173,6 +184,43 @@ export function showConsent(request: ConsentRequest, onDecision: ConsentCallback
       overlay.remove();
       doc.removeEventListener('keydown', onKey);
     },
+  };
+}
+
+/** 把协议级工具名和参数翻译成用户能直接判断后果的文案。 */
+export function describeConsentRequest(request: ConsentRequest): ConsentPresentation {
+  if (request.tool === 'policy.set') {
+    const rawMode = (request.params as { mode?: unknown } | undefined)?.mode;
+    const modeLabel = isPolicyMode(rawMode) ? POLICY_MODE_LABELS[rawMode] : '所选档位';
+    return {
+      title: 'Studio 请求修改审批档位',
+      headline: `将审批档位改为「${modeLabel}」`,
+      summary: rawMode === 'full'
+        ? '允许后，后续工具将按“完全放开”执行，普通操作可能不再逐次向你确认。请确认你了解这项变更的影响。'
+        : `允许后，后续工具将按“${modeLabel}”档位执行。该设置会改变工具执行前的确认强度。`,
+      allowOnceLabel: '允许本次修改',
+      allowSessionLabel: '本次会话允许修改',
+    };
+  }
+
+  if (request.tool === 'workspace.set') {
+    const root = (request.params as { root?: unknown } | undefined)?.root;
+    const shownRoot = typeof root === 'string' && root ? root : '所选目录';
+    return {
+      title: 'Studio 请求修改工作区',
+      headline: '将工具工作区切换到新目录',
+      summary: `允许后，文件与命令操作将以「${shownRoot}」作为可信根目录。`,
+      allowOnceLabel: '允许本次修改',
+      allowSessionLabel: '本次会话允许修改',
+    };
+  }
+
+  return {
+    title: 'DeepSeek++ Studio 请求执行工具',
+    headline: request.tool,
+    summary: summarizeParams(request.params),
+    allowOnceLabel: '允许一次',
+    allowSessionLabel: '本次会话允许',
   };
 }
 

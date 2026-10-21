@@ -44,4 +44,36 @@ describe('同意模态', () => {
     await new Promise((r) => setTimeout(r, 80));
     expect(decision).toBe('deny');
   });
+
+  it('修改审批档位使用自然语言，不暴露协议字段', () => {
+    const handle = showConsent({
+      tool: 'policy.set',
+      params: { mode: 'full' },
+      meta: { riskLabel: '特权级', modeLabel: '风险审批' },
+    }, () => {});
+
+    const card = document.querySelector('.ds-consent-card') as HTMLElement;
+    expect(card.textContent).toContain('Studio 请求修改审批档位');
+    expect(card.textContent).toContain('将审批档位改为「完全放开」');
+    expect(card.textContent).toContain('普通操作可能不再逐次向你确认');
+    expect(card.textContent).not.toContain('policy.set');
+    expect(card.textContent).not.toContain('mode:');
+    expect(document.querySelector('.ds-consent-allow-once')?.textContent).toBe('允许本次修改');
+    handle.dispose();
+  });
+
+  it('修改工作区使用自然语言，不暴露参数键名', () => {
+    const handle = showConsent({
+      tool: 'workspace.set',
+      params: { root: 'E:\\NAS' },
+      meta: { riskLabel: '特权级' },
+    }, () => {});
+
+    const card = document.querySelector('.ds-consent-card') as HTMLElement;
+    expect(card.textContent).toContain('将工具工作区切换到新目录');
+    expect(card.textContent).toContain('E:\\NAS');
+    expect(card.textContent).not.toContain('workspace.set');
+    expect(card.textContent).not.toContain('root:');
+    handle.dispose();
+  });
 });
