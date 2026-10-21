@@ -140,31 +140,6 @@ export function createRightSidebar(): { container: HTMLElement; toggle: HTMLElem
   skillSection.appendChild(skillTags);
   body.appendChild(skillSection);
 
-  // 元宝审计（v0.16）
-  const auditSection = el('div', { className: 'studio-right-section' });
-  const auditTitle = el('div', { className: 'studio-right-section-title' });
-  auditTitle.innerHTML = `<span>元宝审计</span><span id="audit-state-badge" style="background:#f0f0f0;color:#888;padding:1px 6px;border-radius:8px;font-size:10px">—</span>`;
-  auditSection.appendChild(auditTitle);
-  const auditBodyEl = el('div', { attrs: { style: 'padding:0 16px' } });
-  auditBodyEl.innerHTML = `
-    <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
-      <span style="color:#888">进度</span><span id="audit-rounds" style="color:#333">—</span>
-    </div>
-    <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px">
-      <span style="color:#888">已见轮次</span><span id="audit-seen" style="color:#666">—</span>
-    </div>
-    <div style="display:flex;gap:4px;flex-wrap:wrap;margin:8px 0">
-      <button class="studio-btn sm" data-cmd="continue">继续</button>
-      <button class="studio-btn sm" data-cmd="pause">暂停</button>
-      <button class="studio-btn sm" data-cmd="stop">停止</button>
-      <button class="studio-btn sm" data-cmd="reset">重置</button>
-    </div>
-    <div id="audit-log-toggle" style="font-size:11px;color:#4D6BFE;cursor:pointer;margin-bottom:4px">查看最近日志</div>
-    <pre id="audit-log-box" style="display:none;max-height:140px;overflow:auto;background:#f7f7f8;border-radius:6px;padding:6px;font-size:10px;color:#646a73;white-space:pre-wrap;word-break:break-all"></pre>
-  `;
-  auditSection.appendChild(auditBodyEl);
-  body.appendChild(auditSection);
-
   // 最近文件
   const recentSection = el('div', { className: 'studio-right-section' });
   recentSection.appendChild(el('div', { className: 'studio-right-section-title', text: '最近文件' }));
@@ -253,75 +228,6 @@ export function createRightSidebar(): { container: HTMLElement; toggle: HTMLElem
     }
   }
 
-  // 元宝审计（v0.16）
-  async function renderAudit(): Promise<void> {
-    const badge = auditSection.querySelector('#audit-state-badge') as HTMLElement;
-    const roundsEl = auditSection.querySelector('#audit-rounds') as HTMLElement;
-    const seenEl = auditSection.querySelector('#audit-seen') as HTMLElement;
-    try {
-      const st = await fetch('http://127.0.0.1:8761/status').then((r) => {
-        if (!r.ok) throw new Error('status ' + r.status);
-        return r.json();
-      });
-      const colors: Record<string, string> = {
-        running: '#e6f4ea;color:#34a853',
-        paused: '#fef7e0;color:#b06000',
-        stopped: '#fce8e6;color:#e5484d',
-        done: '#e6f4ea;color:#34a853',
-        idle: '#f0f0f0;color:#888',
-      };
-      badge.textContent = st.state;
-      badge.style.cssText = `padding:1px 6px;border-radius:8px;font-size:10px;${colors[st.state] ?? colors.idle}`;
-      roundsEl.textContent = `${st.rounds} / ${st.target}`;
-      const seen = Array.isArray(st.seenRounds) ? st.seenRounds : [];
-      seenEl.textContent = seen.length ? seen.join(', ') : '无';
-    } catch {
-      badge.textContent = '未启动';
-      badge.style.cssText = 'padding:1px 6px;border-radius:8px;font-size:10px;#f0f0f0;color:#888';
-      roundsEl.textContent = '—';
-      seenEl.textContent = '—';
-    }
-  }
-
-  auditBodyEl.querySelectorAll('button[data-cmd]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const command = (btn as HTMLElement).dataset.cmd;
-      try {
-        const r = await fetch('http://127.0.0.1:8761/command', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command }),
-        });
-        if (!r.ok) throw new Error('cmd ' + r.status);
-        await renderAudit();
-      } catch {
-        /* 审计内核未运行 */
-      }
-    });
-  });
-
-  const logToggle = auditBodyEl.querySelector('#audit-log-toggle') as HTMLElement;
-  const logBox = auditBodyEl.querySelector('#audit-log-box') as HTMLElement;
-  logToggle.addEventListener('click', async () => {
-    if (logBox.style.display !== 'none') {
-      logBox.style.display = 'none';
-      logToggle.textContent = '查看最近日志';
-      return;
-    }
-    logBox.style.display = 'block';
-    logToggle.textContent = '收起日志';
-    try {
-      const r = await fetch('http://127.0.0.1:8761/v1/audit-log?lines=15');
-      const data = await r.json();
-      const lines: string[] = Array.isArray(data.lines) ? data.lines : [];
-      logBox.textContent = lines.length
-        ? lines.map((l) => { try { return JSON.stringify(JSON.parse(l)); } catch { return l; } }).join('\n')
-        : '暂无日志';
-    } catch {
-      logBox.textContent = '审计内核未运行';
-    }
-  });
-
   function show(): void {
     isOpen = true;
     sidebar.classList.add('open');
@@ -331,7 +237,6 @@ export function createRightSidebar(): { container: HTMLElement; toggle: HTMLElem
     renderTasks();
     renderSkills();
     renderRecent();
-    void renderAudit();
   }
 
   function hide(): void {

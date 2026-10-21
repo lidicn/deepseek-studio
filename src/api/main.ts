@@ -268,15 +268,6 @@ export async function main(): Promise<void> {
   );
   console.log(`[deepseek-studio] 命令审批档位: ${POLICY_MODE_LABELS[policyMode]} (${policyMode})`);
 
-  // v0.15：同进程启动 Lever-Hub server（端口 8762）
-  try {
-    const { createLeverHubServer } = await import('../lever-hub/lever-hub-server');
-    const leverHub = createLeverHubServer();
-    await leverHub.start();
-    console.log('[deepseek-studio] Lever-Hub API on http://127.0.0.1:8762');
-  } catch (err) {
-    console.warn(`[deepseek-studio] Lever-Hub 未启动（端口可能被占用）: ${err instanceof Error ? err.message : String(err)}`);
-  }
 }
 
 // 进程直接运行时自启动。
