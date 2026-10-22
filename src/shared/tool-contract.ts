@@ -23,19 +23,23 @@ interface UpstreamToolMapping {
 }
 
 /**
- * 上游 invocationName → Studio 工具 映射表。
- * 新增上游工具时只改这里；页端与宿主通过同一张表保持一致。
+ * v2.0：模型可调工具白名单（G-01 修复的权限面）。
  *
- * v1.8：用 Object.create(null) 切断原型链。之前是普通对象字面量，原型为
- * Object.prototype，直接索引 UPSTREAM_TO_STUDIO[invocationName] 会对
- * 'constructor' / '__proto__' / 'toString' 等原型属性名命中 truthy 的继承
- * 成员，绕过 mapUpstreamToolInvocation 的 null 兜底，随后 mapping.adapt
- * 为 undefined 抛 TypeError。create(null) 从根上消除穿透，对 Object.keys
- * 与直接索引都安全，与同文件 isSupportedUpstreamTool 的 hasOwnProperty 语义一致。
+ * 背景：旧实现把「模型 XML 标签可调」与「UI 直调」混在同一张 UPSTREAM_TO_STUDIO 表里，
+ * 30 个键全部喂给流式解析器（SUPPORTED_INVOCATION_NAMES = Object.keys(全表)）。
+ * 这意味着 settings.get / workspace.set / policy.set / folder.pick / memory.delete
+ * 等宿主 RPC 名义上对模型开放——只是被解析器的字符类意外挡住（点号匹配不上）。
+ * 一旦放宽字符类让点号 id 可达，这些写权限就会真的暴露给模型。
+ *
+ * 因此这里显式声明「模型可以调什么」。判定入口 isSupportedUpstreamTool() 只查本表，
+ * 页端解析与宿主映射共用同一真相源；UI 侧走 callHostTool（src/ui/studio-ui-core.ts:92）
+ * 直投 WS，不经解析器，故不受本表限制。
+ *
+ * 收录原则：把宿主已登记的能力投影给模型；不含任何改变宿主配置/安全档位的 RPC。
  */
-const UPSTREAM_TO_STUDIO: Record<string, UpstreamToolMapping> = Object.assign(
+const MODEL_INVOCATION_TOOLS: Record<string, UpstreamToolMapping> = Object.assign(
   Object.create(null) as Record<string, UpstreamToolMapping>,
-  ({
+  {
     shell_exec: {
     id: 'shell.exec',
     adapt: (p) => ({
@@ -63,7 +67,33 @@ const UPSTREAM_TO_STUDIO: Record<string, UpstreamToolMapping> = Object.assign(
     id: 'file.stat',
     adapt: (p) => ({ path: typeof p.path === 'string' ? p.path : '' }),
   },
-  // v1.0：长期记忆保存（移植自 deepseek++ memory_save）。
+  // G-02：宿主早已登记 file.edit（src/host/desktop-host.ts:419）却因缺映射而对模型
+  // 不可达，模型只能靠 local_file_write 整文件覆写。这里补下划线别名，与既有 8 个
+  // 工具风格一致（模型无需记点号形式）。
+  file_edit: {
+    id: 'file.edit',
+    adapt: (p) => ({
+      path: typeof p.path === 'string' ? p.path : '',
+      edits: Array.isArray(p.edits) ? p.edits : [],
+      ...(typeof p.expectedSha256 === 'string' ? { expectedSha256: p.expectedSha256 } : {}),
+      ...(p.dryRun === true ? { dryRun: true } : {}),
+    }),
+  },
+  // G-02：search_files（listFiles + grepFiles 合成，src/host/desktop-host.ts:421）。
+  search_files: {
+    id: 'search_files',
+    adapt: (p) => ({
+      operation: typeof p.operation === 'string' ? p.operation : 'list',
+      ...(typeof p.root === 'string' ? { root: p.root } : {}),
+      ...(typeof p.query === 'string' ? { query: p.query } : {}),
+      ...(p.regex === true ? { regex: true } : {}),
+      ...(p.caseInsensitive === true ? { caseInsensitive: true } : {}),
+      ...(typeof p.glob === 'string' ? { glob: p.glob } : {}),
+      ...(typeof p.pattern === 'string' ? { pattern: p.pattern } : {}),
+      ...(typeof p.recursive === 'boolean' ? { recursive: p.recursive } : {}),
+      ...(typeof p.limit === 'number' ? { limit: p.limit } : {}),
+    }),
+  },
   memory_save: {
     id: 'memory.save',
     adapt: (p) => ({
@@ -73,19 +103,16 @@ const UPSTREAM_TO_STUDIO: Record<string, UpstreamToolMapping> = Object.assign(
       tags: Array.isArray(p.tags) ? p.tags : [],
     }),
   },
-  // v1.0：Python 代码执行（移植自 deepseek++ python_exec）。
   python_exec: {
     id: 'python.exec',
     adapt: (p) => ({
       code: typeof p.code === 'string' ? p.code : '',
     }),
   },
-  // v1.0：列出 MCP 工具。
   mcp_list: {
     id: 'mcp.list',
     adapt: () => ({}),
   },
-  // v1.0：调用 MCP 工具。
   mcp_call: {
     id: 'mcp.call',
     adapt: (p) => ({
@@ -94,8 +121,28 @@ const UPSTREAM_TO_STUDIO: Record<string, UpstreamToolMapping> = Object.assign(
       args: p.args && typeof p.args === 'object' ? p.args : p.arguments && typeof p.arguments === 'object' ? p.arguments : {},
     }),
   },
-  // v1.1：测试 MCP 连接（UI 直接调用时用点号，模型 XML 标签用下划线）。
-  mcp_test: {
+    // 点号形式同样可达（解析器字符类已放宽），供模型直接使用宿主 id。
+    'shell.exec': { id: 'shell.exec', adapt: (p) => p },
+    'file.read': { id: 'file.read', adapt: (p) => p },
+    'file.write': { id: 'file.write', adapt: (p) => p },
+    'file.stat': { id: 'file.stat', adapt: (p) => p },
+    'file.edit': { id: 'file.edit', adapt: (p) => p },
+    'memory.save': { id: 'memory.save', adapt: (p) => p },
+    'python.exec': { id: 'python.exec', adapt: (p) => p },
+    'mcp.list': { id: 'mcp.list', adapt: (p) => p },
+    'mcp.call': { id: 'mcp.call', adapt: (p) => p },
+  } as Record<string, UpstreamToolMapping>,
+);
+
+/**
+ * v2.0：仅 UI 直调表（不经模型，不喂解析器）。
+ * 这些是宿主 RPC / 设置面，保留在 UPSTREAM_TO_STUDIO 供 mapUpstreamToolInvocation
+ * 使用（UI 经 callHostTool 投递时也要能映射），但不出现在 SUPPORTED_INVOCATION_NAMES。
+ */
+const UI_ONLY_TOOLS: Record<string, UpstreamToolMapping> = Object.assign(
+  Object.create(null) as Record<string, UpstreamToolMapping>,
+  {
+    mcp_test: {
     id: 'mcp.test',
     adapt: (p) => ({ config: p.config && typeof p.config === 'object' ? p.config : {} }),
   },
@@ -103,7 +150,6 @@ const UPSTREAM_TO_STUDIO: Record<string, UpstreamToolMapping> = Object.assign(
     id: 'mcp.test',
     adapt: (p) => ({ config: p.config && typeof p.config === 'object' ? p.config : {} }),
   },
-  // v1.1：保存 MCP 配置。
   mcp_save: {
     id: 'mcp.save',
     adapt: (p) => ({
@@ -118,7 +164,6 @@ const UPSTREAM_TO_STUDIO: Record<string, UpstreamToolMapping> = Object.assign(
       config: p.config && typeof p.config === 'object' ? p.config : {},
     }),
   },
-  // v1.1：UI 点号直调（无需适配，透传参数）。
   'mcp.remove': { id: 'mcp.remove', adapt: (p) => p },
   'mcp.get': { id: 'mcp.get', adapt: (p) => p },
   'memory.delete': { id: 'memory.delete', adapt: (p) => p },
@@ -129,22 +174,35 @@ const UPSTREAM_TO_STUDIO: Record<string, UpstreamToolMapping> = Object.assign(
   'project.create': { id: 'project.create', adapt: (p) => p },
   'folder.pick': { id: 'folder.pick', adapt: (p) => p },
   'skill.list': { id: 'skill.list', adapt: (p) => p },
-  'memory.save': { id: 'memory.save', adapt: (p) => p },
-  'python.exec': { id: 'python.exec', adapt: (p) => p },
-  'mcp.list': { id: 'mcp.list', adapt: (p) => p },
-  'mcp.call': { id: 'mcp.call', adapt: (p) => p },
-  'shell.exec': { id: 'shell.exec', adapt: (p) => p },
-  'file.read': { id: 'file.read', adapt: (p) => p },
-  'file.write': { id: 'file.write', adapt: (p) => p },
-    'file.stat': { id: 'file.stat', adapt: (p) => p },
-  }) as Record<string, UpstreamToolMapping>,
+  } as Record<string, UpstreamToolMapping>,
 );
 
-/** 受支持的下游 invocationName 列表（用于喂给上游流式解析器的 toolDescriptors）。 */
-export const SUPPORTED_INVOCATION_NAMES: readonly string[] = Object.keys(UPSTREAM_TO_STUDIO);
+/**
+ * 全量映射表 = 模型可调 + 仅 UI。mapUpstreamToolInvocation 用它做映射，因此 UI 经
+ * callHostTool 投递的 settings.get / workspace.set 等仍能正常执行；而解析链路
+ * （SUPPORTED_INVOCATION_NAMES）只喂模型表，两者权限面在此分开。
+ */
+const UPSTREAM_TO_STUDIO: Record<string, UpstreamToolMapping> = Object.assign(
+  Object.create(null) as Record<string, UpstreamToolMapping>,
+  MODEL_INVOCATION_TOOLS,
+  UI_ONLY_TOOLS,
+);
+
+
+/**
+ * v2.0：受支持的下游 invocationName 列表（喂给上游流式解析器的 toolDescriptors）。
+ * 只含模型可调表，**不含** UI_ONLY_TOOLS —— 否则模型输出 <settings.get> 会被解析器
+ * 接收并真的触发宿主 RPC（G-01 修复的权限面收窄）。
+ */
+export const SUPPORTED_INVOCATION_NAMES: readonly string[] = Object.keys(MODEL_INVOCATION_TOOLS);
+
+/** v2.0：仅 UI 直调的 invocationName 列表（供测试与文档断言隔离边界）。 */
+export const UI_ONLY_INVOCATION_NAMES: readonly string[] = Object.keys(UI_ONLY_TOOLS);
 
 export function isSupportedUpstreamTool(invocationName: string): boolean {
-  return Object.prototype.hasOwnProperty.call(UPSTREAM_TO_STUDIO, invocationName);
+  // v2.0：只认模型可调表。UI 直调（settings.get / workspace.set 等）不经此闸门，
+  // 它们由 UI 经 callHostTool 直接投递 WS，与页端解析链路完全隔离。
+  return Object.prototype.hasOwnProperty.call(MODEL_INVOCATION_TOOLS, invocationName);
 }
 
 /**

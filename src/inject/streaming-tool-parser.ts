@@ -43,7 +43,11 @@ export class StreamingToolCallParser {
       }
       clean += input.slice(i, lt);
       const after = input.slice(lt);
-      const open = after.match(/^<([a-zA-Z_][\w-]*)>/);
+      // v2.0：标签名字符类对齐上游 deepseek-pp 的 isValidToolTagName
+      // （src/core/tool/invocation.ts:187 → /^[A-Za-z_][A-Za-z0-9_.:-]*$/）。
+      // 旧字符类 `[a-zA-Z_][\w-]*` 不含 `.` 与 `:`，导致 `<settings.get>` /
+      // `<file.edit>` 这类点号 invocationName 匹配不上开标签，整段被当作普通文本流回对话（G-01：模型以为调用了工具，实际什么都没发生）。
+      const open = after.match(/^<([a-zA-Z_][\w.:-]*)>/);
       if (open && this.names.includes(open[1])) {
         const name = open[1];
         const openEnd = lt + open[0].length;
@@ -59,11 +63,11 @@ export class StreamingToolCallParser {
         calls.push(this.make(name, body, rawBlock));
         i = closeIdx + closeTag.length;
       } else {
-        const close = after.match(/^<\/([a-zA-Z_][\w-]*)>/);
+        const close = after.match(/^<\/([a-zA-Z_][\w.:-]*)>/);
         if (close && this.names.includes(close[1])) {
           // 受支持工具的悬空闭合标签：丢弃
           i = lt + close[0].length;
-        } else if (/^<\/?[a-zA-Z_][\w-]*$/.test(after) || /^<\/?$/.test(after)) {
+        } else if (/^<\/?[a-zA-Z_][\w.:-]*$/.test(after) || /^<\/?$/.test(after)) {
           // 跨 chunk 的未完成标签前缀：DeepSeek 逐字符 delta 下发时，开标签首字符 `<`
           // （甚至 `<name` 的若干前缀字符）会先于闭合的 `>` 单独到达，此时既匹配不到完整
           // 开标签也匹配不到闭合标签。必须把从 `<` 到末尾的整段留到下次 feed 拼接后再判定，
