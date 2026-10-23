@@ -8,6 +8,12 @@
 export const UNTRUSTED_MEMORY_OPEN = '[[STUDIO_UNTRUSTED_MEMORY_OPEN]]';
 export const UNTRUSTED_MEMORY_CLOSE = '[[STUDIO_UNTRUSTED_MEMORY_CLOSE]]';
 
+/**
+ * 注入预算（行数）。宿主侧 formatForPrompt 与页端 formatUntrustedMemoriesBlock
+ * 共用同一个默认值，避免「改一处必漏另一处」。
+ */
+export const MEMORY_INJECT_LIMIT = 40;
+
 const REDACTED_MARKER = '[[redacted-memory-marker]]';
 
 const UNTRUSTED_MEMORY_NOTICE =
@@ -45,7 +51,7 @@ export function wrapUntrustedMemoryContent(content: string): string {
  */
 export function formatUntrustedMemoriesBlock(
   memories: readonly MemoryPromptRow[],
-  limit = 50,
+  limit = MEMORY_INJECT_LIMIT,
 ): string {
   const list = memories.slice(0, Math.max(0, limit));
   if (list.length === 0) return '';

@@ -472,8 +472,12 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
               content: String(params.content ?? ''),
               tags: Array.isArray(params.tags) ? params.tags.map(String) : [],
               pinned: Boolean(params.pinned),
-              // v2：治理字段透传（来源/可信度/人设标签，缺省不传）
-              ...(typeof params.source === 'string' ? { source: params.source } : {}),
+              // M10-6：source 是可信度权威，只能由宿主按调用来源赋值——
+              // 读调用方传来的 source 字段等于让模型把自己写的记忆标记成用户来源。
+              // 本工具面只有模型可调（面板无保存入口），故固定记 'agent'；
+              // 旧 memories.json 导入路径记 'import'（见 memory-store.migrateLegacyJson）。
+              source: 'agent',
+              // v2：其余治理字段仍可透传（可信度/人设标签）
               ...(typeof params.confidence === 'number' ? { confidence: params.confidence } : {}),
               ...(Array.isArray(params.personaTags) ? { personaTags: params.personaTags.map(String) } : {}),
             });

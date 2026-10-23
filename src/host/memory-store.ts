@@ -25,6 +25,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import type { Memory, MemoryStoreV2 } from './bot/types';
+import { MEMORY_INJECT_LIMIT } from '../inject/untrusted-memory';
 
 export type MemoryType = 'user' | 'project';
 
@@ -245,7 +246,7 @@ export class MemoryStore implements MemoryStoreV2 {
         const name = String(raw.name ?? '');
         ins.run(
           raw.id, type, name, content, JSON.stringify(tags), raw.pinned ? 1 : 0,
-          null, null, '[]', contentHash(type, name, content), null,
+          'import', null, '[]', contentHash(type, name, content), null,
           Number(raw.createdAt ?? now), Number(raw.updatedAt ?? now),
         );
         const rid = (db.prepare('SELECT rowid FROM memories WHERE id = ?').get(raw.id)?.rowid as number) ?? 0;
@@ -275,6 +276,7 @@ export class MemoryStore implements MemoryStoreV2 {
           name: String(raw.name ?? ''),
           content: String(raw.content ?? ''),
           tags: Array.isArray(raw.tags) ? raw.tags.filter((t: unknown) => typeof t === 'string') : [],
+          source: 'import',
           personaTags: [],
           invalidAt: null,
           pinned: Boolean(raw.pinned),
@@ -307,21 +309,31 @@ export class MemoryStore implements MemoryStoreV2 {
     const hash = contentHash(params.type, params.name, params.content);
 
     if (this.db) {
+      // M10-5：同名行分「有效 / 已失效」两种命中。有效 → 原地更新；已失效 → 复活原行
+      // （invalid_at 归零）而不是另起一行有效记录，否则账本会出现「作废 + 同名有效」
+      // 两行、stats().total 单调顶高，而面板因为只看 list() 看不出重复。
+      // 排序取「有效优先，其次最近更新」，两条命中共用下面同一段 UPDATE。
       const existing = this.db
-        .prepare('SELECT rowid AS rid, * FROM memories WHERE type = ? AND lower(name) = lower(?) AND invalid_at IS NULL')
+        .prepare(
+          `SELECT rowid AS rid, * FROM memories
+           WHERE type = ? AND lower(name) = lower(?)
+           ORDER BY (invalid_at IS NULL) DESC, updated_at DESC
+           LIMIT 1`,
+        )
         .get(params.type, params.name) as Record<string, unknown> | undefined;
 
       if (existing) {
+        const valid = existing.invalid_at === null || existing.invalid_at === undefined;
         const existingHash = typeof existing.content_hash === 'string' ? existing.content_hash : '';
         const existingTags = parseJsonArray(existing.tags_json);
-        if (existingHash === hash && sameStringArray(existingTags, tags)) {
+        if (valid && existingHash === hash && sameStringArray(existingTags, tags)) {
           return { ok: true, id: String(existing.id) }; // 无变化，不搅动 updatedAt
         }
         const rid = existing.rid as number;
         this.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(rid);
         this.db.prepare(
           `UPDATE memories SET content = ?, tags_json = ?, pinned = ?, source = ?, confidence = ?,
-           persona_tags_json = ?, content_hash = ?, updated_at = ? WHERE id = ?`,
+           persona_tags_json = ?, content_hash = ?, invalid_at = NULL, updated_at = ? WHERE id = ?`,
         ).run(
           params.content, JSON.stringify(tags), (params.pinned ?? false) ? 1 : 0,
           params.source ?? null, params.confidence ?? null, JSON.stringify(personaTags), hash, now,
@@ -348,16 +360,18 @@ export class MemoryStore implements MemoryStoreV2 {
     }
 
     // 降级路径：内存数组
-    const idx = this.fallback!.findIndex(
-      (m) => m.type === params.type && m.name.toLowerCase() === params.name.toLowerCase() && m.invalidAt === null,
+    const sameName = this.fallback!.filter(
+      (m) => m.type === params.type && m.name.toLowerCase() === params.name.toLowerCase(),
     );
-    if (idx >= 0) {
-      const m = this.fallback![idx];
+    // M10-5：同 SQL 路径——有效行优先，否则复活最近一条同名作废行。
+    const target = sameName.find((m) => m.invalidAt === null) ?? sameName[sameName.length - 1];
+    if (target) {
+      const idx = this.fallback!.indexOf(target);
       this.fallback![idx] = {
-        ...m, content: params.content, tags, pinned: params.pinned ?? m.pinned,
+        ...target, content: params.content, tags, pinned: params.pinned ?? target.pinned,
         source: params.source, confidence: params.confidence, personaTags, invalidAt: null, updatedAt: now,
       } as MemoryRow;
-      return { ok: true, id: m.id };
+      return { ok: true, id: target.id };
     }
     const id = genId();
     this.fallback!.push({
@@ -491,7 +505,7 @@ export class MemoryStore implements MemoryStoreV2 {
   }
 
   /** 格式化注入系统提示词（格式与 v1 一致：- #id [type] name: content）。 */
-  formatForPrompt(memories: readonly Memory[], limit = 50): string {
+  formatForPrompt(memories: readonly Memory[], limit = MEMORY_INJECT_LIMIT): string {
     const list = memories.slice(0, Math.max(0, limit));
     if (list.length === 0) return '';
     return list
@@ -565,6 +579,9 @@ export class MemoryStore implements MemoryStoreV2 {
   private sortRows(rows: MemoryRow[]): MemoryRow[] {
     return [...rows].sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      // M10-7a：第二级是「个人记忆优先」——否则新写入的 project 记忆会把
+      // user 档（身份/偏好）挤出注入窗口。
+      if (a.type !== b.type) return a.type === 'user' ? -1 : 1;
       return b.updatedAt - a.updatedAt;
     });
   }
