@@ -472,14 +472,14 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
               content: String(params.content ?? ''),
               tags: Array.isArray(params.tags) ? params.tags.map(String) : [],
               pinned: Boolean(params.pinned),
-              // M10-6：source 是可信度权威，只能由宿主按调用来源赋值——
-              // 读调用方传来的 source 字段等于让模型把自己写的记忆标记成用户来源。
-              // 本工具面只有模型可调（面板无保存入口），故固定记 'agent'；
+              // M10-6：治理字段一律由宿主决定，不接受调用方传入。
+              // 第一道收口在映射层（tool-contract.ts 的 memory_save 只转发 type/name/content/tags），
+              // 这里是第二道：即便别的调用路径送来 source/confidence/personaTags，也不采信。
+              // 本工具面只有模型可调（面板无保存入口），故 source 固定 'agent'；
               // 旧 memories.json 导入路径记 'import'（见 memory-store.migrateLegacyJson）。
+              // confidence / personaTags 当前零写入方、零（或近零）读取点，宁可不写，
+              // 也不写一个模型能左右、却没人校验的假权威值。
               source: 'agent',
-              // v2：其余治理字段仍可透传（可信度/人设标签）
-              ...(typeof params.confidence === 'number' ? { confidence: params.confidence } : {}),
-              ...(Array.isArray(params.personaTags) ? { personaTags: params.personaTags.map(String) } : {}),
             });
             if (!result.ok) {
               return { ok: false, error: result.error };

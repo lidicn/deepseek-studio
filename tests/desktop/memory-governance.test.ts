@@ -178,6 +178,8 @@ describe('M10-6 source 由宿主赋值', () => {
         name: 'src-probe',
         content: '模型自封来源',
         source: 'user',
+        confidence: 1,
+        personaTags: ['audit'],
       });
       expect(saved.ok).toBe(true);
       const id = (saved.data as { id: string }).id;
@@ -185,6 +187,9 @@ describe('M10-6 source 由宿主赋值', () => {
       const { getMemoryStore } = await import('../../src/host/memory-store');
       const row = await getMemoryStore().get(id);
       expect(row?.source).toBe('agent');
+      // M10-6b：模型自封的 confidence / personaTags 一律不落地
+      expect(row?.confidence).toBeUndefined();
+      expect(row?.personaTags).toEqual([]);
       ws.close();
     } finally {
       await host.stop();
@@ -194,5 +199,20 @@ describe('M10-6 source 由宿主赋值', () => {
       getMemoryStore().close();
       await fsp.rm(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it('映射层是真正的收口点：memory_save 只转发 type/name/content/tags', async () => {
+    const { mapUpstreamToolInvocation } = await import('../../src/shared/tool-contract');
+    const mapped = mapUpstreamToolInvocation('memory_save', {
+      type: 'user',
+      name: 'n',
+      content: 'c',
+      source: 'user',
+      confidence: 1,
+      personaTags: ['audit'],
+      pinned: true,
+    });
+    expect(mapped).not.toBeNull();
+    expect(mapped!.params).toEqual({ type: 'user', name: 'n', content: 'c', tags: [] });
   });
 });

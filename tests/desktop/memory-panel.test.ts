@@ -92,6 +92,11 @@ describe('记忆面板取数', () => {
     const archivedBtn = Array.from(document.querySelectorAll('.studio-memory-toolbar button'))
       .find((b) => (b.textContent ?? '').includes('已归档')) as HTMLButtonElement;
     expect(archivedBtn).toBeTruthy();
+    // 样式钩子：高亮靠 .studio-memory-toolbar .studio-btn[data-active="true"]
+    const activeBtn = Array.from(document.querySelectorAll('.studio-memory-toolbar button'))
+      .find((b) => (b.textContent ?? '').includes('生效中')) as HTMLButtonElement;
+    expect(activeBtn.dataset.active).toBe('true');
+    expect(archivedBtn.dataset.active).toBe('false');
     archivedBtn.click();
     await flush();
     await flush();
@@ -100,6 +105,8 @@ describe('记忆面板取数', () => {
     expect(text).toContain('归档的记忆');
     expect(text).toContain('恢复');
     expect(text).toContain('彻底删除');
+    expect(archivedBtn.dataset.active).toBe('true');
+    expect(activeBtn.dataset.active).toBe('false');
     expect(bridge.sendToolCall.mock.calls.some(([r]) => r.invocationName === 'memory.listArchived')).toBe(true);
   });
 });
