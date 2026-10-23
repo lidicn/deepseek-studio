@@ -43,6 +43,8 @@ export interface AgentChannelHost {
   readonly policyMode: PolicyMode;
   setPolicyMode(mode: PolicyMode): void;
   readonly workspaceRoot: string | null;
+  /** 记忆库后端；memory 表示当前进程内存储，重启即丢。 */
+  readonly memoryBackend?: 'sqlite' | 'memory';
   setWorkspaceRoot(path: string | null): { ok: boolean; error?: string };
   pickFolder(): Promise<string | null>;
   /**
@@ -118,6 +120,7 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
       policyMode: options.host.policyMode,
       panelModes: PANEL_POLICY_MODES,
       workspaceRoot: options.host.workspaceRoot,
+      memoryBackend: options.host.memoryBackend ?? 'sqlite',
       // v0.23：running 保持指向 main bot（向后兼容现有面板）
       running: mainBot?.running ?? false,
       // v0.23：多 bot 状态列表（新面板可读此字段展示所有 bot）

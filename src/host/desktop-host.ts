@@ -62,7 +62,7 @@ import { webFetch } from '../capabilities/web-fetch';
 import { webSearch } from '../capabilities/web-search';
 import { createMessageHistory } from './kernel/message-history';
 import { createHostToolsAdapter } from './kernel/host-tools-adapter';
-import { createTaskLoop } from './kernel/task-loop';
+import { createTaskLoop, requireTaskLoopReply } from './kernel/task-loop';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -852,27 +852,17 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     const state = botRegistry.getState('main');
     state?.sessionAllowlist.addPermanent('chat-insert');
     state?.sessionAllowlist.addPermanent('chat-send');
-    let finalAnswer = '';
-    const listener = (event: AgentLoopEvent) => {
-      if (event.type === 'assistant' && event.text) {
-        finalAnswer = event.text;
-      }
-    };
-    agentListeners.add(listener);
-    try {
-      if (!mainBot) await mainBotReady;
-      if (!mainBot) throw new Error('main bot not ready');
-      // TaskLoop 路径
-      const loop = createTaskLoop({
-        engine: mainBot.engine,
-        history: kernelHistory,
-        maxRounds: 25,
-      });
-      const result = await loop.run(`${AGENT_SENTINEL}${text}`);
-      return result.content || finalAnswer;
-    } finally {
-      agentListeners.delete(listener);
-    }
+    if (!mainBot) await mainBotReady;
+    if (!mainBot) throw new Error('main bot not ready');
+    // TaskLoop 自带历史与轮次边界；不能从全局 assistant 广播兜底，否则会取到
+    // 聊天室、其他 bot 或上一轮残留的正文。
+    const loop = createTaskLoop({
+      engine: mainBot.engine,
+      history: kernelHistory,
+      maxRounds: 25,
+    });
+    const result = await loop.run(`${AGENT_SENTINEL}${text}`);
+    return requireTaskLoopReply(result);
   }
 
   // —— v0.27：聊天室运行时装配 ——
@@ -966,6 +956,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       onBotReply: (event) => {
         // v0.28：bot 回复落盘后，CB 已构造好 ChatRoomBotReplyEvent（含 roomId/persona/content/messageId）。
         // 经 chatRoomListeners → agent-channel broadcast 成 {type:'chat-room-event'}，UI 据此渲染气泡。
+        emitChatRoomEvent(event);
+      },
+      onBotError: (event) => {
         emitChatRoomEvent(event);
       },
       onSummary: (event) => {
@@ -1469,6 +1462,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             setPolicyMode,
             get workspaceRoot() {
               return mutableWorkspace.configured ? mutableWorkspace.root : null;
+            },
+            get memoryBackend() {
+              return getMemoryStore().stats().backend;
             },
             setWorkspaceRoot,
             pickFolder: () => agent.pickFolder(),

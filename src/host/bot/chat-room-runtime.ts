@@ -61,6 +61,9 @@ export type AgentEventBus = (cb: (event: AgentLoopEvent) => void) => () => void;
 /** 发送 bot 回复到 UI 的回调。接线层在每条 bot 回复落盘后调它（payload 即 ChatRoomBotReplyEvent）。 */
 export type BotReplySink = (event: ChatRoomBotReplyEvent) => void;
 
+/** 发送 bot 生成失败事件到 UI 的回调。 */
+export type BotErrorSink = (event: import('./types').ChatRoomBotErrorEvent) => void;
+
 /** 房间摘要结构化推送回调。摘要落快照成功后调它（payload 即 ChatRoomSummaryEvent）。 */
 export type SummarySink = (event: ChatRoomSummaryEvent) => void;
 
@@ -95,6 +98,7 @@ export interface ChatRoomRuntimeOptions {
 
   // 回调
   readonly onBotReply?: BotReplySink;
+  readonly onBotError?: BotErrorSink;
   readonly onSummary?: SummarySink;
   readonly onUnresolved?: UnresolvedSink;
   readonly onRoundComplete?: RoundCompleteSink;
@@ -219,9 +223,13 @@ function createGenerateReply(
 
     // 4. 临时 listener 按 botId 过滤捕获 assistant 事件
     let capturedReply = '';
+    let capturedError = '';
     const listener = (event: AgentLoopEvent): void => {
-      if (event.botId === botId && event.type === 'assistant' && event.text) {
+      if (event.botId !== botId || event.roomId !== room.roomId) return;
+      if (event.type === 'assistant' && event.text) {
         capturedReply = event.text;
+      } else if (event.type === 'error' && event.text) {
+        capturedError = event.text;
       }
     };
     const unsub = onAgentEvent(listener);
@@ -234,6 +242,9 @@ function createGenerateReply(
       // 6. 发送 → loop.send resolve 时 assistant 事件已同步 emit
       // v0.28：带 roomId，AgentLoop 把它戳到每条事件上供 UI 按 roomId 过滤。
       await bot.loop.send(`${AGENT_SENTINEL}${message}`, { roomId: room.roomId });
+
+      if (capturedError) throw new Error(capturedError);
+      if (capturedReply.trim() === '') throw new Error('empty-response');
 
       // 7. 记录原始回复供 planRound 后取 unresolved
       rawReplyMap.set(persona, capturedReply);
@@ -266,6 +277,7 @@ export function createModelSummarizer(deps: {
     if (messages.length === 0) return '';
     const bot = registry.get(summarizerBotId);
     if (!bot) throw new Error('[summary: bot unavailable]');
+    const roomId = messages[0]?.roomId;
 
     // 拼摘要 prompt
     const transcript = messages
@@ -275,7 +287,12 @@ export function createModelSummarizer(deps: {
 
     let summary = '';
     const listener = (event: AgentLoopEvent): void => {
-      if (event.botId === summarizerBotId && event.type === 'assistant' && event.text) {
+      if (
+        event.botId === summarizerBotId &&
+        event.type === 'assistant' &&
+        event.text &&
+        (roomId === undefined || event.roomId === roomId)
+      ) {
         summary = event.text;
       }
     };
@@ -284,7 +301,11 @@ export function createModelSummarizer(deps: {
     // 摘要器专属超时：到点即放弃，不等全局看门狗（15min 太长，散会不该卡这么久）。
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error('[summary: timeout]')), timeoutMs);
+      timer = setTimeout(() => {
+        // Promise.race 只会放弃等待，不会终止仍在占用的 AgentLoop。
+        bot.loop.stop();
+        reject(new Error('[summary: timeout]'));
+      }, timeoutMs);
     });
 
     try {
@@ -294,7 +315,7 @@ export function createModelSummarizer(deps: {
       // race 摘要发送 vs 超时；send 先 resolve 则看是否捕到 assistant 文本，
       // 超时先 reject 则走 catch throw。
       await Promise.race([
-        bot.loop.send(`${AGENT_SENTINEL}${prompt}`),
+        bot.loop.send(`${AGENT_SENTINEL}${prompt}`, roomId === undefined ? undefined : { roomId }),
         timeout,
       ]);
       if (!summary) throw new Error('[summary: empty]');
@@ -322,6 +343,7 @@ export function createChatRoomRuntime(options: ChatRoomRuntimeOptions): ChatRoom
     rooms,
     maxDepth = 1,
     onBotReply,
+    onBotError,
     onSummary,
     onUnresolved,
     onRoundComplete,
@@ -427,70 +449,86 @@ export function createChatRoomRuntime(options: ChatRoomRuntimeOptions): ChatRoom
     // 7. planRound
     const round = await orchestrator.planRound({ trigger, room, participants });
 
-    // 8. 逐个回复落盘 + 推 UI（结构化 ChatRoomBotReplyEvent）
-    for (const persona of round.members) {
-      const participant = participants.find((p) => p.name === persona);
-      if (!participant) continue;
-      const content = round.contents[persona] ?? '';
-      const botId = participant.botId;
-      const senderType: 'main-bot' | 'sub-bot' = botId === 'main' ? 'main-bot' : 'sub-bot';
-      const stored = messageStore.append({
-        roomId,
-        senderId: botId,
-        senderType,
-        content,
-        timestamp: Date.now(),
-        mentions: [],
-      });
-      onBotReply?.({
-        kind: 'chat-bot-reply',
-        roomId,
-        persona,
-        botId,
-        senderType,
-        content,
-        messageId: stored.id,
-        timestamp: stored.timestamp,
-      });
-    }
-
-    // 9. unresolved 上报：重新 parse 原始回复取未注册 @名
-    const unresolvedAll: string[] = [];
-    for (const persona of round.members) {
-      const raw = rawReplyMap.get(persona);
-      if (!raw) continue;
-      const res: HandoffResolution = handoffParser.parse(raw, participants);
-      if (res.unresolved.length > 0) {
-        unresolvedAll.push(...res.unresolved);
+    let persistedReplies = 0;
+    try {
+      // 8. 逐个回复落盘 + 推 UI（结构化 ChatRoomBotReplyEvent）。
+      // 空正文不落盘；失败原因单独推 chat-bot-error，避免产生空气泡。
+      for (const persona of round.members) {
+        const participant = participants.find((p) => p.name === persona);
+        if (!participant) continue;
+        const content = round.contents[persona] ?? '';
+        const botId = participant.botId;
+        if (content.trim() === '') {
+          onBotError?.({
+            kind: 'chat-bot-error',
+            roomId,
+            persona,
+            botId,
+            error: round.errors?.[persona] ?? 'empty-response',
+            timestamp: Date.now(),
+          });
+          continue;
+        }
+        const senderType: 'main-bot' | 'sub-bot' = botId === 'main' ? 'main-bot' : 'sub-bot';
+        const stored = messageStore.append({
+          roomId,
+          senderId: botId,
+          senderType,
+          content,
+          timestamp: Date.now(),
+          mentions: [],
+        });
+        persistedReplies += 1;
+        onBotReply?.({
+          kind: 'chat-bot-reply',
+          roomId,
+          persona,
+          botId,
+          senderType,
+          content,
+          messageId: stored.id,
+          timestamp: stored.timestamp,
+        });
       }
+
+      // 9. unresolved 上报：重新 parse 原始回复取未注册 @名
+      const unresolvedAll: string[] = [];
+      for (const persona of round.members) {
+        const raw = rawReplyMap.get(persona);
+        if (!raw) continue;
+        const res: HandoffResolution = handoffParser.parse(raw, participants);
+        if (res.unresolved.length > 0) {
+          unresolvedAll.push(...res.unresolved);
+        }
+      }
+      if (unresolvedAll.length > 0) {
+        onUnresolved?.(roomId, unresolvedAll);
+      }
+
+      // 10. pendingHandoff 不执行（maxDepth=1 默认）；接线层可据此决定续轮策略
+      // （v0.27 阶段：调用方连续调 handleUserMessage 续轮，不在此自动续）
+
+      // v0.29：仅真正落盘的 bot 回复才算讨论轮，空回复/失败不污染门控。
+      if (persistedReplies > 0) stateStore.incrementRounds(roomId);
+
+      // 11. 摘要触发 —— v0.29 改为会议驱动门控（替换原「每轮无条件 summarize」）：
+      //   status === 'active' 且 roundsSinceSummary >= 阈值 → 摘要 + 推送 + 清零计数
+      //   status === 'active' 未达阈值                          → 跳过（等讨论累积）
+      //   status !== 'active'（无会议）                         → 跳过（无会议不总结）
+      // 门控的是「是否调 summarize()」本身 —— CB 的 CAS/租约守卫不受影响。
+      const st = stateStore.get(roomId);
+      if (st?.status === 'active' && st.strategy && st.roundsSinceSummary >= st.strategy.minRoundsBeforeAutoSummary) {
+        // 达阈值才摘要（门控的是「是否调 summarize()」，不是 CB 内部的 CAS/租约）。
+        // 摘要失败不重置轮数 —— 轮数反映「已总结覆盖到的进度」，
+        // 没提交成功就该保留，下一轮继续重试。
+        if (await runSummarize(roomId)) stateStore.resetRounds(roomId);
+      }
+
+      return round;
+    } finally {
+      // 落盘或摘要抛错也必须解锁 UI，否则输入框永久停在 roundInProgress。
+      onRoundComplete?.(round);
     }
-    if (unresolvedAll.length > 0) {
-      onUnresolved?.(roomId, unresolvedAll);
-    }
-
-    // 10. pendingHandoff 不执行（maxDepth=1 默认）；接线层可据此决定续轮策略
-    // （v0.27 阶段：调用方连续调 handleUserMessage 续轮，不在此自动续）
-
-    // v0.29：累计讨论轮数。仅当本轮「有 bot 回复」（members 非空）才算一轮讨论 ——
-    // 无人回复的消息（如纯 @未注册名）不计数，不污染阈值门控。
-    const hadReplies = round.members.length > 0;
-    if (hadReplies) stateStore.incrementRounds(roomId);
-
-    // 11. 摘要触发 —— v0.29 改为会议驱动门控（替换原「每轮无条件 summarize」）：
-    //   status === 'active' 且 roundsSinceSummary >= 阈值 → 摘要 + 推送 + 清零计数
-    //   status === 'active' 未达阈值                          → 跳过（等讨论累积）
-    //   status !== 'active'（无会议）                         → 跳过（无会议不总结）
-    // 门控的是「是否调 summarize()」本身 —— CB 的 CAS/租约守卫不受影响。
-    const st = stateStore.get(roomId);
-    if (st?.status === 'active' && st.strategy && st.roundsSinceSummary >= st.strategy.minRoundsBeforeAutoSummary) {
-      // 达阈值才摘要（门控的是「是否调 summarize()」，不是 CB 内部的 CAS/租约）。
-      // 摘要失败不重置轮数 —— 轮数反映「已总结覆盖到的进度」，
-      // 没提交成功就该保留，下一轮继续重试。
-      if (await runSummarize(roomId)) stateStore.resetRounds(roomId);
-    }
-
-    onRoundComplete?.(round);
-    return round;
   }
 
   function getRoomParticipants(roomId: string): Participant[] {

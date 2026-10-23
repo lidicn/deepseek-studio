@@ -26,6 +26,13 @@ export function renderStatusbar(bar: HTMLElement, state: WorkbenchState): void {
     bar.appendChild(running);
   }
 
+  if (state.memoryBackend === 'memory') {
+    const memory = document.createElement('span');
+    memory.className = 'status-memory-warning';
+    memory.textContent = '记忆库降级为内存，重启后丢失';
+    bar.appendChild(memory);
+  }
+
   if (state.lastError && state.connection !== 'connected') {
     const err = document.createElement('span');
     err.className = 'status-error';

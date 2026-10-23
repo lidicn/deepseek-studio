@@ -77,6 +77,7 @@ export class DefaultRoundOrchestrator implements RoundOrchestrator {
     const spoken = new Set<string>();
     const order: string[] = [];
     const contents: Record<string, string> = {};
+    const errors: Record<string, string> = {};
     const pendingHandoff: string[] = [];
 
     let wave: string[] = [...decision.targets];
@@ -102,8 +103,9 @@ export class DefaultRoundOrchestrator implements RoundOrchestrator {
         let reply: string;
         try {
           reply = await this.generateReply(persona, ctx);
-        } catch {
+        } catch (err) {
           contents[persona] = '';
+          errors[persona] = err instanceof Error ? err.message : String(err);
           spoken.add(persona);
           order.push(persona);
           continue; // 不解析其接力、不进 pendingHandoff
@@ -136,6 +138,7 @@ export class DefaultRoundOrchestrator implements RoundOrchestrator {
       triggerMessageId: trigger.id,
       members: order,
       contents,
+      ...(Object.keys(errors).length > 0 ? { errors } : {}),
       pendingHandoff,
     };
   }

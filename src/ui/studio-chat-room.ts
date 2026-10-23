@@ -61,7 +61,7 @@ interface ChatRoomEvent {
  *  v0.29 修复：加 round-complete 成员 —— 给 UI 确定性轮次结束信号（不依赖 main bot done）。
  *  v0.30：加 task-progress / task-complete / report-ready 成员（审计会议离线执行事件）。 */
 interface StructuredChatRoomEvent {
-  kind: 'chat-bot-reply' | 'chat-summary' | 'meeting-state' | 'round-complete'
+  kind: 'chat-bot-reply' | 'chat-bot-error' | 'chat-summary' | 'meeting-state' | 'round-complete'
     | 'task-progress' | 'task-complete' | 'report-ready';
   roomId: string;
   // chat-bot-reply
@@ -259,7 +259,7 @@ export function createChatRoom(config: ChatRoomRuntimeConfig): ChatRoomHandle {
   function handleEvent(event: ChatRoomEvent): void {
     // v0.28：多房间隔离——聊天室驱动的 send 带 roomId，只处理当前房间的事件。
     // 无 roomId 的原始事件属于日常对话，聊天室 UI 忽略（内容渲染走结构化事件）。
-    if (event.roomId !== undefined && event.roomId !== config.roomId) return;
+    if (event.roomId !== config.roomId) return;
     const botId = event.botId ?? 'main';
     switch (event.type) {
       case 'user':
@@ -318,6 +318,12 @@ export function createChatRoom(config: ChatRoomRuntimeConfig): ChatRoomHandle {
       case 'chat-summary': {
         // 摘要事件（CB 在 summaryService.getSummary 成功后推出，roomId 隔离）。
         if (ev.summary) appendSummary(ev.summary);
+        break;
+      }
+      case 'chat-bot-error': {
+        const botId = ev.botId ?? 'main';
+        thinkingBots.delete(botId);
+        appendErrorMessage(botId, ev.error ?? '生成失败');
         break;
       }
       case 'meeting-state': {

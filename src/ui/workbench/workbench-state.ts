@@ -21,6 +21,7 @@ export interface WorkbenchState {
   connection: ConnectionState;
   running: boolean;
   workspaceRoot: string | null;
+  memoryBackend: 'sqlite' | 'memory';
   policyMode: PolicyMode;
   bots: BotDescriptor[];
   events: AgentLoopEvent[];
@@ -33,6 +34,7 @@ export function createInitialState(): WorkbenchState {
     connection: 'connecting',
     running: false,
     workspaceRoot: null,
+    memoryBackend: 'sqlite',
     policyMode: DEFAULT_POLICY_MODE,
     bots: [],
     events: [],
@@ -72,6 +74,7 @@ export function applyState(state: WorkbenchState, payload: StatePayload): Workbe
   return {
     ...state,
     workspaceRoot: payload.workspaceRoot,
+    memoryBackend: payload.memoryBackend === 'memory' ? 'memory' : 'sqlite',
     policyMode: payload.policyMode,
     running: payload.running,
     bots: payload.bots ?? [],
@@ -80,6 +83,10 @@ export function applyState(state: WorkbenchState, payload: StatePayload): Workbe
 
 /** {type:'event'}：追加到 events；done/error 把 running 置 false，error 写 lastError。 */
 export function applyLoopEvent(state: WorkbenchState, event: AgentLoopEvent): WorkbenchState {
+  // 工作台只跟踪 main bot 的日常对话。聊天室和子 bot 的事件走结构化通道，
+  // 不能让别房/别 bot 的 done/error 改动本端 running 或错误栏。
+  if (event.roomId !== undefined) return state;
+  if (event.botId !== undefined && event.botId !== 'main') return state;
   const next: WorkbenchState = { ...state, events: [...state.events, event] };
   if (event.type === 'done') {
     next.running = false;

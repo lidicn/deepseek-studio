@@ -198,13 +198,15 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
    * 修复前 ws.on('close') 只做 clients.delete(id)，pendingDispatch/pendingConsent
    * 中的 Promise 只能等 dispatchTimeoutMs/consentTimeoutMs 才结算。
    */
-  function failAllPending(reason: string): void {
+  function failAllPending(reason: string, ownerId?: string): void {
     for (const [id, p] of pendingDispatch) {
+      if (ownerId !== undefined && p.ownerId !== ownerId) continue;
       clearTimeout(p.timer);
       pendingDispatch.delete(id);
       p.resolve({ ok: false, error: reason });
     }
     for (const [id, p] of pendingConsent) {
+      if (ownerId !== undefined && p.ownerId !== ownerId) continue;
       clearTimeout(p.timer);
       pendingConsent.delete(id);
       p.resolve('deny');
@@ -465,8 +467,8 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           });
       }
     });
-    ws.on('close', () => { clients.delete(id); failAllPending('page-disconnected'); options.onDisconnect?.({ id, botId: rec.botId }); });
-    ws.on('error', () => { clients.delete(id); failAllPending('page-disconnected'); options.onDisconnect?.({ id, botId: rec.botId }); });
+    ws.on('close', () => { clients.delete(id); failAllPending('page-disconnected', id); options.onDisconnect?.({ id, botId: rec.botId }); });
+    ws.on('error', () => { clients.delete(id); failAllPending('page-disconnected', id); options.onDisconnect?.({ id, botId: rec.botId }); });
   });
 
   return {

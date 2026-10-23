@@ -48,6 +48,35 @@ export interface TaskLoopRoundResult {
   readonly error?: string;
 }
 
+/** 终态不可作为成功回复返回的错误。 */
+export class TaskLoopReplyError extends Error {
+  readonly stopReason?: TaskLoopStopReason;
+
+  constructor(message: string, stopReason?: TaskLoopStopReason) {
+    super(message);
+    this.name = 'TaskLoopReplyError';
+    this.stopReason = stopReason;
+  }
+}
+
+/**
+ * 把 TaskLoop 结果转成调用方可直接消费的成功回复。
+ * 空正文、超时、中止、空响应和跑满轮数都不能伪装成成功。
+ */
+export function requireTaskLoopReply(result: TaskLoopRoundResult): string {
+  const content = result.content.trim();
+  const failedReason =
+    result.stopReason === 'empty-response' ||
+    result.stopReason === 'timeout' ||
+    result.stopReason === 'aborted' ||
+    result.stopReason === 'max-rounds';
+  if (content === '' || failedReason) {
+    const detail = result.stopReason ?? 'empty-response';
+    throw new TaskLoopReplyError(`task loop returned no successful reply (${detail})`, result.stopReason);
+  }
+  return result.content;
+}
+
 /** 引擎抛错时向上抛出，带发生错误时的轮次。 */
 export class TaskLoopError extends Error {
   readonly round: number;

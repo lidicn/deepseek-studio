@@ -69,6 +69,26 @@ describe('WorkbenchState · loop event', () => {
     expect(e.running).toBe(false);
     expect(e.lastError).toBe('boom');
   });
+
+  it('聊天室与子 bot 事件不污染工作台主对话状态', () => {
+    let s = applySocketOpen(createInitialState());
+    s = applyState(s, statePayload({ running: true }));
+
+    const roomEvent = applyLoopEvent(s, { type: 'done', roomId: 'room-a', botId: 'main' });
+    expect(roomEvent).toBe(s);
+
+    const subBotEvent = applyLoopEvent(s, { type: 'error', text: 'sub failed', botId: 'bot-a' });
+    expect(subBotEvent).toBe(s);
+    expect(subBotEvent.running).toBe(true);
+    expect(subBotEvent.lastError).toBeNull();
+  });
+
+  it('记忆后端默认 sqlite，state 可显式切到 memory', () => {
+    let s = createInitialState();
+    expect(s.memoryBackend).toBe('sqlite');
+    s = applyState(s, statePayload({ memoryBackend: 'memory' }));
+    expect(s.memoryBackend).toBe('memory');
+  });
 });
 
 describe('WorkbenchState · tool-run 终态去重', () => {

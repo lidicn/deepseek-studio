@@ -385,6 +385,8 @@ export interface ConversationRound {
   readonly members: readonly string[];
   /** 本轮内各 persona 的净回复内容。 */
   readonly contents: Readonly<Record<string, string>>;
+  /** 本轮生成失败的 persona → 可诊断错误。成功时不出现该键。 */
+  readonly errors?: Readonly<Record<string, string>>;
   /** 本轮结束后解析出的接力目标（下一轮的入参）。 */
   readonly pendingHandoff: readonly string[];
 }
@@ -433,6 +435,16 @@ export interface ChatRoomBotReplyEvent {
   readonly content: string;
   /** 落盘后的消息 id（UI 去重/定位用）。 */
   readonly messageId: string;
+  readonly timestamp: number;
+}
+
+/** bot 生成失败的结构化事件。 */
+export interface ChatRoomBotErrorEvent {
+  readonly kind: 'chat-bot-error';
+  readonly roomId: string;
+  readonly persona: string;
+  readonly botId: string;
+  readonly error: string;
   readonly timestamp: number;
 }
 
@@ -598,6 +610,7 @@ export interface ChatRoomReportReadyEvent {
 /** 聊天室结构化事件联合。UI + 多房间隔离的唯一事件源。 */
 export type ChatRoomEvent =
   | ChatRoomBotReplyEvent
+  | ChatRoomBotErrorEvent
   | ChatRoomSummaryEvent
   | ChatRoomMeetingStateEvent
   | ChatRoomRoundCompleteEvent

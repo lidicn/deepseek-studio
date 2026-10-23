@@ -35,6 +35,7 @@ export interface StatePayload {
   policyMode: PolicyMode;
   panelModes: readonly PolicyMode[];
   workspaceRoot: string | null;
+  memoryBackend?: 'sqlite' | 'memory';
   running: boolean;
   bots?: BotDescriptor[];
 }

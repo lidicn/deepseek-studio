@@ -32,8 +32,10 @@ export function createWindowMessageTransport(
   selfWindow: {
     addEventListener(type: string, listener: EventListener): void;
     removeEventListener(type: string, listener: EventListener): void;
+    location?: { origin?: string };
   } = globalThis as never,
   pendingTimeoutMs = 30_000,
+  targetOrigin: string = selfWindow.location?.origin ?? '*',
 ): Transport {
   const pending = new Map<string, {
     resolve: (value: unknown) => void;
@@ -42,6 +44,7 @@ export function createWindowMessageTransport(
   }>();
 
   const listener = ((event: MessageEvent) => {
+    if (targetOrigin !== '*' && event.origin && event.origin !== targetOrigin) return;
     const data = event.data as { __channel?: string; requestId?: string; response?: unknown } | null;
     if (!data || data.__channel !== channel) return;
     const id = data.requestId ?? '';
@@ -64,7 +67,7 @@ export function createWindowMessageTransport(
           }
         }, pendingTimeoutMs);
         pending.set(envelope.requestId, { resolve, reject, timer });
-        targetWindow.postMessage({ __channel: channel, ...envelope }, '*');
+        targetWindow.postMessage({ __channel: channel, ...envelope }, targetOrigin);
       });
     },
     // F-M6：移除 message 监听器并拒绝所有在途请求

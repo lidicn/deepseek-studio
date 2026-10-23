@@ -90,6 +90,7 @@ export function createAutomationManager(options?: {
   let logs: AutomationLogEntry[] = [];
   let scheduled: Map<string, ScheduledTaskWrap> = new Map();
   let started = false;
+  const inFlight = new Set<string>();
 
   // ── 持久化 ─────────────────────────────────────────────────────────
 
@@ -203,6 +204,20 @@ export function createAutomationManager(options?: {
   // ── 任务执行 ───────────────────────────────────────────────────────
 
   async function executeTask(task: AutomationTask): Promise<AutomationLogEntry> {
+    if (inFlight.has(task.id)) {
+      const skipped: AutomationLogEntry = {
+        id: randomUUID(),
+        taskId: task.id,
+        taskName: task.name,
+        startedAt: Date.now(),
+        finishedAt: Date.now(),
+        status: 'failed',
+        error: 'task-already-running',
+      };
+      addLog(skipped);
+      return skipped;
+    }
+
     const logEntry: AutomationLogEntry = {
       id: randomUUID(),
       taskId: task.id,
@@ -210,6 +225,7 @@ export function createAutomationManager(options?: {
       startedAt: Date.now(),
       status: 'running',
     };
+    inFlight.add(task.id);
     addLog(logEntry);
 
     try {
@@ -271,6 +287,8 @@ export function createAutomationManager(options?: {
       saveTasks();
 
       return { ...logEntry, finishedAt: Date.now(), status: 'failed', error };
+    } finally {
+      inFlight.delete(task.id);
     }
   }
 

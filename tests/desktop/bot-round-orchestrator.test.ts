@@ -94,6 +94,7 @@ describe('RoundOrchestrator', () => {
     const round = await orch.planRound({ trigger: msg('@all 大家说'), room, participants });
     expect(round.members).toEqual(['frontend-expert', 'backend-expert']);
     expect(round.contents['frontend-expert']).toBe(''); // 异常 → 空
+    expect(round.errors?.['frontend-expert']).toContain('boom:frontend-expert');
     expect(round.contents['backend-expert']).toBe('我补充一下');
     expect(round.pendingHandoff).toEqual([]); // 抛错者不解析接力
   });

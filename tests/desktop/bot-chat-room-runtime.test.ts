@@ -133,6 +133,7 @@ async function setup(room: RoomConfig, opts?: { maxDepth?: number }) {
   }
 
   const onBotReply = vi.fn();
+  const onBotError = vi.fn();
   const onUnresolved = vi.fn();
   const onRoundComplete = vi.fn();
 
@@ -142,9 +143,10 @@ async function setup(room: RoomConfig, opts?: { maxDepth?: number }) {
     registry, slotRuntime, personas: new FakePersonaRegistry(),
     onAgentEvent, rooms: [room], maxDepth: opts?.maxDepth,
     onBotReply, onUnresolved, onRoundComplete,
+    onBotError,
   });
 
-  return { runtime, registry, script, events, messageStore, bots, onBotReply, onUnresolved, onRoundComplete, summarizer };
+  return { runtime, registry, script, events, messageStore, bots, onBotReply, onBotError, onUnresolved, onRoundComplete, summarizer };
 }
 
 const ROOM: RoomConfig = {
@@ -251,10 +253,18 @@ describe('chat-room-runtime 接线层', () => {
 
     // frontend 的 contents 留空（fail-soft）
     expect(round.contents['frontend-expert'] ?? '').toBe('');
+    expect(round.errors?.['frontend-expert']).toContain('engine crash');
     // 其他人正常
     expect(round.contents['backend-expert']).toBe('BE 正常');
     // 整轮不炸：有别的成员回了
     expect(round.members).toContain('backend-expert');
+    // 空回复不落盘、不推空气泡；错误原因单独推送
+    expect(ctx.onBotReply.mock.calls.some(([event]) => event.persona === 'frontend-expert')).toBe(false);
+    expect(ctx.onBotError).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'chat-bot-error',
+      persona: 'frontend-expert',
+      error: expect.stringContaining('engine crash'),
+    }));
 
     fe.engine.send = origSend;
   });
@@ -301,6 +311,19 @@ describe('chat-room-runtime 接线层', () => {
     expect(userMsg.content).toContain('问题内容');
     // mentions 记录了 @frontend-expert
     expect(userMsg.mentions.some((m) => m.type === 'agent' && m.participantId === 'frontend-expert')).toBe(true);
+  });
+
+  it('10b. bot 落盘抛错时仍发 round-complete，避免 UI 永久锁死', async () => {
+    const ctx = await setup(ROOM);
+    ctx.script.setReply('frontend-expert', '正常回复');
+    const append = ctx.messageStore.append.bind(ctx.messageStore);
+    ctx.messageStore.append = ((message) => {
+      if (message.senderType !== 'user') throw new Error('disk full');
+      return append(message);
+    }) as typeof ctx.messageStore.append;
+
+    await expect(ctx.runtime.handleUserMessage('r1', '@frontend-expert 写盘')).rejects.toThrow('disk full');
+    expect(ctx.onRoundComplete).toHaveBeenCalledTimes(1);
   });
 
   it('11. getRoomParticipants 返回已注册成员', async () => {
@@ -382,17 +405,18 @@ describe('chat-room-runtime 真摘要器', () => {
     // 散会/手动总结不该卡 15 分钟才放弃。用短 timeoutMs 验证快速失败。
     const script = makeScriptedEngines();
     const listeners = new Set<(event: AgentLoopEvent) => void>();
+    let releaseSend: ((value: EngineSendResult) => void) | undefined;
     // 模拟 bot.loop.send 永不 resolve（挂在 pending 态）
     const registry = createBotRegistry({
       createEngine: ({ botId }) => {
         // 一个不 emit assistant 事件的引擎 → send resolve 但 summary 仍空 → throw empty
         // 这里要测超时，所以让 send 永不 resolve：
         const e = script.ensureEngine(botId);
-        return { ...e, send: () => new Promise(() => {}) }; // 永不 resolve
+        return { ...e, send: () => new Promise((resolve) => { releaseSend = resolve; }) };
       },
       onEvent: (ev) => { for (const cb of listeners) cb(ev); },
     });
-    await registry.create({ botId: 'main', slotId: 'main' });
+    const created = await registry.create({ botId: 'main', slotId: 'main' });
     const onAgentEvent = (cb: (event: AgentLoopEvent) => void) => { listeners.add(cb); return () => { listeners.delete(cb); }; };
 
     const summarizer = createModelSummarizer({ registry, onAgentEvent, summarizerBotId: 'main', timeoutMs: 1500 });
@@ -404,5 +428,11 @@ describe('chat-room-runtime 真摘要器', () => {
     const elapsed = Date.now() - start;
     // 应在 ~1.5s 抛错，绝非 15 分钟。留 5s 余量（timer 精度 + 事件循环）。
     expect(elapsed).toBeLessThan(5000);
+    // 超时不能只放弃 await，还必须给仍挂起的 AgentLoop 置停止信号。
+    expect(registry.getState('main')?.stopFlag.stopped).toBe(true);
+    // AgentLoop 的 active 只能由原 send 的 finally 释放；这里不伪造 running=false。
+    expect(created.loop.running).toBe(true);
+    releaseSend?.({ content: '', toolCalls: 0 });
+    await vi.waitFor(() => expect(created.loop.running).toBe(false));
   });
 });

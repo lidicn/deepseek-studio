@@ -17,9 +17,11 @@ export function createWebviewPostMessageTransport(
   selfWindow: {
     addEventListener(type: string, listener: EventListener): void;
     removeEventListener(type: string, listener: EventListener): void;
+    location?: { origin?: string };
   } = globalThis as never,
+  targetOrigin: string = selfWindow.location?.origin ?? '*',
 ): Transport {
-  return createWindowMessageTransport(targetWindow, channel, selfWindow);
+  return createWindowMessageTransport(targetWindow, channel, selfWindow, 30_000, targetOrigin);
 }
 
 export interface NodeWsEnvelopeReceiver {
