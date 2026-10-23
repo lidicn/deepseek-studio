@@ -24,6 +24,7 @@ export const UI_ERROR_CODES: Readonly<Record<string, string>> = {
   timeout: '操作超时',
   failed: '执行失败',
   cancelled: '已取消',
+  'pow-expired': 'PoW 挑战已过期，重新获取后仍无法继续',
   // 工具参数/文件
   'missing-argument': '缺少必填参数',
   'invalid-argument': '参数格式不正确',
@@ -33,6 +34,8 @@ export const UI_ERROR_CODES: Readonly<Record<string, string>> = {
   'limit-exceeded': '并发或数量超限，请等待当前任务结束',
   'call-error': '工具调用出错',
   'call-skip': '该工具调用被跳过',
+  // 回合终态
+  'empty-reply': '模型本轮没有输出任何可见内容（可能只产生了思考），可以直接重新发送',
 };
 
 /**

@@ -256,6 +256,7 @@ function beginStream(loopState: LoopState): number {
   loopState.streamSawDone = false;
   loopState.streamTruncatedTag = false;
   loopState.streamBytes = 0;
+  loopState.streamHadVisibleText = false;
   return id;
 }
 
@@ -330,6 +331,8 @@ interface LoopState {
   autoReplyHadTools: boolean;
   /** 当前普通请求是否已解析到工具调用，即使执行结果尚未返回。 */
   streamHadTools: boolean;
+  /** QD-R8-01：本条流是否推送过可见正文（用于区分「真的没话说」与「回复被吞」）。 */
+  streamHadVisibleText?: boolean;
   /** R0-R5：本轮流里检测到的 SSE 错误帧（200 内嵌错误），readyState===4 时据此分类。 */
   sseErrorSeen?: ClassifiedResponse | null;
   /** v1.6：用户原始任务（首轮请求 prompt 字段，augmentation 前）。XHR/fetch hook 在首条消息时写入，
@@ -820,6 +823,7 @@ function installFetchHook(
             const text = sse.feed(rawSse);
             const { calls, clean } = parser.feed(text);
             if (clean) interceptorTrace.record({ t: 'sse.frame', turnId: traceTurnId, kind: 'text', count: clean.length });
+            if (clean && loopState && isActiveStream(loopState, streamId)) loopState.streamHadVisibleText = true;
             if (calls.length > 0) interceptorTrace.record({ t: 'sse.frame', turnId: traceTurnId, kind: 'tool', count: calls.length });
             // v0.19：推送可见文本给自建聊天 UI（80ms 节流 + markdown 实时渲染 + 光标）
             if (loopState?.chatUI && clean) loopState.chatUI.appendToAssistantMessage(clean);
@@ -848,6 +852,7 @@ function installFetchHook(
             if (loopState?.chatUI && tailParsed.clean) {
               loopState.chatUI.appendToAssistantMessage(tailParsed.clean);
             }
+            if (tailParsed.clean && loopState && isActiveStream(loopState, streamId)) loopState.streamHadVisibleText = true;
             for (const c of tailParsed.calls) forward(c);
             // 尾部也原样转发
           }
@@ -1090,6 +1095,7 @@ function installXhrHooks(
             // 会把 THINK 文本一起喂给工具解析器，最终被当成可见回答记录。
             const { calls, clean } = parser.feed(visible);
             if (clean) interceptorTrace.record({ t: 'sse.frame', turnId: traceTurnId, kind: 'text', count: clean.length });
+            if (clean && loopState && isActiveStream(loopState, streamId)) loopState.streamHadVisibleText = true;
             if (calls.length > 0) interceptorTrace.record({ t: 'sse.frame', turnId: traceTurnId, kind: 'tool', count: calls.length });
             // v0.19：parser.clean 已剔除完整/未完成的工具标签；不要按网络分片正则兜底，
             // 否则跨 chunk 的半个标签仍可能闪过 Studio。
@@ -1479,7 +1485,12 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     const pendingResults = pending.map((p) => p.result as { terminate?: boolean } | undefined);
     if (shouldSkipAutoContinue(pendingResults)) {
       console.log('[autoContinue] skipped by terminate');
+      // QD-R8-01：terminate 是「循环正常结束」的第三条退出路径。此前直接 return，
+      // 既不复位状态栏也不收尾消息 —— 与普通回合同一种「永停执行中」。
       interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'terminate', triggered: false });
+      finishStepFlow();
+      loopDepth = 0;
+      interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: true, stopReason: 'terminate' });
       return;
     }
     // MAX_AUTO_CONTINUE（移植 dpp）：空转续轮独立封顶。
@@ -1602,11 +1613,45 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       stepFlowStep = 0;
       stepFlowToolCount = 0;
       setTimeout(() => sf.destroy(), 3000);
+      // 注意：stepFlow 只在 `!chatUI` 时创建（见 forward），所以这里没有状态栏可复位；
+      // 有 chatUI 的路径一律走下面那条分支。
       interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'no-tools', triggered: false });
       interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: true, stopReason: 'completed' });
     } else if (chatUI && !loopState.inAutoContinue) {
       // 无工具/无续跑的普通回合，在 XHR 流结束时完成 Markdown 定稿。
       try { chatUI.finishAssistantMessage(); } catch { /* ignore */ }
+      // QD-R8-01：现场（2026-10-23 19:06:50）—— 纯问答回合走到这里就结束了，
+      // 而这条分支此前只调 finishAssistantMessage，从不调 setBusy(false)。
+      // 于是状态栏永远停在「执行中…」，用户以为任务还在跑，实际早已没有请求。
+      // 这是「没有调用工具、也没有报错，但 UI 一直转」的直接成因。
+      //
+      // 但「这一轮真的结束」不能只看走到了这条分支：首轮断流的原样重发、
+      // 以及排队的续跑，都会先经过 onStreamEnd 再在定时器里发新请求。
+      // 那些情况下 busy 必须保持 true（QD-R4-03 已钉：重试期间不得复位），
+      // 否则状态栏在重试退避窗口里闪一下「完成」，用户会以为已经结束。
+      const stillRunning = firstAttemptResendActive
+        || firstAttemptResendPending
+        || continuationRetryPending
+        || autoContinueTimer !== null;
+      if (!stillRunning) {
+        try { chatUI.setBusy(false); } catch { /* ignore */ }
+      }
+      // 本轮既没有可见正文、也没有工具 → 用户什么都看不到，必须显式告知。
+      // QD-R8-01：判据用 streamHadVisibleText（本轮流真正推送过的正文），不能用
+      // autoReplyText —— 后者只在 inAutoContinue 时累积，普通回合恒为空，
+      // 会把「正常回答」也误判成空回复。
+      // 只在「见到了完成哨兵」时才报：0 字节的 no-stream 是另一类（R7-02 要求静默、
+      // 不吃重试预算），不能混进来，否则会把「请求根本没通」说成「模型没说话」。
+      if (!stillRunning && loopState.streamSawDone && !loopState.streamHadVisibleText && !loopState.streamHadTools) {
+        d('stream end: completed with empty reply (no text, no tools)');
+        try {
+          chatUI.appendError(
+            'empty-reply',
+            '模型这一轮没有输出任何可见内容（可能只产生了思考，或回复被上游吞掉）。'
+            + '本轮已结束，可以直接重新发送。',
+          );
+        } catch { /* ignore */ }
+      }
       interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'no-tools', triggered: false });
       interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: true, stopReason: 'completed' });
     }
@@ -1643,12 +1688,14 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     loopState.sseErrorSeen = null;
     loopState.autoReplyHadTools = false;
     loopState.streamHadTools = false;
+    loopState.streamHadVisibleText = false;
     // QD-R7-01（F4）：把上一回合可能仍在飞的流一律作废（unclaim），
     // 它的回调此后再结算就会发现自己是 stale，不会动新回合的 UI/预算。
     loopState.activeStreamId = STREAM_UNCLAIMED;
     loopState.streamBytes = 0;
     loopState.streamSawDone = false;
     loopState.streamTruncatedTag = false;
+    loopState.streamHadVisibleText = false;
     loopState.abortedByUser = false;
     // 上一回合的临时桶可能还带着历史事件。新回合开始前显式把 UI 切到干净的
     // route: 会话，否则新对话时上一段结果会残留在消息列表里。
