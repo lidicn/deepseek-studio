@@ -121,16 +121,6 @@ const MODEL_INVOCATION_TOOLS: Record<string, UpstreamToolMapping> = Object.assig
       args: p.args && typeof p.args === 'object' ? p.args : p.arguments && typeof p.arguments === 'object' ? p.arguments : {},
     }),
   },
-    // 点号形式同样可达（解析器字符类已放宽），供模型直接使用宿主 id。
-    'shell.exec': { id: 'shell.exec', adapt: (p) => p },
-    'file.read': { id: 'file.read', adapt: (p) => p },
-    'file.write': { id: 'file.write', adapt: (p) => p },
-    'file.stat': { id: 'file.stat', adapt: (p) => p },
-    'file.edit': { id: 'file.edit', adapt: (p) => p },
-    'memory.save': { id: 'memory.save', adapt: (p) => p },
-    'python.exec': { id: 'python.exec', adapt: (p) => p },
-    'mcp.list': { id: 'mcp.list', adapt: (p) => p },
-    'mcp.call': { id: 'mcp.call', adapt: (p) => p },
   } as Record<string, UpstreamToolMapping>,
 );
 
@@ -198,6 +188,18 @@ export const SUPPORTED_INVOCATION_NAMES: readonly string[] = Object.keys(MODEL_I
 
 /** v2.0：仅 UI 直调的 invocationName 列表（供测试与文档断言隔离边界）。 */
 export const UI_ONLY_INVOCATION_NAMES: readonly string[] = Object.keys(UI_ONLY_TOOLS);
+
+/**
+ * v2.1：模型表的「对外声明名」清单，供 interceptor 的 TOOL_CAPABILITY_PROMPT /
+ * TOOL_CATALOG_TEXT 与测试做跨源一致性断言。
+ *
+ * 为什么需要它：GAP-1 的根因是模型表与提示词工具目录两份手工维护的文本脱节
+ * （表里有 19 个键、目录只声明 8 个）。本常量让「表里有什么」变成可编程查询，
+ * 测试据此断言目录条目与表键集合相等，避免再次脱节。
+ * 注意：不反过来用本清单生成目录文本——那会改变 prompt 的实际措辞与顺序，
+ * 属于模型行为面变更，需单独评估。
+ */
+export const MODEL_INVOCATION_DECLARED_NAMES: readonly string[] = Object.keys(MODEL_INVOCATION_TOOLS);
 
 export function isSupportedUpstreamTool(invocationName: string): boolean {
   // v2.0：只认模型可调表。UI 直调（settings.get / workspace.set 等）不经此闸门，

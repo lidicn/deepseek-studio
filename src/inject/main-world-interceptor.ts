@@ -48,6 +48,7 @@ import {
   describeStudioBudget,
   evaluateStudioBudgetForMessages,
 } from '../shared/studio-context-budget';
+import { createToolCallDedupe } from '../shared/tool-call-dedupe';
 
 /**
  * 从文本里剔除原始工具调用标签（<shell_exec>…</shell_exec> 等），返回纯散文。
@@ -62,7 +63,7 @@ import {
  * 这里在推送前剥标签，让 AgentLoop 只看到干净的散文。
  */
 const RAW_TOOL_TAG_GLOBAL_RE =
-  /<(?:local_file_(?:read|write|stat)|shell_exec|python_exec|memory_save|mcp_(?:list|call|test|save))>[\s\S]*?<\/(?:local_file_(?:read|write|stat)|shell_exec|python_exec|memory_save|mcp_(?:list|call|test|save))>/g;
+  /<(?:local_file_(?:read|write|stat)|file_edit|search_files|shell_exec|python_exec|memory_save|mcp_(?:list|call|test|save))>[\s\S]*?<\/(?:local_file_(?:read|write|stat)|file_edit|search_files|shell_exec|python_exec|memory_save|mcp_(?:list|call|test|save))>/g;
 
 function stripRawToolTags(text: string): string {
   return text.replace(RAW_TOOL_TAG_GLOBAL_RE, '');
@@ -126,8 +127,15 @@ let currentMemories: Array<{ id: string; type: string; name: string; content: st
 // v1.0：MCP 工具列表缓存（启动时从宿主拉取，用于动态注入提示词，让 agent 知道有哪些 MCP 工具可用）
 let currentMcpTools: Array<{ serverId: string; name: string; description: string }> = [];
 
+export interface StudioSkillDescriptor {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly skillMdPath: string;
+}
+
 // v1.9：技能列表缓存（启动时从宿主 skill.list 拉取，注入提示词，让 agent 知道有哪些技能、SKILL.md 在哪）。
-let currentSkills: Array<{ id: string; name: string; description: string; skillMdPath: string }> = [];
+let currentSkills: StudioSkillDescriptor[] = [];
 
 // v1.3：步骤流 UI 句柄（分布思考状态栏 + 工具分组）
 let stepFlow: StepFlowHandle | null = null;
@@ -414,6 +422,7 @@ function methodOf(input: RequestInfo | URL, init?: RequestInit | undefined): str
  * 仅当用户消息涉及文件/命令时才注入，避免污染普通闲聊。
  */
 const TOOL_CAPABILITY_MARKER = '[studio-tool-capability]';
+const TOOL_CAPABILITY_END_MARKER = '[studio-tool-capability-end]';
 const TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
 ## 角色
 你是 DeepSeek Studio 的本地工具代理，可以操作用户电脑上的文件、执行命令、保存长期记忆。
@@ -424,7 +433,7 @@ const TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
 <local_file_read>{"path":"E:/Users/name/file.txt"}</local_file_read>
 <local_file_write>{"path":"E:/Users/name/file.txt","content":"要写入的文本"}</local_file_write>
 <local_file_stat>{"path":"E:/Users/name"}</local_file_stat>
-<shell_exec>{"command":"powershell -NoProfile -Command \"Get-ChildItem -LiteralPath 'E:/Users/name' -File | Sort-Object LastWriteTime -Descending | Select-Object -First 10\""}</shell_exec>
+<shell_exec>{"command":"Get-ChildItem -LiteralPath 'E:/Users/name' -File | Sort-Object LastWriteTime -Descending | Select-Object -First 10"}</shell_exec>
 <memory_save>{"type":"user","name":"用户角色","content":"前端开发者，主要使用 React 和 TypeScript","tags":["frontend","React"]}</memory_save>
 <python_exec>{"code":"print('hello')"}</python_exec>
 
@@ -433,8 +442,12 @@ const TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
 - 工具调用放在最终回答正文里，不要放在思考/推理区域，不要放在 Markdown 代码块里
 - 工具标签必须独立成行，标签前后不要有任何额外文字（不要在标签后写"。不要 Markdown"之类的话）
 - Windows 路径一律用正斜杠（如 E:/Users/name），不要用反斜杠，不要写四反斜杠
-- 列出文件/目录优先用 PowerShell 的 Get-ChildItem，不要用 cmd 的 dir（dir 对正斜杠路径会报错）
-- 一次只调用一个工具，等结果返回后再决定下一步
+- 列出文件/目录优先用 search_files 的 operation=list；检索文件内容优先用 operation=grep
+- 只有在确实需要执行命令行工具时才用 shell_exec。不要用 Get-ChildItem -Recurse 扫描盘根、node_modules 或大型仓库
+- 不要假设目录是 git 仓库；需要 git 信息前先用 local_file_stat 或 search_files 确认 .git 存在
+- 一次只调用一个工具，等结果返回后再决定下一步；同一轮不要输出多个工具标签
+- 不要重复输出工具名和参数都相同的调用；已有结果时直接基于结果继续
+- 局部改写文件优先用 file_edit，只有创建文件或必须整文件替换时才用 local_file_write
 - **思考过程放 THINK 段，最终回答直接给结论，不要在回答开头写英文总结或"user asked... I got... Now output..."这类话**
 - **全程用中文回答，除非用户明确要求其他语言**
 
@@ -451,12 +464,13 @@ const TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
 - 长期记忆（保存用户身份、偏好、技术栈、项目决策等跨会话信息）
 
 ## 记忆保存规则
-当对话中出现以下情况时，你必须调用 memory_save 工具：
+只有用户明确要求"记住"、"记一下"、"别忘了"，或明确要求保存某条长期偏好/项目决策时，才调用 memory_save。
+不要因为用户只是自我介绍、讨论技术方案或纠正本轮回答就自动保存记忆。
+以下情况可作为候选，但除非用户明确要求，否则只在本轮使用：
 - 用户提到自己的身份、职业或角色
 - 用户表达偏好、习惯或工作风格
 - 用户纠正你的回答风格或行为
 - 出现重要的技术决策或架构选择
-- 用户明确说"记住"、"记一下"、"别忘了"等
 
 ## 可用工具
 - local_file_read — 读取文件内容，参数：path（绝对路径，正斜杠）
@@ -542,45 +556,113 @@ function formatMcpToolsBlock(): string {
 /* function extractThinkingPreface(reply: string): { thinking: string; answer: string } {
    -- v0.19 deleted, see comment above */
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function explicitSkillTokenRe(token: string): RegExp {
+  // 前后不允许是路径分隔符、文件扩展名或标识符字符。这样 E:/NAS/deepseek-pp、
+  // .../deepseek-pp-audit/SKILL.md 不会被误判成“用户点名了技能”。
+  const before = String.raw`(^|[^A-Za-z0-9_.:/\\-])`;
+  const after = String.raw`(?=$|[^A-Za-z0-9_.:/\\-])`;
+  return new RegExp(`${before}${escapeRegExp(token)}${after}`, 'u');
+}
+
+function explicitSlashSkillRe(id: string): RegExp {
+  // /skill-id 只接受行首、空白、引号/标点或中文前的斜杠命令；
+  // 排除 C:/...、E:/... 这类路径中的斜杠。
+  const before = String.raw`(^|[\s"'“”‘’「」【】,，;；!?！？\u4e00-\u9fff])`;
+  const after = String.raw`(?=$|[^A-Za-z0-9_.:/\\-])`;
+  return new RegExp(`${before}/${escapeRegExp(id)}${after}`, 'u');
+}
+
 /**
- * v1.9：技能块。把可用技能（id/名称/描述/SKILL.md 路径）注入提示词，
- * 让 agent 在用户以「/技能名」或技能名请求时，能先读 SKILL.md 再按 SOP 执行，
- * 而不是靠猜路径反复试探（用户反馈「试了几次都完不成探测」的根因）。
+ * 只选择用户在任务里明确点名的技能。
+ *
+ * 明确点名 = `/skill-id`，或完整 skill id / name 作为独立词出现。项目路径、
+ * 项目名和技能 description 里的关键词都不触发。修复现场：用户只问
+ * `E:/NAS/deepseek-pp`，模型却自行读取 deepseek-pp-audit/SKILL.md。
  */
-function formatSkillsBlock(): string {
+export function selectExplicitSkills(
+  taskText: string,
+  skills: readonly StudioSkillDescriptor[],
+): StudioSkillDescriptor[] {
+  const text = taskText.trim();
+  if (!text) return [];
+  return skills.filter((skill) => {
+    if (explicitSlashSkillRe(skill.id).test(text)) return true;
+    const terms = [...new Set([skill.id, skill.name].filter((term) => term.trim().length > 0))];
+    return terms.some((term) => explicitSkillTokenRe(term).test(text));
+  });
+}
+
+/** 生成“仅显式技能”提示块。没有明确点名时返回空串，不向模型列出技能清单。 */
+export function formatExplicitSkillsBlock(
+  taskText: string,
+  skills: readonly StudioSkillDescriptor[],
+): string {
+  const selected = selectExplicitSkills(taskText, skills);
+  if (selected.length === 0) return '';
   const lines = [
-    '## 技能（Skills）',
-    '当用户以「/技能名」（如 /adm-auditkit）或以技能名提到某个技能时，表示要使用该技能：',
-    '1. 先用 local_file_read 读取该技能的 SKILL.md（路径见下方列表）；',
-    '2. 严格按 SKILL.md 里的 SOP / 约束 / 依赖执行，不要只凭名称猜测；',
-    '3. 技能依赖的外部资源（脚本、SSH 目标、容器名、其他文档路径）一律以 SKILL.md 为准。',
+    '## 技能（仅限用户明确点名）',
+    '本轮用户明确点名了以下技能，才读取对应 SKILL.md：',
+    '1. 先用 local_file_read 读取对应 SKILL.md；',
+    '2. 严格按 SKILL.md 里的 SOP / 约束 / 依赖执行；',
+    '3. 不要因为项目路径、项目名或技能描述关键词相似，就读取未被点名的其他技能。',
+    '',
+    '本轮明确点名的技能：',
   ];
-  if (currentSkills.length === 0) {
-    lines.push('（当前未扫描到任何技能。技能目录：~/.agents/skills）');
-    return lines.join('\n');
-  }
-  lines.push('', '可用技能：');
-  for (const sk of currentSkills) {
+  for (const sk of selected) {
     lines.push(`- ${sk.id}（${sk.name}）— ${sk.description}｜SKILL.md: ${sk.skillMdPath}`);
   }
-  lines.push('', '读取示例：<local_file_read>{"path":"<上面的 SKILL.md 路径>"}</local_file_read>');
   return lines.join('\n');
 }
 
-function buildCapabilityPrompt(): string {
+function formatSkillsBlock(taskText: string): string {
+  return formatExplicitSkillsBlock(taskText, currentSkills);
+}
+
+/** 导出静态提示模板，供回归测试逐条验证示例标签里的 JSON 可解析。 */
+export function capabilityPromptText(): string {
+  return TOOL_CAPABILITY_PROMPT;
+}
+
+export function buildCapabilityPrompt(taskText = ''): string {
   const blocks = [TOOL_CAPABILITY_PROMPT];
   const mcpBlock = formatMcpToolsBlock();
   if (mcpBlock) blocks.push(mcpBlock);
-  blocks.push(formatSkillsBlock());
+  const skillsBlock = formatSkillsBlock(taskText);
+  if (skillsBlock) blocks.push(skillsBlock);
+  blocks.push(TOOL_CAPABILITY_END_MARKER);
   return blocks.join('\n\n');
 }
 
-function injectInstructionIntoMessages(messages: unknown[]): unknown[] {
-  const first = messages[0] as { role?: string; content?: unknown } | undefined;
-  if (first && first.role === 'system' && typeof first.content === 'string' && first.content.includes(TOOL_CAPABILITY_MARKER)) {
-    return messages;
-  }
-  return [{ role: 'system', content: buildCapabilityPrompt() }, ...messages];
+function isCapabilitySystemMessage(message: unknown): boolean {
+  const m = message as { role?: string; content?: unknown } | undefined;
+  return m?.role === 'system'
+    && typeof m.content === 'string'
+    && m.content.includes(TOOL_CAPABILITY_MARKER);
+}
+
+/**
+ * 每次发送都重建能力提示，而不是看到 marker 就原样返回。
+ * 原实现会把首轮的全量技能块永久留在 system prompt 中，导致后续无关任务继续被误导。
+ */
+function injectInstructionIntoMessages(messages: unknown[], taskText: string): unknown[] {
+  const rest = messages.filter((message) => !isCapabilitySystemMessage(message));
+  return [{ role: 'system', content: buildCapabilityPrompt(taskText) }, ...rest];
+}
+
+function stripCapabilityPromptFromText(text: string): string {
+  const start = text.indexOf(TOOL_CAPABILITY_MARKER);
+  if (start < 0) return text;
+  const end = text.indexOf(TOOL_CAPABILITY_END_MARKER, start);
+  if (end < 0) return text;
+  // capability block 与用户 prompt 之间原本固定隔着两个换行；重建时这一对换行
+  // 会由 `${buildCapabilityPrompt}...\\n\\n${cleanPrompt}` 重新补上，若这里不剥掉
+  // 会让首轮重发体多出空行，破坏 F8 的逐字节幂等。
+  const tail = text.slice(end + TOOL_CAPABILITY_END_MARKER.length).replace(/^(?:\r?\n){2}/, '');
+  return `${text.slice(0, start)}${tail}`;
 }
 
 function appendResultsToMessages(messages: unknown[], block: string): unknown[] {
@@ -612,7 +694,7 @@ function formatMemoriesBlock(): string {
   return `\n\n## 已有记忆\n${lines.join('\n')}`;
 }
 
-function prepareOutgoingBody(rawBody: string, pending: PendingResult[]): string | null {
+function prepareOutgoingBody(rawBody: string, pending: PendingResult[], taskText = ''): string | null {
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(rawBody) as Record<string, unknown>;
@@ -628,8 +710,8 @@ function prepareOutgoingBody(rawBody: string, pending: PendingResult[]): string 
   const memoriesBlock = formatMemoriesBlock();
   if (Array.isArray(parsed.messages)) {
     let msgs: unknown[] = parsed.messages as unknown[];
-    // 无条件注入：injectInstructionIntoMessages 内部已判重（含 MARKER 则跳过）
-    msgs = injectInstructionIntoMessages(msgs);
+    // 每次发送都重建：技能选择必须跟随当前用户任务，不能沿用上一轮的全量技能块。
+    msgs = injectInstructionIntoMessages(msgs, taskText);
     // 系统提示词后追加已有记忆
     if (memoriesBlock) {
       const first = msgs[0] as { role?: string; content?: unknown };
@@ -641,9 +723,9 @@ function prepareOutgoingBody(rawBody: string, pending: PendingResult[]): string 
     parsed.messages = msgs;
   } else if (typeof parsed.prompt === 'string') {
     let prompt: string = parsed.prompt;
-    if (!prompt.includes(TOOL_CAPABILITY_MARKER)) {
-      prompt = `${buildCapabilityPrompt()}${memoriesBlock}\n\n${prompt}`;
-    }
+    // 旧请求体可能已经带过能力提示；先剔除带结束标记的旧块，再按当前任务重建。
+    const cleanPrompt = stripCapabilityPromptFromText(prompt);
+    prompt = `${buildCapabilityPrompt(taskText)}${memoriesBlock}\n\n${cleanPrompt}`;
     if (hasResults) prompt = reinjectIntoPrompt(prompt, pending.slice());
     parsed.prompt = prompt;
   } else {
@@ -653,9 +735,13 @@ function prepareOutgoingBody(rawBody: string, pending: PendingResult[]): string 
   return JSON.stringify(parsed);
 }
 
-function augmentInit(init: RequestInit | undefined, pending: PendingResult[]): RequestInit | undefined {
+function augmentInit(
+  init: RequestInit | undefined,
+  pending: PendingResult[],
+  taskText = '',
+): RequestInit | undefined {
   if (typeof init?.body !== 'string') return init;
-  const newBody = prepareOutgoingBody(init.body, pending);
+  const newBody = prepareOutgoingBody(init.body, pending, taskText);
   if (newBody === null) return init;
   return { ...init, body: newBody };
 }
@@ -754,8 +840,8 @@ function installFetchHook(
     }
 
     // 请求侧回填：把累积的工具结果写进下一次对话请求的 prompt
-    if (pending.length > 0 && isDeepSeekChatEndpoint(url, method)) {
-      init = augmentInit(init, pending);
+    if (pending.length > 0 && isDeepSeekChatEndpoint(url, method) && !loopState?.inFirstAttemptResend) {
+      init = augmentInit(init, pending, loopState?.originalTask ?? '');
     }
 
     // 非对话响应不拦截（直接放行，避免影响其它请求）
@@ -991,7 +1077,11 @@ function installXhrHooks(
       // 跨任务泄漏（上个任务的上下文污染当前任务）。续跑/nudge prompt 都带这些标签，用户消息不带。
       // 必须在 prepareOutgoingBody 之前抓原始 prompt（augmentation 会改写它）。
       if (loopState) captureChatRequest(body, loopState, diag);
-      const next = prepareOutgoingBody(body, pending);
+      // F8：首轮原样重发时，body 已经是上一份已注入的原文；再跑一次注入会把
+      // JSON 重新序列化并改变字节，重试就不再幂等。
+      const next = loopState?.inFirstAttemptResend
+        ? body
+        : prepareOutgoingBody(body, pending, loopState?.originalTask ?? '');
       if (next !== null) {
         body = next;
         diag(`xhr chat body injected len=${next.length}`);
@@ -1227,6 +1317,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   // 让续跑 prompt 带完整历史，模型不会从第 2 步起忘了之前做了什么。
   // originalTask 存在 loopState.originalTask（XHR/fetch hook 要写入，在闭包外访问）。
   const collectedExecutions: PendingResult[] = [];
+  // QD-R8：同一条流可能被重复消费；相同 callId 只允许投递一次。
+  const toolCallDedupe = createToolCallDedupe();
   // R0-R2：独立错误重试计数（429/网络错误/5xx/200 错误体），
   // 封顶 MAX_ERROR_RETRIES，防止服务器错误消耗整轮续跑预算。
   let errorRetryCount = 0;
@@ -1358,6 +1450,10 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       return;
     }
     const callId = call.id || crypto.randomUUID();
+    if (!toolCallDedupe.claim(callId)) {
+      d(`forward: duplicate callId=${callId}, skip (same turn)`);
+      return;
+    }
     const startedAt = Date.now();
     interceptorTrace.record({
       t: 'tool.parsed',
@@ -1679,6 +1775,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     continuationRetryPending = false;
     idleContinueCount = 0;
     collectedExecutions.length = 0;
+    toolCallDedupe.reset();
     loopDepth = 0;
     errorRetryCount = 0;
     // QD-R7-01（F9）：首轮重试预算随轮次作废，不再是一个全局数字。

@@ -1,11 +1,19 @@
 import { describe, it, expect } from 'vitest';
 import {
   SUPPORTED_INVOCATION_NAMES,
+  MODEL_INVOCATION_DECLARED_NAMES,
   UI_ONLY_INVOCATION_NAMES,
   isSupportedUpstreamTool,
   mapUpstreamToolInvocation,
 } from '../../src/shared/tool-contract';
 import { StreamingToolCallParser } from '../../src/inject/streaming-tool-parser';
+import {
+  capabilityPromptText,
+  capabilityPromptToolNames,
+  catalogTextToolNames,
+  formatExplicitSkillsBlock,
+  type StudioSkillDescriptor,
+} from '../../src/inject/main-world-interceptor';
 
 /**
  * v2.0 G-01 / G-02 回归。
@@ -78,9 +86,21 @@ describe('G-01 permission surface: UI-only table must stay closed to the model',
     expect(isSupportedUpstreamTool('mcp.save')).toBe(false);
   });
 
-  it('model-reachable dotted and underscore names both pass the gate', () => {
-    for (const ok of ['shell_exec', 'file_edit', 'search_files', 'file.edit', 'shell.exec', 'mcp.list', 'mcp.call']) {
+  it('model-reachable names are all underscore form (single naming rule)', () => {
+    // v2.1：点号别名已删。模型只用下划线形式，宿主内部的点号 id 与它无关。
+    // 这里同时锁死反向断言：任何点号 invocationName 都不得过闸门。
+    for (const ok of ['shell_exec', 'file_edit', 'search_files', 'local_file_read', 'mcp_list', 'mcp_call']) {
       expect(isSupportedUpstreamTool(ok)).toBe(true);
+    }
+    for (const no of ['file.edit', 'shell.exec', 'mcp.list', 'mcp.call', 'file.read', 'file.write', 'memory.save', 'python.exec', 'file.stat']) {
+      expect(isSupportedUpstreamTool(no)).toBe(false);
+    }
+  });
+
+  it('SUPPORTED_INVOCATION_NAMES contains no dotted name at all', () => {
+    // 别名删净的兜底断言：模型表里不允许再出现点号键。
+    for (const name of SUPPORTED_INVOCATION_NAMES) {
+      expect(name).not.toContain('.');
     }
   });
 
@@ -135,5 +155,88 @@ describe('prototype chain regression (v1.8 contract unchanged)', () => {
     expect(mapUpstreamToolInvocation('valueOf', {})).toBeNull();
     expect(mapUpstreamToolInvocation('hasOwnProperty', {})).toBeNull();
     expect(isSupportedUpstreamTool('constructor')).toBe(false);
+  });
+});
+
+describe('GAP-1: prompt catalog must declare exactly the model table', () => {
+  // GAP-1 根因：模型表与提示词目录两份手工文本脱节，表里 19 键、目录只声明 8 个，
+  // 导致 file_edit / search_files 修了映射却对模型不可见（G-02 等于白修）。
+  // 这里把「表里有什么」与「目录声明什么」钉成相等，任何一侧增减都会红。
+  const sorted = (a: readonly string[]): string[] => [...a].sort();
+
+  it('首轮能力提示词声明的工具与模型表完全一致', () => {
+    const declared = capabilityPromptToolNames();
+    expect(declared.length).toBeGreaterThan(0);
+    expect(sorted(declared)).toEqual(sorted(MODEL_INVOCATION_DECLARED_NAMES));
+  });
+
+  it('续跑目录声明的工具与模型表完全一致', () => {
+    const declared = catalogTextToolNames();
+    expect(declared.length).toBeGreaterThan(0);
+    expect(sorted(declared)).toEqual(sorted(MODEL_INVOCATION_DECLARED_NAMES));
+  });
+
+  it('目录中不存在点号工具名（单一命名规则）', () => {
+    for (const name of [...capabilityPromptToolNames(), ...catalogTextToolNames()]) {
+      expect(name).not.toContain('.');
+    }
+  });
+
+  it('自证有效性：表有目录无时集合比较必然不相等', () => {
+    // 反向自证，防止上面两条因取到空数组而假绿。
+    const table = ['shell_exec', 'brand_new_tool'];
+    const declared = ['shell_exec'];
+    expect(sorted(table)).not.toEqual(sorted(declared));
+  });
+});
+
+describe('QD-R8: prompt examples and explicit skill selection', () => {
+  it('every tool example in the capability prompt has valid JSON', () => {
+    const prompt = capabilityPromptText();
+    const tags = [...prompt.matchAll(/<([a-z_][\w-]*)>([\s\S]*?)<\/\1>/g)];
+    expect(tags.length).toBeGreaterThan(0);
+    for (const tag of tags) {
+      expect(() => JSON.parse(tag[2]), `${tag[1]} example must be JSON`).not.toThrow();
+    }
+  });
+
+  const skills: readonly StudioSkillDescriptor[] = [
+    {
+      id: 'deepseek-pp-audit',
+      name: 'deepseek-pp-audit',
+      description: 'deepseek-pp 审计流水线',
+      skillMdPath: 'C:/Users/example/.agents/skills/deepseek-pp-audit/SKILL.md',
+    },
+    {
+      id: 'lever-hub',
+      name: 'lever-hub',
+      description: 'Lever-Hub 产线操作手册',
+      skillMdPath: 'C:/Users/example/.agents/skills/lever-hub/SKILL.md',
+    },
+  ];
+
+  it('does not inject a skill for a project path or description keyword', () => {
+    const block = formatExplicitSkillsBlock('E:/NAS/deepseek-pp 的 UI 是否被改坏了', skills);
+    expect(block).toBe('');
+  });
+
+  it('does not inject a skill for a SKILL.md path', () => {
+    const block = formatExplicitSkillsBlock(
+      '请读取 C:/Users/example/.agents/skills/deepseek-pp-audit/SKILL.md',
+      skills,
+    );
+    expect(block).toBe('');
+  });
+
+  it('injects only the explicitly named skill', () => {
+    const block = formatExplicitSkillsBlock('请用 /deepseek-pp-audit 审计这个项目', skills);
+    expect(block).toContain('deepseek-pp-audit');
+    expect(block).not.toContain('lever-hub');
+  });
+
+  it('accepts a complete skill id in prose without matching adjacent paths', () => {
+    const block = formatExplicitSkillsBlock('使用 deepseek-pp-audit 技能检查', skills);
+    expect(block).toContain('deepseek-pp-audit');
+    expect(block).not.toContain('lever-hub');
   });
 });
