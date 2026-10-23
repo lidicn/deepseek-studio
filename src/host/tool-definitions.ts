@@ -207,12 +207,39 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },
-  // v1.1：删除记忆（M10-1：硬删不可回滚，必须人工同意）。
+  // v1.1：归档记忆（M10-1 提级需同意；M10-5 改为软删，可从「已归档」恢复）。
   {
     id: 'memory.delete',
-    title: '删除记忆',
-    description: '删除一条长期记忆（不可回滚，需用户同意）。',
+    title: '归档记忆',
+    description: '把一条长期记忆归档（不再注入提示词，可从「已归档」恢复；需用户同意）。',
     risk: 'privileged',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
+  // M10-5：恢复已归档记忆（写回注入面，需用户同意）。
+  {
+    id: 'memory.unarchive',
+    title: '恢复记忆',
+    description: '把一条已归档的长期记忆恢复为生效状态（会重新进入提示词，需用户同意）。',
+    risk: 'insert',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
+  // M10-5：彻底删除已归档记忆（不可恢复，必须人工同意）。
+  {
+    id: 'memory.purge',
+    title: '彻底删除记忆',
+    description: '从记忆库彻底删除一条记录（不可恢复，需用户同意）。',
+    risk: 'privileged',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
+  // M10-5：已归档列表（面板两态视图，只读）。
+  {
+    id: 'memory.listArchived',
+    title: '列出已归档记忆',
+    description: '列出已归档的长期记忆（只读，自动放行）。',
+    risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },

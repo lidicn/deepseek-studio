@@ -66,6 +66,8 @@ const panelStyles = `
   .studio-mcp-add-btn { width: 100%; padding: 10px; border: 1px dashed #d0d0d0; border-radius: 8px; background: transparent; cursor: pointer; color: #888; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 6px; }
   .studio-mcp-add-btn:hover { border-color: #4D6BFE; color: #4D6BFE; }
   .studio-memory-item { display: flex; align-items: flex-start; gap: 10px; padding: 10px; border-bottom: 1px solid #f5f5f5; }
+  .studio-memory-toolbar { display: flex; gap: 6px; margin-bottom: 8px; }
+  .studio-memory-toolbar .studio-btn[data-active="true"] { background: #eef2ff; color: #4D6BFE; border-color: #dbe3ff; }
   .studio-memory-type { flex-shrink: 0; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; }
   .studio-memory-type.user { background: #e3f2fd; color: #1565c0; }
   .studio-memory-type.project { background: #f3e5f5; color: #7b1fa2; }
@@ -328,19 +330,49 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   tabContents['skills'] = skillsTab;
   contentPane.appendChild(skillsTab);
 
-  // Memory tab
+  // Memory tab（M10-5：生效中 / 已归档 两态；删除改为归档，真删走 memory.purge）
   const memoryTab = el('div', { className: 'studio-tab-content' });
   memoryTab.dataset.tabPanel = 'memory';
+
+  type MemoryRowView = { id: string; type: string; name: string; content: string };
+  let memoryMode: 'active' | 'archived' = 'active';
+  let archivedRows: MemoryRowView[] = [];
+
+  const memoryToolbar = el('div', { className: 'studio-memory-toolbar' });
+  const activeModeBtn = el('button', { className: 'studio-btn sm', text: '生效中' });
+  const archivedModeBtn = el('button', { className: 'studio-btn sm', text: '已归档' });
+  memoryToolbar.appendChild(activeModeBtn);
+  memoryToolbar.appendChild(archivedModeBtn);
   const memoryList = el('div', { className: 'studio-memory-list' });
+  memoryTab.appendChild(memoryToolbar);
   memoryTab.appendChild(memoryList);
 
+  function syncModeButtons(): void {
+    activeModeBtn.dataset.active = String(memoryMode === 'active');
+    archivedModeBtn.dataset.active = String(memoryMode === 'archived');
+  }
+
+  async function reloadArchived(): Promise<void> {
+    const r = await callHostTool('memory.listArchived', {});
+    const rows = r.ok && r.data && typeof r.data === 'object'
+      ? (r.data as { memories?: unknown }).memories
+      : undefined;
+    archivedRows = Array.isArray(rows) ? (rows as MemoryRowView[]) : [];
+    if (memoryMode === 'archived') renderMemories();
+  }
+
   function renderMemories(): void {
+    syncModeButtons();
     memoryList.replaceChildren();
-    if (globalState.memories.length === 0) {
-      memoryList.appendChild(el('div', { className: 'studio-empty-state', text: '暂无保存的记忆' }));
+    const rows: MemoryRowView[] = memoryMode === 'active' ? globalState.memories : archivedRows;
+    if (rows.length === 0) {
+      memoryList.appendChild(el('div', {
+        className: 'studio-empty-state',
+        text: memoryMode === 'active' ? '暂无保存的记忆' : '暂无已归档的记忆',
+      }));
       return;
     }
-    for (const mem of globalState.memories) {
+    for (const mem of rows) {
       const item = el('div', { className: 'studio-memory-item' });
       // W4：mem.type / name / content 经 escapeHtml 转义
       item.innerHTML = `
@@ -350,16 +382,45 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
           <div class="studio-memory-text">${escapeHtml(mem.content)}</div>
         </div>
       `;
-      const delBtn = el('button', { className: 'studio-btn sm danger' }, [icon(Icons.trash, 12)]);
-      delBtn.addEventListener('click', async () => {
-        await callHostTool('memory.delete', { id: mem.id });
-        globalState.memories = globalState.memories.filter((m) => m.id !== mem.id);
-        renderMemories();
-      });
-      item.appendChild(delBtn);
+      if (memoryMode === 'active') {
+        const archiveBtn = el('button', { className: 'studio-btn sm danger' }, [icon(Icons.trash, 12)]);
+        archiveBtn.title = '归档（可在「已归档」里恢复）';
+        archiveBtn.addEventListener('click', async () => {
+          const r = await callHostTool('memory.delete', { id: mem.id });
+          if (r.ok) {
+            globalState.memories = globalState.memories.filter((m) => m.id !== mem.id);
+            await reloadArchived();
+            renderMemories();
+          }
+        });
+        item.appendChild(archiveBtn);
+      } else {
+        const restoreBtn = el('button', { className: 'studio-btn sm', text: '恢复' });
+        restoreBtn.addEventListener('click', async () => {
+          const r = await callHostTool('memory.unarchive', { id: mem.id });
+          if (r.ok) await reloadArchived();
+        });
+        const purgeBtn = el('button', { className: 'studio-btn sm danger', text: '彻底删除' });
+        purgeBtn.addEventListener('click', async () => {
+          const r = await callHostTool('memory.purge', { id: mem.id });
+          if (r.ok) await reloadArchived();
+        });
+        item.appendChild(restoreBtn);
+        item.appendChild(purgeBtn);
+      }
       memoryList.appendChild(item);
     }
   }
+
+  activeModeBtn.addEventListener('click', () => {
+    memoryMode = 'active';
+    renderMemories();
+  });
+  archivedModeBtn.addEventListener('click', () => {
+    memoryMode = 'archived';
+    renderMemories();
+    void reloadArchived();
+  });
   renderMemories();
   tabContents['memory'] = memoryTab;
   contentPane.appendChild(memoryTab);

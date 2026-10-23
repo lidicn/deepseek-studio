@@ -157,6 +157,10 @@ const UI_ONLY_TOOLS: Record<string, UpstreamToolMapping> = Object.assign(
   'mcp.remove': { id: 'mcp.remove', adapt: (p) => p },
   'mcp.get': { id: 'mcp.get', adapt: (p) => p },
   'memory.delete': { id: 'memory.delete', adapt: (p) => p },
+  // M10-5：归档两态（恢复 / 彻底删除 / 已归档列表），同样只对 UI 开放。
+  'memory.unarchive': { id: 'memory.unarchive', adapt: (p) => ({ id: String(p.id ?? '') }) },
+  'memory.purge': { id: 'memory.purge', adapt: (p) => ({ id: String(p.id ?? '') }) },
+  'memory.listArchived': { id: 'memory.listArchived', adapt: () => ({}) },
   'workspace.set': { id: 'workspace.set', adapt: (p) => p },
   'policy.set': { id: 'policy.set', adapt: (p) => p },
   'settings.get': { id: 'settings.get', adapt: (p) => p },

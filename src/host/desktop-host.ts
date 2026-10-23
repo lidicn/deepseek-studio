@@ -625,16 +625,64 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             return result.ok ? { ok: true } : { ok: false, error: result.error };
           },
         },
-        // v1.1：删除记忆。
+        // v1.1：归档记忆（M10-5：由硬删改为软删 invalidate，可经「已归档」恢复）。
         'memory.delete': {
           id: 'memory.delete',
           async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
             const id = String(params.id ?? '');
             if (!id) return { ok: false, error: 'id is required' };
             const store = getMemoryStore();
-            const ok = store.remove(id);
-            if (ok) hub?.broadcastMemories(await listMemoryBroadcastRows());
-            return { ok: ok ?? true };
+            const existing = await store.get(id);
+            if (!existing) return { ok: false, error: 'memory-not-found' };
+            await store.invalidate(id);
+            hub?.broadcastMemories(await listMemoryBroadcastRows());
+            return { ok: true };
+          },
+        },
+        // M10-5：恢复已归档记忆（写回注入面）。
+        'memory.unarchive': {
+          id: 'memory.unarchive',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const id = String(params.id ?? '');
+            if (!id) return { ok: false, error: 'id is required' };
+            const store = getMemoryStore();
+            const archived = (await store.listInvalidated()).some((m) => m.id === id);
+            if (!archived) return { ok: false, error: 'memory-not-archived' };
+            await store.restore(id);
+            hub?.broadcastMemories(await listMemoryBroadcastRows());
+            return { ok: true };
+          },
+        },
+        // M10-5：彻底删除（不可恢复；归档两态里的「真删」出口）。
+        'memory.purge': {
+          id: 'memory.purge',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const id = String(params.id ?? '');
+            if (!id) return { ok: false, error: 'id is required' };
+            const removed = getMemoryStore().remove(id);
+            if (!removed) return { ok: false, error: 'memory-not-found' };
+            hub?.broadcastMemories(await listMemoryBroadcastRows());
+            return { ok: true };
+          },
+        },
+        // M10-5：已归档列表（面板「已归档」态的取数口）。
+        'memory.listArchived': {
+          id: 'memory.listArchived',
+          async execute(): Promise<ExecuteResult> {
+            const rows = await getMemoryStore().listInvalidated();
+            return {
+              ok: true,
+              data: {
+                memories: rows.map((m) => ({
+                  id: m.id,
+                  type: m.type,
+                  name: m.name,
+                  content: m.content,
+                  tags: m.tags,
+                  archivedAt: m.invalidAt,
+                })),
+              },
+            };
           },
         },
         // v1.1：设置工作区根目录。
