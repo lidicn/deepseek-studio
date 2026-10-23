@@ -189,7 +189,7 @@ describe('记忆层 v2：失效与人设路由', () => {
     const text = s.formatForPrompt(await s.list());
     expect(text).toMatch(/^- #mem-\S+ \[user\] 身份: lidicn$/m);
     expect(text).toMatch(/^- #mem-\S+ \[project project\] 决策: 走 API 路径$/m);
-    expect(s.formatForPrompt([])).toBe('(No memories yet)');
+    expect(s.formatForPrompt([])).toBe('');
     s.close();
   });
 });

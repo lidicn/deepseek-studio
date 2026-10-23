@@ -207,12 +207,12 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },
-  // v1.1：删除记忆（自动放行）。
+  // v1.1：删除记忆（M10-1：硬删不可回滚，必须人工同意）。
   {
     id: 'memory.delete',
     title: '删除记忆',
-    description: '删除一条长期记忆（自动放行）。',
-    risk: 'read',
+    description: '删除一条长期记忆（不可回滚，需用户同意）。',
+    risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },

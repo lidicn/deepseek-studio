@@ -49,6 +49,7 @@ import {
   evaluateStudioBudgetForMessages,
 } from '../shared/studio-context-budget';
 import { createToolCallDedupe } from '../shared/tool-call-dedupe';
+import { formatUntrustedMemoriesBlock } from './untrusted-memory';
 
 /**
  * 从文本里剔除原始工具调用标签（<shell_exec>…</shell_exec> 等），返回纯散文。
@@ -686,12 +687,8 @@ function appendResultsToMessages(messages: unknown[], block: string): unknown[] 
  * 返回新的 JSON 字符串；无改动返回 null。
  */
 function formatMemoriesBlock(): string {
-  if (currentMemories.length === 0) return '';
-  const lines = currentMemories.slice(0, 50).map((m) => {
-    const scope = m.type === 'project' ? 'project ' : '';
-    return `- #${m.id} [${scope}${m.type}] ${m.name}: ${m.content}`;
-  });
-  return `\n\n## 已有记忆\n${lines.join('\n')}`;
+  // STUDIO_UNTRUSTED_MEMORY_* markers are neutralized by the formatter wrapper.
+  return formatUntrustedMemoriesBlock(currentMemories);
 }
 
 function prepareOutgoingBody(rawBody: string, pending: PendingResult[], taskText = ''): string | null {

@@ -313,6 +313,19 @@ function createHostResourceScope(): ContentResourceScope {
 /** QD-R2-08：用户点 allow-session 的默认 TTL（与密钥轮换宽限期同族，10min）。 */
 const DEFAULT_SESSION_GRANT_TTL_MS = DEFAULT_SECRET_GRACE_MS;
 
+/** 页端只需要渲染记忆列表所需字段，不把治理字段带出宿主。 */
+async function listMemoryBroadcastRows(): Promise<
+  Array<{ id: string; type: string; name: string; content: string; tags: string[] }>
+> {
+  return (await getMemoryStore().list()).map((m) => ({
+    id: m.id,
+    type: m.type,
+    name: m.name,
+    content: m.content,
+    tags: m.tags,
+  }));
+}
+
 export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   // C3：tool run 事件追踪（Workbench UI 投影）
   const pendingRuns = new Map<string, { tool: string; botId: string; startedAt: number }>();
@@ -468,10 +481,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
               return { ok: false, error: result.error };
             }
             // 保存成功后推送记忆列表更新到页端。
-            const memories = (await store.list()).map((m) => ({
-              id: m.id, type: m.type, name: m.name, content: m.content, tags: m.tags,
-            }));
-            hub?.broadcastMemories(memories);
+            hub?.broadcastMemories(await listMemoryBroadcastRows());
             return { ok: true, data: { id: result.id, saved: true } };
           },
         },
@@ -619,6 +629,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             if (!id) return { ok: false, error: 'id is required' };
             const store = getMemoryStore();
             const ok = store.remove(id);
+            if (ok) hub?.broadcastMemories(await listMemoryBroadcastRows());
             return { ok: ok ?? true };
           },
         },
@@ -1565,10 +1576,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       });
       // v1.0：连接建立后立即推送当前记忆列表。
       const pushMemories = async () => {
-        const memories = (await getMemoryStore().list()).map((m) => ({
-          id: m.id, type: m.type, name: m.name, content: m.content, tags: m.tags,
-        }));
-        hub?.broadcastMemories(memories);
+        hub?.broadcastMemories(await listMemoryBroadcastRows());
       };
       void pushMemories();
       // v1.0：确保技能目录存在

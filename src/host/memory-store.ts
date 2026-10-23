@@ -493,7 +493,7 @@ export class MemoryStore implements MemoryStoreV2 {
   /** 格式化注入系统提示词（格式与 v1 一致：- #id [type] name: content）。 */
   formatForPrompt(memories: readonly Memory[], limit = 50): string {
     const list = memories.slice(0, Math.max(0, limit));
-    if (list.length === 0) return '(No memories yet)';
+    if (list.length === 0) return '';
     return list
       .map((m) => {
         const scope = m.type === 'project' ? 'project ' : '';
