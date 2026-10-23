@@ -24,7 +24,11 @@ fn load_init_script() -> String {
     candidates.push(std::path::PathBuf::from("inject/entry.js"));
     candidates.push(std::path::PathBuf::from("src-tauri/inject/entry.js"));
 
-    if let Some(root) = exe_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+    if let Some(root) = exe_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+    {
         candidates.push(root.join("inject/entry.js"));
         candidates.push(root.join("src-tauri/inject/entry.js"));
     }
@@ -149,7 +153,10 @@ fn load_studio_chat_config_script() -> String {
         Some(h) => h,
         None => return String::new(),
     };
-    let cfg_path = home.join(".config").join("deepseek-studio").join("config.json");
+    let cfg_path = home
+        .join(".config")
+        .join("deepseek-studio")
+        .join("config.json");
     let s = match std::fs::read_to_string(&cfg_path) {
         Ok(s) => s,
         Err(_) => return String::new(),
@@ -178,10 +185,7 @@ fn load_studio_chat_config_script() -> String {
         "roomName": room.room_name,
         "members": room.member_personas,
     });
-    format!(
-        "window.__studioChatConfig = {};\n",
-        payload
-    )
+    format!("window.__studioChatConfig = {};\n", payload)
 }
 
 /// QD-R2-01 / H-2b：把 config.json 里的 WS host token 注入 `window.__studioHostToken`。
@@ -194,7 +198,10 @@ fn load_host_token_script() -> String {
         Some(h) => h,
         None => return String::new(),
     };
-    let cfg_path = home.join(".config").join("deepseek-studio").join("config.json");
+    let cfg_path = home
+        .join(".config")
+        .join("deepseek-studio")
+        .join("config.json");
     let s = match std::fs::read_to_string(&cfg_path) {
         Ok(s) => s,
         Err(_) => return String::new(),
@@ -206,24 +213,45 @@ fn load_host_token_script() -> String {
     if cfg.token.is_empty() {
         return String::new();
     }
-    format!("window.__studioHostToken = {};\n", serde_json::to_string(&cfg.token).unwrap())
+    format!(
+        "window.__studioHostToken = {};\n",
+        serde_json::to_string(&cfg.token).unwrap()
+    )
 }
 
+// W2（20261023）：启动不再读这份配置建窗，读它的入口只剩下面这条路径 +
+// 供将来「预置 profile 映射」用。保留而不是删掉，是因为按需建窗仍可能想知道
+// 某个 botId 的预置 dataDir；加 allow(dead_code) 明确「现在确实没人调」。
+#[allow(dead_code)]
 fn bot_windows_path() -> std::path::PathBuf {
+    // 两个配置刻意分处不同目录，是既定设计，别「对齐」：
+    //   config.json      → home/.config/deepseek-studio/（Node 侧 main.ts 读同一路径）
+    //   bot-windows.json → dirs::config_dir()/deepseek-studio/（Windows = %APPDATA%）
+    // 20261017 用户明确要求把这里清成 {"bots":[]}，启动只留主窗口；bot 窗口改为
+    // 按需（主 bot 用聊天室时）再拉起。home/.config 下那份是更早的残留（含
+    // frontend/backend-expert），照它开窗会违背该决定 —— 故此处不得回退到它。
     dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("deepseek-studio")
         .join("bot-windows.json")
 }
 
+#[allow(dead_code)]
 fn load_bot_windows_config() -> BotWindowsConfig {
     let path = bot_windows_path();
     if let Ok(s) = std::fs::read_to_string(&path) {
-        if let Ok(cfg) = serde_json::from_str::<BotWindowsConfig>(&s) {
+        // P1-1：去 BOM。PowerShell 5.1 `Set-Content -Encoding UTF8` 写出的文件
+        // 带 U+FEFF，read_to_string 会把它保留成字符，serde_json 的 from_str
+        // 不接受前导 BOM → 恒解析失败（表现为 WARN + using empty）。
+        let cleaned = s.trim_start_matches('\u{feff}');
+        if let Ok(cfg) = serde_json::from_str::<BotWindowsConfig>(cleaned) {
             eprintln!("[studio] bot windows config: {} entries", cfg.bots.len());
             return cfg;
         }
-        eprintln!("[studio] WARN: bot-windows.json parse failed, using empty");
+        eprintln!(
+            "[studio] WARN: bot-windows.json parse failed ({}), using empty",
+            path.display()
+        );
     }
     BotWindowsConfig::default()
 }
@@ -231,7 +259,10 @@ fn load_bot_windows_config() -> BotWindowsConfig {
 /// 带 botId 的注入脚本：在原脚本最前面声明 window.__studioBotId，
 /// 供 entry.ts 的 createHostClient 读取（缺省 = 'main'）。
 fn inject_with_bot_id(base_script: &str, bot_id: &str) -> String {
-    let declare = format!("window.__studioBotId = {};\n", serde_json::to_string(bot_id).unwrap());
+    let declare = format!(
+        "window.__studioBotId = {};\n",
+        serde_json::to_string(bot_id).unwrap()
+    );
     declare + base_script
 }
 
@@ -246,7 +277,8 @@ fn resolve_data_dir(raw: &str) -> Option<std::path::PathBuf> {
         return None;
     }
     let base = dirs::config_dir()?;
-    let path = if trimmed.starts_with('/') || (trimmed.len() >= 2 && trimmed.as_bytes()[1] == b':') {
+    let path = if trimmed.starts_with('/') || (trimmed.len() >= 2 && trimmed.as_bytes()[1] == b':')
+    {
         std::path::PathBuf::from(trimmed)
     } else if trimmed == "~" || trimmed.starts_with("~/") {
         base.join(trimmed.trim_start_matches("~/"))
@@ -324,11 +356,9 @@ fn plan_bot_windows(
         // 显式 dataDir 优先；缺失/非法 → 派生 profiles/<botId>，绝不共享主 profile。
         let data_dir = match entry.data_dir.as_deref().and_then(resolve_data_dir) {
             Some(d) => d,
-            None => match dirs::config_dir().map(|b| {
-                b.join("deepseek-studio")
-                    .join("profiles")
-                    .join(&bot_id)
-            }) {
+            None => match dirs::config_dir()
+                .map(|b| b.join("deepseek-studio").join("profiles").join(&bot_id))
+            {
                 Some(d) => d,
                 None => {
                     plans.push(BotWindowPlan::Skip {
@@ -374,14 +404,22 @@ fn sanitize_window_label(raw: &str) -> String {
             out.push(c);
         }
     }
-    if out.is_empty() { "bot".to_string() } else { out }
+    if out.is_empty() {
+        "bot".to_string()
+    } else {
+        out
+    }
 }
 
 /// W1：工作台窗口 URL（`http://host:port/agent`），与 sidecar 读同一份 config.json 的
 /// host/port；缺文件/解析失败回落 127.0.0.1:8760。不 panic。
 fn workbench_url() -> String {
     let (host, port) = dirs::home_dir()
-        .map(|h| h.join(".config").join("deepseek-studio").join("config.json"))
+        .map(|h| {
+            h.join(".config")
+                .join("deepseek-studio")
+                .join("config.json")
+        })
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| serde_json::from_str::<StudioConfig>(&s).ok())
         .map(|c| {
@@ -425,9 +463,125 @@ fn focus_main_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// W2（20261023 用户定调的窗口设计）：主窗口 = 主 bot；bot 窗口按需拉起。
+///
+/// 启动时不再按 bot-windows.json 建窗（那是 v0.24 行为，配置残留一次就多开 N 个窗口，
+/// 实测出现过「启动即 4 个窗口」）。聊天室路径要建窗时调 `open_bot_window`，
+/// 由它把 setup 时算好的注入上下文取出来复用。
+struct BotWindowContext {
+    base_script: String,
+    disable_inject: bool,
+}
+
+/// 主窗口自己的 WebView2 profile（Tauri 默认 = data_local_dir/<identifier>/EBWebView）。
+/// 预留给 plan_bot_windows 当「已占用 profile」——避开它，否则 bot 窗口的 dataDir
+/// 撞上主 profile = 主账号被复制进第二个窗口。
+fn main_profile_dirs() -> Vec<std::path::PathBuf> {
+    dirs::data_local_dir()
+        .map(|d| vec![d.join("com.deepseek.studio").join("EBWebView")])
+        .unwrap_or_default()
+}
+
+/// 真正建一个 bot 窗口（幂等由调用方保证）。
+/// 主窗口（label="main"）不在这里建；这里只处理带 botId 的独立窗口：
+/// 独立 WebView2 data_directory 隔离登录态 + 注入带 __studioBotId 的脚本 + host token。
+fn create_bot_window(
+    app: &tauri::AppHandle,
+    ctx: &BotWindowContext,
+    label: &str,
+    bot_id: &str,
+    visible: bool,
+    data_dir: std::path::PathBuf,
+) -> Result<(), String> {
+    let mut builder = WebviewWindowBuilder::new(
+        app,
+        label,
+        WebviewUrl::External(Url::parse(CHAT_URL).expect("invalid chat url")),
+    )
+    .title(format!("DeepSeek++ Studio [{}]", bot_id))
+    .visible(visible)
+    .inner_size(1280.0, 800.0);
+
+    // QD-R2-01：bot 窗口的注入页连 /studio 同样需要 host token——
+    // 拼在 botId 声明之前，entry.ts 的 createHostClient 即可读到。
+    if !ctx.disable_inject {
+        let host_token_script = load_host_token_script();
+        let with_bot = inject_with_bot_id(&ctx.base_script, bot_id);
+        builder = builder.initialization_script(&format!("{}{}", host_token_script, with_bot));
+    }
+
+    let _ = std::fs::create_dir_all(&data_dir);
+    builder = builder.data_directory(data_dir.clone());
+
+    builder
+        .build()
+        .map_err(|e| format!("failed to create bot window {:?}: {:?}", label, e))?;
+    eprintln!(
+        "[studio] bot window created on demand: label={:?} visible={} profile={:?}",
+        label, visible, data_dir
+    );
+    Ok(())
+}
+
+/// W2：按需打开一个 bot 窗口（主 bot 进入聊天室时才调）。
+///
+/// 幂等：label 已存在则 show + unminimize + focus，不重复建窗。
+/// 复用 plan_bot_windows 的「1 槽位 : 1 账号 : 1 窗口」判定：dataDir 缺失时按
+/// botId 派生独立 profile；撞上主 profile 等保留目录则**如实报错**（fail-closed），
+/// 绝不静默回退成共享 profile。
+#[tauri::command]
+fn open_bot_window(
+    app: tauri::AppHandle,
+    bot_id: String,
+    data_dir: Option<String>,
+) -> Result<(), String> {
+    let ctx = app
+        .try_state::<BotWindowContext>()
+        .ok_or_else(|| "bot window context not initialised".to_string())?;
+    let label = sanitize_window_label(&bot_id);
+
+    // 已在屏幕上 → 聚焦返回（幂等路径）。
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+
+    let entry = BotWindowConfig {
+        bot_id: bot_id.clone(),
+        visible: true,
+        data_dir,
+    };
+    for plan in plan_bot_windows(std::slice::from_ref(&entry), &main_profile_dirs()) {
+        match plan {
+            BotWindowPlan::Skip { bot_id, reason } => {
+                eprintln!("[studio] bot window skipped ({:?}): {}", bot_id, reason);
+                return Err(format!("bot window skipped ({:?}): {}", bot_id, reason));
+            }
+            BotWindowPlan::Create {
+                label,
+                bot_id,
+                visible,
+                data_dir,
+            } => {
+                if app.get_webview_window(&label).is_some() {
+                    return Err(format!("duplicate window label {:?}", label));
+                }
+                create_bot_window(&app, &ctx, &label, &bot_id, visible, data_dir)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![open_workbench, focus_main_window])
+        .invoke_handler(tauri::generate_handler![
+            open_workbench,
+            focus_main_window,
+            open_bot_window
+        ])
         // v0.30 单实例锁：第二个 deepseek-studio.exe 进程不再创建窗口，
         // 而是聚焦到已有主窗口（根治多实例 × N bot 窗口 = 窗口爆炸）。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -496,7 +650,12 @@ fn main() {
                 // QD-R2-01：注入页连 /studio 工具通道也要带 token——单独一段常量，
                 // 不依赖 chat_rooms 配置（无聊天室的纯工具窗口同样要鉴权）。
                 let host_token_script = load_host_token_script();
-                let init_script = format!("{}{}{}", chat_config_script, host_token_script, load_init_script());
+                let init_script = format!(
+                    "{}{}{}",
+                    chat_config_script,
+                    host_token_script,
+                    load_init_script()
+                );
                 main_builder = main_builder.initialization_script(&init_script);
             }
 
@@ -517,84 +676,49 @@ fn main() {
                 let _ = win.maximize();
             }
 
-            // v0.24：按预配置创建 bot 窗口（每窗口独立登录态）。
-            // 主窗口已建好；bot 窗口逐个容错创建——单个失败不影响主窗口，也不中断 setup。
-            // v0.31：改走 plan_bot_windows——dataDir 缺失不再回退主 profile（那是同账号
-            // 双窗口的成因），两条目撞同一 profile 直接跳过（1 槽位 : 1 账号 : 1 窗口）。
-            let base_script = if !disable_inject { load_init_script() } else { String::new() };
-            // 主窗口自己的 WebView2 profile（Tauri 默认 = data_local_dir/<identifier>/EBWebView），
-            // 预留出去，避免 bot 窗口的 dataDir 撞上它 → 主账号被复制进第二个窗口。
-            let main_profile: Vec<std::path::PathBuf> = dirs::data_local_dir()
-                .map(|d| vec![d.join("com.deepseek.studio").join("EBWebView")])
-                .unwrap_or_default();
-            for plan in plan_bot_windows(&load_bot_windows_config().bots, &main_profile) {
-                let (label, bot_id, visible, data_dir) = match plan {
-                    BotWindowPlan::Skip { bot_id, reason } => {
-                        eprintln!("[studio] bot window skipped ({:?}): {}", bot_id, reason);
-                        continue;
-                    }
-                    BotWindowPlan::Create { label, bot_id, visible, data_dir } => {
-                        (label, bot_id, visible, data_dir)
-                    }
-                };
-                // 标签必须唯一；重复条目跳过，避免 Tauri 拒绝/panic
-                if app.get_webview_window(&label).is_some() {
-                    eprintln!("[studio] bot window skipped: duplicate label {:?}", label);
-                    continue;
-                }
-                let mut builder = WebviewWindowBuilder::new(
-                    app,
-                    &label,
-                    WebviewUrl::External(Url::parse(CHAT_URL).expect("invalid chat url")),
-                )
-                .title(format!("DeepSeek++ Studio [{}]", bot_id))
-                .visible(visible)
-                .inner_size(1280.0, 800.0);
-
-                // 注入带 botId 的脚本（禁用注入时不注入）
-                // QD-R2-01：bot 窗口的注入页连 /studio 同样需要 host token——
-                // 拼在 botId 声明之前，entry.ts 的 createHostClient 即可读到。
-                if !disable_inject {
-                    let host_token_script = load_host_token_script();
-                    let with_bot = inject_with_bot_id(&base_script, &bot_id);
-                    builder = builder.initialization_script(&format!("{}{}", host_token_script, with_bot));
-                }
-
-                // profile 隔离：独立 WebView2 user data folder → Cookie/localStorage 不串号
-                let _ = std::fs::create_dir_all(&data_dir);
-                builder = builder.data_directory(data_dir.clone());
-
-                match builder.build() {
-                    Ok(_) => eprintln!(
-                        "[studio] bot window created: label={:?} visible={} profile={:?}",
-                        label, visible, data_dir
-                    ),
-                    Err(e) => eprintln!("[studio] FAILED to create bot window {:?}: {:?}", label, e),
-                }
-            }
+            // W2（20261023 用户定调）：启动时**只建主窗口**。
+            // 主窗口是「主 bot」；只有当主 bot 进入聊天室时，才按 chatRooms 的
+            // memberPersonas 逐个调 open_bot_window 按需拉起 bot 窗口。
+            // 此前这里是无条件按 bot-windows.json 建窗（v0.24 行为）：配置里残留几条
+            // 就多开几个窗口，实测出现过「启动即 4 个窗口」，与设计不符。
+            // plan_bot_windows 及其单测保留 —— 按需建窗那条路径仍要走同一套
+            // 「1 槽位 : 1 账号 : 1 窗口」判定。
+            let base_script = if !disable_inject {
+                load_init_script()
+            } else {
+                String::new()
+            };
+            // 按需建窗时要用到这两样，寄存到 managed state 里（setup 之后主线程
+            // 拿不到这个闭包，只能经 State 取）。
+            app.manage(BotWindowContext {
+                base_script,
+                disable_inject,
+            });
 
             // v0.12 Phase 3：系统托盘
             #[cfg(feature = "tray-icon")]
             {
                 use tauri::menu::{MenuBuilder, MenuItemBuilder};
                 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-                // W1：扩展现有 main-tray（不建第二托盘），四项菜单：打开工作台 / 显示 / 隐藏 / 退出。
+                // 统一 UI：桌面主入口只保留主窗口；Workbench 转为手机远程端，
+                // 不再从托盘暴露桌面第二客户端。open_workbench 命令保留给兼容/诊断调用。
                 let tray_menu = MenuBuilder::new(app)
-                    .item(MenuItemBuilder::with_id("open-workbench", "打开工作台").build(app)?)
+                    .item(&MenuItemBuilder::with_id("show", "显示主窗口").build(app)?)
+                    .item(&MenuItemBuilder::with_id("hide", "隐藏主窗口").build(app)?)
                     .separator()
-                    .item(MenuItemBuilder::with_id("show", "显示主窗口").build(app)?)
-                    .item(MenuItemBuilder::with_id("hide", "隐藏主窗口").build(app)?)
-                    .separator()
-                    .item(MenuItemBuilder::with_id("quit", "退出").build(app)?)
+                    .item(&MenuItemBuilder::with_id("quit", "退出").build(app)?)
                     .build()?;
                 let tray = TrayIconBuilder::with_id("main-tray")
+                    // 显式给图标：Windows 上未设置 icon 时托盘不会创建可视项。
+                    // 缺失时退回 tauri.conf bundle.icon 解析出的默认窗口图标。
+                    .icon(
+                        app.default_window_icon()
+                            .cloned()
+                            .expect("default window icon must resolve from tauri.conf bundle.icon"),
+                    )
                     .tooltip("DeepSeek++ Studio")
                     .menu(&tray_menu)
                     .on_menu_event(|app, event| match event.id().as_ref() {
-                        "open-workbench" => {
-                            // W1：托盘唯一新增入口 → 调 open_workbench（已存在则聚焦，否则建窗）。
-                            let _ = open_workbench(app.clone());
-                        }
                         "show" => {
                             if let Some(win) = app.get_webview_window("main") {
                                 let _ = win.show();
@@ -644,7 +768,10 @@ fn main() {
                 // v0.24：bot 窗口直接放行原生关闭——不保存几何（避免污染主窗口状态）、
                 // 也不关闭 sidecar（它是全应用共享的常驻宿主进程）。仅主窗口走下方优雅关闭。
                 if label != "main" {
-                    eprintln!("[studio] bot window {:?} closed (state/sidecar untouched)", label);
+                    eprintln!(
+                        "[studio] bot window {:?} closed (state/sidecar untouched)",
+                        label
+                    );
                     return;
                 }
                 api.prevent_close();
@@ -698,9 +825,9 @@ mod tests {
         plans
             .iter()
             .filter_map(|p| match p {
-                BotWindowPlan::Create { bot_id, data_dir, .. } => {
-                    Some((bot_id.as_str(), normalize_for_compare(data_dir)))
-                }
+                BotWindowPlan::Create {
+                    bot_id, data_dir, ..
+                } => Some((bot_id.as_str(), normalize_for_compare(data_dir))),
                 _ => None,
             })
             .collect()
@@ -733,7 +860,8 @@ mod tests {
     fn missing_datadir_derives_isolated_profile_not_main() {
         // 回归：旧实现 dataDir 缺失 → 静默共享主 profile（同账号双窗口）。
         // 现在必须派生 profiles/<botId>，且与主 profile 不同。
-        let main = std::path::PathBuf::from("C:/Users/x/AppData/Local/com.deepseek.studio/EBWebView");
+        let main =
+            std::path::PathBuf::from("C:/Users/x/AppData/Local/com.deepseek.studio/EBWebView");
         let plans = plan_bot_windows(&[entry("S1", None)], &[main.clone()]);
         let c = created(&plans);
         assert_eq!(c.len(), 1, "missing dataDir must still create a window");
@@ -758,9 +886,13 @@ mod tests {
 
     #[test]
     fn profile_colliding_with_main_window_is_skipped() {
-        let main = std::path::PathBuf::from("C:/Users/x/AppData/Local/com.deepseek.studio/EBWebView");
+        let main =
+            std::path::PathBuf::from("C:/Users/x/AppData/Local/com.deepseek.studio/EBWebView");
         let plans = plan_bot_windows(
-            &[entry("S1", Some("C:/Users/x/AppData/Local/com.deepseek.studio/EBWebView"))],
+            &[entry(
+                "S1",
+                Some("C:/Users/x/AppData/Local/com.deepseek.studio/EBWebView"),
+            )],
             &[main],
         );
         assert!(created(&plans).is_empty());

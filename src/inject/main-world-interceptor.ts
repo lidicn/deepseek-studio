@@ -12,8 +12,8 @@
  */
 
 import { StreamingToolCallParser, type ParsedToolCall } from './streaming-tool-parser';
-import { SseTextStreamExtractor, snapshotFragments } from './sse-text-extractor';
-import { DeepSeekSseFrameDecoder } from './deepseek-sse-frame-decoder';
+import { SseTextStreamExtractor } from './sse-text-extractor';
+import { DeepSeekSseFrameDecoder, framesSignalStreamCompletion } from './deepseek-sse-frame-decoder';
 import { isSupportedUpstreamTool, SUPPORTED_INVOCATION_NAMES } from '../shared/tool-contract';
 import { shouldSkipAutoContinue } from '../shared/tool-result-format';
 import {
@@ -21,15 +21,33 @@ import {
   extractTaskCompleteSignal,
   MAX_LOOP,
   MAX_ERROR_RETRIES,
+  MAX_AUTO_CONTINUE,
   type PendingResult,
 } from '../shared/continuation-prompt';
-import { classifyResponse, classifySseFrame, errorBackoffMs, recordVerdict, type ClassifiedResponse } from './response-classifier';
+import {
+  classifyResponse,
+  classifySseFrame,
+  errorBackoffMs,
+  filterReplayableHeaders,
+  recordVerdict,
+  type ClassifiedResponse,
+} from './response-classifier';
 import type { ExecuteResult } from '../capabilities/types';
 import { createPowHeaders } from './pow';
-import { createToolCard, updateToolCardByCallId, stripRawToolTagsFromMessage } from './tool-card-ui';
 import { createStepFlowContainer, type StepFlowHandle } from './step-flow-ui';
 import { hydrateCodeBlocks, type CodeRunner } from './render-code-runner';
 import type { StudioChatUIHandle } from '../ui/studio-chat-ui';
+import { normalizeChatSessionKey } from '../shared/studio-execution';
+import {
+  createStudioTraceCollector,
+  renderStudioTraceReport,
+  type StudioTraceCollector,
+  type StudioTraceEvent,
+} from '../shared/studio-trace';
+import {
+  describeStudioBudget,
+  evaluateStudioBudgetForMessages,
+} from '../shared/studio-context-budget';
 
 /**
  * 从文本里剔除原始工具调用标签（<shell_exec>…</shell_exec> 等），返回纯散文。
@@ -75,6 +93,26 @@ export interface MainWorldInterceptorOptions {
   onStreamDelta?: (text: string) => void;
 }
 
+/** 断流取证入口：把当前缓冲的轨迹渲染成纯文本报告（空缓冲返回空串）。 */
+export function renderInterceptorTraceReport(): string {
+  return renderStudioTraceReport(interceptorTrace.snapshot());
+}
+
+/** 供测试直接取采集器快照（不经过渲染）。 */
+export function interceptorTraceSnapshot(): readonly StudioTraceEvent[] {
+  return interceptorTrace.snapshot();
+}
+
+/**
+ * 把断流取证出口挂到 window.__studioTraceReport。
+ * 没有调用方时 esbuild 会 tree-shake 掉整套 trace 采集（实测：导出未引用即被剔除），
+ * 那样「用户报断流」时依然只能人肉翻 storage.json 时间戳。
+ * 挂 global 的代价是一个函数引用，换取控制台一行 `__studioTraceReport()` 即可取证。
+ */
+export function installTraceReportHandle(): void {
+  (globalThis as { __studioTraceReport?: () => string }).__studioTraceReport = renderInterceptorTraceReport;
+}
+
 export interface MainWorldInterceptorHandle {
   stop(): void;
 }
@@ -98,6 +136,165 @@ let stepFlowToolCount = 0;
 let stepFlowStartTime = 0;
 let stepReasoningAccum = '';
 
+// v2.0 断流取证：模块级有界轨迹缓冲（环形，2000 条上限）。
+// 纯内存、不落盘；页端 iframe 与 Node 测试两端可运行，刻意不依赖 studio-execution 的 kv 通道。
+//
+// QD-R7-01（F12）：内存环之外再加一条「每轮一行 JSONL」落盘通道。
+// 内存环随页面刷新即丢；落盘由宿主侧完成（页端只把这行发过去，见 page-runtime 的
+// 'trace' 分支 → logs/trace/trace-<日期>.jsonl）。这样断流现场重启后仍在，
+// 可以直接 diff「哪一轮开始没有哨兵」，不必再靠 storage.json 的副产品时间戳反推。
+const traceCollector: StudioTraceCollector = createStudioTraceCollector();
+let traceLineSink: ((line: string) => void) | null = null;
+
+/** 设置 JSONL 落盘通道（entry.ts 接到 host.trace）；传 null 关闭。 */
+export function setInterceptorTraceSink(sink: ((line: string) => void) | null): void {
+  traceLineSink = sink;
+}
+
+const interceptorTrace: StudioTraceCollector = {
+  record(event) {
+    traceCollector.record(event);
+    // 只在「一轮真正收尾」时落一行：turn.end 是所有退出路径（完成 / 截断 / 放弃 /
+    // 用户中止）的公共汇聚点，正好一轮一行。
+    if (event.t === 'turn.end' && traceLineSink) {
+      try {
+        traceLineSink(JSON.stringify({ ...(event as Record<string, unknown>), ts: Date.now() }));
+      } catch {
+        // 取证落盘失败不影响主链路。
+      }
+    }
+  },
+  snapshot: () => traceCollector.snapshot(),
+  clear: () => traceCollector.clear(),
+  size: () => traceCollector.size(),
+};
+// UTF-8 字节数，不是 .length（中文请求体两者差 3 倍，直接影响「prompt 多大」的读数）。
+function byteLengthOf(text: string): number {
+  try {
+    return new TextEncoder().encode(text).byteLength;
+  } catch {
+    return text.length;
+  }
+}
+
+/**
+ * QD-R4-01：续跑重试的标志位。
+ *
+ * 根因：`autoContinueWithPow` 首行守卫要求 `pending.length > 0`，而续跑请求发出前
+ * `pending.length = 0`（F8 修复，防 XHR hook 重复注入）。429/5xx/断网后退避定时器回调
+ * 重新进入该函数，第一行守卫直接 return → MAX_ERROR_RETRIES=3 的预算一次都花不出去，
+ * 表现为「工具卡片转完，回复停了」且状态栏永停在「执行中…」。
+ *
+ * 修复：让守卫显式豁免重试入口。重试只重发上一份 body，不依赖 pending。
+ */
+let continuationRetryPending = false;
+// QD-R5-01: first-attempt (non-continuation) stream break auto-retry budget.
+// Why a separate counter: the continuation path already has errorRetryCount + exponential
+// backoff (see the retryable branch of autoContinueWithPow), but a first-attempt failure
+// used to only appendError and stop - so one network blip forced a manual resend every round.
+// Cap is 2: enough to cover a single blip, without making the user wait through three
+// backoff cycles when the upstream is genuinely down.
+/**
+ * QD-R7-01（断流定案报告 F9/F10）：首轮重试预算必须「按轮次」存，并且「只有真发出才算」。
+ *
+ * 修复前是一个模块级数字，两个问题叠加：
+ *   1) 被同一时刻并发的所有轮次共享 —— 结算读到的不是这一轮的账；
+ *   2) 在「计划重发」时就 +1，而不是在请求真的发出去时。
+ * 实测表现：243 毫秒内三次结算把预算烧穿，报出「已自动重试 2 次仍失败」，
+ * 而退避从 2s 起，一次重试请求都不可能真的发出（storage.json 同一 turn 只有
+ * 用户消息 + 重试 1/2 + 重试 2/2 + 放弃四条事件，间隔 141ms/99ms/4ms）。
+ */
+interface FirstAttemptBudget {
+  /** 「重试请求」实际发出的次数（首轮那次不算）。 */
+  sent: number;
+  /** 已排进退避队列的重发次数（防「发不出去却无限排队」）。 */
+  scheduled: number;
+}
+const firstAttemptBudgets = new Map<string, FirstAttemptBudget>();
+function firstAttemptBudget(turnId: string): FirstAttemptBudget {
+  let b = firstAttemptBudgets.get(turnId);
+  if (!b) {
+    b = { sent: 0, scheduled: 0 };
+    firstAttemptBudgets.set(turnId, b);
+    // 粗暴截断：只保留最近 32 轮，避免长会话里无限累积。
+    while (firstAttemptBudgets.size > 32) {
+      const oldest = firstAttemptBudgets.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      firstAttemptBudgets.delete(oldest);
+    }
+  }
+  return b;
+}
+/** QD-R5-01：首轮断流自动重试上限。 */
+const FIRST_ATTEMPT_MAX_RETRIES = 2;
+/** QD-R5-01：当前是否处于「首轮重发链」中（首轮失败后的原样重发，不是工具续跑）。
+ *  用途有两点：让 autoContinueWithPow 知道要原样重发而不是套续跑 prompt；
+ *  让执行器里的 retryable 分支走首轮预算，不去消耗续跑的 errorRetryCount。 */
+let firstAttemptResendActive = false;
+/** QD-R5-01：下一次 autoContinueWithPow 原样重发 lastChatBody（不套 <original_task>）。 */
+let firstAttemptResendPending = false;
+
+/**
+ * QD-R7-01（断流定案报告 F4）：完成哨兵必须归属到「某一条流」。
+ *
+ * 修复前 streamSawDone 是挂在共享 loopState 上的一个全局布尔：写入口只有一个、
+ * 重置点有五个，而结算点读的都是这个全局值。这套架构里并发是常态——页面自己的
+ * completion、Studio 的首轮重发、上一轮没跑完的流、页面 auto_resume 可以同时存在。
+ * 于是任何一条流看到 FINISHED 都会把「别人的」哨兵算到当前轮头上；反过来，当前轮
+ * 真断流时结算读到的又可能是另一条流刚重置的 false。同一份代码有时对、有时错。
+ *
+ * 修法：每条 chat 流领一个序号，只有「当前被认领的那条流」才允许写哨兵/截断标记/
+ * 字节计数，结算前也先确认「要结算的这条流就是被认领的那条」，否则整条跳过。
+ */
+const STREAM_UNCLAIMED = 0;
+let streamSeq = STREAM_UNCLAIMED;
+
+/** 认领一条新的 chat 流：返回它的 streamId，并把这条流的哨兵/字节计数清零。 */
+function beginStream(loopState: LoopState): number {
+  const id = ++streamSeq;
+  loopState.activeStreamId = id;
+  loopState.streamSawDone = false;
+  loopState.streamTruncatedTag = false;
+  loopState.streamBytes = 0;
+  return id;
+}
+
+/** 该 streamId 是否仍是当前被认领的流（不是被更晚的请求挤掉的旧流）。 */
+function isActiveStream(loopState: LoopState | undefined, streamId: number): boolean {
+  return !!loopState && streamId !== STREAM_UNCLAIMED && loopState.activeStreamId === streamId;
+}
+
+/**
+ * QD-R4-04：用户主动 abort 的标记。
+ *
+ * `xhr.abort()` 与「网络断开」在回调层完全同构（readyState=4, status=0），
+ * classifyResponse(0) 一律 retryable/network-error。若本轮工具结果已回到 pending，
+ * onStreamEnd 照常调度续跑 → 用户按下停止后仍发出新请求、模型继续输出并继续触发工具，
+ * 这是用户控制面被绕过，不只是多发一次请求。
+ *
+ * 修复：包装 proto.abort 给该 xhr 打 __dsAborted，readyState===4 分类前先看它，
+ * 命中则不分类、不重试、不续跑，清 pending/定时器并复位 UI。
+ */
+const DS_ABORTED_FLAG = '__dsAborted';
+
+/**
+ * QD-R4-03：本轮流是否收到完成哨兵。
+ *
+ * 此前 onStreamEnd 只看 pending 与 stepFlow，没有「流是否真的结束」这一维：
+ * 模型吐到一半网络断掉（无工具）→ 走 else 分支 → 被当成正常完成收尾，
+ * 用户只能自己发现「回答没说完」。
+ *
+ * DeepSeek 的完成哨兵不是通用 SSE 的 `data: [DONE]`（实测 20 份真实抓包
+ * 全部 DONE=False），而是 `response/status = FINISHED` 或 `event: close`。
+ * 判定在 deepseek-sse-frame-decoder.framesSignalStreamCompletion 里按 frame 做，
+ * 不在原始 chunk 上做子串匹配（字节边界会把 frame 切开导致漏判）。
+ */
+// 当前轮次的 trace id。与 studio-execution 的 turnId 同源（同一轮 = 同 id），
+// 但两套缓冲独立：trace 只回答「这轮发生了什么」，execution 记录回答「给用户看什么」。
+let traceTurnId = '';
+/** 空转续轮计数：流截断且本轮无工具时的独立封顶（受 MAX_AUTO_CONTINUE 约束）。 */
+let idleContinueCount = 0;
+
 /** 诊断回调（临时）：把 hook 拦到的对话请求信息上报宿主日志。 */
 export type InterceptorDiag = (message: string) => void;
 
@@ -107,6 +304,21 @@ interface LoopState {
   lastChatBody: string | null;
   /** 当前响应流是否仍在进行（用于判断工具结果回填时机）。 */
   streamActive: boolean;
+  /** QD-R4-03：本轮流是否见到 `data: [DONE]` 完成哨兵。 */
+  streamSawDone?: boolean;
+  /** QD-R7-01（F4）：当前被认领的流序号；只有它对应的流能改哨兵/截断/字节计数。 */
+  activeStreamId?: number;
+  /** QD-R7-01（F2）：本条流累计收到的原始字节数（0 = 根本没有流，不是截断）。 */
+  streamBytes?: number;
+  /** QD-R4-02：流结束时解析器尾部残留未闭合工具标签（工具调用被截断）。 */
+  streamTruncatedTag?: boolean;
+  /** QD-R4-04：当前请求是否由用户主动 abort（与网络断开不可区分，需显式区分）。 */
+  abortedByUser?: boolean;
+  /** QD-R5-01：首轮失败后的原样重发进行中（captureChatRequest 据此不当新用户消息）。 */
+  inFirstAttemptResend?: boolean;
+  /** QD-R4-04：在飞续跑定时器句柄（由 installMainWorldInterceptor 写入），
+   *  供 settleStreamEnd / XHR hook 取消——定时器属于外层闭包，hook 内访问不到。 */
+  autoContinueTimerRef?: ReturnType<typeof setTimeout> | null;
   /** 最近一次响应的 response_message_id。 */
   lastResponseMsgId: number | null;
   /** v0.9：auto-continue XHR 的累积回复文本（SSE extracted）。 */
@@ -116,6 +328,8 @@ interface LoopState {
   /** v1.6：本轮 auto-continue 回复里是否出现了工具调用（由 forward 在 inAutoContinue 时置位）。
    *  readyState===4 时据此判断「模型没调工具」→ 走 nudge 判定，避免 pending 异步未到位的误判。 */
   autoReplyHadTools: boolean;
+  /** 当前普通请求是否已解析到工具调用，即使执行结果尚未返回。 */
+  streamHadTools: boolean;
   /** R0-R5：本轮流里检测到的 SSE 错误帧（200 内嵌错误），readyState===4 时据此分类。 */
   sseErrorSeen?: ClassifiedResponse | null;
   /** v1.6：用户原始任务（首轮请求 prompt 字段，augmentation 前）。XHR/fetch hook 在首条消息时写入，
@@ -123,6 +337,8 @@ interface LoopState {
   originalTask: string;
   /** v0.19：检测到新用户消息时，把用户原始 prompt 传回给闭包（用于推送给 chat UI）。 */
   newUserPrompt?: string;
+  /** 对话请求体中的稳定会话 id；缺省时由 UI 使用规范化路由兜底。 */
+  newChatSessionId?: string;
   /** v0.19：自建聊天 UI（由 installMainWorldInterceptor 传入，fetch/XHR hook 共用）。 */
   chatUI?: StudioChatUIHandle;
   /** v1.6：检测到新用户消息（parent_message_id === null）时触发，让 installMainWorldInterceptor
@@ -130,6 +346,9 @@ interface LoopState {
   onNewUserMessage?: () => void;
   /** 竞态修复：流结束时回调，检查 pending 并触发续跑（由 installMainWorldInterceptor 设置） */
   onStreamEnd?: () => void;
+  /** QD-R4-04：取消在飞的续跑定时器 / 重试计划（由 installMainWorldInterceptor 设置，
+   *  XHR hook 在用户 abort 分支调用——定时器属于外层闭包，hook 内访问不到）。 */
+  cancelAutoContinue?: () => void;
 }
 
 function formatToolResultBlock(results: readonly PendingResult[]): string {
@@ -240,6 +459,8 @@ const TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
 - local_file_read — 读取文件内容，参数：path（绝对路径，正斜杠）
 - local_file_write — 写入文件，参数：path、content
 - local_file_stat — 查看文件/目录信息，参数：path
+- file_edit — 局部改写文件（优先于整文件覆写），参数：path、edits（[{oldString,newString}]）、expectedSha256（可选）、dryRun（可选）
+- search_files — 检索文件/内容，参数：operation（list/grep）、root、query、pattern、regex（可选）、glob（可选）、limit（可选）
 - shell_exec — 执行命令行，参数：command（优先用 PowerShell，路径用正斜杠）
 - memory_save — 保存长期记忆，参数：type（user/project）、name、content、tags（可选）
 - python_exec — 执行 Python 代码，参数：code（Python 源代码字符串）
@@ -256,6 +477,8 @@ const TOOL_CATALOG_TEXT = `## 可用工具
 - local_file_read — 读取文件内容，参数：path（绝对路径，正斜杠）
 - local_file_write — 写入文件，参数：path、content
 - local_file_stat — 查看文件/目录信息，参数：path
+- file_edit — 局部改写文件（优先于整文件覆写），参数：path、edits（[{oldString,newString}]）、expectedSha256（可选）、dryRun（可选）
+- search_files — 检索文件/内容，参数：operation（list/grep）、root、query、pattern、regex（可选）、glob（可选）、limit（可选）
 - shell_exec — 执行命令行，参数：command（优先用 PowerShell，路径用正斜杠）
 - memory_save — 保存长期记忆，参数：type（user/project）、name、content、tags（可选）
 - python_exec — 执行 Python 代码，参数：code（Python 源代码字符串）
@@ -263,6 +486,29 @@ const TOOL_CATALOG_TEXT = `## 可用工具
 - mcp_call — 调用 MCP 工具，参数：serverId、tool、args（参数对象）
 
 调用方式：直接输出 XML 标签，标签体内为合法 JSON，如 <shell_exec>{"command":"..."}</shell_exec>`;
+
+/**
+ * 从目录文本里提取「- <name> — 」形式的工具名，供测试断言目录与模型表一致。
+ * 只读解析，不改变 prompt 本体。GAP-1 的教训：两份手工文本必然脱节，
+ * 必须有测试盯着，否则加了映射不声明 = 模型看不到。
+ */
+export function toolCatalogNames(text: string): string[] {
+  const names: string[] = [];
+  const re = /(?:^|\r?\n)- ([a-zA-Z_][\w]*) \u2014 /g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) names.push(m[1]);
+  return names;
+}
+
+/** 首轮能力提示词里声明的工具名。 */
+export function capabilityPromptToolNames(): string[] {
+  return toolCatalogNames(TOOL_CAPABILITY_PROMPT);
+}
+
+/** 续跑 prompt 里引用的目录工具名。 */
+export function catalogTextToolNames(): string[] {
+  return toolCatalogNames(TOOL_CATALOG_TEXT);
+}
 
 // v1.7：hasToolIntent / computeIntent 已删除。之前用正则猜「要不要用工具」会漏掉
 // 「审计」「bug」「代码」等关键词，导致模型不知道有工具而只聊天。修复：无条件注入
@@ -411,17 +657,98 @@ function augmentInit(init: RequestInit | undefined, pending: PendingResult[]): R
   return { ...init, body: newBody };
 }
 
+/**
+ * 估算 outgoing 请求体的上下文占用，把三档提示送到 Studio 状态栏。
+ * 只提示不截断：截断由 continuation-prompt 的字符预算负责，本函数不参与裁剪。
+ * 纯 UI 副作用，失败不影响请求本身。
+ */
+function reportContextBudget(rawBody: string, chatUI?: StudioChatUIHandle): void {
+  if (!chatUI) return;
+  try {
+    const parsed = JSON.parse(rawBody) as { messages?: unknown };
+    if (!Array.isArray(parsed.messages)) return;
+    const state = evaluateStudioBudgetForMessages(parsed.messages);
+    const notice = describeStudioBudget(state);
+    // ok 档 notice 为空串 → 清除上一条提示，避免旧告警长期挂在状态栏。
+    chatUI.setContextNotice(notice);
+  } catch { /* 非 JSON 或 UI 未就绪：跳过提示 */ }
+}
+
+function captureChatRequest(body: string, loopState: LoopState, diag: InterceptorDiag): void {
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    loopState.newChatSessionId = undefined;
+    const rawSessionId = parsed.chat_session_id
+      ?? parsed.chatSessionId
+      ?? parsed.session_id
+      ?? parsed.conversation_id;
+    if (typeof rawSessionId === 'string' || typeof rawSessionId === 'number') {
+      const value = String(rawSessionId).trim();
+      if (value) loopState.newChatSessionId = value;
+    }
+    let userText = typeof parsed.prompt === 'string' ? parsed.prompt : '';
+    if (!userText && Array.isArray(parsed.messages)) {
+      for (let i = parsed.messages.length - 1; i >= 0; i--) {
+        const message = parsed.messages[i] as { role?: string; content?: unknown };
+        if (message?.role !== 'user') continue;
+        if (typeof message.content === 'string') {
+          userText = message.content;
+        } else if (Array.isArray(message.content)) {
+          userText = message.content
+            .map((part) => {
+              if (typeof part === 'string') return part;
+              const p = part as { type?: string; text?: string };
+              return p.type === 'text' && typeof p.text === 'string' ? p.text : '';
+            })
+            .join('');
+        }
+        break;
+      }
+    }
+    // QD-R5-01：首轮重发不是新任务。重发体会带注入的能力前缀，
+    // 不排除它就会被判成新一轮 → 重试预算被重置、prompt 漂移。
+    if (
+      userText.trim()
+      && !loopState.inFirstAttemptResend
+      && !userText.includes('<original_task>')
+      && !userText.includes('<tool_results')
+      && !userText.includes('[TOOL_RESULTS]')
+    ) {
+      loopState.originalTask = userText;
+      loopState.newUserPrompt = userText;
+      diag(`originalTask captured len=${loopState.originalTask.length}`);
+      // 新用户消息 = 新一轮 trace。id 与 execution turnId 同源同值。
+      traceTurnId = `t${Date.now().toString(36)}`;
+      idleContinueCount = 0;
+      interceptorTrace.record({ t: 'turn.start', turnId: traceTurnId });
+      loopState.onNewUserMessage?.();
+    }
+  } catch {
+    // 非 JSON 请求体不参与会话识别。
+  }
+}
+
 function installFetchHook(
   origFetch: typeof window.fetch,
   forward: (call: ParsedToolCall) => void,
   pending: PendingResult[],
   diag: InterceptorDiag = () => {},
   loopState?: LoopState,
+  settleStreamEnd?: (
+    loopState: LoopState,
+    pending: PendingResult[],
+    httpStatus?: number,
+    streamId?: number,
+  ) => boolean,
+  escalateFirstAttemptFailure?: (code: string, why: string) => void,
 ): () => void {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = resolveUrl(input);
     const method = methodOf(input, init);
     diag(`fetch ${method} ${url} bodyType=${typeof init?.body}`);
+    if (isDeepSeekChatEndpoint(url, method) && loopState && typeof init?.body === 'string') {
+      captureChatRequest(init.body, loopState, diag);
+    }
 
     // 请求侧回填：把累积的工具结果写进下一次对话请求的 prompt
     if (pending.length > 0 && isDeepSeekChatEndpoint(url, method)) {
@@ -434,12 +761,45 @@ function installFetchHook(
     }
 
     diag(`chat-endpoint matched, bodyLen=${typeof init?.body === 'string' ? init.body.length : 'n/a'}`);
-    if (loopState) { loopState.streamActive = true; if (typeof init?.body === 'string') loopState.lastChatBody = init.body; }
+    if (loopState) {
+      loopState.streamActive = true;
+      loopState.sseErrorSeen = null;
+      if (typeof init?.body === 'string') loopState.lastChatBody = init.body;
+    }
+    // QD-R7-01（F4/F9/F10）：认领这条流；若它是首轮重发，记一次「真实发出」。
+    // beginStream 顺带把本轮哨兵/截断/字节计数清零（原来的三行重置收进这里）。
+    const streamId = loopState ? beginStream(loopState) : STREAM_UNCLAIMED;
+    if (loopState?.inFirstAttemptResend) firstAttemptBudget(traceTurnId).sent += 1;
+    if (loopState && typeof init?.body === 'string') {
+      interceptorTrace.record({ t: 'request.sent', turnId: traceTurnId, bytes: byteLengthOf(init.body) });
+      reportContextBudget(init.body, loopState.chatUI);
+    }
     const response = await origFetch(input, init);
+    if (loopState && !response.ok) {
+      const verdict = classifyResponse(response.status, null);
+      loopState.chatUI?.finishAssistantMessage({ recordFinal: false });
+      // QD-R5-01：首轮 retryable 失败先原样重发，封顶 2 次；预算耗尽才上报。
+      // 与 XHR 路径共用 escalateFirstAttemptFailure，避免两条路径各写一套重试语义。
+      if (verdict.verdict === 'retryable') {
+        loopState.streamActive = false;
+        escalateFirstAttemptFailure?.(verdict.reason, '服务器暂时无法访问');
+        return response;
+      }
+      loopState.chatUI?.appendError(
+        verdict.reason,
+        firstAttemptBudget(traceTurnId).sent > 0
+          ? `服务器暂时无法访问，已自动重试 ${firstAttemptBudget(traceTurnId).sent} 次仍失败。请检查网络后手动重试。`
+          : `请求失败（${verdict.reason}），本轮消息不会自动重发。`,
+      );
+      loopState.chatUI?.setBusy(false);
+      return response;
+    }
     if (!response.body) return response;
 
     const parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
     const sse = new SseTextStreamExtractor();
+    // QD-R4-03：fetch 路径此前完全没有 frame decoder，无法判定完成哨兵。
+    const frameDec = new DeepSeekSseFrameDecoder();
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     const stream = new ReadableStream<Uint8Array>({
@@ -450,17 +810,27 @@ function installFetchHook(
             if (done) break;
             // v0.7：先把原始 SSE 提取成可见纯文本（跨 chunk 不丢事件），再解析工具标签
             const rawSse = decoder.decode(value, { stream: true });
+            // QD-R7-01（F2）：累计本条流的字节数，供「0 字节 vs 有字节无哨兵」三态判定。
+            if (loopState) loopState.streamBytes = (loopState.streamBytes ?? 0) + rawSse.length;
+            // QD-R4-03：fetch 路径同样要判定完成哨兵（按 frame 判定，见 framesSignalStreamCompletion）。
+            // QD-R7-01（F4）：只有当前被认领的那条流才能写哨兵。
+            if (loopState && isActiveStream(loopState, streamId) && framesSignalStreamCompletion(frameDec.push(rawSse))) {
+              loopState.streamSawDone = true;
+            }
             const text = sse.feed(rawSse);
+            const { calls, clean } = parser.feed(text);
+            if (clean) interceptorTrace.record({ t: 'sse.frame', turnId: traceTurnId, kind: 'text', count: clean.length });
+            if (calls.length > 0) interceptorTrace.record({ t: 'sse.frame', turnId: traceTurnId, kind: 'tool', count: calls.length });
             // v0.19：推送可见文本给自建聊天 UI（80ms 节流 + markdown 实时渲染 + 光标）
-            if (loopState?.chatUI && text) loopState.chatUI.appendToAssistantMessage(text);
+            if (loopState?.chatUI && clean) loopState.chatUI.appendToAssistantMessage(clean);
             // v0.18：抽取推理文本到步骤笔记 + chat UI think 块（传累积全量快照）
             const rsn = sse.consumeReasoning();
             if (rsn) {
               stepReasoningAccum += rsn;
               stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
               if (loopState?.chatUI) loopState.chatUI.appendReasoning(stepReasoningAccum);
+              interceptorTrace.record({ t: 'sse.frame', turnId: traceTurnId, kind: 'think', count: rsn.length });
             }
-            const { calls } = parser.feed(text);
             for (const c of calls) forward(c);
             // 原样转发原始 SSE chunk，不修改内容（避免编码破坏 + SSE 解析器崩溃）
             controller.enqueue(value);
@@ -474,22 +844,57 @@ function installFetchHook(
           }
           if (sseTail) {
             // v0.19：尾部可见文本也推送给 chat UI
-            if (loopState?.chatUI) loopState.chatUI.appendToAssistantMessage(sseTail);
             const tailParsed = parser.feed(sseTail);
+            if (loopState?.chatUI && tailParsed.clean) {
+              loopState.chatUI.appendToAssistantMessage(tailParsed.clean);
+            }
             for (const c of tailParsed.calls) forward(c);
             // 尾部也原样转发
           }
+          // QD-R7-01（F1）：EOF 必须 flush frame 缓冲并重跑哨兵判定。
+          // 解码器只在空行上切 frame，而实测流尾那一段（event: close / FINISHED）
+          // 常常不带结尾空行 → 永远吐不出来 → 正常完成的流被判成截断。
+          // finish() 此前全项目零调用，XHR 与 fetch 两条路径都只往缓冲里 push。
+          const tailFrames = frameDec.finish();
+          if (loopState && isActiveStream(loopState, streamId) && framesSignalStreamCompletion(tailFrames)) {
+            loopState.streamSawDone = true;
+          }
           const fin = parser.flush();
           for (const c of fin.calls) forward(c);
-          // 尾部 flush 不发内容（原始 chunk 已转发）
+          // QD-R4-02：fetch 路径此前只取 fin.calls，flush 的残留 tail 被丢弃。
+          // 残留含 '<' 即代表有未闭合工具标签，必须标记为截断。
+          if (fin.clean && loopState && isActiveStream(loopState, streamId) && fin.clean.includes('<')) {
+            loopState.streamTruncatedTag = true;
+          }
         } catch (err) {
+          // QD-R4-06：此前 catch 里直接 return，streamActive 永远停在 true，
+          // onStreamEnd 不执行 → forward 的 .then 里 scheduleAutoContinue 的
+          // `!streamActive` 条件永不成立，工具循环卡死且 UI 无收尾。
+          if (loopState) {
+            loopState.streamActive = false;
+            interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'stream-error' });
+            try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+            loopState.chatUI?.appendError(
+              'stream-error',
+              '读取模型回复时连接中断，本轮不会自动重试。请重新发送该请求。',
+            );
+            loopState.chatUI?.setBusy(false);
+            if (typeof loopState.onStreamEnd === 'function') {
+              try { loopState.onStreamEnd(); } catch { /* ignore */ }
+            }
+          }
           controller.error(err);
           return;
         }
         controller.close();
         if (loopState) {
           loopState.streamActive = false;
+          // QD-R4-02/03：fetch 路径此前完全没有断流判定。XHR 一侧的 isDone 分支
+          // 只挂在 XHR 上，fetch 拉流时工具标签被截断 / 无完成哨兵依旧静默无反馈。
+          settleStreamEnd?.(loopState, pending, undefined, streamId);
           // 竞态修复：同 XHR 路径，工具结果先于流结束返回时通过 onStreamEnd 补触发
+          // QD-R7-01（F6）：结算命中不再吞掉收尾——此前 settle 返回 true 时这里
+          // 整段被跳过，页面侧那条助手消息永远不收尾，污染下一轮父节点。
           if (typeof loopState.onStreamEnd === 'function') {
             try { loopState.onStreamEnd(); } catch { /* ignore */ }
           }
@@ -506,6 +911,7 @@ function installFetchHook(
     window.fetch = origFetch;
   };
 }
+
 
 /**
  * 从 DeepSeek SSE 流的增量 chunk 里提取可见文本。
@@ -524,12 +930,26 @@ function installXhrHooks(
   loopState?: LoopState,
   capturedHeaders?: Record<string, string>,
   onStreamDelta?: (text: string) => void,
+  settleStreamEnd?: (
+    loopState: LoopState,
+    pending: PendingResult[],
+    httpStatus?: number,
+    streamId?: number,
+  ) => boolean,
+  escalateFirstAttemptFailure?: (code: string, why: string) => void,
 ): () => void {
   if (typeof XMLHttpRequest === 'undefined') return () => {};
   const proto = XMLHttpRequest.prototype;
   const origOpen = proto.open;
   const origSend = proto.send;
   const origSetRequestHeader = proto.setRequestHeader;
+  // QD-R4-04：包装 abort，让「用户主动停止」与「网络断开」在回调层可区分。
+  const origAbort = proto.abort;
+  proto.abort = function (this: XMLHttpRequest & Record<string, unknown>) {
+    (this as Record<string, unknown>)[DS_ABORTED_FLAG] = true;
+    if (loopState) loopState.abortedByUser = true;
+    return (origAbort as (...a: unknown[]) => unknown).apply(this, []);
+  } as typeof proto.abort;
 
   proto.setRequestHeader = function (this: XMLHttpRequest & Record<string, unknown>, name: string, value: string) {
     const url = String(this.__dsUrl ?? '');
@@ -549,6 +969,9 @@ function installXhrHooks(
     const url = String(this.__dsUrl ?? '');
     const method = String(this.__dsMethod ?? 'GET');
     const isChat = isDeepSeekChatEndpoint(url, method);
+    // QD-R7-01（F4）：本条 XHR 的流序号，在下面的 chat 分支里认领；
+    // 回调闭包按它判断「这条流还是不是当前被认领的那条」。
+    let streamId = STREAM_UNCLAIMED;
     diag(`xhr ${method} ${url} isChat=${isChat} bodyType=${typeof body}`);
     // 诊断：捕获页面正常发的 create_pow_challenge body
     if (url.includes('/create_pow_challenge') && typeof body === 'string') {
@@ -562,43 +985,42 @@ function installXhrHooks(
       // 只靠 parent_message_id===null 不够 —— 同一会话连续发任务时它永远非 null，导致 originalTask
       // 跨任务泄漏（上个任务的上下文污染当前任务）。续跑/nudge prompt 都带这些标签，用户消息不带。
       // 必须在 prepareOutgoingBody 之前抓原始 prompt（augmentation 会改写它）。
-      if (loopState) {
-        try {
-          const parsedBody = JSON.parse(body) as { prompt?: unknown };
-          if (typeof parsedBody.prompt === 'string' && parsedBody.prompt.trim()
-              && !parsedBody.prompt.includes('<original_task>')
-              && !parsedBody.prompt.includes('<tool_results')
-              && !parsedBody.prompt.includes('[TOOL_RESULTS]')) {
-            loopState.originalTask = parsedBody.prompt;
-            // v0.19：把用户原始 prompt 传回闭包，onNewUserMessage 会推送给 chat UI
-            loopState.newUserPrompt = parsedBody.prompt;
-            diag(`originalTask captured len=${loopState.originalTask.length}`);
-            if (typeof loopState.onNewUserMessage === 'function') {
-              try { loopState.onNewUserMessage(); } catch { /* ignore */ }
-            }
-          }
-        } catch { /* not json, ignore */ }
-      }
+      if (loopState) captureChatRequest(body, loopState, diag);
       const next = prepareOutgoingBody(body, pending);
       if (next !== null) {
         body = next;
         diag(`xhr chat body injected len=${next.length}`);
       }
       // v0.8：记住最近一次 chat 请求 body 作为自动续跑模板。
-      if (loopState) { loopState.lastChatBody = body; loopState.streamActive = true; }
+      if (loopState) {
+        loopState.lastChatBody = body;
+        loopState.streamActive = true;
+        loopState.sseErrorSeen = null;
+      }
+      // QD-R7-01（F4/F9/F10）：认领这条流（并清零本轮哨兵/截断/字节计数）；
+      // 若它是首轮重发，记一次「真实发出」——预算只认真发出去的请求。
+      streamId = loopState ? beginStream(loopState) : STREAM_UNCLAIMED;
+      if (loopState?.inFirstAttemptResend) firstAttemptBudget(traceTurnId).sent += 1;
+      interceptorTrace.record({ t: 'request.sent', turnId: traceTurnId, bytes: byteLengthOf(body) });
+      reportContextBudget(body, loopState?.chatUI);
     }
     const xhr = this;
     (xhr as Record<string, unknown>).__dsIsChat = isChat;
     const prev = xhr.onreadystatechange;
     xhr.onreadystatechange = (...args: unknown[]) => {
-      if (xhr.readyState === 4 && loopState) {
+      // QD-R6-01：断流结算只对对话端点成立。
+      // 此前 isDone / streamActive 重置对**所有** XHR 生效，于是页面启动阶段
+      // 那一批非对话请求（/api/v0/client/settings、/api/v0/chat/history_messages、
+      // gator.volces.com 埋点…）在 readyState=4 时逐个掉进 settleStreamEnd，
+      // 而本轮 streamSawDone 仍是 false → 被判「无完成哨兵」→ 计入首轮重试预算
+      // → 预算耗尽后每来一个非对话 XHR 就 append 一张 stream-incomplete 错误卡，
+      // 表现为「满屏执行未完成」。门禁补上 isChat 后，只有真正的 completion
+      // 流才参与哨兵/截断判定。
+      const isDone = xhr.readyState === 4 && !!loopState && isChat;
+      // QD-R7-01（F4）：旧流结束不再清 streamActive —— 它已不属于当前轮，
+      // 清了会让「当前流还在跑」的状态被误置为 false，提前触发续跑。
+      if (xhr.readyState === 4 && loopState && isChat && isActiveStream(loopState, streamId)) {
         loopState.streamActive = false;
-        // 竞态修复：工具结果可能在 XHR 结束前就返回了，
-        // 此时 streamActive=true 导致 scheduleAutoContinue 未触发；
-        // XHR 结束后通过 onStreamEnd 回调补查 pending。
-        if (typeof loopState.onStreamEnd === 'function') {
-          try { loopState.onStreamEnd(); } catch { /* ignore */ }
-        }
       }
       if (xhr.readyState >= 3) {
         const text = xhr.responseText;
@@ -607,6 +1029,8 @@ function installXhrHooks(
         xhr.__dsScanned = text.length;
         if (part && (xhr as Record<string, unknown>).__dsIsChat) {
           diag(`xhr resp[${part.length}]: ${part.slice(0, 400).replace(/\s+/g, ' ')}`);
+          // QD-R7-01（F2）：累计本条流的字节数，供三态判定用。
+          if (loopState) loopState.streamBytes = (loopState.streamBytes ?? 0) + part.length;
           // 提取 response_message_id（event: ready data: {"request_message_id":1,"response_message_id":2}）
           const m = part.match(/"response_message_id"\s*:\s*(\d+)/);
           if (m && loopState) loopState.lastResponseMsgId = parseInt(m[1], 10);
@@ -627,7 +1051,6 @@ function installXhrHooks(
           }
           // v1.5：用 frame decoder 从原始 SSE chunk 提取 data 文本（不经过显示用改写）
           const frames = frameDec.push(part);
-          let rawDataText = '';
           for (const frame of frames) {
             // R0-R5：识别流内 SSE 错误帧（event=error / status=0·429·500 载荷），
             // 200 状态码下也记录，供 readyState===4 分类，避免被当空回复 nudge。
@@ -636,59 +1059,23 @@ function installXhrHooks(
               recordVerdict({ status: xhr.status, verdict: sseErr.verdict, reason: sseErr.reason, attempt: 0 });
               loopState.sseErrorSeen = sseErr;
             }
-            // 从 frame.parsed 里提取原始 content（未 JSON 转义的文本）
-            if (frame.parsed && typeof frame.parsed === 'object') {
-              const obj = frame.parsed as {
-                p?: string;
-                v?: Array<{ type?: string; content?: string }> | string;
-              };
-              // v1.6：同时提取 fragment APPEND 的 content 数组 + 单字符 delta（v 是字符串）。
-              // 单字符 delta 是 DeepSeek 逐 token 下发工具标签字符的主要形式，漏掉它会导致
-              // 工具标签（<local_file_read> 等）的字符丢失，解析器收不到完整标签。
-              if (Array.isArray(obj.v)) {
-                for (const frag of obj.v) {
-                  if (typeof frag.content === 'string') {
-                    rawDataText += frag.content;
-                  }
-                }
-              } else if (typeof obj.v === 'string') {
-                // 只取 RESPONSE 内容路径的 delta（过滤 status/elapsed_secs 等控制字段、
-                // 以及 THINK 段的逐字 delta —— 后者由 activeFragmentType 判断，但
-                // rawDataText 是给工具解析用的原始流，THINK 段不含工具标签，可全收，
-                // 因为 parser 只认工具标签名，THINK 文本不会误匹配）。
-                const p = String(obj.p ?? '');
-                if (!p || /^response(\/|$)/.test(p)) {
-                  rawDataText += obj.v;
-                }
-              } else {
-                // 全量 response 快照：{"v":{"response":{...,"fragments":[{type,content}]}}}。
-                // 无 p 字段，既不是 string 也不是数组，旧实现三个分支全落空 → 快照里的
-                // content 被静默丢弃。真机后果：模型直接以工具标签开头时，标签首字符 `<`
-                // 就是这个初始 content，丢了它整条工具调用永远解析不出来（rawDataText 是
-                // 喂给 StreamingToolCallParser 的唯一来源，比 visible 更关键）。
-                // 快照累积重发，只取首次（frameDec 每 XHR 一个实例，用 __dsSnapSeen 记）。
-                const snap = snapshotFragments(frame.parsed);
-                if (snap) {
-                  if (!(xhr as Record<string, unknown>).__dsSnapSeen) {
-                    (xhr as Record<string, unknown>).__dsSnapSeen = true;
-                    for (const f of snap) {
-                      const c = (f as { content?: unknown })?.content;
-                      if (typeof c === 'string') rawDataText += c;
-                    }
-                  }
-                }
-              }
-            }
           }
           let visible = sse.feed(part);
           // readyState===4：流结束，刷出 SSE 缓冲区里最后一个不带换行的残留事件
           if (xhr.readyState === 4) visible += sse.flush();
+          // QD-R4-03：完成哨兵。必须按 frame 判定——字节边界可能把 frame
+          // 切在两次回调之间，对 part 做子串匹配会漏判 → 把正常流误报成截断。
+          // QD-R7-01（F4）：只有当前被认领的那条流才能写哨兵，否则就是「读到别人的结果」。
+          if (loopState && isActiveStream(loopState, streamId) && framesSignalStreamCompletion(frames)) {
+            loopState.streamSawDone = true;
+          }
           // v0.18：抽取推理文本到步骤笔记 + chat UI think 块
           const rsnX = sse.consumeReasoning();
           if (rsnX) {
             stepReasoningAccum += rsnX;
             stepFlow?.addReasoningNote(stepFlowStep, stepReasoningAccum);
             if (loopState?.chatUI) loopState.chatUI.appendReasoning(stepReasoningAccum);
+            interceptorTrace.record({ t: 'sse.frame', turnId: traceTurnId, kind: 'think', count: rsnX.length });
           }
           if (visible) {
             diag(`xhr extracted[${visible.length}]: ${visible.slice(0, 300).replace(/\s+/g, ' ')}`);
@@ -696,16 +1083,105 @@ function installXhrHooks(
             if (loopState && loopState.inAutoContinue) {
               loopState.autoReplyText += visible;
             }
-            // v0.19：推送可见文本给自建聊天 UI（原始请求和 auto-continue 两条路径都推送）
-            if (loopState?.chatUI) {
-              loopState.chatUI.appendToAssistantMessage(visible);
-            }
             // M9：流式 delta 推给宿主（web-engine onDelta）
             onStreamDelta?.(visible);
-            // v1.5：工具解析走原始 data 文本（不经过显示用改写），保住转义引号
-            const { calls } = parser.feed(rawDataText || visible);
+            // 统一走 SseTextStreamExtractor 的 RESPONSE 文本：它已过滤 THINK，
+            // 且 JSON 解析后保留工具标签参数中的正确转义。此前另建 rawDataText
+            // 会把 THINK 文本一起喂给工具解析器，最终被当成可见回答记录。
+            const { calls, clean } = parser.feed(visible);
+            if (clean) interceptorTrace.record({ t: 'sse.frame', turnId: traceTurnId, kind: 'text', count: clean.length });
+            if (calls.length > 0) interceptorTrace.record({ t: 'sse.frame', turnId: traceTurnId, kind: 'tool', count: calls.length });
+            // v0.19：parser.clean 已剔除完整/未完成的工具标签；不要按网络分片正则兜底，
+            // 否则跨 chunk 的半个标签仍可能闪过 Studio。
+            if (loopState?.chatUI && clean) {
+              loopState.chatUI.appendToAssistantMessage(clean);
+            }
             for (const c of calls) forward(c);
           }
+        }
+      }
+      if (isDone && loopState) {
+        // QD-R7-01（F1）：EOF 必须 flush frame 解码器并重跑哨兵判定。
+        // 解码器只在空行上切 frame，而流尾那段（event: close / response/status=FINISHED）
+        // 实测常常不带结尾空行 → finish() 之前它永远吐不出来 → 正常完成的流被判截断。
+        // finish() 此前全项目零调用（XHR / fetch 两条路径都只 push 不 finish）。
+        const tailDecoder = (xhr as Record<string, unknown>).__dsFrameDec as
+          | DeepSeekSseFrameDecoder
+          | undefined;
+        if (tailDecoder) {
+          const tailFrames = tailDecoder.finish();
+          if (isActiveStream(loopState, streamId) && framesSignalStreamCompletion(tailFrames)) {
+            diag('xhr tail frame flushed: completion sentinel found at EOF');
+            loopState.streamSawDone = true;
+          }
+        }
+        // QD-R4-02：XHR 路径此前只 feed 不 flush。流在工具标签中间断掉时，
+        // StreamingToolCallParser 把未闭合标签留在 tail，flush() 之前它既不会
+        // 变成 call 也不会被报错 —— 工具静默不执行、无提示、不续跑，
+        // 是「工具调用断流」最典型的失效模式。
+        //
+        // 必须放在 `if (part)` 之外：readyState=4 的那次回调通常没有新增字节
+        // （part 为空、字节偏移已在上一次 3 时消费完），写在 part 分支里等于
+        // 永远不执行。parser 挂在 xhr 上，跨回调保留，这里直接取。
+        const tailParser = (xhr as Record<string, unknown>).__dsParser as
+          | { flush: () => { calls: unknown[]; clean: string } }
+          | undefined;
+        if (tailParser && loopState) {
+          const tailFlush = tailParser.flush();
+          if (tailFlush.clean) {
+            diag(`xhr parser tail flushed len=${tailFlush.clean.length} head=${tailFlush.clean.slice(0, 120)}`);
+            if (isActiveStream(loopState, streamId) && tailFlush.clean.includes('<')) {
+              // 残留含 '<' → 有未闭合的工具标签。截断的工具调用必须可见，
+              // 不能像此前那样连标签带任务一起消失。
+              loopState.streamTruncatedTag = true;
+            }
+          }
+        }
+        // QD-R4-02/03/04：统一结算判定（与 fetch 路径共用同一函数）。
+        // 必须在分类之前：abort 与断网同为 readyState=4/status=0，
+        // classifyResponse(0) 一律 retryable/network-error；若本轮工具结果
+        // 已回到 pending，onStreamEnd 照常调度续跑 → 用户按下停止后仍发出新请求。
+        // QD-R5-01：透传 status，让结算函数能区分「断流」与「401/403 这类确定性失败」。
+        // QD-R7-01（F4/F6）：透传本条流的序号（并发时只结算自己的流），
+        // 并且结算命中不再 return 掉后面的收尾——此前 return 让 onStreamEnd 永不执行，
+        // 页面侧那条助手消息永远不收尾，父节点残留 → 下一轮更容易再判错。
+        const settled = settleStreamEnd?.(loopState, pending, xhr.status, streamId) === true;
+        if (!settled) {
+        // QD-R5-01：首轮重发链（含续跑轮）的失败由 autoContinueWithPow 的执行器
+        // 分类并升级，这里不再插手——否则一次失败会被计两次预算。
+        if (!loopState.inAutoContinue) {
+          const firstVerdict = loopState.sseErrorSeen ?? classifyResponse(xhr.status, xhr.responseText);
+          if (firstVerdict.verdict !== 'ok') {
+            // QD-R5-01：首轮 retryable 失败（断连 / 5xx / 限流）先自动重试。
+            // 重发由外层的 scheduleFirstAttemptResend 完成——hook 作用域里没有请求入口，
+            // 也不该在这里再造一条发送路径。这里只做三件事：计预算、提示用户、
+            // 把 lastChatBody 交回续跑机制（它在 loopState 上，XHR open 时已存）。
+            if (firstVerdict.verdict === 'retryable') {
+              // QD-R5-01：预算内原样重发，耗尽由 escalate 统一上报「已自动重试 N 次仍失败」。
+              // QD-R7-01（F4）：不再手工清哨兵标记——下一条流 beginStream 时会清，
+              // 并发时手工改这里正是在改「别人的」状态。
+              loopState.streamActive = false;
+              escalateFirstAttemptFailure?.(firstVerdict.reason, '服务器暂时无法访问');
+              return;
+            }
+            try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+            loopState.chatUI?.appendError(
+              firstVerdict.reason,
+              firstVerdict.reason === 'network-error'
+                ? (firstAttemptBudget(traceTurnId).sent > 0
+                  ? `服务器暂时无法访问，已自动重试 ${firstAttemptBudget(traceTurnId).sent} 次仍失败。请检查网络后手动重试。`
+                  : '服务器暂时无法访问。本轮消息不会自动重发，请检查网络后手动重试。')
+                : `请求失败（${firstVerdict.reason}），本轮消息不会自动重发。`,
+            );
+            loopState.chatUI?.setBusy(false);
+          }
+        }
+        }
+        // 竞态修复：工具结果可能在 XHR 结束前就返回了，
+        // 此时 streamActive=true 导致 scheduleAutoContinue 未触发；
+        // XHR 结束后通过 onStreamEnd 回调补查 pending。
+        if (typeof loopState.onStreamEnd === 'function') {
+          try { loopState.onStreamEnd(); } catch { /* ignore */ }
         }
       }
       if (typeof prev === 'function') (prev as (...a: unknown[]) => unknown).apply(xhr, args);
@@ -716,6 +1192,9 @@ function installXhrHooks(
   return () => {
     proto.open = origOpen;
     proto.send = origSend;
+    // QD-R4-04 候选 a（报告第 2 节登记）：同步恢复 abort。
+    // 不恢复会造成「卸载后页面 abort 行为被改写」的泄漏，属于 hook 卫生问题。
+    proto.abort = origAbort;
   };
 }
 
@@ -734,7 +1213,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     if (g.__studioMemories) currentMemories = g.__studioMemories;
   }
   // v0.8：自动工具循环——记住最近一次 chat 请求的 body 模板 + 当前流是否结束。
-  const loopState: LoopState = { lastChatBody: null as string | null, streamActive: false, lastResponseMsgId: null as number | null, autoReplyText: '', inAutoContinue: false, autoReplyHadTools: false, originalTask: '', chatUI };
+  const loopState: LoopState = { lastChatBody: null as string | null, streamActive: false, lastResponseMsgId: null as number | null, autoReplyText: '', inAutoContinue: false, autoReplyHadTools: false, streamHadTools: false, originalTask: '', chatUI };
   let autoContinueTimer: ReturnType<typeof setTimeout> | null = null;
   let loopDepth = 0;
   // v1.6：跨整个循环累积的工具执行结果（对标 deepseek-pp collectedExecutions）。
@@ -750,7 +1229,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
 
   // QD-R2-09/10：finishStepFlow 提到外层作用域，pow 与 nudge 共用。
   // 原定义在 autoContinueWithPow 的 xhr executor 里是局部常量，nudge 拿不到 → nudge fatal 时 UI 永不复位。
-  const finishStepFlow = (): void => {
+  const finishStepFlow = (error?: { code: string; message?: string }): void => {
     if (stepFlow) {
       stepFlow.finish(stepFlowStep + 1, stepFlowToolCount, Math.round((Date.now() - stepFlowStartTime) / 1000));
       const sf = stepFlow;
@@ -762,21 +1241,108 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     chatUI?.setBusy(false);
     // QD-R2-09：错误路径上 assistant 气泡收尾，否则上一轮 startAssistantMessage 建的容器
     // 永远挂着闪烁光标（视觉上「还在输出」）。
-    try { chatUI?.finishAssistantMessage(); } catch { /* ignore */ }
+    try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+    if (error) chatUI?.appendError(error.code, error.message);
   };
-
-  // QD-R2-11：重放头过滤统一出口。pow 与 nudge 必须用同一套规则——
-  // 上次只改了 pow 路径（黑名单剔 content-type/length/x-ds-pow-response），nudge 还走 filterReplayableHeaders
-  // 白名单，导致 nudge 请求缺一次性会话头 → 422 → fatal → UI 卡死。
-  const replayHeaders = (src: Record<string, string>): Record<string, string> => {
-    const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(src)) {
-      const lower = k.toLowerCase();
-      if (lower === 'content-type' || lower === 'content-length' || lower === 'x-ds-pow-response') continue;
-      out[k] = v;
+/**
+ * QD-R4-02/03/04：流结束时的统一结算判定。
+ *
+ * 三处「断流」缺陷的共性是：XHR 与 fetch 两条路径各自收尾，判定只写在 XHR 一侧
+ * （`isDone` 分支），fetch 路径完全没有——工具标签被截断、流无完成哨兵、
+ * 用户主动停止，在 fetch 路径上依旧静默无反馈。
+ *
+ * 抽成共享函数让两条路径走同一套语义；返回 true 表示「本轮已定性，不必再走外层分类」。
+ * 注意（QD-R7-01 / F6）：返回 true **不再**表示调用方要跳过收尾——onStreamEnd 必须照常执行，
+ * 否则页面侧那条助手消息永远不收尾，父节点残留会污染下一轮判定。
+ */
+  function settleStreamEnd(
+    loopState: LoopState,
+    pending: PendingResult[],
+    httpStatus?: number,
+    streamId?: number,
+  ): boolean {
+    // QD-R7-01（F4）：只结算「当前被认领的那条流」。并发时晚到的旧流若也结算，
+    // 读到的就是别人的 streamSawDone / streamBytes —— 实测 243ms 内三次结算、
+    // 零真实重试，就是这条路径。旧流到此为止：不动 UI、不动预算。
+    if (streamId !== undefined && streamId !== STREAM_UNCLAIMED && loopState.activeStreamId !== streamId) {
+      d(`stream end: stale stream #${streamId} (active=#${String(loopState.activeStreamId)}), skip settle`);
+      return true;
     }
-    return out;
-  };
+    // R4-04：用户主动停止是预期行为，不叠加「截断」提示，也不续跑。
+    if (loopState.abortedByUser) {
+      d('stream end: aborted by user, stop without retry/continuation');
+      if (loopState.cancelAutoContinue) loopState.cancelAutoContinue();
+      const timer = loopState.autoContinueTimerRef;
+      if (timer) { clearTimeout(timer); loopState.autoContinueTimerRef = null; }
+      continuationRetryPending = false;
+      pending.length = 0;
+      interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'user-aborted', triggered: false });
+      interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'user-aborted' });
+      try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+      loopState.chatUI?.setBusy(false);
+      return true;
+    }
+    // R4-02：半截工具标签一定伴随无哨兵（流断了），但反过来不成立。
+    // 先报更具体的那个，用户才知道是「模型想调工具但没调成」。
+    if (loopState.streamTruncatedTag) {
+      d('stream end: truncated tool tag detected, report to user');
+      interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'truncated-tool-tag' });
+      try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+      loopState.chatUI?.appendError(
+        'tool-call-truncated',
+        '模型输出的工具调用被网络中断截断，本轮不会自动重试。请重新发送该请求。',
+      );
+      loopState.chatUI?.setBusy(false);
+      return true;
+    }
+    // QD-R7-01（F2）：三态判定 —— complete / truncated / no-stream。
+    // 0 字节说明这一轮根本没有流（非对话 XHR、被 abort 的空请求、空响应体），
+    // 既不是截断、也不该消耗首轮重试预算。此前一律按「无哨兵 = 断流」处理，
+    // 于是每个空 XHR 都烧一次预算并 append 一张错误卡 —— 就是「满屏执行未完成」。
+    if (!loopState.streamSawDone && (loopState.streamBytes ?? 0) === 0) {
+      d('stream end: no bytes received (no-stream), not a truncation');
+      interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'no-stream' });
+      // 交回外层：classifyResponse 会给 401/403/5xx 正确文案；200 空响应则静默放行。
+      return false;
+    }
+    // R4-03：无完成哨兵 = 流被截断。此前这种轮次被当成「正常完成」收尾。
+    // R4-03: no completion sentinel = stream truncated.
+    // QD-R5-01: retry a first-attempt break before surfacing it.
+    if (!loopState.streamSawDone) {
+      // QD-R5-01 修正：确定性 HTTP 失败不是断流。401/403/402/4xx 重发同一份 body
+      // 必然同样失败，还会把「鉴权失败」误报成「连接中断」——此前正是如此。
+      // 交回外层 classifyResponse 出正确文案，不占用首轮重试预算。
+      const httpVerdict = httpStatus === undefined ? null : classifyResponse(httpStatus, null);
+      if (httpVerdict?.verdict === 'fatal') {
+        d(`stream end: no sentinel but http ${httpStatus} is ${httpVerdict.reason}, defer to classifier`);
+        return false;
+      }
+      // 续跑轮（含首轮重发链）由 autoContinueWithPow 的执行器分类，
+      // 这里只负责首轮原始请求，否则会抢在业务 handler 之前把它吃掉。
+      if (loopState.inAutoContinue) return false;
+      d(`stream end: no completion sentinel, bytes=${loopState.streamBytes ?? 0}, retries-sent=${firstAttemptBudget(traceTurnId).sent}`);
+      if (!loopState.inAutoContinue) {
+        // status=0/429/5xx 与 200 截断在回调层同构，只有原样重发才能区分
+        // 「网络抖动」和「模型半句截断」。预算内重发，耗尽由 escalate 统一上报。
+        escalateFirstAttemptFailure(
+          httpVerdict?.verdict === 'retryable' ? httpVerdict.reason : 'stream-incomplete',
+          httpVerdict?.verdict === 'retryable' ? '服务器暂时无法访问' : '模型回复未完整接收（连接中断）',
+        );
+        return true;
+      }
+      interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'stream-incomplete' });
+      try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+      loopState.chatUI?.appendError(
+        'stream-incomplete',
+        firstAttemptBudget(traceTurnId).sent > 0
+          ? `模型回复未完整接收（连接中断），已自动重试 ${firstAttemptBudget(traceTurnId).sent} 次仍失败。请稍后手动重试。`
+          : '模型回复未完整接收（连接中断），本轮不会自动重试。请重新发送该请求。',
+      );
+      loopState.chatUI?.setBusy(false);
+      return true;
+    }
+    return false;
+  }
 
   const forward = (call: ParsedToolCall): void => {
     console.log('[interceptor] forward:', call.invocationName, JSON.stringify(call.params).slice(0, 150));
@@ -787,19 +1353,28 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     }
     const callId = call.id || crypto.randomUUID();
     const startedAt = Date.now();
+    interceptorTrace.record({
+      t: 'tool.parsed',
+      turnId: traceTurnId,
+      name: call.invocationName,
+      status: call.params && call.params.__invalid_json ? 'invalid-json' : 'ok',
+    });
     // v1.6：auto-continue 期间检测到工具调用 → 标记，readyState===4 时据此走续跑而非 nudge。
+    loopState.streamHadTools = true;
     if (loopState.inAutoContinue) loopState.autoReplyHadTools = true;
 
-    // v0.9：在页面上创建工具调用卡片（替代原始 XML 标签展示）
+    const cardData = { toolName: call.invocationName, params: call.params as Record<string, unknown> };
+    // DOM 隔离：只写 Studio 自有助手节点；没有 Studio 根节点时跳过，绝不回退到原生消息 DOM。
     try {
-      stripRawToolTagsFromMessage();
-      createToolCard({ toolName: call.invocationName, params: call.params as Record<string, unknown> }, callId);
+      if (!chatUI?.startToolCard(callId, cardData)) {
+        d('forward: no studio assistant root, skip tool card render');
+      }
     } catch (e) {
-      d(`forward: createToolCard failed: ${e instanceof Error ? e.message : String(e)}`);
+      d(`forward: studio tool card failed: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     // v1.3：步骤流 UI —— 第一次工具调用时创建状态栏（固定在输入框上方，不随对话滚动）
-    if (!stepFlow) {
+    if (!stepFlow && !chatUI) {
       // 清掉残留的旧状态栏
       document.querySelectorAll('.ds-sf-container').forEach((n) => n.remove());
       // v0.19：不再搜索 DeepSeek composer 选择器（obfuscated class 名太脆弱）。
@@ -818,7 +1393,6 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       stepFlow.addToolEntry(stepFlowStep, call.invocationName, call.params);
       stepFlow.setPhase('running', stepFlowStep, stepFlowToolCount);
     }
-    const cardData = { toolName: call.invocationName, params: call.params as Record<string, unknown> };
     // F3 修复：JSON 解析失败的工具调用，直接回填错误，不投递宿主
     if (call.params && call.params.__invalid_json) {
       d(`forward: invalid JSON for ${call.invocationName}, err=${call.params.__error}`);
@@ -829,7 +1403,15 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       };
       pending.push(r);
       collectedExecutions.push(r);
-      try { updateToolCardByCallId(callId, cardData, { ok: false, error: `invalid-tool-json: ${call.params.__error}` }, Date.now() - startedAt); } catch { /* ignore */ }
+      try {
+        chatUI?.finishToolCard(
+          callId,
+          cardData,
+          { ok: false, error: `invalid-tool-json: ${call.params.__error}` },
+          Date.now() - startedAt,
+        );
+      } catch { /* ignore */ }
+      interceptorTrace.record({ t: 'tool.exec', turnId: traceTurnId, name: call.invocationName, ok: false, durationMs: Date.now() - startedAt });
       if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
         scheduleAutoContinue();
       }
@@ -847,7 +1429,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
           stepFlow.resolveToolEntry(stepFlowStep, r.ok, detail);
         }
         try {
-          updateToolCardByCallId(
+          chatUI?.finishToolCard(
             callId,
             cardData,
             {
@@ -862,6 +1444,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
             Date.now() - startedAt,
           );
         } catch { /* ignore */ }
+        interceptorTrace.record({ t: 'tool.exec', turnId: traceTurnId, name: call.invocationName, ok: r.ok, durationMs: Date.now() - startedAt });
         if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
           scheduleAutoContinue();
         }
@@ -875,7 +1458,15 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
         if (stepFlow) {
           stepFlow.resolveToolEntry(stepFlowStep, false, e instanceof Error ? e.message : String(e));
         }
-        try { updateToolCardByCallId(callId, cardData, { ok: false, error: e instanceof Error ? e.message : String(e) }, Date.now() - startedAt); } catch { /* ignore */ }
+        try {
+          chatUI?.finishToolCard(
+            callId,
+            cardData,
+            { ok: false, error: e instanceof Error ? e.message : String(e) },
+            Date.now() - startedAt,
+          );
+        } catch { /* ignore */ }
+        interceptorTrace.record({ t: 'tool.exec', turnId: traceTurnId, name: call.invocationName, ok: false, durationMs: Date.now() - startedAt });
         if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
           scheduleAutoContinue();
         }
@@ -888,19 +1479,117 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     const pendingResults = pending.map((p) => p.result as { terminate?: boolean } | undefined);
     if (shouldSkipAutoContinue(pendingResults)) {
       console.log('[autoContinue] skipped by terminate');
+      interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'terminate', triggered: false });
       return;
+    }
+    // MAX_AUTO_CONTINUE（移植 dpp）：空转续轮独立封顶。
+    // 本轮无工具结果却仍要续跑 = 模型吐一半断流的空转，最多 3 次；含工具的正式续跑走 MAX_LOOP。
+    //
+    // QD-R4-03：此前这个分支是死代码 —— 全部调用点都保证 pending>0，
+    // 且即便执行，1s 后的定时器回调也会被 autoContinueWithPow 的 pending 守卫 return。
+    // R4-01 给守卫加了 continuationRetryPending 豁免，这里显式置位该标志，
+    // 让「工具调用被截断、结果还没回来」的空转续跑真正能发出去。
+    if (pending.length === 0) {
+      idleContinueCount += 1;
+      if (idleContinueCount > MAX_AUTO_CONTINUE) {
+        d(`auto-continue idle cap reached ${idleContinueCount}/${MAX_AUTO_CONTINUE}, stop`);
+        interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'auto-continue-max', triggered: false });
+        interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'auto-continue-max' });
+        finishStepFlow({
+          code: 'stream-cut',
+          message: `模型连续 ${MAX_AUTO_CONTINUE} 次输出不完整，已停止自动续跑。可以手动重试或换个说法。`,
+        });
+        loopDepth = 0;
+        return;
+      }
+      continuationRetryPending = true;
     }
     if (autoContinueTimer) clearTimeout(autoContinueTimer);
     autoContinueTimer = setTimeout(() => {
       autoContinueTimer = null;
-      autoContinueWithPow();
+      void autoContinueWithPow();
     }, 1000);
+  }
+
+  /**
+   * QD-R5-01：安排一次「原样重发上一份 chat 请求体」。
+   *
+   * 与 scheduleAutoContinue 的区别：那条路径发的是「续跑 prompt」（带原始任务 +
+   * 窗口化工具历史）。首轮失败时还没有任何工具结果，套续跑 prompt 等于把
+   * 「重发同一个问题」变成「拿着空 <tool_results> 的续跑」。
+   */
+  function scheduleFirstAttemptResend(delayMs?: number): void {
+    firstAttemptResendActive = true;
+    firstAttemptResendPending = true;
+    // 豁免 autoContinueWithPow 的 pending 守卫（重发不依赖 pending）。
+    continuationRetryPending = true;
+    if (autoContinueTimer) clearTimeout(autoContinueTimer);
+    autoContinueTimer = setTimeout(() => {
+      autoContinueTimer = null;
+      void autoContinueWithPow();
+    }, delayMs ?? 1000);
+  }
+
+  /**
+   * QD-R5-01：首轮（非续跑）失败的统一升级点。
+   *
+   * 修复前这里只有 appendError + setBusy(false)：一次网络抖动就要用户手动重发，
+   * 这正是「满屏 服务器暂时无法访问 / stream-incomplete」的成因。
+   *
+   * 预算内 → 退避后原样重发；耗尽 → 收尾并明确告知已重试几次（不再假装没试过）。
+   * 注意（QD-R7-01 / F10）：预算按「重试请求真实发出的次数」结算（sent），
+   * 「已排入队列的次数」（scheduled）只用来防止「发不出去却无限排队」。
+   * 修复前是在这里就 +1，于是三次结算就能烧穿 2 次预算、报出从未发生过的重试。
+   * @param code UI 错误码
+   * @param why  失败原因的中文主语（「服务器暂时无法访问」/「模型回复未完整接收（连接中断）」）
+   */
+  function escalateFirstAttemptFailure(code: string, why: string): void {
+    if (loopState.abortedByUser) {
+      d('first-attempt failure suppressed: user aborted this turn');
+      firstAttemptResendActive = false;
+      firstAttemptResendPending = false;
+      return;
+    }
+    const budget = firstAttemptBudget(traceTurnId);
+    if (budget.sent >= FIRST_ATTEMPT_MAX_RETRIES || budget.scheduled >= FIRST_ATTEMPT_MAX_RETRIES + 1) {
+      d(`first-attempt retryable: reason=${code} budget out (sent=${budget.sent} scheduled=${budget.scheduled})`);
+      interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'first-attempt-retry-out' });
+      loopState.streamActive = false;
+      firstAttemptResendActive = false;
+      firstAttemptResendPending = false;
+      try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+      loopState.chatUI?.appendError(
+        code,
+        `${why}，已自动重试 ${budget.sent} 次仍失败。请检查网络后手动重试。`,
+      );
+      loopState.chatUI?.setBusy(false);
+      return;
+    }
+    budget.scheduled += 1;
+    const delay = errorBackoffMs(budget.scheduled - 1);
+    d(`first-attempt retryable: reason=${code} scheduled retry ${budget.scheduled}/${FIRST_ATTEMPT_MAX_RETRIES} in ${delay}ms (sent so far=${budget.sent})`);
+    interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'first-attempt-retry', triggered: true });
+    loopState.streamActive = false;
+    try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+    loopState.chatUI?.appendError(
+      code,
+      `${why}，正在自动重试（${budget.scheduled}/${FIRST_ATTEMPT_MAX_RETRIES}）...`,
+    );
+    scheduleFirstAttemptResend(delay);
   }
 
   // 竞态修复：流结束时补查 pending，工具结果先于流结束返回时触发续跑
   loopState.onStreamEnd = () => {
-    if (pending.length > 0 && loopState.lastChatBody && loopDepth < MAX_LOOP) {
-      scheduleAutoContinue();
+    if ((pending.length > 0 || loopState.streamHadTools) && loopState.lastChatBody && loopDepth < MAX_LOOP) {
+      if (pending.length > 0) scheduleAutoContinue();
+      interceptorTrace.record({
+        t: 'continuation.decision',
+        turnId: traceTurnId,
+        reason: pending.length > 0 ? 'tools-pending' : 'tools-returned',
+        triggered: pending.length > 0,
+      });
+      // 合并回合：工具续跑期间保持同一助手消息打开，过程与正文在同一消息里按叙事流累积；
+      // 消息只在循环真正结束（无工具续跑）或错误路径时收尾。
     } else if (stepFlow && loopDepth === 0) {
       // v1.8：只有 loopDepth===0（连第一次续跑都没进入）才说明循环真正结束。
       // 之前无此守卫，fetch+XHR 两条 SSE 路径各触发一次 onStreamEnd，
@@ -913,19 +1602,66 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       stepFlowStep = 0;
       stepFlowToolCount = 0;
       setTimeout(() => sf.destroy(), 3000);
+      interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'no-tools', triggered: false });
+      interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: true, stopReason: 'completed' });
+    } else if (chatUI && !loopState.inAutoContinue) {
+      // 无工具/无续跑的普通回合，在 XHR 流结束时完成 Markdown 定稿。
+      try { chatUI.finishAssistantMessage(); } catch { /* ignore */ }
+      interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'no-tools', triggered: false });
+      interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: true, stopReason: 'completed' });
     }
   };
 
   // v1.6：新用户消息到达 → 重置循环累积状态（hook 函数在闭包外，只能经此回调通知）。
   // v0.19：同时把用户消息推送给 chat UI，并创建新的助手回复流式容器。
+  // QD-R4-04：把「取消在飞续跑」暴露给 XHR hook（用户 abort 分支用）。
+  loopState.cancelAutoContinue = () => {
+    if (autoContinueTimer) { clearTimeout(autoContinueTimer); autoContinueTimer = null; }
+    continuationRetryPending = false;
+    loopState.autoContinueTimerRef = autoContinueTimer;
+  };
   loopState.onNewUserMessage = () => {
+    // QD-R4-05：新用户消息必须继承一张干净的桌面。
+    // 上一回合 pending 里的迟到工具结果会被 prepareOutgoingBody 当成本轮上下文
+    // 注入 prompt 尾部（`【工具执行结果】[tool-result:shell_exec] ok`），
+    // 模型把 A 的结果当成 B 的前提继续推理；1s 续跑定时器若仍存活，
+    // 还会用 B 的 lastChatBody 发出一次「续跑 B」的并发请求。
+    // 只靠 onNewUserMessage 触发时机清是不够的——captureChatRequest 识别到
+    // 新用户消息时先回本回调，prepareOutgoingBody 才在 XHR/fetch hook 里跑，
+    // 所以这里清了，本次请求体就是干净的。
+    pending.length = 0;
+    if (autoContinueTimer) { clearTimeout(autoContinueTimer); autoContinueTimer = null; }
+    continuationRetryPending = false;
+    idleContinueCount = 0;
     collectedExecutions.length = 0;
     loopDepth = 0;
     errorRetryCount = 0;
+    // QD-R7-01（F9）：首轮重试预算随轮次作废，不再是一个全局数字。
+    firstAttemptBudgets.delete(traceTurnId);
+    firstAttemptResendActive = false;
+    firstAttemptResendPending = false;
     loopState.sseErrorSeen = null;
     loopState.autoReplyHadTools = false;
+    loopState.streamHadTools = false;
+    // QD-R7-01（F4）：把上一回合可能仍在飞的流一律作废（unclaim），
+    // 它的回调此后再结算就会发现自己是 stale，不会动新回合的 UI/预算。
+    loopState.activeStreamId = STREAM_UNCLAIMED;
+    loopState.streamBytes = 0;
+    loopState.streamSawDone = false;
+    loopState.streamTruncatedTag = false;
+    loopState.abortedByUser = false;
+    // 上一回合的临时桶可能还带着历史事件。新回合开始前显式把 UI 切到干净的
+    // route: 会话，否则新对话时上一段结果会残留在消息列表里。
+    if (chatUI && chatUI.sessionKey.startsWith('route:')) {
+      void chatUI.activateSession(chatUI.sessionKey);
+    }
     d('new user message: reset collectedExecutions/loopDepth/errorRetryCount');
     if (chatUI) {
+      if (loopState.newChatSessionId) {
+        const nextKey = normalizeChatSessionKey(loopState.newChatSessionId);
+        const migrateFrom = chatUI.sessionKey.startsWith('route:') ? chatUI.sessionKey : undefined;
+        void chatUI.activateSession(nextKey, { migrateFrom });
+      }
       if (loopState.newUserPrompt) {
         chatUI.addUserMessage(loopState.newUserPrompt);
       }
@@ -935,17 +1671,41 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   };
 
   async function autoContinueWithPow(): Promise<void> {
-    if (!loopState.lastChatBody || pending.length === 0 || loopDepth >= MAX_LOOP) return;
-    loopDepth += 1;
+    // QD-R4-01：重试入口豁免 pending 守卫。
+    // 续跑发出前 pending 已被清空（F8 修复），若此处仍要求 pending>0，
+    // 429/5xx/断网后的退避定时器回调会被第一行守卫挡死，一次重试都发不出去。
+    if (!loopState.lastChatBody) return;
+    if (pending.length === 0 && !continuationRetryPending) return;
+    // QD-R5-01：首轮重发必须原样重发。套上 <original_task>/<tool_results> 会把
+    // 「重发同一个问题」变成「拿着空工具结果的续跑」，模型的回答会漂。
+    const resendVerbatim = firstAttemptResendPending;
+    firstAttemptResendPending = false;
+    if (resendVerbatim) loopState.inFirstAttemptResend = true;
+    // QD-R4-04：用户主动停止后，任何续跑（含定时器回调）一律不再发出。
+    if (loopState.abortedByUser) {
+      d('auto-continue suppressed: user aborted this turn');
+      continuationRetryPending = false;
+      return;
+    }
+    // 重试不应消耗 loopDepth：它是「工具续跑」的步数预算，
+    // 一次 429 就吃掉一步会让真正的工具轮次被提前耗尽。
+    if (!continuationRetryPending) loopDepth += 1;
+    continuationRetryPending = false;
+    if (!resendVerbatim) loopDepth += 1;
     // v0.18：步骤编号随续跑递增，工具归到对应步骤
     stepFlowStep = loopDepth;
     stepReasoningAccum = '';
     loopState.streamActive = true;
     loopState.autoReplyHadTools = false;
-    // UI 渲染修复：auto-continue 每轮创建新消息容器，否则回复追加到旧消息上不显示
-    if (chatUI) {
-      chatUI.startAssistantMessage({ name: `回合 ${loopDepth}`, type: 'main-bot' });
-    }
+    loopState.streamHadTools = false;
+    // QD-R7-01（F4）：作废上一条流（如果有），哨兵/截断/字节计数由随后的
+    // beginStream 在认领新流时统一清零 —— 这里不再手工写三个共享标记。
+    loopState.activeStreamId = STREAM_UNCLAIMED;
+    loopState.streamBytes = 0;
+    loopState.streamSawDone = false;
+    loopState.streamTruncatedTag = false;
+    // 合并回合：不再每轮续跑新建"回合 N"气泡；当前消息在 onStreamEnd 保持打开，
+    // 若被错误路径提前收尾，appendToAssistantMessage/startToolCard 会自动补开一条。
     try {
       // v1.6：续跑 prompt 带原始任务 + 窗口化全部历史 + 工具目录（移植自 deepseek-pp
       // buildContinuationPrompt）。collectedExecutions 跨循环累积，pending 只是本轮回填缓冲。
@@ -957,19 +1717,31 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       pending.length = 0;
 
       let bodyStr = loopState.lastChatBody;
-      try {
-        const parsed = JSON.parse(bodyStr) as Record<string, unknown>;
-        parsed.prompt = continuationPrompt;
-        if (loopState.lastResponseMsgId != null) {
-          parsed.parent_message_id = loopState.lastResponseMsgId;
-        }
-        bodyStr = JSON.stringify(parsed);
-      } catch { /* keep original */ }
+      if (resendVerbatim) {
+        // QD-R7-01（F8）：重试必须幂等 —— 逐字节重发上一份 body，不做任何改写。
+        // 修复前这里会把 parent_message_id 改写成上一轮的 response_message_id（即那条
+        // 没写完的消息），于是「重发同一个问题」变成「接在残句后面继续生成」：
+        // 重试不是原样重放，失败会自我放大，父节点也被污染。
+        // 也不做 JSON 往返 —— JSON.parse→stringify 会丢掉原始空白与键序，不再逐字节相等。
+        d(`first-attempt retry: resend lastChatBody verbatim (retry #${firstAttemptBudget(traceTurnId).scheduled}/${FIRST_ATTEMPT_MAX_RETRIES})`);
+      } else {
+        try {
+          const parsed = JSON.parse(bodyStr) as Record<string, unknown>;
+          parsed.prompt = continuationPrompt;
+          // 续跑路径保留父节点改写：这才是「接着上一条消息继续」，语义正确。
+          if (loopState.lastResponseMsgId != null) {
+            parsed.parent_message_id = loopState.lastResponseMsgId;
+          }
+          bodyStr = JSON.stringify(parsed);
+        } catch { /* keep original */ }
+      }
 
+      interceptorTrace.record({ t: 'request.sent', turnId: traceTurnId, bytes: byteLengthOf(bodyStr) });
+      reportContextBudget(bodyStr, loopState.chatUI);
       d(`auto-continue loop=${loopDepth} computing PoW... capturedHeaders=${JSON.stringify(Object.keys(capturedHeaders))}`);
 
-      // 重放头：统一走外层 replayHeaders（QD-R2-11，与 nudge 共用）。
-      const filteredHeaders = replayHeaders(capturedHeaders);
+      // 重放头：统一使用白名单，剔除 x-hif-*、Cookie、CSRF、旧 PoW 等一次性凭证。
+      const filteredHeaders = filterReplayableHeaders(capturedHeaders);
 
       // 算 POW headers
       const powHeaders = await createPowHeaders(filteredHeaders);
@@ -985,9 +1757,15 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
         xhr.open('POST', '/api/v0/chat/completion', true);
         xhr.setRequestHeader('Content-Type', 'application/json');
         for (const [k, v] of Object.entries(filteredHeaders)) {
+          if (k.toLowerCase() === 'content-type') continue;
           try { xhr.setRequestHeader(k, v); } catch { /* ignore */ }
         }
         for (const [k, v] of Object.entries(powHeaders)) {
+          // QD-R7-01（F15）：powHeaders 里自带一个 Content-Type（pow.ts:112），
+          // 上面已经显式设过一次，这里再设一次会被拼成
+          // `Content-Type: application/json, application/json` → 服务端 422
+          // → 自动续跑直接掐死。第一条循环早有这个 continue，第二条漏了。
+          if (k.toLowerCase() === 'content-type') continue;
           try { xhr.setRequestHeader(k, v); } catch { /* ignore */ }
         }
         // QD-R2-09/10：收尾统一走外层 finishStepFlow（含 finishAssistantMessage）。
@@ -1001,68 +1779,99 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
             const reply = loopState.autoReplyText.trim();
             const hadTools = loopState.autoReplyHadTools;
             d(`auto-continue reply len=${reply.length} hadTools=${hadTools} hasCallback=${typeof onAssistantReply}`);
-            if (reply) {
-              // v0.32 修复：只在「本轮无工具调用」时把回复推给宿主。
-              // 有工具的回合是中间态——页端拦截器已 forward 工具 + 自动续跑，宿主此时
-              // 不该拿到回复（拿到也是带 <shell_exec> 标签的半截文本）。旧实现无条件推，
-              // 导致宿主 AgentLoop 抓到中间回合（toolCalls=0 + content 含原始标签）→
-              // 格式纠偏循环 → 永不 emit assistant → 聊天室收不到任何回复。
-              // 无工具回合 = 循环走到最终回答，这时推干净的散文（剥标签）给宿主。
-              if (!hadTools) {
-                const cleanReply = stripRawToolTags(reply).trim();
-                if (cleanReply) {
-                  try { onAssistantReply?.(cleanReply, loopDepth); } catch (e) { d(`auto-continue push failed: ${(e as Error).message}`); }
-                } else {
-                  d(`auto-continue reply all-tool-text (stripped to empty), skipping push`);
-                }
-              } else {
-                d(`auto-continue turn had tools, not pushing to host (interceptor will auto-continue)`);
-              }
-              // v0.19：auto-continue 回复已通过 SSE 拦截推送给了 chat UI（appendToAssistantMessage）。
-              // 流结束，通知 chat UI 格式化渲染。不再操作 DeepSeek DOM。
-              if (chatUI) {
-                try {
-                  chatUI.finishAssistantMessage();
-                  d(`auto-continue chat UI finished, len=${reply.length}`);
-                } catch (e) {
-                  d(`auto-continue chat UI finish failed: ${(e as Error).message}`);
-                }
-              }
-            }
             // R0-R2：显式分类响应，不再只认 429、其余一律当空回复 nudge。
             const httpVerdict = classifyResponse(xhr.status, xhr.responseText);
             // R0-R5：流内 SSE 错误帧优先于 HTTP 状态分类（200 内嵌错误也按错误处理）。
             const verdict = loopState.sseErrorSeen ?? httpVerdict;
             recordVerdict({ status: xhr.status, verdict: verdict.verdict, reason: verdict.reason, attempt: errorRetryCount });
+            // QD-R5-01：首轮重发链的失败归首轮预算管。否则它会掉进续跑的
+            // errorRetryCount 分支——不仅预算口径错，prompt 也会被换成续跑版。
+            // 只在这里升级一次：settleStreamEnd 对续跑轮一律放行（见 R3），
+            // 不会重复计数把 2 次预算一次烧光。
+            if (firstAttemptResendActive) {
+              firstAttemptResendActive = false;
+              loopState.streamActive = false;
+              try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+              if (verdict.verdict === 'fatal') {
+                // 重发后撞上 401/403/402：再重发必然同样失败，直接停。
+                interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'first-attempt-fatal' });
+                finishStepFlow({
+                  code: verdict.reason,
+                  message: `请求失败（${verdict.reason}），已停止重试。`,
+                });
+                loopDepth = 0;
+              } else if (verdict.verdict === 'retryable') {
+                escalateFirstAttemptFailure(verdict.reason, '服务器暂时无法访问');
+              }
+              resolve();
+              return;
+            }
             if (verdict.verdict === 'fatal' || (verdict.verdict === 'retryable' && errorRetryCount >= MAX_ERROR_RETRIES)) {
               // 不可重试（401/403/402/400）或错误预算耗尽 → 停手上报，禁止落入 nudge/续跑。
               d(`auto-continue ${verdict.verdict}: status=${xhr.status} reason=${verdict.reason} retries=${errorRetryCount}/${MAX_ERROR_RETRIES}, stop loop`);
               loopState.streamActive = false;
-              finishStepFlow();
+              interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'error-budget-out', triggered: false });
+              interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: verdict.reason });
+              finishStepFlow({
+                code: verdict.reason,
+                message: verdict.reason === 'network-error'
+                  ? '服务器暂时无法访问，已停止自动续跑。请检查网络后手动重试。'
+                  : `自动续跑失败（${verdict.reason}），已停止重试。`,
+              });
               loopDepth = 0;
             } else if (verdict.verdict === 'retryable') {
               // 429/断连/5xx/200错误体：独立错误预算 + 指数退避，不占用工具续跑/nudge 预算。
               errorRetryCount += 1;
               loopState.streamActive = false;
+              try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
               if (autoContinueTimer) clearTimeout(autoContinueTimer);
               const delay = verdict.retryAfterMs ?? errorBackoffMs(errorRetryCount - 1);
               d(`auto-continue retryable: status=${xhr.status} reason=${verdict.reason}, retry ${errorRetryCount}/${MAX_ERROR_RETRIES} in ${delay}ms`);
-              autoContinueTimer = setTimeout(() => { autoContinueTimer = null; autoContinueWithPow(); }, delay);
+              // QD-R4-01：标记重试入口，否则定时器回调会被 autoContinueWithPow 的
+              // pending 守卫挡死（pending 在发出续跑前已清空）。
+              continuationRetryPending = true;
+              autoContinueTimer = setTimeout(() => { autoContinueTimer = null; void autoContinueWithPow(); }, delay);
+              interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: `error-retry-${verdict.reason}`, triggered: true });
             } else if (loopDepth >= MAX_LOOP) {
               // 达工具续跑步数上限：正常结束。
               d('auto-continue reached MAX_LOOP, stop');
+              interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'loop-depth-max', triggered: false });
+              interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'max-loop' });
+              const cleanReply = stripRawToolTags(reply).trim();
+              if (!hadTools && cleanReply) {
+                try { chatUI?.finishAssistantMessage({ fallbackText: cleanReply, recordFinal: true }); } catch { /* ignore */ }
+                try { onAssistantReply?.(cleanReply, loopDepth); } catch (e) { d(`auto-continue max-round push failed: ${(e as Error).message}`); }
+              } else {
+                try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+              }
               finishStepFlow();
               loopDepth = 0;
             } else {
+              // 成功轮次重置错误预算；否则一次历史 429 会让后续正常轮次过早进入 fatal。
+              errorRetryCount = 0;
+              firstAttemptResendActive = false;
               // M3-1a：nudge 机制已删。无工具调用时不再逼模型再调工具，
               // 直接结束循环——内核 TaskLoop 自驱（M2-3）取代了这个网页侧补丁。
               const replyForNudge = loopState.autoReplyText.trim();
               const hasTaskComplete = !!extractTaskCompleteSignal(replyForNudge);
               if (hadTools) {
-                // 本轮有工具调用：续跑结果回来后 scheduleAutoContinue 接管。
+                try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+                if (pending.length > 0) {
+                  // 工具结果可能早于本轮 readyState=4 返回；此处补一次调度，避免停在中间态。
+                  scheduleAutoContinue();
+                }
               } else {
                 // 循环真正结束（无工具、task_complete 或达上限）。
                 d(`auto-continue loop end: hadTools=${hadTools} taskComplete=${hasTaskComplete}`);
+                interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'no-tools', triggered: false });
+                interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: true, stopReason: 'completed' });
+                const cleanReply = stripRawToolTags(reply).trim();
+                if (cleanReply) {
+                  try { chatUI?.finishAssistantMessage({ fallbackText: cleanReply, recordFinal: true }); } catch { /* ignore */ }
+                  try { onAssistantReply?.(cleanReply, loopDepth); } catch (e) { d(`auto-continue push failed: ${(e as Error).message}`); }
+                } else if (reply) {
+                  d('auto-continue reply all-tool-text (stripped to empty), skipping push');
+                }
                 finishStepFlow();
                 loopDepth = 0;
               }
@@ -1072,15 +1881,28 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
         };
         xhr.send(bodyStr);
       });
+      loopState.inFirstAttemptResend = false;
     } catch (e) {
       d(`auto-continue failed: ${(e as Error).message}`);
       loopState.streamActive = false;
+      interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'auto-continue-failed' });
+      const message = e instanceof Error ? e.message : String(e);
+      finishStepFlow({
+        code: message.includes('pow-expired') ? 'pow-expired' : 'auto-continue-failed',
+        message: message.includes('pow-expired')
+          ? 'PoW 挑战已过期，重新获取后仍失败，已停止自动续跑。'
+          : `自动续跑失败：${message}`,
+      });
+      loopDepth = 0;
     }
   }
 
   const origFetch = window.fetch ? window.fetch.bind(window) : undefined;
-  const stopFetch = origFetch ? installFetchHook(origFetch, forward, pending, d, loopState) : undefined;
-  const stopXhr = installXhrHooks(forward, pending, d, loopState, capturedHeaders, onStreamDelta);
+  // QD-R4-02/03/04：把流结束结算函数传给两条 hook，让 XHR 与 fetch 走同一套断流语义。
+  const stopFetch = origFetch
+    ? installFetchHook(origFetch, forward, pending, d, loopState, settleStreamEnd, escalateFirstAttemptFailure)
+    : undefined;
+  const stopXhr = installXhrHooks(forward, pending, d, loopState, capturedHeaders, onStreamDelta, settleStreamEnd, escalateFirstAttemptFailure);
 
   // v1.0：设置记忆更新回调
   if (onMemoriesUpdate) {
@@ -1134,8 +1956,11 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     });
     codeObserver.observe(document.body, { childList: true, subtree: true });
   };
-  if (document.body) setupCodeObserver();
-  else document.addEventListener('DOMContentLoaded', setupCodeObserver, { once: true });
+  if (!chatUI) {
+    // Studio 主视图存在时不再给原生 React 消息树插“运行”按钮，避免污染原生 DOM。
+    if (document.body) setupCodeObserver();
+    else document.addEventListener('DOMContentLoaded', setupCodeObserver, { once: true });
+  }
 
   // v1.0：启动时异步加载 MCP 工具列表，注入提示词让 agent 知道有哪些 MCP 工具可用
   // 注意：installMainWorldInterceptor 可能在 WebSocket 连接建立前被调用，

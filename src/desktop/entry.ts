@@ -19,13 +19,54 @@ import { createChatReadCapability } from '../capabilities/chat-read';
 import { createChatInsertCapability } from '../capabilities/chat-insert';
 import { createChatSendCapability } from '../capabilities/chat-send';
 import { createHostClient, type HostClient } from './host-client';
-import { installMainWorldInterceptor } from '../inject/main-world-interceptor';
+import { installMainWorldInterceptor, setInterceptorTraceSink } from '../inject/main-world-interceptor';
+import { installTraceReportHandle } from '../inject/main-world-interceptor';
 import { createChatRoom, type ChatRoomRuntimeConfig } from '../ui/studio-chat-room';
 import { installStudioSettingsEntry } from '../ui/studio-settings-entry';
+import { createStudioChatUI, type StudioChatUIHandle } from '../ui/studio-chat-ui';
+import { createStudioExecutionStore } from '../ui/studio-execution-store';
+import { normalizeSessionKeyFromPathname } from '../shared/studio-execution';
+import { createNavigationObserver } from '../inject/navigation';
 import { freezeStudioObject, startIntegrityProbe } from './integrity';
 import type { ExecutableCapability } from '../capabilities/types';
 
 const DEFAULT_HOST_URL = 'ws://127.0.0.1:8760/studio';
+
+/**
+ * W2（20261023 用户定调的窗口设计）：主窗口 = 主 bot。
+ * bot 窗口**不在启动时建**，只在主 bot 真正进入聊天室时按成员按需拉起。
+ *
+ * 为什么挂在 show() 上：ChatRoomHandle 只有 show/hide/toggle 三个入口，
+ * show 就是「主 bot 开始用聊天室」这一刻。只拉一次（首个 show 之后不再重复），
+ * 非 Tauri 环境（浏览器/测试桩）静默跳过，不影响既有装配。
+ */
+function wireChatRoomBotWindows(chatRoom: { show: () => void }, members: readonly string[]): void {
+  const internals = (globalThis as {
+    __TAURI_INTERNALS__?: { invoke?: (cmd: string, args?: Record<string, unknown>) => unknown };
+  }).__TAURI_INTERNALS__;
+  if (!internals?.invoke) {
+    console.warn('[StudioUI] bot windows skipped: not running under Tauri');
+    return;
+  }
+  const originalShow = chatRoom.show.bind(chatRoom);
+  let opened = false;
+  const openMembers = (): void => {
+    if (opened) return;
+    opened = true;
+    for (const botId of members) {
+      try {
+        void internals.invoke?.('open_bot_window', { botId });
+      } catch (e) {
+        console.warn(`[StudioUI] open_bot_window failed for ${botId}`, e);
+      }
+    }
+  };
+  chatRoom.show = () => {
+    originalShow();
+    openMembers();
+  };
+  (globalThis as { __studioOpenRoomBots?: () => void }).__studioOpenRoomBots = openMembers;
+}
 
 export interface InstallStudioOptions {
   capabilities?: readonly ContentCapabilityController[];
@@ -118,6 +159,7 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
   // v0.27：bot 窗口（botId !== 'main'）是纯 DeepSeek 操作窗口——只保留桥接+拦截器，
   // 跳过 chat overlay 与 sidebar UI，避免遮挡 DeepSeek 登录框/输入框。
   const isBotWindow = botId !== 'main';
+  let chatUI: StudioChatUIHandle | undefined;
   if (typeof globalThis.document !== 'undefined') {
     // W1：主窗口暴露 Tauri 工作台/聚焦入口。调用时求值（document_start 时
     // __TAURI_INTERNALS__ 可能尚未就绪）；非 Tauri 环境只 warn，不抛异常、不影响既有装配。
@@ -149,6 +191,45 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
     }
     const isLoginPage = location.pathname.includes('/login') || location.pathname.includes('/signin');
     if (!isBotWindow && !isLoginPage) {
+      // Studio 常驻主视图：覆盖 DeepSeek 内容区，但动态避让原生侧栏和 composer。
+      // 登录页与 bot 操作窗口不挂载；无法创建 DOM 的测试桩环境也跳过。
+      if (typeof document.createElement === 'function') {
+        try {
+          const executionStore = createStudioExecutionStore({
+            kv: {
+              kvGet: (key) => host.kvGet(key),
+              kvSet: (key, value) => host.kvSet(key, value),
+              kvRemove: (key) => host.kvRemove(key),
+            },
+            onConnected: (callback) => host.onConnected(callback),
+            isConnected: () => host.connected,
+            reportError: (message, error) => options.reportError?.(message, error),
+          });
+          const initialSessionKey = normalizeSessionKeyFromPathname(location.pathname);
+          chatUI = createStudioChatUI({ persistence: executionStore, initialSessionKey });
+          const append = (): void => {
+            const parent = document.body ?? document.documentElement;
+            if (parent && !chatUI?.container.isConnected) parent.appendChild(chatUI!.container);
+          };
+          if (document.body) append();
+          else document.addEventListener('DOMContentLoaded', append, { once: true });
+
+          void chatUI.activateSession(initialSessionKey);
+          executionStore.onConnected(() => {
+            void chatUI?.activateSession(chatUI.sessionKey);
+          });
+          const navigation = createNavigationObserver({
+            reinjectOnRouteChange: false,
+            onRouteChange: (pathname) => {
+              void chatUI?.activateSession(normalizeSessionKeyFromPathname(pathname));
+            },
+          });
+          navigation.start();
+        } catch (e) {
+          options.reportError?.('failed to mount studio chat UI', e);
+        }
+      }
+
       // C4：Focus 模式待 C5 托盘菜单项触发，本期不自动挂载
 
       // T4：聊天室最小挂载（仅 chat-room；不恢复 sidebar/input-bar/settings/project/skills/mcp/right-sidebar）。
@@ -157,6 +238,8 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
         const chatCfg = (globalThis as { __studioChatConfig?: ChatRoomRuntimeConfig }).__studioChatConfig;
         if (chatCfg && chatCfg.token && chatCfg.roomId) {
           const chatRoom = createChatRoom(chatCfg);
+          // W2：进入聊天室才拉起成员 bot 窗口（启动时一个都不建）。
+          wireChatRoomBotWindows(chatRoom, chatCfg.members);
           document.body.appendChild(chatRoom.container);
           console.log('[StudioUI] chat room installed:', chatCfg.roomName);
         } else {
@@ -178,6 +261,8 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
       }
     }
     try {
+      // QD-R7-01（F12）：先把取证落盘通道接上，再装拦截器——否则第一轮就丢。
+      setInterceptorTraceSink((line) => host.trace(line));
       installMainWorldInterceptor({
         sender: (req) => host.sendToolCall(req),
         diag: (msg) => host.log(`[interceptor] ${msg}`),
@@ -186,10 +271,16 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
         onMemoriesUpdate: (memories) => {
           (globalThis as { __studioMemories?: unknown }).__studioMemories = memories;
         },
-        chatUI: undefined,
+        chatUI,
       });
     } catch (err) {
       options.reportError?.('failed to install main-world interceptor', err);
+    }
+    // 断流取证出口：不挂就会被 esbuild tree-shake，整套 trace 采集白写。
+    try {
+      installTraceReportHandle();
+    } catch (err) {
+      options.reportError?.('failed to install trace report handle', err);
     }
   }
 

@@ -25,6 +25,12 @@ export interface WebSocketLike {
 
 export type WebSocketFactory = (url: string) => WebSocketLike;
 
+/**
+ * tool-call 的兜底超时必须长于宿主同意框的 60s 等待窗口，否则用户在
+ * 30s 后点击“允许一次”会先收到 host-timeout，而宿主随后仍可能完成执行。
+ */
+export const DEFAULT_TOOL_CALL_TIMEOUT_MS = 75_000;
+
 export interface HostClientOptions {
   url: string;
   capabilities: ReadonlyArray<ExecutableCapability>;
@@ -38,7 +44,7 @@ export interface HostClientOptions {
   wsFactory?: WebSocketFactory;
   /** 断线重连退避上界（毫秒），默认 10000。 */
   maxBackoffMs?: number;
-  /** v0.6：tool-call 等待宿主结果的超时（毫秒），默认 30000。 */
+  /** v0.6：tool-call 等待宿主结果的超时（毫秒），默认 75000。 */
   toolCallTimeoutMs?: number;
   /** v1.0：宿主推送记忆列表更新时的回调。 */
   onMemoriesUpdate?: (memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>) => void;
@@ -58,12 +64,16 @@ export interface HostClient {
   connect(): void;
   disconnect(): void;
   readonly connected: boolean;
+  /** 连接建立后的通知；注册时若已连接会异步立即回调。返回退订函数。 */
+  onConnected(callback: () => void): () => void;
   /** v0.5：上报页面完整性违规（自检发现注入对象被篡改）。宿主收到后会降级该页。 */
   reportIntegrity(alert: { reason: string; detail?: string }): void;
   /** v0.6：把一次工具调用发给宿主并等回结果（按 callId 关联 tool-call-result）。 */
   sendToolCall(req: ToolCallRequest): Promise<ExecuteResult>;
   /** 调试：发日志到宿主 stdout。 */
   log(text: string): void;
+  /** QD-R7-01（F12）：发一行 JSONL 断流取证到宿主（宿主写 logs/trace/）。 */
+  trace(line: string): void;
   /** v0.9：auto-continue 收到模型最终回复时推送给宿主。 */
   assistantReply(text: string, loop: number): void;
   /** M9：流式 delta 推送——页端每收到一段模型输出就推给宿主。 */
@@ -84,7 +94,7 @@ export function createHostClient(options: HostClientOptions): HostClient {
   const capabilities = new Map(options.capabilities.map((c) => [c.id, c]));
   const origin = options.origin ?? globalThis.location?.origin ?? 'https://chat.deepseek.com';
   const maxBackoff = options.maxBackoffMs ?? 10_000;
-  const toolCallTimeoutMs = options.toolCallTimeoutMs ?? 30_000;
+  const toolCallTimeoutMs = options.toolCallTimeoutMs ?? DEFAULT_TOOL_CALL_TIMEOUT_MS;
   let ws: WebSocketLike | null = null;
   let stopped = false;
   let backoff = 500;
@@ -94,12 +104,13 @@ export function createHostClient(options: HostClientOptions): HostClient {
   const pendingToolCalls = new Map<string, { resolve: (r: ExecuteResult) => void; timer: ReturnType<typeof setTimeout> }>();
   const pendingKv = new Map<string, { resolve: (v: unknown, error?: string) => void }>();
   const pendingEnvelope = new Map<string, { resolve: (v: unknown) => void }>();
+  const connectedCallbacks = new Set<() => void>();
 
   /**
    * R3-C1 修复：连接断开时立即结算所有待决请求。
    * 修复前 kvGet/kvSet/sendEnvelope 既无超时、onclose 也不遍历结算，
    * 一旦断线这些 Promise 永不 settle（调用方永久挂起、pending 永不清理）。
-   * sendToolCall 虽有 30s 超时，也应在断线时立即失败而不是干等。
+   * sendToolCall 虽有兜底超时，也应在断线时立即失败而不是干等。
    */
   function failAllPending(reason: string): void {
     for (const [id, p] of pendingToolCalls) {
@@ -284,6 +295,13 @@ export function createHostClient(options: HostClientOptions): HostClient {
       // v0.31：同时上报账号身份指纹（localStorage.userToken 派生），宿主据此做
       // 同账号双窗口去重——两窗口登同一 DeepSeek 账号 → 同指纹 → 第二个 fail-closed。
       send({ type: 'hello', origin, sessionId: crypto.randomUUID(), botId: options.botId, accountFingerprint: readAccountFingerprint() });
+      for (const callback of connectedCallbacks) {
+        try {
+          callback();
+        } catch (error) {
+          options.reportError?.('host-client connected callback failed', error);
+        }
+      }
     };
     socket.onmessage = (ev: { data: unknown }) => onMessage(ev.data);
     socket.onclose = () => {
@@ -309,6 +327,19 @@ export function createHostClient(options: HostClientOptions): HostClient {
   return {
     get connected() {
       return ws !== null && ws.readyState === OPEN;
+    },
+    onConnected(callback) {
+      connectedCallbacks.add(callback);
+      if (ws && ws.readyState === OPEN) {
+        queueMicrotask(() => {
+          try {
+            callback();
+          } catch (error) {
+            options.reportError?.('host-client connected callback failed', error);
+          }
+        });
+      }
+      return () => connectedCallbacks.delete(callback);
     },
     reportIntegrity(alert) {
       // 不上报就无法让宿主降级，因此即便未连接也尝试发送（send 内部已判状态）
@@ -346,6 +377,9 @@ export function createHostClient(options: HostClientOptions): HostClient {
     },
     log(text: string) {
       send({ type: 'log', text });
+    },
+    trace(line: string) {
+      send({ type: 'trace', line });
     },
     assistantReply(text: string, loop: number) {
       send({ type: 'assistant-reply', text, loop });

@@ -93,6 +93,9 @@ export type PageToHostMessage =
   /** M9：页端 SSE 流式 delta 推送（逐 token）。 */
   | { type: 'stream-delta'; text: string }
   /** 调试：debug-eval 结果。 */
-  | { type: 'debug-eval-result'; requestId: string; ok: boolean; result: string };
+  | { type: 'debug-eval-result'; requestId: string; ok: boolean; result: string }
+  /** QD-R7-01（F12）：每轮一行 JSONL 断流取证。页端内存环随刷新即丢，宿主侧落盘才
+   *  能在事后复盘 —— 这是把「断流不可取证」变成「可取证」的那条通道。 */
+  | { type: 'trace'; line: string };
 
 export type { ExecuteResult };

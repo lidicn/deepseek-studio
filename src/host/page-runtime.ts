@@ -11,6 +11,10 @@
  */
 
 import type { Server, IncomingMessage } from 'node:http';
+import { appendFileSync, mkdirSync } from 'node:fs';
+// 必须换名导入：本文件内部已有 `const path = options.path ?? '/studio'`（WS 挂载路径），
+// 直接 import * as path 会被它遮蔽。
+import * as nodePath from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { ExecuteResult } from '../capabilities/types';
 import type { ToolExecutionResult } from './desktop-host';
@@ -18,6 +22,9 @@ import type { ConsentDecision, ConsentMeta, HostToPageMessage, PageToHostMessage
 import { mapUpstreamToolInvocation } from '../shared/tool-contract';
 import { DEEPSEEK_ORIGIN } from './tool-definitions';
 import { verifyWsQueryToken, type WSQueryTokenSource } from './host-token';
+
+/** QD-R7-01（F12）：单行 JSONL 的上限。超长只丢取证细节，不影响落盘本身。 */
+const TRACE_LINE_MAX_CHARS = 16_000;
 
 /**
  * PNA 白名单：公网页（chat.deepseek.com）需要连本机 ws 通道，Chromium 在「实际握手
@@ -90,6 +97,8 @@ export interface PageRuntimeHubOptions {
   /** v1.0：宿主推送记忆列表更新时的回调。 */
   onMemoriesUpdate?: (memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>) => void;
   onToolResult?: (info: { callId: string; tool: string; ok: boolean; error?: string; botId?: string; details?: Record<string, unknown> }) => void;
+  /** 可信页 hello 登记完成（该页可执行能力）。 */
+  onConnect?: (info: { id: string; botId?: string }) => void;
   /**
    * 页端连接断开（ws close / error）观察钩子。观察者，不影响 hub 自身的 pending 失败逻辑。
    * T5：宿主据此把本侧 pendingRuns 中未完成 runId 统一标 failed / page-disconnected 并清空。
@@ -288,6 +297,9 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
             });
           }
         }
+        if (!rec.untrusted) {
+          options.onConnect?.({ id, botId: rec.botId });
+        }
       } else if (msg.type === 'result') {
         // QD-R2-03 入站身份门：
         // ① 未握手（!ready）或已被判定篡改（untrusted）的连接发的任何 result 一律忽略。
@@ -306,6 +318,25 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         options.onError?.(`integrity violation: page=${id} reason=${msg.reason}${msg.detail ? ` detail=${msg.detail}` : ''}`);
       } else if (msg.type === 'log') {
         console.log(`[page ${id}] ${msg.text}`);
+      } else if (msg.type === 'trace') {
+        // QD-R7-01（F12）：断流取证落盘 —— 每轮一行 JSONL。
+        // 此前取证只有三条路：页端内存环（刷新即丢）、localStorage 死键（三个函数零调用）、
+        // console.log（桌面启动时 stdout 没人接）。结果就是「故障不落盘」，
+        // 修的人拿不到一次真实样本，只能靠猜。这里把每轮的 turn.end 写进
+        // logs/trace/trace-<日期>.jsonl，重启后仍在，可直接 diff。
+        try {
+          const dir = nodePath.resolve(process.cwd(), 'logs', 'trace');
+          mkdirSync(dir, { recursive: true });
+          const day = new Date().toISOString().slice(0, 10);
+          // 单行化 + 截断：JSONL 一行必须是一行，且不能让超长载荷拖垮落盘。
+          const line = (msg.line.length > TRACE_LINE_MAX_CHARS
+            ? `${msg.line.slice(0, TRACE_LINE_MAX_CHARS)}...[truncated]`
+            : msg.line
+          ).replace(/[\r\n]+/g, ' ');
+          appendFileSync(nodePath.join(dir, `trace-${day}.jsonl`), `${line}\n`, 'utf8');
+        } catch {
+          // 落盘失败不影响主链路（只影响事后取证）。
+        }
       } else if (msg.type === 'assistant-reply') {
         // v0.24：以 hello 登记的 rec.botId 为准定位是哪个 bot 的 auto-continue 回复。
         options.onAssistantReply?.(msg.text, msg.loop, rec.botId);
