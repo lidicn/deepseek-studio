@@ -142,6 +142,50 @@ body {
   border-right: 1px solid var(--studio-border);
   display: flex; flex-direction: column; overflow: hidden;
 }
+.session-list {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 8px;
+}
+.session-item {
+  width: 100%; border: 1px solid transparent; border-radius: 8px;
+  background: transparent; color: var(--studio-text-primary);
+  padding: 9px 10px; text-align: left; cursor: pointer;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.session-item:hover { background: var(--studio-bg-subtle); }
+.session-item[aria-current="true"] {
+  background: var(--studio-bg-subtle);
+  border-color: var(--studio-border);
+}
+.session-item-title {
+  font-size: 12.5px; line-height: 1.45;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.session-item-meta { font-size: 10.5px; color: var(--studio-text-weak); }
+.mobile-session-bar {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--studio-border);
+  background: var(--studio-bg-panel);
+}
+.mobile-session-bar label {
+  flex-shrink: 0;
+  color: var(--studio-text-secondary);
+  font-size: 12px;
+}
+.mobile-session-bar select {
+  min-width: 0;
+  flex: 1;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--studio-border);
+  border-radius: 8px;
+  background: var(--studio-bg-subtle);
+  color: var(--studio-text-primary);
+  font: inherit;
+}
 .center-canvas {
   flex: 1; min-width: 520px;
   display: flex; flex-direction: column; overflow: hidden;
@@ -183,6 +227,7 @@ body {
 .workbench-layout.is-compact .left-panel { display: none; }
 .workbench-layout.is-compact .right-inspector { display: none; }
 .workbench-layout.is-compact .center-canvas { min-width: 0; }
+.workbench-layout.is-compact .mobile-session-bar { display: flex; }
 
 /* 抽屉：宽屏隐藏，compact 起由 JS 的 .open 控制显隐。
  * 抽屉本身不随 is-compact 之外的档位变化，故默认隐藏、仅 compact 档启用。 */

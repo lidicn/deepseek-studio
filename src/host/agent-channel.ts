@@ -19,6 +19,10 @@ import type { ChatRoomEvent } from './bot/types';
 import type { PolicyMode } from './policy';
 import { PANEL_POLICY_MODES } from './policy';
 import { verifyWsQueryToken, type WSQueryTokenSource } from './host-token';
+import type {
+  StudioExecutionIndex,
+  StudioExecutionSession,
+} from '../shared/studio-execution';
 
 /** 单个 bot 的面板可调用能力面（与改造前 AgentChannelHost.agent 形状一致）。 */
 export interface BotHandle {
@@ -40,6 +44,14 @@ export interface AgentChannelHost {
   onChatRoomEvent?: (cb: (event: ChatRoomEvent) => void) => () => void;
   /** C3：结构化工具运行事件订阅（ToolRunEvent → {type:'tool-run'} broadcast）。 */
   onToolRunEvent?: (cb: (event: import('../shared/tool-run-event').ToolRunEvent) => void) => () => void;
+  /** 统一执行会话：Studio overlay 写入后实时镜像给远程端。 */
+  onExecutionSession?: (cb: (session: StudioExecutionSession) => void) => () => void;
+  onExecutionIndex?: (cb: (index: StudioExecutionIndex) => void) => () => void;
+  onExecutionCleared?: (cb: () => void) => () => void;
+  getExecutionIndex?: () => Promise<StudioExecutionIndex | null>;
+  getExecutionSession?: (key: string) => Promise<StudioExecutionSession | null>;
+  /** 电脑端 DeepSeek 页面是否已连接并可执行。 */
+  desktopPageConnected?: () => boolean;
   readonly policyMode: PolicyMode;
   setPolicyMode(mode: PolicyMode): void;
   readonly workspaceRoot: string | null;
@@ -66,6 +78,8 @@ export interface AgentChannelOptions {
    * QD-R2-12：支持每连接求值的 TokenSource（轮换环），与 page-runtime 共用 helper。
    */
   token: WSQueryTokenSource;
+  /** LAN 显式开启时，允许与请求 Host 同源的手机 PWA 连接；token 仍是硬门槛。 */
+  allowLanOrigins?: boolean;
   path?: string;
   onError?: (message: string, error?: unknown) => void;
 }
@@ -80,12 +94,41 @@ type ClientMessage =
   | { type: 'set-policy'; mode?: unknown; reqId?: string }
   | { type: 'set-workspace'; path?: unknown; reqId?: string }
   | { type: 'pick-folder'; reqId?: string }
+  | { type: 'get-execution-index'; reqId?: string }
+  | { type: 'get-execution-session'; key?: unknown; reqId?: string }
   | { type: 'ping'; reqId?: string };
 
 export interface AgentChannel {
   dispose(): void;
+  /** 将最新 state 推给所有已连接远程端（桌面页面连接状态变化时调用）。 */
+  broadcastState(): void;
   /** 当前连接的面板数（测试/诊断用）。 */
   readonly clientCount: number;
+}
+
+/**
+ * `/agent-ws` 的 Origin 白名单。
+ * - 无 Origin：本机脚本/测试，token 已校验，放行。
+ * - localhost：桌面本机页面，放行。
+ * - LAN：仅 allowLanOrigins 开启且 Origin 与请求 Host 完全同源时放行。
+ *   手机页面只有在通过配对码拿到内嵌 token 后才能走到这里。
+ */
+export function isAllowedAgentOrigin(
+  origin: string | undefined,
+  requestHost: string | undefined,
+  allowLanOrigins: boolean,
+): boolean {
+  if (origin === undefined) return true;
+  try {
+    const u = new URL(origin);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    if (u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]') {
+      return true;
+    }
+    return allowLanOrigins && !!requestHost && u.host === requestHost;
+  } catch {
+    return false;
+  }
 }
 
 export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
@@ -123,6 +166,7 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
       memoryBackend: options.host.memoryBackend ?? 'sqlite',
       // v0.23：running 保持指向 main bot（向后兼容现有面板）
       running: mainBot?.running ?? false,
+      desktopPageConnected: options.host.desktopPageConnected?.() ?? false,
       // v0.23：多 bot 状态列表（新面板可读此字段展示所有 bot）
       bots: botsList,
     };
@@ -142,9 +186,32 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
     for (const ws of sockets) safeSend(ws, { type: 'tool-run', event });
   }
 
+  function broadcastExecutionSession(session: StudioExecutionSession): void {
+    for (const ws of sockets) safeSend(ws, { type: 'execution-session', session });
+  }
+
+  function broadcastExecutionIndex(index: StudioExecutionIndex): void {
+    for (const ws of sockets) safeSend(ws, { type: 'execution-index', index });
+  }
+
+  function broadcastExecutionCleared(): void {
+    for (const ws of sockets) safeSend(ws, { type: 'execution-cleared' });
+  }
+
+  function sendExecutionIndex(ws: WebSocket): void {
+    void options.host.getExecutionIndex?.()
+      .then((index) => {
+        if (index) safeSend(ws, { type: 'execution-index', index });
+      })
+      .catch((err) => options.onError?.('load execution index failed', err));
+  }
+
   const unsubscribe = options.host.onAgentEvent(broadcast);
   const unsubscribeChatRoom = options.host.onChatRoomEvent?.(broadcastChatRoomEvent);
   const unsubscribeToolRun = options.host.onToolRunEvent?.(broadcastToolRunEvent);
+  const unsubscribeExecutionSession = options.host.onExecutionSession?.(broadcastExecutionSession);
+  const unsubscribeExecutionIndex = options.host.onExecutionIndex?.(broadcastExecutionIndex);
+  const unsubscribeExecutionCleared = options.host.onExecutionCleared?.(broadcastExecutionCleared);
 
   wss.on('connection', (ws: WebSocket, req) => {
     // 鉴权：query token 必须与当前 accepted 集合之一匹配（QD-R2-12：接轮换环 + 常数时间比较）。
@@ -156,20 +223,17 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
     // QD-R2-16：Origin 校验。面板是本机 Tauri 窗口（http://127.0.0.1:8760/agent 或 tauri://localhost）。
     // 公网页（chat.deepseek.com 等）不应该连 /agent-ws——它没有页端业务，只有本机控制面。
     // 带 Origin 但非 localhost → 拒；无 Origin = 本机脚本/测试，token 已校验，放行。
-    const origin = req.headers.origin;
-    if (origin !== undefined) {
-      let okOrigin = false;
-      try {
-        const u = new URL(origin);
-        okOrigin = u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]';
-      } catch { okOrigin = false; }
-      if (!okOrigin) {
-        try { ws.close(1008, 'forbidden origin'); } catch { /* ignore */ }
-        return;
-      }
+    if (!isAllowedAgentOrigin(
+      req.headers.origin,
+      req.headers.host,
+      options.allowLanOrigins === true,
+    )) {
+      try { ws.close(1008, 'forbidden origin'); } catch { /* ignore */ }
+      return;
     }
     sockets.add(ws);
     safeSend(ws, statePayload());
+    sendExecutionIndex(ws);
 
     ws.on('message', (raw) => {
       let msg: ClientMessage;
@@ -249,6 +313,20 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
           ack(true, { path: dir });
           return;
         }
+        case 'get-execution-index': {
+          const index = await options.host.getExecutionIndex?.();
+          ack(true, { index: index ?? null });
+          return;
+        }
+        case 'get-execution-session': {
+          if (typeof msg.key !== 'string' || msg.key.length === 0) {
+            ack(false, undefined, 'missing-session-key');
+            return;
+          }
+          const session = await options.host.getExecutionSession?.(msg.key);
+          ack(true, { session: session ?? null });
+          return;
+        }
         default:
           return;
       }
@@ -262,6 +340,9 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
       unsubscribe();
       unsubscribeChatRoom?.();
       unsubscribeToolRun?.();
+      unsubscribeExecutionSession?.();
+      unsubscribeExecutionIndex?.();
+      unsubscribeExecutionCleared?.();
       // F-L1：移除 upgrade 监听器，避免泄漏
       (options.server as unknown as { removeListener: (e: string, fn: unknown) => void })
         .removeListener('upgrade', onUpgrade as never);
@@ -274,6 +355,10 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
         }
       }
       sockets.clear();
+    },
+    broadcastState() {
+      const payload = statePayload();
+      for (const ws of sockets) safeSend(ws, payload);
     },
     get clientCount() {
       return sockets.size;

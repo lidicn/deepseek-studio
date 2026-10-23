@@ -17,6 +17,10 @@ import {
 import type { AckPayload, StatePayload, WorkbenchRequest } from './workbench-types';
 import type { AgentLoopEvent } from '../../shared/agent-loop-event';
 import type { ToolRunEvent } from '../../shared/tool-run-event';
+import type {
+  StudioExecutionIndex,
+  StudioExecutionSession,
+} from '../../shared/studio-execution';
 
 export interface WorkbenchSocketHandlers {
   onState(state: WorkbenchState): void;
@@ -25,6 +29,12 @@ export interface WorkbenchSocketHandlers {
   onLoopEvent?(event: AgentLoopEvent): void;
   /** 可选：原始 tool-run 副作用（右栏卡片渲染等），state 已先经 applyToolRun 更新。 */
   onToolRun?(event: ToolRunEvent): void;
+  /** 统一执行会话：列表索引变化。 */
+  onExecutionIndex?(index: StudioExecutionIndex): void;
+  /** 统一执行会话：某会话新增/更新（覆盖层写入后实时镜像）。 */
+  onExecutionSession?(session: StudioExecutionSession): void;
+  /** 统一执行会话：用户清空全部记录。 */
+  onExecutionCleared?(): void;
 }
 
 export interface WorkbenchSocket {
@@ -101,6 +111,15 @@ export function createWorkbenchSocket(options: WorkbenchSocketOptions): Workbenc
         }
         case 'ack':
           options.handlers.onAck(msg as unknown as AckPayload);
+          break;
+        case 'execution-index':
+          options.handlers.onExecutionIndex?.(msg.index as StudioExecutionIndex);
+          break;
+        case 'execution-session':
+          options.handlers.onExecutionSession?.(msg.session as StudioExecutionSession);
+          break;
+        case 'execution-cleared':
+          options.handlers.onExecutionCleared?.();
           break;
         case 'chat-room-event':
           // 本期只记录，不渲染假聊天室。

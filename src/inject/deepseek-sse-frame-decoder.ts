@@ -116,3 +116,35 @@ export function extractFromParsed(parsed: unknown): {
 
   return { visibleText, reasoningText, hasToolCall };
 }
+
+/**
+ * QD-R4-03：判断这批 frame 里是否带「流正常结束」哨兵。
+ *
+ * 早期实现按通用 SSE 惯例找 `data: [DONE]`，但实测 DeepSeek 的 chat/completion
+ * 流**从不下发 `[DONE]`**（`logs/cdp-chat-capture/` 20 份真实抓包全部 DONE=False）。
+ * 真正的完成信号是二者之一：
+ *   1. `data: {"p":"response/status","o":"SET","v":"FINISHED"}`
+ *   2. `data: {"p":"response","o":"BATCH","v":[{"p":"quasi_status","v":"FINISHED"}]}`
+ * 另有 `event: close` 帧作为流的收尾。
+ *
+ * 必须按 frame 判定而不是在原始 chunk 上做 includes：readyState 回调按累计
+ * responseText 的字节偏移切增量，一个 frame 可能被切在两次回调之间，
+ * 对 `part` 做子串匹配会漏判 → 把正常完成的流误判成截断。
+ */
+export function framesSignalStreamCompletion(frames: readonly DeepSeekSseFrame[]): boolean {
+  for (const frame of frames) {
+    const eventType = frame.event?.type;
+    if (eventType && eventType.toLowerCase() === 'close') return true;
+    const parsed = frame.parsed as Record<string, unknown> | null;
+    if (!parsed || typeof parsed !== 'object') continue;
+    if (parsed.p === 'response/status' && parsed.v === 'FINISHED') return true;
+    if (parsed.p === 'response' && Array.isArray(parsed.v)) {
+      for (const item of parsed.v) {
+        if (!item || typeof item !== 'object') continue;
+        const patch = item as Record<string, unknown>;
+        if (patch.p === 'quasi_status' && patch.v === 'FINISHED') return true;
+      }
+    }
+  }
+  return false;
+}

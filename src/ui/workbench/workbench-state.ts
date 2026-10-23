@@ -21,6 +21,7 @@ export interface WorkbenchState {
   connection: ConnectionState;
   running: boolean;
   workspaceRoot: string | null;
+  desktopPageConnected: boolean;
   memoryBackend: 'sqlite' | 'memory';
   policyMode: PolicyMode;
   bots: BotDescriptor[];
@@ -34,6 +35,7 @@ export function createInitialState(): WorkbenchState {
     connection: 'connecting',
     running: false,
     workspaceRoot: null,
+    desktopPageConnected: false,
     memoryBackend: 'sqlite',
     policyMode: DEFAULT_POLICY_MODE,
     bots: [],
@@ -74,6 +76,7 @@ export function applyState(state: WorkbenchState, payload: StatePayload): Workbe
   return {
     ...state,
     workspaceRoot: payload.workspaceRoot,
+    desktopPageConnected: payload.desktopPageConnected === true,
     memoryBackend: payload.memoryBackend === 'memory' ? 'memory' : 'sqlite',
     policyMode: payload.policyMode,
     running: payload.running,
@@ -121,7 +124,7 @@ export function applyToolRun(state: WorkbenchState, event: ToolRunEvent): Workbe
 
 /** 是否允许发送：必须已连接且未在运行。 */
 export function canSend(state: WorkbenchState): boolean {
-  return state.connection === 'connected' && !state.running;
+  return state.connection === 'connected' && state.desktopPageConnected && !state.running;
 }
 
 /** 是否允许停止：仅在运行中。 */

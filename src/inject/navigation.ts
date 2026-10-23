@@ -13,6 +13,8 @@ export interface NavigationObserverOptions {
   maxReinjections?: number;
   /** 达到重装载条件时回调（由装载器执行 replace）。 */
   onReinject?: () => void;
+  /** 每次路由变化都回调；与 reinjectOnRouteChange 独立，不触发能力重装载。 */
+  onRouteChange?: (pathname: string) => void;
   /** 达到上限时回调（告警，fail-open 跳过）。 */
   onLimit?: (count: number) => void;
 }
@@ -33,7 +35,13 @@ export function createNavigationObserver(options: NavigationObserverOptions = {}
     | undefined;
 
   const trigger = (): void => {
-    if (stopped || !enabled) return;
+    if (stopped) return;
+    try {
+      options.onRouteChange?.(globalThis.location?.pathname ?? '/');
+    } catch {
+      // 路由 UI 回调失败不能阻断既有的注入生命周期。
+    }
+    if (!enabled) return;
     if (count >= max) {
       options.onLimit?.(count);
       return;
@@ -46,7 +54,8 @@ export function createNavigationObserver(options: NavigationObserverOptions = {}
   const patchedReplace = history?.replaceState?.bind(history);
   const onPop = (): void => trigger();
 
-  if (enabled && history && patchedPush && patchedReplace) {
+  const shouldPatchHistory = (enabled || !!options.onRouteChange) && history && patchedPush && patchedReplace;
+  if (shouldPatchHistory && history && patchedPush && patchedReplace) {
     history.pushState = (...args) => {
       patchedPush(...args);
       trigger();
@@ -55,6 +64,8 @@ export function createNavigationObserver(options: NavigationObserverOptions = {}
       patchedReplace(...args);
       trigger();
     };
+  }
+  if (shouldPatchHistory) {
     globalThis.addEventListener('popstate', onPop);
     globalThis.addEventListener('hashchange', onPop);
   }
@@ -65,7 +76,9 @@ export function createNavigationObserver(options: NavigationObserverOptions = {}
     },
     stop() {
       stopped = true;
-      if (enabled && history) {
+      if (shouldPatchHistory) {
+        // 保留其它观察者包装后的 pushState/replaceState 可能依赖的原函数引用，
+        // 这里只在仍指向本观察者包装函数时恢复，避免误覆盖后续观察者。
         globalThis.removeEventListener('popstate', onPop);
         globalThis.removeEventListener('hashchange', onPop);
       }

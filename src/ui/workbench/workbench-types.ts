@@ -6,8 +6,13 @@
 import type { PolicyMode } from '../../shared/policy-contract';
 import type { AgentLoopEvent } from '../../shared/agent-loop-event';
 import type { ToolRunEvent } from '../../shared/tool-run-event';
+import type {
+  StudioExecutionIndex,
+  StudioExecutionSession,
+} from '../../shared/studio-execution';
 
 export type { PolicyMode, AgentLoopEvent, ToolRunEvent };
+export type { StudioExecutionIndex, StudioExecutionSession };
 
 /** §10.8 connection 四态，只由 WS 事件驱动。 */
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'auth-failed';
@@ -27,7 +32,9 @@ export type WorkbenchRequest =
   | { type: 'set-policy'; mode: PolicyMode; reqId: string }
   | { type: 'set-workspace'; path: string; reqId: string }
   | { type: 'pick-folder'; reqId: string }
-  | { type: 'get-state'; reqId: string };
+  | { type: 'get-state'; reqId: string }
+  | { type: 'get-execution-index'; reqId: string }
+  | { type: 'get-execution-session'; key: string; reqId: string };
 
 /** 服务端 {type:'state'} 载荷（§10.9）。 */
 export interface StatePayload {
@@ -37,6 +44,7 @@ export interface StatePayload {
   workspaceRoot: string | null;
   memoryBackend?: 'sqlite' | 'memory';
   running: boolean;
+  desktopPageConnected?: boolean;
   bots?: BotDescriptor[];
 }
 
@@ -45,6 +53,10 @@ export interface AckPayload {
   type: 'ack';
   reqId?: string;
   ok: boolean;
-  data?: { path?: string | null };
+  data?: {
+    path?: string | null;
+    index?: StudioExecutionIndex | null;
+    session?: StudioExecutionSession | null;
+  };
   error?: string;
 }

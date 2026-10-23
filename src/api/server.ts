@@ -156,6 +156,17 @@ export function isLocalOrigin(origin: string | undefined): boolean {
   }
 }
 
+/** 浏览器页面与请求 Host 完全同源（用于显式开启的局域网 PWA）。 */
+function isSameHostOrigin(origin: string | undefined, requestHost: string | undefined): boolean {
+  if (!origin || !requestHost) return false;
+  try {
+    const u = new URL(origin);
+    return (u.protocol === 'http:' || u.protocol === 'https:') && u.host === requestHost;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 写 CORS 头。非本地 origin **不写** Allow-Origin（fail-closed）：
  * 宁可让浏览器判定跨域失败，也不给外部站点一个可用凭据的通道。
@@ -239,7 +250,9 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     // 注意不能放开为 *——否则任意公网网页都能预检通过并连接本机工具通道。
     if (req.method === 'OPTIONS' && WS_PREFLIGHT_PATHS.has(pathname)) {
       const origin = req.headers.origin;
-      if (origin && (origin === DEEPSEEK_ORIGIN || isLocalOrigin(origin))) {
+      const lanPairedOrigin = options.agentLanAccess?.lanEnabled === true
+        && isSameHostOrigin(origin, req.headers.host);
+      if (origin && (origin === DEEPSEEK_ORIGIN || isLocalOrigin(origin) || lanPairedOrigin)) {
         res.writeHead(204, {
           'Access-Control-Allow-Origin': origin,
           Vary: 'Origin',

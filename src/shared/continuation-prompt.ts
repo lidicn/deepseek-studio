@@ -49,6 +49,13 @@ export const MAX_LOOP = 25;
  * MAX_LOOP=25 里，一次服务器错误能消耗整轮预算。错误重试单独封顶 3 次，与工具续跑步数互不占用。
  */
 export const MAX_ERROR_RETRIES = 3;
+/**
+ * 移植 dpp `core/chat/loop-contract.ts` MAX_AUTO_CONTINUE=3。
+ * 只封顶「流截断且本轮无工具」的空转续轮：模型吐一半就断、 Studio 反复重发同一 prompt 时，
+ * 最多空转 3 次，不与 MAX_LOOP（含工具的正式步数）混用。
+ * 缺它时的实测后果：空转轮会一路吃到 MAX_LOOP=25，既烧配额又让用户看到漫长的无进展等待。
+ */
+export const MAX_AUTO_CONTINUE = 3;
 /** 续跑 prompt 里带完整 detail/output 的最近结果条数；更早的压缩为 summary。 */
 export const FULL_TOOL_RESULT_WINDOW = 4;
 

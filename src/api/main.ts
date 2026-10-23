@@ -273,6 +273,34 @@ export async function main(): Promise<void> {
 // 进程直接运行时自启动。
 // 注意：经 tsx 运行时 process.argv[1] 指向 tsx 加载器而非本文件，import.meta.url 自启动判定会失效，
 // 故此处直接调用 main()（本模块仅被 start 脚本引用，无测试导入，不会误触发）。
+//
+// 但必须放过 CLI 查询类参数：`tsx src/api/main.ts --help` / `--version` 本该只打印
+// 帮助信息就退出，旧代码无条件跑 main() 会把整个宿主（含 8760 监听）拉起来，
+// 留下一个谁都不管的孤儿 node 占着端口。20261023 实测该孤儿从 14:39 活到 15:2x，
+// 并直接导致后续启动撞 EADDRINUSE → process.exit(2) → StartupFailed。
+// argv[1] 是被执行的脚本路径（tsx 下是 main.ts），只有它之后才是用户参数。
+// 判据：存在 --help/-h/--version/-V 且**没有**其它实参 → 只查询，不起宿主。
+// 正常启动（tsx src/api/main.ts，无附加参数）必须落到下面的 main()。
+const cliArgs = process.argv.slice(2).filter((a) => !a.endsWith("main.ts"));
+const QUERY_FLAGS = new Set(["--help", "-h", "--version", "-V"]);
+const isQueryOnly =
+  cliArgs.length > 0 && cliArgs.every((a) => QUERY_FLAGS.has(a));
+if (isQueryOnly) {
+  // 只打印用法，不起宿主。stdout 供人读，退出码 0。
+  // 本文件在 src/api/ 下，package.json 在仓库根 → 要上跳两级。
+  const pkgUrl = new URL('../../package.json', import.meta.url);
+  let version = 'unknown';
+  try {
+    version = (JSON.parse(fs.readFileSync(pkgUrl, 'utf-8')) as { version?: string }).version ?? 'unknown';
+  } catch {
+    // 读不到 package.json 不影响帮助输出
+  }
+  console.log('deepseek-studio host');
+  console.log(`  version: ${version}`);
+  console.log('  usage:   tsx src/api/main.ts');
+  console.log('  env:     DEEPSEEK_STUDIO_TOKEN / STUDIO_WORKSPACE_ROOT / STUDIO_SKILLS_DIR');
+  process.exit(0);
+}
 void main().catch((err) => {
   console.error(err);
   process.exit(1);

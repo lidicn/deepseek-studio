@@ -105,6 +105,9 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
         emit({ type: 'status', text: '已发送，等待模型回复…', step: 1 });
         let result: EngineSendResult = await options.engine.send(text);
         let hitLimit = false;
+        // 续跑等待失败（超时且无文本）时置位，避免再走「无工具调用 → 最终回答」
+        // 的空 assistant 分支，也避开末尾那条泛化兜底（已单独报过错）。
+        let continuationFailed = false;
 
         for (let step = 1; step <= maxSteps; step++) {
           if (options.stopFlag.stopped) {
@@ -134,6 +137,21 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
               // 降级：引擎不支持 waitForNextReply 时，发一个最小 nudge 触发回复
               result = await options.engine.send(continueNudge);
             }
+            // 真机缺陷修复：waitForNextReply 超时（页端未推送 auto-continue）会返回
+            // content='' + toolCalls=0，旧逻辑把它当「无工具调用的最终回答」处理，
+            // 于是 emit 一条空 assistant 后 break —— 用户侧表现为「回合莫名结束、
+            // 没有结论也没有报错，只能人工发继续」。这里在续跑等待后显式判定：
+            // 既没拿到文本、本轮也没新工具，就是续跑失败，明确报错并终止，
+            // 不再伪装成正常收尾。
+            if (result.timedOut && (!result.content || result.content.length === 0)) {
+              emit({
+                type: 'error',
+                text: '工具结果已回填，但等待模型续跑超时（页端未推送回复）。请检查电脑端页面是否仍在运行，或手动发送「继续」。',
+                step: step + 1,
+              });
+              continuationFailed = true;
+              break;
+            }
             continue;
           }
 
@@ -142,7 +160,7 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
           break;
         }
 
-        if ((!result.content || result.content.length === 0) && !hitLimit && !options.stopFlag.stopped) {
+        if ((!result.content || result.content.length === 0) && !hitLimit && !continuationFailed && !options.stopFlag.stopped) {
           // 循环走完仍没有可见文本（如首步就被超时且无内容）
           emit({ type: 'error', text: '本轮未取得模型回复（页面未连接或回复为空）' });
         }

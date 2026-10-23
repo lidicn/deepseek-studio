@@ -1,8 +1,8 @@
 /**
  * 工具调用卡片 UI 渲染器（v1.0，对齐 deepseek++ 视觉风格）
  *
- * 在 DeepSeek 页面的 assistant message 里注入结构化的工具调用卡片，
- * 替代原始 XML 标签的纯文本展示。
+ * 只允许写入 Studio 自有的 assistant message。函数必须由调用方传入目标根节点，
+ * 严禁再查询或改写 DeepSeek React 管理的消息 DOM。
  *
  * 结构：
  *   .ds-studio-tools-container  — "已调用工具（N次）"可展开容器
@@ -215,24 +215,6 @@ function ensureStyle(): void {
   styleInjected = true;
 }
 
-function findLastAssistantMessage(): HTMLElement | null {
-  // v0.19：优先查询 Studio 自建聊天 UI 的最后一个助手消息元素。
-  // 回退到 DeepSeek DOM 选择器（过渡期兼容，DeepSeek 输入框仍在页面里）。
-  const studioNodes = document.querySelectorAll('.ds-sc-msg-assistant');
-  if (studioNodes.length > 0) return studioNodes[studioNodes.length - 1] as HTMLElement;
-  const selectors = [
-    '.ds-assistant-message-main-content',
-    '[class*="assistant-message"]',
-    '[class*="message-item"]',
-    '.message',
-  ];
-  for (const sel of selectors) {
-    const nodes = document.querySelectorAll(sel);
-    if (nodes.length > 0) return nodes[nodes.length - 1] as HTMLElement;
-  }
-  return null;
-}
-
 function formatJson(obj: unknown): string {
   try {
     return JSON.stringify(obj, null, 2);
@@ -254,10 +236,7 @@ function formatResult(result: { ok: boolean; data?: unknown; error?: string }): 
  * 获取或创建"已调用工具"容器。
  * 所有工具卡片都放在这个可展开容器里。
  */
-function getOrCreateToolsContainer(): HTMLElement | null {
-  const container = findLastAssistantMessage();
-  if (!container) return null;
-
+function getOrCreateToolsContainer(container: HTMLElement): HTMLElement {
   // 查找已有的容器
   let toolsContainer = container.querySelector('.ds-studio-tools-container') as HTMLElement | null;
   if (toolsContainer) return toolsContainer;
@@ -284,9 +263,7 @@ function getOrCreateToolsContainer(): HTMLElement | null {
   return toolsContainer;
 }
 
-function updateToolsCount(): void {
-  const container = findLastAssistantMessage();
-  if (!container) return;
+function updateToolsCount(container: HTMLElement): void {
   const toolsContainer = container.querySelector('.ds-studio-tools-container');
   if (!toolsContainer) return;
   const cards = toolsContainer.querySelectorAll('.ds-studio-tool-card');
@@ -343,19 +320,19 @@ function buildCardHtml(data: ToolCardData, _callId: string): string {
  * 创建一个工具调用卡片（执行中状态），追加到"已调用工具"容器里。
  * 返回 callId，用于后续 updateToolCardByCallId 更新。
  */
-export function createToolCard(data: ToolCardData, callId: string): string | null {
+export function createToolCard(data: ToolCardData, callId: string, container: HTMLElement): string {
   ensureStyle();
-  const toolsContainer = getOrCreateToolsContainer();
-  if (!toolsContainer) return null;
+  const toolsContainer = getOrCreateToolsContainer(container);
 
   const body = toolsContainer.querySelector('.ds-studio-tools-body') as HTMLElement;
   const card = document.createElement('div');
   card.className = 'ds-studio-tool-card';
   card.dataset.callId = callId;
   card.dataset.toolName = data.toolName;
+  // security-ok: buildCardHtml 对所有外部字段做 escapeHtml，图片 URL 走协议白名单。
   card.innerHTML = buildCardHtml(data, callId);
   body.appendChild(card);
-  updateToolsCount();
+  updateToolsCount(container);
   return callId;
 }
 
@@ -367,23 +344,24 @@ export function updateToolCardByCallId(
   callId: string,
   data: ToolCardData,
   result: NonNullable<ToolCardData['result']>,
+  container: HTMLElement,
   durationMs?: number,
 ): void {
-  let card = document.querySelector(`.ds-studio-tool-card[data-call-id="${callId}"]`) as HTMLElement | null;
+  let card = container.querySelector(`.ds-studio-tool-card[data-call-id="${callId}"]`) as HTMLElement | null;
 
   if (!card) {
-    const toolsContainer = getOrCreateToolsContainer();
-    if (!toolsContainer) return;
+    const toolsContainer = getOrCreateToolsContainer(container);
     const body = toolsContainer.querySelector('.ds-studio-tools-body') as HTMLElement;
     card = document.createElement('div');
     card.className = 'ds-studio-tool-card';
     card.dataset.callId = callId;
     card.dataset.toolName = data.toolName;
     body.appendChild(card);
-    updateToolsCount();
+    updateToolsCount(container);
   }
 
   const fullData: ToolCardData = { ...data, result, durationMs };
+  // security-ok: buildCardHtml 对所有外部字段做 escapeHtml，图片 URL 走协议白名单。
   card.innerHTML = buildCardHtml(fullData, callId);
 
   // 绑定展开按钮
@@ -396,24 +374,5 @@ export function updateToolCardByCallId(
         expandBtn.remove();
       }
     });
-  }
-}
-
-/**
- * 从 assistant message 里移除原始工具标签文本（避免卡片和原始标签重复显示）。
- */
-export function stripRawToolTagsFromMessage(): void {
-  const container = findLastAssistantMessage();
-  if (!container) return;
-  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-  const toRemove: Text[] = [];
-  while (walker.nextNode()) {
-    const node = walker.currentNode as Text;
-    if (/<(shell_exec|local_file_read|local_file_write|local_file_stat)>/.test(node.textContent ?? '')) {
-      toRemove.push(node);
-    }
-  }
-  for (const node of toRemove) {
-    node.textContent = node.textContent?.replace(/<(shell_exec|local_file_read|local_file_write|local_file_stat)>[\s\S]*?<\/\1>/g, '') ?? '';
   }
 }

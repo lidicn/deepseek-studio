@@ -20,6 +20,7 @@ interface PowChallenge {
   signature: string;
   expire_at: number;
   expire_after?: number;
+  received_at: number;
 }
 interface PowAnswer {
   algorithm: string;
@@ -74,9 +75,10 @@ function solvePowWithWasm(wasm: WasmExports, target: string, prefix: string, dif
 }
 
 async function createPowChallenge(headers: Record<string, string>, targetPath: string): Promise<PowChallenge> {
+  const requestHeaders = buildPowChallengeHeaders(headers);
   const resp = await fetch('/api/v0/chat/create_pow_challenge', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...headers },
+    headers: requestHeaders,
     body: JSON.stringify({ target_path: targetPath }),
     credentials: 'include',
   });
@@ -94,7 +96,37 @@ async function createPowChallenge(headers: Record<string, string>, targetPath: s
     signature: String(challenge.signature),
     expire_at: Number(challenge.expire_at ?? challenge.expireAt ?? 0),
     expire_after: Number(challenge.expire_after ?? challenge.expireAfter ?? 0),
+    received_at: Date.now(),
   } as PowChallenge;
+}
+
+/**
+ * 捕获到的请求头通常已含 content-type。fetch/Headers 按大小写不敏感合并，
+ * 再额外补一个同名头会变成 `application/json, application/json`，服务端 422。
+ */
+export function buildPowChallengeHeaders(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== 'content-type') out[key] = value;
+  }
+  out['Content-Type'] = 'application/json';
+  return out;
+}
+
+export function isPowChallengeExpired(
+  challenge: Pick<PowChallenge, 'expire_at' | 'expire_after' | 'received_at'>,
+  now = Date.now(),
+): boolean {
+  if (Number.isFinite(challenge.expire_at) && challenge.expire_at > 0) {
+    const expiresAtMs = challenge.expire_at < 1_000_000_000_000
+      ? challenge.expire_at * 1000
+      : challenge.expire_at;
+    if (now >= expiresAtMs) return true;
+  }
+  if (Number.isFinite(challenge.expire_after) && (challenge.expire_after ?? 0) > 0) {
+    if (now >= challenge.received_at + (challenge.expire_after as number) * 1000) return true;
+  }
+  return false;
 }
 
 function base64EncodeUtf8(str: string): string {
@@ -113,21 +145,32 @@ export async function createPowHeaders(
   headers: Record<string, string>,
   targetPath = '/api/v0/chat/completion',
 ): Promise<Record<string, string>> {
-  const challenge = await createPowChallenge(headers, targetPath);
-  if (challenge.algorithm !== SUPPORTED_ALGORITHM) {
-    throw new Error(`Unsupported PoW algorithm: ${challenge.algorithm}`);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const challenge = await createPowChallenge(headers, targetPath);
+    if (challenge.algorithm !== SUPPORTED_ALGORITHM) {
+      throw new Error(`Unsupported PoW algorithm: ${challenge.algorithm}`);
+    }
+    if (isPowChallengeExpired(challenge)) {
+      if (attempt === 0) continue;
+      throw new Error('pow-expired');
+    }
+    const wasm = await loadWasm();
+    const prefix = `${challenge.salt}_${challenge.expire_at}_`;
+    const answer = solvePowWithWasm(wasm, challenge.challenge.toLowerCase(), prefix, challenge.difficulty);
+    if (isPowChallengeExpired(challenge)) {
+      if (attempt === 0) continue;
+      throw new Error('pow-expired');
+    }
+    const powAnswer: PowAnswer = {
+      algorithm: challenge.algorithm,
+      challenge: challenge.challenge,
+      salt: challenge.salt,
+      answer,
+      signature: challenge.signature,
+    };
+    return {
+      'X-DS-PoW-Response': base64EncodeUtf8(JSON.stringify({ ...powAnswer, target_path: targetPath })),
+    };
   }
-  const wasm = await loadWasm();
-  const prefix = `${challenge.salt}_${challenge.expire_at}_`;
-  const answer = solvePowWithWasm(wasm, challenge.challenge.toLowerCase(), prefix, challenge.difficulty);
-  const powAnswer: PowAnswer = {
-    algorithm: challenge.algorithm,
-    challenge: challenge.challenge,
-    salt: challenge.salt,
-    answer,
-    signature: challenge.signature,
-  };
-  return {
-    'X-DS-PoW-Response': base64EncodeUtf8(JSON.stringify({ ...powAnswer, target_path: targetPath })),
-  };
+  throw new Error('pow-expired');
 }

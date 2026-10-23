@@ -28,6 +28,25 @@ function parseBodyError(bodyText: string | null): { retryable: boolean; reason: 
   try {
     obj = JSON.parse(bodyText);
   } catch {
+    const trimmed = bodyText.trimStart();
+    // SSE has its own frame classifier; scanning the whole successful stream for
+    // error-looking prose would misclassify a normal answer that happens to mention it.
+    if (trimmed.startsWith('event:') || trimmed.startsWith('data:')) return null;
+    const lower = bodyText.toLowerCase();
+    const hints = [
+      '服务器暂时不可用',
+      '服务器不可用',
+      '服务繁忙',
+      '请稍后重试',
+      'rate limit',
+      'too many requests',
+      'overloaded',
+      'temporarily unavailable',
+      'service unavailable',
+    ];
+    if (hints.some((hint) => lower.includes(hint))) {
+      return { retryable: true, reason: 'plain-text-upstream-busy' };
+    }
     return null;
   }
   if (!obj || typeof obj !== 'object') return null;
@@ -35,6 +54,9 @@ function parseBodyError(bodyText: string | null): { retryable: boolean; reason: 
   const code = typeof o.code === 'number' ? o.code : typeof o.status === 'number' ? o.status : undefined;
   const err = o.error;
   if (code === undefined && !err) return null;
+  // DeepSeek 的正常成功包也会带 code/status: 0。只有 0 与明确 error 同时出现时
+  // 才是“200 内嵌错误”；单独 code:0 绝不能误报为上游失败。
+  if (code === 0 && !err) return null;
   // 401/403/402 等鉴权/计费错误即使包在 200 里也是 fatal
   if (code === 401 || code === 403 || code === 402 || code === 429) {
     return { retryable: code === 429, reason: `body-error-${code}` };

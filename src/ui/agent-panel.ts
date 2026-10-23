@@ -1,9 +1,11 @@
 /**
- * 智能体面板前端（/agent，原生 TS，esbuild 打包为 dist/agent-panel.js）
+ * Studio 手机/远程端（/agent）。
  *
- * 经 WS /agent-ws 驱动宿主 AgentLoop：send / stop / set-policy / set-workspace / pick-folder。
- * W2：三栏 Workbench —— 消息进中栏画布，tool-run 卡片进右栏 Inspector（复用 tool-run-card），
- * 连接/运行状态进状态条；禁用态只由 WorkbenchState 的 canSend/canStop 决定。
+ * 产品定位：它不再是一套独立聊天 UI，也不自造会话历史。
+ * 任务由电脑端 DeepSeek 页面 + Studio overlay 执行；本页只负责：
+ *   - 发送远程任务 / 停止 / 切换策略与工作区
+ *   - 读取宿主镜像的同一份 StudioExecutionSession
+ *   - 在手机窄屏上展示执行记录与工具进度
  */
 
 declare global {
@@ -12,10 +14,8 @@ declare global {
   }
 }
 
-/** 让本文件成为 ES 模块（declare global 的前置条件）。 */
 export {};
 
-import { createStepFlowContainer, type StepFlowHandle } from '../inject/step-flow-ui';
 import {
   createInitialState,
   canSend,
@@ -24,14 +24,22 @@ import {
 } from './workbench/workbench-state';
 import { createWorkbenchSocket, type WorkbenchSocket } from './workbench/workbench-ws';
 import { mountInspectorDrawer } from './workbench/inspector-drawer';
-import type { WorkbenchRequest, AckPayload, AgentLoopEvent } from './workbench/workbench-types';
-import { appendMessage, getCenterBody } from './workbench/workbench-center';
-import { appendToolRun } from './workbench/workbench-inspector';
+import type {
+  WorkbenchRequest,
+  AckPayload,
+  StudioExecutionIndex,
+  StudioExecutionSession,
+} from './workbench/workbench-types';
 import { renderStatusbar } from './workbench/workbench-statusbar';
 import { mountThemeToggle } from './workbench/theme-toggle';
 import { mountDesktopHint } from './workbench/desktop-hint';
 import { mountLayoutBreakpoints } from './workbench/layout-breakpoints';
 import { createWidthObserver } from './workbench/width-observer';
+import {
+  renderExecutionIndex,
+  renderExecutionIndexSelect,
+  renderExecutionSession,
+} from './workbench/workbench-execution-view';
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -46,7 +54,6 @@ const input = $<HTMLTextAreaElement>('input');
 const btnSend = $<HTMLButtonElement>('btn-send');
 const btnStop = $<HTMLButtonElement>('btn-stop');
 const btnFolder = $<HTMLButtonElement>('btn-open-folder');
-const btnFocus = $<HTMLButtonElement>('btn-open-focus');
 const btnTheme = $<HTMLButtonElement>('btn-theme');
 const btnInspector = $<HTMLButtonElement>('btn-inspector');
 const drawer = $('inspector-drawer');
@@ -55,36 +62,98 @@ const wsPath = $('ws-path');
 const connDot = $('conn-dot');
 const connText = $('conn-text');
 const hint = $('hint');
+const sessionList = $('session-list');
+const sessionSelect = $<HTMLSelectElement>('session-select');
 
-// 桌面提示挂载点：与 #app 同级容器，避免被三栏布局的 display:none 牵连。
 const appRoot = document.getElementById('app') ?? document.body;
-// 布局根节点：断点档位 class 写在这里，CSS 只认 class 不再有 @media。
 const layoutRoot = document.getElementById('studio-workbench-root') ?? document.body;
 
 let socket: WorkbenchSocket | null = null;
 let reqSeq = 0;
-let currentFlow: StepFlowHandle | null = null;
-let tickTimer: number | null = null;
-let flowStep = 0;
-let flowTools = 0;
 let state: WorkbenchState = createInitialState();
+let executionIndex: StudioExecutionIndex | null = null;
+let selectedSessionKey: string | null = null;
+let activeSession: StudioExecutionSession | null = null;
+let requestedSessionKey: string | null = null;
 
-/* ---------- 状态 → DOM ---------- */
+function selectSession(key: string): void {
+  if (!key || key === selectedSessionKey) return;
+  selectedSessionKey = key;
+  activeSession = null;
+  renderSessionList();
+  requestExecutionSession(key);
+}
+
+function renderSessionList(): void {
+  renderExecutionIndex(sessionList, executionIndex, selectedSessionKey, selectSession);
+  renderExecutionIndexSelect(sessionSelect, executionIndex, selectedSessionKey);
+}
+
+function renderActiveSession(): void {
+  renderExecutionSession(canvas, [inspector, drawer], activeSession);
+}
+
+function applyExecutionIndex(index: StudioExecutionIndex | null): void {
+  executionIndex = index;
+  const entries = index?.sessions ?? [];
+  const selectedStillExists = !!selectedSessionKey && entries.some((e) => e.key === selectedSessionKey);
+  if (!selectedStillExists && entries.length > 0) {
+    selectedSessionKey = entries[0].key;
+    activeSession = null;
+  }
+  renderSessionList();
+  if (selectedSessionKey) requestExecutionSession(selectedSessionKey);
+  if (entries.length === 0) {
+    selectedSessionKey = null;
+    activeSession = null;
+    requestedSessionKey = null;
+    renderActiveSession();
+  }
+}
+
+function applyExecutionSession(session: StudioExecutionSession | null): void {
+  if (!session) return;
+  if (selectedSessionKey && session.key !== selectedSessionKey) return;
+  selectedSessionKey = session.key;
+  activeSession = session;
+  renderSessionList();
+  renderActiveSession();
+}
+
+function applyExecutionCleared(): void {
+  executionIndex = null;
+  selectedSessionKey = null;
+  activeSession = null;
+  requestedSessionKey = null;
+  renderSessionList();
+  renderActiveSession();
+}
+
+function requestExecutionSession(key: string): void {
+  if (requestedSessionKey === key && activeSession?.key === key) return;
+  requestedSessionKey = key;
+  call({ type: 'get-execution-session', key });
+}
 
 function syncFromState(): void {
   renderStatusbar(statusbar, state);
   btnSend.disabled = !canSend(state);
-  input.disabled = state.running;
+  input.disabled = !canSend(state);
   btnStop.classList.toggle('hidden', !canStop(state));
-  connDot.className = `conn-dot ${state.connection === 'connected' ? 'ok' : state.connection === 'connecting' ? '' : 'bad'}`;
+  const desktopOnline = state.connection === 'connected' && state.desktopPageConnected;
+  connDot.className = `conn-dot ${desktopOnline ? 'ok' : state.connection === 'connecting' ? '' : 'bad'}`;
   connText.textContent = state.connection === 'connected'
-    ? '已连接'
+    ? (state.desktopPageConnected ? '电脑页面在线' : '电脑页面离线')
     : state.connection === 'auth-failed'
-      ? '鉴权失败（请重启应用）'
+      ? '鉴权失败（请重启桌面端）'
       : state.connection === 'disconnected'
         ? '连接断开，重试中…'
         : '连接中…';
-  hint.textContent = state.running ? '智能体执行中…' : '';
+  hint.textContent = state.running
+    ? '电脑端执行中…'
+    : state.connection === 'connected' && !state.desktopPageConnected
+      ? '电脑端 DeepSeek 页面离线，远程发送已禁用'
+      : '远程控制：任务由电脑端 DeepSeek 页面执行';
   document.querySelectorAll<HTMLButtonElement>('.seg').forEach((b) => {
     b.classList.toggle('active', b.dataset.mode === state.policyMode);
   });
@@ -102,82 +171,6 @@ function commit(next: WorkbenchState): void {
   syncFromState();
 }
 
-/* ---------- 中栏步骤流 ---------- */
-
-function startTick(): void {
-  stopTick();
-  tickTimer = window.setInterval(() => {
-    currentFlow?.setPhase('running', flowStep, flowTools);
-  }, 1000);
-}
-function stopTick(): void {
-  if (tickTimer !== null) { window.clearInterval(tickTimer); tickTimer = null; }
-}
-
-function renderEvent(event: AgentLoopEvent): void {
-  switch (event.type) {
-    case 'user':
-      appendMessage(canvas, 'user', event.text ?? '');
-      if (currentFlow) { try { currentFlow.destroy(); } catch { /* */ } }
-      flowStep = 0; flowTools = 0;
-      currentFlow = createStepFlowContainer(() => call({ type: 'stop' }));
-      canvas.appendChild(currentFlow.container);
-      currentFlow.setPhase('running', 0, 0);
-      startTick();
-      break;
-    case 'assistant':
-      if (currentFlow) {
-        currentFlow.updateNarration(flowStep, event.text ?? '');
-        stopTick();
-        currentFlow.finish(flowStep + 1, flowTools, 0);
-        currentFlow = null;
-      } else {
-        appendMessage(canvas, 'assistant', event.text ?? '');
-      }
-      break;
-    case 'status':
-      if (event.step !== undefined) flowStep = event.step - 1;
-      if (currentFlow) currentFlow.setPhase('running', flowStep, flowTools);
-      appendMessage(canvas, 'status', event.text ?? '');
-      break;
-    case 'error':
-      if (currentFlow) {
-        stopTick();
-        currentFlow.setPhase('error', flowStep, flowTools);
-        currentFlow = null;
-      }
-      appendMessage(canvas, 'error', event.text ?? '');
-      break;
-    case 'tool': {
-      flowTools += event.toolCalls ?? 0;
-      if (currentFlow) currentFlow.setPhase('running', flowStep, flowTools);
-      const card = document.createElement('div');
-      card.className = 'msg msg-tool';
-      const badge = document.createElement('span');
-      badge.className = 'tool-badge';
-      badge.textContent = `⚙ 工具执行完成（${event.toolCalls ?? 0} 次）`;
-      card.appendChild(badge);
-      if (event.step !== undefined) {
-        const tag = document.createElement('span');
-        tag.className = 'step-tag';
-        tag.textContent = `第 ${event.step} 步`;
-        card.appendChild(tag);
-      }
-      getCenterBody(canvas).appendChild(card);
-      break;
-    }
-    case 'done':
-      stopTick();
-      if (currentFlow) {
-        currentFlow.finish(flowStep + 1, flowTools, 0);
-        currentFlow = null;
-      }
-      break;
-  }
-}
-
-/* ---------- WS 通道（workbench-ws 统一连接/1008 不重连/分发） ---------- */
-
 function startSocket(): void {
   const token = window.__STUDIO_TOKEN__ ?? '';
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -188,13 +181,13 @@ function startSocket(): void {
     handlers: {
       onState: (next) => commit(next),
       onAck: (ack) => handleAck(ack),
-      onLoopEvent: (ev) => renderEvent(ev),
-      onToolRun: (toolEvent) => {
-        // 窄屏抽屉与宽屏右栏是同一份数据的两个出口，各自走 appendToolRun，
-        // runId 去重语义天然一致（同一函数），不会出现两边卡片数不一致。
-        appendToolRun(inspector, toolEvent);
-        appendToolRun(drawer, toolEvent);
-      },
+      // AgentLoopEvent 只驱动运行/错误状态；可展示历史统一来自执行会话。
+      onLoopEvent: () => {},
+      // 工具最终渲染以持久化执行会话为准，避免同一事件出现两份卡片。
+      onToolRun: () => {},
+      onExecutionIndex: (index) => applyExecutionIndex(index),
+      onExecutionSession: (session) => applyExecutionSession(session),
+      onExecutionCleared: () => applyExecutionCleared(),
     },
   });
 }
@@ -205,16 +198,23 @@ function call(payload: Record<string, unknown>): string {
   return reqId;
 }
 
-/* ---------- 交互 ---------- */
-
 function handleAck(ack: AckPayload): void {
   const ok = ack.ok === true;
-  const data = ack.data as { path?: string | null } | undefined;
+  const data = ack.data;
   const error = typeof ack.error === 'string' ? ack.error : undefined;
-  if (!ok && error) appendMessage(canvas, 'error', `操作失败：${error}`);
+
+  if (!ok && error) {
+    const el = document.createElement('div');
+    el.className = 'msg msg-error';
+    el.textContent = `操作失败：${error}`;
+    canvas.querySelector<HTMLElement>('.canvas-body')?.appendChild(el);
+  }
+
+  if (data?.index !== undefined) applyExecutionIndex(data.index ?? null);
+  if (data?.session !== undefined) applyExecutionSession(data.session ?? null);
+
   if (ok && data && typeof data.path === 'string' && data.path.length > 0) {
     call({ type: 'set-workspace', path: data.path });
-    appendMessage(canvas, 'status', `工作区已切换：${data.path}`);
   }
 }
 
@@ -234,6 +234,7 @@ input.addEventListener('keydown', (e) => {
 
 btnStop.addEventListener('click', () => call({ type: 'stop' }));
 btnFolder.addEventListener('click', () => call({ type: 'pick-folder' }));
+sessionSelect.addEventListener('change', () => selectSession(sessionSelect.value));
 
 document.querySelectorAll<HTMLButtonElement>('.seg').forEach((btn) => {
   btn.addEventListener('click', () => {
@@ -241,25 +242,15 @@ document.querySelectorAll<HTMLButtonElement>('.seg').forEach((btn) => {
   });
 });
 
-// Focus 模式本期无自动挂载/快捷键：按钮降级为提示，不造假入口。
-btnFocus.addEventListener('click', () => {
-  appendMessage(canvas, 'status', '专注模式将由托盘菜单触发，本期不自动打开。');
-});
-
-// 窄屏（<1200px）Inspector 抽屉开关；宽屏按钮由 CSS 隐藏，不影响常驻右栏。
 mountInspectorDrawer({ drawer, toggleButton: btnInspector, closeButton: btnDrawerClose });
-
-// 主题：默认浅色，点 🌗 切深色并记忆；用户选过后不跟随系统。
-// 面板随窗口生命周期，不注册卸载清理（与 inspector-drawer 一致）。
 mountThemeToggle({ toggleButton: btnTheme });
 
-// 断点：WORKBENCH_BREAKPOINTS 为唯一真相源。桌面提示与断点档位共用同一个
-// resize 监听（width-observer），不建两份。
 const widthObserver = createWidthObserver(window.innerWidth);
 const breakpoints = mountLayoutBreakpoints({ root: layoutRoot, observer: widthObserver });
-// <900 显示桌面提示：阈值同样取 WORKBENCH_BREAKPOINTS.compact。
 mountDesktopHint({ parent: appRoot, observer: widthObserver, mobile: breakpoints.mobile });
 
 startSocket();
 syncFromState();
+renderSessionList();
+renderActiveSession();
 input.focus();

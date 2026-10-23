@@ -116,6 +116,15 @@ import type {
   ContentResourceScope,
 } from '../inject/types';
 import type { IssueGrantInput } from './grant-store';
+import {
+  STUDIO_EXECUTION_INDEX_KEY,
+  STUDIO_EXECUTION_SESSION_PREFIX,
+  isStudioExecutionIndex,
+  isStudioExecutionSession,
+  studioExecutionStorageKey,
+  type StudioExecutionIndex,
+  type StudioExecutionSession,
+} from '../shared/studio-execution';
 
 export interface DesktopHostOptions {
   config: ApiConfig;
@@ -253,6 +262,12 @@ export interface DesktopHost {
   onChatRoomEvent(cb: (event: ChatRoomEvent) => void): () => void;
   /** C3：订阅结构化工具运行事件（ToolRunEvent → Workbench UI）；返回退订函数。 */
   onToolRun(cb: (event: import('../shared/tool-run-event').ToolRunEvent) => void): () => void;
+  /** 统一执行会话总线：覆盖层写入后，宿主镜像给手机远程端。 */
+  onExecutionSession(cb: (session: StudioExecutionSession) => void): () => void;
+  onExecutionIndex(cb: (index: StudioExecutionIndex) => void): () => void;
+  onExecutionCleared(cb: () => void): () => void;
+  getExecutionIndex(): Promise<StudioExecutionIndex | null>;
+  getExecutionSession(key: string): Promise<StudioExecutionSession | null>;
 }
 
 export interface AgentFacade {
@@ -336,6 +351,26 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   function onToolRun(cb: (event: import('../shared/tool-run-event').ToolRunEvent) => void): () => void {
     toolRunListeners.add(cb);
     return () => toolRunListeners.delete(cb);
+  }
+
+  // 统一执行会话：Studio overlay 是唯一写入者，宿主只验证、存储、广播。
+  const executionSessionListeners = new Set<(session: StudioExecutionSession) => void>();
+  const executionIndexListeners = new Set<(index: StudioExecutionIndex) => void>();
+  const executionClearedListeners = new Set<() => void>();
+  function emitExecutionSession(session: StudioExecutionSession): void {
+    for (const cb of executionSessionListeners) {
+      try { cb(session); } catch { /* ignore */ }
+    }
+  }
+  function emitExecutionIndex(index: StudioExecutionIndex): void {
+    for (const cb of executionIndexListeners) {
+      try { cb(index); } catch { /* ignore */ }
+    }
+  }
+  function emitExecutionCleared(): void {
+    for (const cb of executionClearedListeners) {
+      try { cb(); } catch { /* ignore */ }
+    }
   }
 
   // 密钥环：轮换期新密钥立即生效、旧密钥在宽限期内仍被接受，
@@ -1220,11 +1255,17 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     await kvGet(key); // ensure loaded
     kvCache[key] = value;
     await kvBackend.writeBatch({ set: { [key]: value }, remove: [] });
+    if (key === STUDIO_EXECUTION_INDEX_KEY && isStudioExecutionIndex(value)) {
+      emitExecutionIndex(value);
+    } else if (key.startsWith(STUDIO_EXECUTION_SESSION_PREFIX) && isStudioExecutionSession(value)) {
+      emitExecutionSession(value);
+    }
   }
   async function kvRemove(key: string): Promise<void> {
     await kvGet(key);
     delete kvCache[key];
     await kvBackend.writeBatch({ set: {}, remove: [key] });
+    if (key === STUDIO_EXECUTION_INDEX_KEY) emitExecutionCleared();
   }
 
   let epoch = 0;
@@ -1496,6 +1537,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           server: server.rawServer,
           // QD-R2-12：WS 接轮换环，不再传冻结字面量。
           token: () => apiTokenRing.accepted,
+          // 手机 PWA 与页面同源；只有显式开启 LAN 且配对成功后才可能拿到页面令牌。
+          allowLanOrigins: options.agentLanAccess?.lanEnabled === true,
           host: {
             bots: {
               get(botId = 'main') {
@@ -1539,6 +1582,28 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             },
             // C3：工具运行事件订阅（ToolRunEvent → agent-channel broadcast）
             onToolRunEvent: (cb) => onToolRun(cb),
+            onExecutionSession: (cb) => {
+              executionSessionListeners.add(cb);
+              return () => executionSessionListeners.delete(cb);
+            },
+            onExecutionIndex: (cb) => {
+              executionIndexListeners.add(cb);
+              return () => executionIndexListeners.delete(cb);
+            },
+            onExecutionCleared: (cb) => {
+              executionClearedListeners.add(cb);
+              return () => executionClearedListeners.delete(cb);
+            },
+            getExecutionIndex: async () => {
+              const value = await kvGet(STUDIO_EXECUTION_INDEX_KEY);
+              return isStudioExecutionIndex(value) ? value : null;
+            },
+            getExecutionSession: async (key: string) => {
+              const value = await kvGet(studioExecutionStorageKey(key));
+              return isStudioExecutionSession(value) ? value : null;
+            },
+            desktopPageConnected: () =>
+              !!hub?.trustedPages.some((p) => (p.botId ?? 'main') === 'main'),
             get policyMode() {
               return policyMode;
             },
@@ -1609,8 +1674,12 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             ...(artifactPaths ? { artifactPaths } : {}),
           });
         },
+        onConnect: () => agentChannel?.broadcastState(),
         // T5：页端断开 → pendingRuns 全部未完成 runId 标 failed/page-disconnected 并清空（无定时器）。
-        onDisconnect: () => failPendingRunsOnDisconnect(pendingRuns, emitToolRun),
+        onDisconnect: () => {
+          failPendingRunsOnDisconnect(pendingRuns, emitToolRun);
+          agentChannel?.broadcastState();
+        },
         // v0.9：页端 auto-continue 推送的模型回复（不渲染到 DOM）。
         // v0.24：写入发起 bot 的 lastAutoReply 缓冲。
         onAssistantReply: (text, loop, botId) => {
@@ -1699,6 +1768,26 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     },
     // C3：结构化工具运行事件订阅（供 Workbench UI 消费）
     onToolRun,
+    onExecutionSession(cb) {
+      executionSessionListeners.add(cb);
+      return () => executionSessionListeners.delete(cb);
+    },
+    onExecutionIndex(cb) {
+      executionIndexListeners.add(cb);
+      return () => executionIndexListeners.delete(cb);
+    },
+    onExecutionCleared(cb) {
+      executionClearedListeners.add(cb);
+      return () => executionClearedListeners.delete(cb);
+    },
+    async getExecutionIndex() {
+      const value = await kvGet(STUDIO_EXECUTION_INDEX_KEY);
+      return isStudioExecutionIndex(value) ? value : null;
+    },
+    async getExecutionSession(key) {
+      const value = await kvGet(studioExecutionStorageKey(key));
+      return isStudioExecutionSession(value) ? value : null;
+    },
   };
 }
 

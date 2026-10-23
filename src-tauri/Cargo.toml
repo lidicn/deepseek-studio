@@ -26,5 +26,8 @@ libc = "0.2"
 [features]
 # 生产分发时由 tauri 注入自定义协议；开发期不开启。
 custom-protocol = ["tauri/custom-protocol"]
-# v0.12 Phase 3：系统托盘功能
+# v0.12 Phase 3：系统托盘功能。
+# 必须进 default：否则 main.rs 里 `#[cfg(feature = "tray-icon")]` 的托盘代码
+# 在 cargo build / tauri dev / tauri build 下都不会编译，托盘会静默消失。
+default = ["tray-icon"]
 tray-icon = []
