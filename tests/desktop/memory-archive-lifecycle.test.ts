@@ -152,6 +152,30 @@ describe('M10-5 归档生命周期', () => {
     expect(needsConsent(pick('memory.unarchive'))).toBe(true);
     expect(needsConsent(pick('memory.purge'))).toBe(true);
     expect(needsConsent(pick('memory.listArchived'))).toBe(false);
+    expect(needsConsent(pick('memory.list'))).toBe(false);
+  });
+
+  it('memory.list 是面板取数口：只回生效行，按 pinned → user → updated_at', async () => {
+    const seen: HostToPageMessage[] = [];
+    const ws = await connectPage(host!, seen);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const namesOf = (r: { data?: unknown }): string[] =>
+      (r.data as { memories: Array<{ name: string }> }).memories.map((m) => m.name);
+
+    await host!.invokeTool('memory.save', { type: 'user', name: 'u-old', content: 'u' });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const p = await host!.invokeTool('memory.save', { type: 'project', name: 'p-new', content: 'p' });
+    await host!.invokeTool('memory.save', { type: 'project', name: 'p-pin', content: 'pin', pinned: true });
+
+    const listed = await host!.invokeTool('memory.list', {});
+    expect(listed.ok).toBe(true);
+    expect(namesOf(listed)).toEqual(['p-pin', 'u-old', 'p-new']);
+
+    // 归档一行后立刻从生效面消失（面板切换/刷新走同一个口）
+    expect((await host!.invokeTool('memory.delete', { id: (p.data as { id: string }).id })).ok).toBe(true);
+    const after = await host!.invokeTool('memory.list', {});
+    expect(namesOf(after)).toEqual(['p-pin', 'u-old']);
+    ws.close();
   });
 
   it('契约面：归档三兄弟仍是 UI 直调，模型不可达', async () => {

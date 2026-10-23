@@ -352,6 +352,16 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
     archivedModeBtn.dataset.active = String(memoryMode === 'archived');
   }
 
+  /** 从宿主拉一次生效中列表。RPC 失败时保留现有缓存，不清空界面。 */
+  async function reloadActive(): Promise<void> {
+    const r = await callHostTool('memory.list', {});
+    const rows = r.ok && r.data && typeof r.data === 'object'
+      ? (r.data as { memories?: unknown }).memories
+      : undefined;
+    if (Array.isArray(rows)) globalState.memories = rows as MemoryRowView[];
+    if (memoryMode === 'active') renderMemories();
+  }
+
   async function reloadArchived(): Promise<void> {
     const r = await callHostTool('memory.listArchived', {});
     const rows = r.ok && r.data && typeof r.data === 'object'
@@ -415,6 +425,7 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   activeModeBtn.addEventListener('click', () => {
     memoryMode = 'active';
     renderMemories();
+    void reloadActive();
   });
   archivedModeBtn.addEventListener('click', () => {
     memoryMode = 'archived';
@@ -489,7 +500,9 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
     void controls.refresh();
     void loadMcp();
     void loadSkills();
-    renderMemories();
+    // M10-5：面板打开就从宿主拉一次，别只等广播（否则打开早于首帧广播时永远空）。
+    void reloadActive();
+    void reloadArchived();
   }
 
   function close(): void {
@@ -502,6 +515,10 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
     if (isOpen) close();
     else open('general');
   });
+  // 宿主推来新的生效列表 → 直接重渲染（载具在 entry.ts 的 onMemoriesUpdate）
+  const unsubscribeMemories = globalEvents.on('ui:memories-updated', () => {
+    if (memoryMode === 'active') renderMemories();
+  });
 
   return {
     container,
@@ -510,6 +527,7 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
     destroy() {
       unsubscribeControls();
       unsubscribeSettings();
+      unsubscribeMemories();
       if (ownsControls) controls.destroy();
       container.remove();
     },

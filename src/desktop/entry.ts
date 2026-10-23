@@ -21,6 +21,7 @@ import { createChatSendCapability } from '../capabilities/chat-send';
 import { createHostClient, type HostClient } from './host-client';
 import { installMainWorldInterceptor, setInterceptorTraceSink } from '../inject/main-world-interceptor';
 import { installTraceReportHandle } from '../inject/main-world-interceptor';
+import { globalEvents, globalState } from '../ui/studio-ui-core';
 import { createChatRoom, type ChatRoomRuntimeConfig } from '../ui/studio-chat-room';
 import { installStudioSettingsEntry } from '../ui/studio-settings-entry';
 import { createStudioChatUI, type StudioChatUIHandle } from '../ui/studio-chat-ui';
@@ -270,6 +271,10 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
         onStreamDelta: (text) => host.streamDelta(text),
         onMemoriesUpdate: (memories) => {
           (globalThis as { __studioMemories?: unknown }).__studioMemories = memories;
+          // M10-5：设置面板的记忆页从 globalState 取数，广播到了要同步进去，
+          // 否则面板永远显示「暂无保存的记忆」（此前的实况）。
+          globalState.memories = memories;
+          globalEvents.emit('ui:memories-updated');
         },
         chatUI,
       });

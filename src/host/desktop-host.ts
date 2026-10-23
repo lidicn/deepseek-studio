@@ -685,6 +685,26 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             };
           },
         },
+        // M10-5：生效中列表（面板「生效中」态的取数口）。
+        // 广播只做实时刷新，不能当唯一来源——面板打开时宿主可能还没推过任何一帧。
+        'memory.list': {
+          id: 'memory.list',
+          async execute(): Promise<ExecuteResult> {
+            const rows = await getMemoryStore().list();
+            return {
+              ok: true,
+              data: {
+                memories: rows.map((m) => ({
+                  id: m.id,
+                  type: m.type,
+                  name: m.name,
+                  content: m.content,
+                  tags: m.tags,
+                })),
+              },
+            };
+          },
+        },
         // v1.1：设置工作区根目录。
         'workspace.set': {
           id: 'workspace.set',

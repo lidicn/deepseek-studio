@@ -161,6 +161,7 @@ const UI_ONLY_TOOLS: Record<string, UpstreamToolMapping> = Object.assign(
   'memory.unarchive': { id: 'memory.unarchive', adapt: (p) => ({ id: String(p.id ?? '') }) },
   'memory.purge': { id: 'memory.purge', adapt: (p) => ({ id: String(p.id ?? '') }) },
   'memory.listArchived': { id: 'memory.listArchived', adapt: () => ({}) },
+  'memory.list': { id: 'memory.list', adapt: () => ({}) },
   'workspace.set': { id: 'workspace.set', adapt: (p) => p },
   'policy.set': { id: 'policy.set', adapt: (p) => p },
   'settings.get': { id: 'settings.get', adapt: (p) => p },

@@ -243,6 +243,15 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
   },
+  // M10-5：生效中列表（面板取数口——广播只做实时刷新，不能当唯一来源）。
+  {
+    id: 'memory.list',
+    title: '列出记忆',
+    description: '列出当前生效的长期记忆（只读，自动放行）。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+  },
   // v1.1：设置工作区（改写后续文件工具的可信边界——高危，必须用户同意）。
   // QD-R2-04 修复：原 risk:'read' 会被自动放行，模型自调即可把文件根指向任意目录。
   {
