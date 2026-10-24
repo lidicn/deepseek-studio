@@ -84,6 +84,12 @@ function contentHash(type: string, name: string, content: string): string {
   return crypto.createHash('sha1').update(`${type}\n${name.toLowerCase()}\n${norm}`).digest('hex');
 }
 
+/** M10-7.2：名称无关的去重指纹——type + 规范化内容（压缩空白 + 去首尾 + 小写，跨名大小写/空白归一后命中）。 */
+function dedupeHash(type: string, content: string): string {
+  const norm = content.replace(/\s+/g, ' ').trim().toLowerCase();
+  return crypto.createHash('sha1').update(`${type}\n${norm}`).digest('hex');
+}
+
 function sameStringArray(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
   const sa = [...a].sort();
@@ -142,6 +148,7 @@ CREATE TABLE IF NOT EXISTS memories (
   confidence REAL,
   persona_tags_json TEXT NOT NULL DEFAULT '[]',
   content_hash TEXT,
+  dedupe_hash TEXT,
   invalid_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -219,6 +226,9 @@ export class MemoryStore implements MemoryStoreV2 {
       const db = new DatabaseSync(this.storePath);
       db.exec(SCHEMA_SQL);
       this.db = db;
+      // M10-7.2：先加列/回填，再导入旧 JSON（导入 INSERT 已自带 dedupe_hash）。
+      // 顺序反了会在「旧 DB 空表缺列 + memories.json」时导入失败漏数据。
+      this.migrateDedupeHash(db);
       this.migrateLegacyJson(db);
     } catch (e) {
       console.warn(
@@ -244,6 +254,27 @@ export class MemoryStore implements MemoryStoreV2 {
     return this.db === null;
   }
 
+  /**
+   * M10-7.2：旧库兼容迁移——补 dedupe_hash 列、回填存量、建非唯一索引。
+   * 可重复执行：列已存在则跳过 ALTER，回填只处理 NULL 行，索引 IF NOT EXISTS。
+   */
+  private migrateDedupeHash(db: import('node:sqlite').DatabaseSync): void {
+    try {
+      const cols = db.prepare('PRAGMA table_info(memories)').all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'dedupe_hash')) {
+        db.exec('ALTER TABLE memories ADD COLUMN dedupe_hash TEXT');
+      }
+      const rows = db.prepare('SELECT id, type, content FROM memories WHERE dedupe_hash IS NULL').all() as Array<{ id: string; type: string; content: string }>;
+      const backfill = db.prepare('UPDATE memories SET dedupe_hash = ? WHERE id = ?');
+      for (const row of rows) {
+        backfill.run(dedupeHash(row.type, String(row.content ?? '')), row.id);
+      }
+      db.exec('CREATE INDEX IF NOT EXISTS idx_memories_dedupe ON memories(type, dedupe_hash)');
+    } catch (e) {
+      console.warn('[memory] dedupe_hash migration failed:', e instanceof Error ? e.message : String(e));
+    }
+  }
+
   /** 旧 memories.json 一次性导入（仅在 DB 表为空时，保留原文件作备份）。 */
   private migrateLegacyJson(db: import('node:sqlite').DatabaseSync): void {
     const legacy = legacyJsonPath(this.storePath);
@@ -255,8 +286,8 @@ export class MemoryStore implements MemoryStoreV2 {
       if (!Array.isArray(parsed) || parsed.length === 0) return;
       const ins = db.prepare(
         `INSERT OR REPLACE INTO memories
-         (id, type, name, content, tags_json, pinned, source, confidence, persona_tags_json, content_hash, invalid_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, type, name, content, tags_json, pinned, source, confidence, persona_tags_json, content_hash, dedupe_hash, invalid_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       const ftsIns = db.prepare('INSERT INTO memories_fts(rowid, name, content, tags) VALUES (?, ?, ?, ?)');
       let imported = 0;
@@ -269,7 +300,7 @@ export class MemoryStore implements MemoryStoreV2 {
         const name = String(raw.name ?? '');
         ins.run(
           raw.id, type, name, content, JSON.stringify(tags), raw.pinned ? 1 : 0,
-          'import', null, '[]', contentHash(type, name, content), null,
+          'import', null, '[]', contentHash(type, name, content), dedupeHash(type, content), null,
           Number(raw.createdAt ?? now), Number(raw.updatedAt ?? now),
         );
         const rid = (db.prepare('SELECT rowid FROM memories WHERE id = ?').get(raw.id)?.rowid as number) ?? 0;
@@ -330,6 +361,8 @@ export class MemoryStore implements MemoryStoreV2 {
     const tags = params.tags ?? [];
     const personaTags = params.personaTags ?? [];
     const hash = contentHash(params.type, params.name, params.content);
+    // M10-7.2：名称无关去重指纹（同名之外，跨名同内容也靠它命中既有行）。
+    const dedupe = dedupeHash(params.type, params.content);
 
     if (this.db) {
       // M10-5：同名行分「有效 / 已失效」两种命中。有效 → 原地更新；已失效 → 复活原行
@@ -374,10 +407,10 @@ export class MemoryStore implements MemoryStoreV2 {
         this.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(rid);
         this.db.prepare(
           `UPDATE memories SET content = ?, tags_json = ?, pinned = ?, source = ?, confidence = ?,
-           persona_tags_json = ?, content_hash = ?, invalid_at = NULL, updated_at = ? WHERE id = ?`,
+           persona_tags_json = ?, content_hash = ?, dedupe_hash = ?, invalid_at = NULL, updated_at = ? WHERE id = ?`,
         ).run(
           params.content, JSON.stringify(merged.tags), merged.pinned ? 1 : 0,
-          merged.source ?? null, merged.confidence ?? null, JSON.stringify(merged.personaTags), hash, now,
+          merged.source ?? null, merged.confidence ?? null, JSON.stringify(merged.personaTags), hash, dedupe, now,
           String(existing.id),
         );
         this.db.prepare('INSERT INTO memories_fts(rowid, name, content, tags) VALUES (?, ?, ?, ?)')
@@ -385,14 +418,64 @@ export class MemoryStore implements MemoryStoreV2 {
         return { ok: true, id: String(existing.id) };
       }
 
+      // M10-7.2：同名未命中 → 同 type + dedupe_hash 跨名去重。有效行优先、否则最近更新；
+      // 不改原 name（跨名去重保留首个名称），content_hash 用原 name 重算以保留旧语义。
+      const cross = this.db
+        .prepare(
+          `SELECT rowid AS rid, * FROM memories
+           WHERE type = ? AND dedupe_hash = ?
+           ORDER BY (invalid_at IS NULL) DESC, updated_at DESC
+           LIMIT 1`,
+        )
+        .get(params.type, dedupe) as Record<string, unknown> | undefined;
+      if (cross) {
+        const crossId = String(cross.id);
+        const valid = cross.invalid_at === null || cross.invalid_at === undefined;
+        const crossName = String(cross.name);
+        const crossHash = contentHash(params.type, crossName, params.content);
+        const crossGov: ExistingGovernanceFields = {
+          pinned: cross.pinned === 1,
+          tags: parseJsonArray(cross.tags_json),
+          personaTags: parseJsonArray(cross.persona_tags_json),
+          source: typeof cross.source === 'string' ? cross.source : undefined,
+          confidence: typeof cross.confidence === 'number' ? cross.confidence : undefined,
+        };
+        const merged = mergeUpdateGovernance(crossGov, params);
+        // 跨名同内容时若治理字段也未变 → no-op，直接复用既有 id，不搅动 updatedAt。
+        const unchanged =
+          valid &&
+          merged.pinned === crossGov.pinned &&
+          sameStringArray(merged.tags, crossGov.tags) &&
+          sameStringArray(merged.personaTags, crossGov.personaTags) &&
+          (merged.source ?? undefined) === crossGov.source &&
+          (merged.confidence ?? undefined) === crossGov.confidence;
+        if (unchanged) {
+          return { ok: true, id: crossId };
+        }
+        const rid = cross.rid as number;
+        this.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(rid);
+        this.db.prepare(
+          `UPDATE memories SET content = ?, tags_json = ?, pinned = ?, source = ?, confidence = ?,
+           persona_tags_json = ?, content_hash = ?, dedupe_hash = ?, invalid_at = NULL, updated_at = ? WHERE id = ?`,
+        ).run(
+          params.content, JSON.stringify(merged.tags), merged.pinned ? 1 : 0,
+          merged.source ?? null, merged.confidence ?? null, JSON.stringify(merged.personaTags),
+          crossHash, dedupe, now, crossId,
+        );
+        // name 保留原值，FTS 仍按原 name 索引。
+        this.db.prepare('INSERT INTO memories_fts(rowid, name, content, tags) VALUES (?, ?, ?, ?)')
+          .run(rid, crossName, params.content, merged.tags.join(' '));
+        return { ok: true, id: crossId };
+      }
+
       const id = genId();
       this.db.prepare(
         `INSERT INTO memories
-         (id, type, name, content, tags_json, pinned, source, confidence, persona_tags_json, content_hash, invalid_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, type, name, content, tags_json, pinned, source, confidence, persona_tags_json, content_hash, dedupe_hash, invalid_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         id, params.type, params.name, params.content, JSON.stringify(tags), (params.pinned ?? false) ? 1 : 0,
-        params.source ?? null, params.confidence ?? null, JSON.stringify(personaTags), hash, null, now, now,
+        params.source ?? null, params.confidence ?? null, JSON.stringify(personaTags), hash, dedupe, null, now, now,
       );
       const rid = (this.db.prepare('SELECT last_insert_rowid() AS rid').get()?.rid as number) ?? 0;
       this.db.prepare('INSERT INTO memories_fts(rowid, name, content, tags) VALUES (?, ?, ?, ?)')
@@ -430,6 +513,35 @@ export class MemoryStore implements MemoryStoreV2 {
       } as MemoryRow;
       return { ok: true, id: target.id };
     }
+
+    // M10-7.2：同名未命中 → 同 type + dedupeHash 跨名去重。有效行优先、否则最近更新。
+    const sameDedupe = this.fallback!.filter(
+      (m) => m.type === params.type && dedupeHash(m.type, m.content) === dedupe,
+    );
+    const crossTarget =
+      sameDedupe.find((m) => m.invalidAt === null) ??
+      [...sameDedupe].sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    if (crossTarget) {
+      const merged = mergeUpdateGovernance(crossTarget, params);
+      const unchanged =
+        crossTarget.invalidAt === null &&
+        merged.pinned === crossTarget.pinned &&
+        sameStringArray(merged.tags, crossTarget.tags) &&
+        sameStringArray(merged.personaTags, crossTarget.personaTags) &&
+        (merged.source ?? undefined) === crossTarget.source &&
+        (merged.confidence ?? undefined) === crossTarget.confidence;
+      if (unchanged) {
+        return { ok: true, id: crossTarget.id };
+      }
+      const idx = this.fallback!.indexOf(crossTarget);
+      this.fallback![idx] = {
+        ...crossTarget, content: params.content, tags: merged.tags, pinned: merged.pinned,
+        source: merged.source, confidence: merged.confidence, personaTags: merged.personaTags,
+        invalidAt: null, updatedAt: now,
+      } as MemoryRow;
+      return { ok: true, id: crossTarget.id };
+    }
+
     const id = genId();
     this.fallback!.push({
       id, type: params.type as MemoryType, name: params.name, content: params.content, tags,

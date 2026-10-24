@@ -397,3 +397,157 @@ describe('M10-7.1 fallback 内存路径同语义（pinned + tags）', () => {
     s.close();
   });
 });
+
+describe('M10-7.2 跨名称同内容去重', () => {
+  it('同 type、同 content、不同 name → 第二次复用既有 id，total 不增', async () => {
+    const s = newStore();
+    const first = s.save({ type: 'user', name: '第一次的名字', content: '统一记忆内容' });
+    const second = s.save({ type: 'user', name: '另一个名字', content: '统一记忆内容' });
+    expect(second.id).toBe(first.id);
+    expect(s.stats().total).toBe(1);
+    const row = await s.get(first.id!);
+    expect(row!.name).toBe('第一次的名字'); // 跨名去重保留首个名称
+    s.close();
+  });
+
+  it('同 content、不同 type → 不去重，仍新增两行', () => {
+    const s = newStore();
+    const a = s.save({ type: 'user', name: 'n1', content: '共享内容' });
+    const b = s.save({ type: 'project', name: 'n2', content: '共享内容' });
+    expect(b.id).not.toBe(a.id);
+    expect(s.stats().total).toBe(2);
+    s.close();
+  });
+
+  it('大小写/连续空白规范化后相同 → 跨名命中去重', async () => {
+    const s = newStore();
+    const first = s.save({ type: 'user', name: 'orig', content: 'Hello   WORLD' });
+    const second = s.save({ type: 'user', name: 'another', content: 'hello world' });
+    expect(second.id).toBe(first.id);
+    expect(s.stats().total).toBe(1);
+    s.close();
+  });
+
+  it('命中归档行 → 复活原行，不新建', async () => {
+    const s = newStore();
+    const first = s.save({ type: 'user', name: 'archived-name', content: '归档内容' });
+    await s.invalidate(first.id!);
+    expect((await s.list()).find((m) => m.id === first.id)).toBeUndefined();
+    // 另一个 name，同内容 → 应复活归档行而非新建有效行
+    const second = s.save({ type: 'user', name: 'revive-name', content: '归档内容' });
+    expect(second.id).toBe(first.id);
+    expect(s.stats().total).toBe(1);
+    expect(s.stats().valid).toBe(1);
+    s.close();
+  });
+
+  it('旧库无 dedupe_hash 列 → 打开后自动补列并回填，值非空', () => {
+    const oldDir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-mem-old-'));
+    const dbPath = path.join(oldDir, 'old.db');
+    // 手工建旧版 schema（无 dedupe_hash）
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
+    const raw = new DatabaseSync(dbPath);
+    raw.exec(`
+      CREATE TABLE memories (
+        id TEXT PRIMARY KEY, type TEXT NOT NULL, name TEXT NOT NULL, content TEXT NOT NULL,
+        tags_json TEXT NOT NULL DEFAULT '[]', pinned INTEGER NOT NULL DEFAULT 0,
+        source TEXT, confidence REAL, persona_tags_json TEXT NOT NULL DEFAULT '[]',
+        content_hash TEXT, invalid_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      INSERT INTO memories (id,type,name,content,tags_json,pinned,content_hash,persona_tags_json,created_at,updated_at)
+      VALUES ('old-1','user','old','老内容','[]',0,'x','[]',1,1);
+    `);
+    raw.close();
+
+    const s = new MemoryStore(dbPath);
+    const cols = s.getDb()!.prepare('PRAGMA table_info(memories)').all() as Array<{ name: string }>;
+    expect(cols.some((c) => c.name === 'dedupe_hash')).toBe(true);
+    const row = s.getDb()!.prepare('SELECT dedupe_hash FROM memories WHERE id = ?').get('old-1') as { dedupe_hash: string | null };
+    expect(typeof row.dedupe_hash).toBe('string');
+    expect(row.dedupe_hash!.length).toBeGreaterThan(0);
+    s.close();
+    fs.rmSync(oldDir, { recursive: true, force: true });
+  });
+
+  it('fallback 路径：跨名同内容去重 + 不同 type 不去重', () => {
+    const s = new MemoryStore(path.join(tmpRoot, 'bad\0path', 'memories.db'));
+    expect(s.stats().backend).toBe('memory');
+    const a = s.save({ type: 'project', name: 'p1', content: 'fb 共享' });
+    const b = s.save({ type: 'project', name: 'p2', content: 'fb 共享' });
+    expect(b.id).toBe(a.id); // 跨名去重
+    const c = s.save({ type: 'user', name: 'u1', content: 'fb 共享' });
+    expect(c.id).not.toBe(a.id); // 不同 type 不去重
+    s.close();
+  });
+
+  it('旧 memories.json 导入行 dedupe_hash 非空，且可被跨名同内容命中', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-mem-legacy-dedupe-'));
+    fs.writeFileSync(
+      path.join(dir, 'memories.json'),
+      JSON.stringify([{ id: 'mem-old', type: 'user', name: '旧名', content: '同一内容' }]),
+      'utf8',
+    );
+    const s = new MemoryStore(path.join(dir, 'memories.db'));
+    // 导入行 dedupe_hash 已写
+    const row = s.getDb()!.prepare('SELECT dedupe_hash FROM memories WHERE id = ?').get('mem-old') as { dedupe_hash: string | null };
+    expect(typeof row.dedupe_hash).toBe('string');
+    expect(row.dedupe_hash!.length).toBeGreaterThan(0);
+    // 不同 name、同 content → 复用旧 id，不新增
+    const saved = s.save({ type: 'user', name: '新名字', content: '同一内容' });
+    expect(saved.id).toBe('mem-old');
+    expect(s.stats().total).toBe(1);
+    s.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('旧 JSON 导入数据经大小写/空白归一后也能跨名命中', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-mem-legacy-ws-'));
+    fs.writeFileSync(
+      path.join(dir, 'memories.json'),
+      JSON.stringify([{ id: 'mem-old2', type: 'user', name: '旧', content: 'Hello   WORLD' }]),
+      'utf8',
+    );
+    const s = new MemoryStore(path.join(dir, 'memories.db'));
+    const saved = s.save({ type: 'user', name: '别的名', content: 'hello world' });
+    expect(saved.id).toBe('mem-old2');
+    expect(s.stats().total).toBe(1);
+    s.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('旧 DB 空表无 dedupe 列 + memories.json：先加列再导入，且可跨名去重', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-mem-emptyold-'));
+    const dbPath = path.join(dir, 'memories.db');
+    // 手工建旧版空表（无 dedupe_hash 列）
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
+    const raw = new DatabaseSync(dbPath);
+    raw.exec(`
+      CREATE TABLE memories (
+        id TEXT PRIMARY KEY, type TEXT NOT NULL, name TEXT NOT NULL, content TEXT NOT NULL,
+        tags_json TEXT NOT NULL DEFAULT '[]', pinned INTEGER NOT NULL DEFAULT 0,
+        source TEXT, confidence REAL, persona_tags_json TEXT NOT NULL DEFAULT '[]',
+        content_hash TEXT, invalid_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+    `);
+    raw.close();
+    // 同目录放旧 JSON
+    fs.writeFileSync(
+      path.join(dir, 'memories.json'),
+      JSON.stringify([{ id: 'mem-old3', type: 'user', name: '旧名', content: '空表升级内容' }]),
+      'utf8',
+    );
+
+    const s = new MemoryStore(dbPath);
+    expect(s.stats().total).toBe(1); // 成功导入，未漏数据
+    const row = s.getDb()!.prepare('SELECT dedupe_hash FROM memories WHERE id = ?').get('mem-old3') as { dedupe_hash: string | null };
+    expect(typeof row.dedupe_hash).toBe('string');
+    expect(row.dedupe_hash!.length).toBeGreaterThan(0);
+    const saved = s.save({ type: 'user', name: '新名', content: '空表升级内容' });
+    expect(saved.id).toBe('mem-old3');
+    expect(s.stats().total).toBe(1);
+    s.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
