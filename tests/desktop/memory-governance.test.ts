@@ -216,3 +216,184 @@ describe('M10-6 source 由宿主赋值', () => {
     expect(mapped!.params).toEqual({ type: 'user', name: 'n', content: 'c', tags: [] });
   });
 });
+
+describe('M10-7.1 同名 save() 未传治理字段保留原值（SQL 持久化路径）', () => {
+  it('置顶行只更新 content、不传 pinned → 仍置顶', async () => {
+    const s = newStore();
+    const first = s.save({ type: 'user', name: 'keep-pin', content: 'v1', pinned: true });
+    s.save({ type: 'user', name: 'keep-pin', content: 'v2' }); // 不传 pinned
+    const row = await s.get(first.id!);
+    expect(row).toBeDefined();
+    expect(row!.pinned).toBe(true);
+    expect(row!.content).toBe('v2');
+    s.close();
+  });
+
+  it('带 tags 的行只更新 content、不传 tags → tags 原样保留', async () => {
+    const s = newStore();
+    const first = s.save({ type: 'user', name: 'keep-tags', content: 'v1', tags: ['a', 'b'] });
+    s.save({ type: 'user', name: 'keep-tags', content: 'v2' }); // 不传 tags
+    const row = await s.get(first.id!);
+    expect(row).toBeDefined();
+    expect(row!.tags).toEqual(['a', 'b']);
+    s.close();
+  });
+
+  it('带 personaTags 的行只更新 content、不传 → personaTags 原样保留', async () => {
+    const s = newStore();
+    const first = s.save({ type: 'user', name: 'keep-pt', content: 'v1', personaTags: ['工作', '家人'] });
+    s.save({ type: 'user', name: 'keep-pt', content: 'v2' }); // 不传 personaTags
+    const row = await s.get(first.id!);
+    expect(row).toBeDefined();
+    expect(row!.personaTags).toEqual(['工作', '家人']);
+    s.close();
+  });
+
+  it('带 source/confidence 的行只更新 content、不传 → 原值保留', async () => {
+    const s = newStore();
+    const first = s.save({ type: 'user', name: 'keep-sc', content: 'v1', source: 'curator', confidence: 0.9 });
+    s.save({ type: 'user', name: 'keep-sc', content: 'v2' }); // 不传 source/confidence
+    const row = await s.get(first.id!);
+    expect(row).toBeDefined();
+    expect(row!.source).toBe('curator');
+    expect(row!.confidence).toBe(0.9);
+    s.close();
+  });
+
+  it('显式 pinned=false 明确取消置顶（未传 ≠ 显式 false）', async () => {
+    const s = newStore();
+    const first = s.save({ type: 'user', name: 'unpin', content: 'v1', pinned: true });
+    s.save({ type: 'user', name: 'unpin', content: 'v2', pinned: false }); // 显式取消
+    const row = await s.get(first.id!);
+    expect(row).toBeDefined();
+    expect(row!.pinned).toBe(false);
+    s.close();
+  });
+
+  it('显式 tags=[] 明确清空（未传 ≠ 显式空数组）', async () => {
+    const s = newStore();
+    const first = s.save({ type: 'user', name: 'clear-tags', content: 'v1', tags: ['keep'] });
+    s.save({ type: 'user', name: 'clear-tags', content: 'v2', tags: [] }); // 显式清空
+    const row = await s.get(first.id!);
+    expect(row).toBeDefined();
+    expect(row!.tags).toEqual([]);
+    s.close();
+  });
+
+  it('归档行同名复活：未传 pinned/tags 时复活后仍保留原字段', async () => {
+    const s = newStore();
+    const first = s.save({ type: 'user', name: 'revive-keep', content: 'v1', pinned: true, tags: ['x'] });
+    await s.invalidate(first.id!);
+    expect((await s.list()).find((m) => m.id === first.id)).toBeUndefined();
+    s.save({ type: 'user', name: 'revive-keep', content: 'v2' }); // 不传 pinned/tags，复活
+    const row = await s.get(first.id!);
+    expect(row).toBeDefined();
+    expect(row!.content).toBe('v2');
+    expect(row!.pinned).toBe(true); // 复活保留置顶
+    expect(row!.tags).toEqual(['x']); // 复活保留 tags
+    s.close();
+  });
+
+  it('同内容只传 pinned:false → 必须取消置顶（不能被无变化早退吞掉）', async () => {
+    const s = newStore();
+    const first = s.save({ type: 'user', name: 'only-pin', content: 'same', pinned: true });
+    s.save({ type: 'user', name: 'only-pin', content: 'same', pinned: false }); // 内容相同
+    const row = await s.get(first.id!);
+    expect(row!.pinned).toBe(false);
+    s.close();
+  });
+
+  it('同内容只传 tags:[] → 必须清空 tags', async () => {
+    const s = newStore();
+    const first = s.save({ type: 'user', name: 'only-tags', content: 'same', tags: ['keep'] });
+    s.save({ type: 'user', name: 'only-tags', content: 'same', tags: [] }); // 内容相同
+    const row = await s.get(first.id!);
+    expect(row!.tags).toEqual([]);
+    s.close();
+  });
+
+  it('同内容只换 personaTags → 必须更新', async () => {
+    const s = newStore();
+    const first = s.save({ type: 'user', name: 'only-pt', content: 'same', personaTags: ['old'] });
+    s.save({ type: 'user', name: 'only-pt', content: 'same', personaTags: ['new'] });
+    const row = await s.get(first.id!);
+    expect(row!.personaTags).toEqual(['new']);
+    s.close();
+  });
+
+  it('同内容只换 source/confidence → 必须更新', async () => {
+    const s = newStore();
+    const first = s.save({ type: 'user', name: 'only-sc', content: 'same', source: 'agent', confidence: 0.5 });
+    s.save({ type: 'user', name: 'only-sc', content: 'same', source: 'curator', confidence: 1 });
+    const row = await s.get(first.id!);
+    expect(row!.source).toBe('curator');
+    expect(row!.confidence).toBe(1);
+    s.close();
+  });
+
+  it('内容与所有治理字段均未变 → 真正 no-op（id 同、updatedAt 不搅动）', async () => {
+    const s = newStore();
+    const first = s.save({ type: 'user', name: 'noop', content: 'c', pinned: true, tags: ['a'], personaTags: ['p'], source: 'x', confidence: 0.5 });
+    const before = (await s.get(first.id!))!.updatedAt;
+    await new Promise((r) => setTimeout(r, 5));
+    const again = s.save({ type: 'user', name: 'noop', content: 'c', pinned: true, tags: ['a'], personaTags: ['p'], source: 'x', confidence: 0.5 });
+    expect(again.id).toBe(first.id);
+    expect((await s.get(first.id!))!.updatedAt).toBe(before); // 未被搅动
+    s.close();
+  });
+});
+
+describe('M10-7.1 fallback 内存路径同语义（pinned + tags）', () => {
+  function newFallback(): MemoryStore {
+    return new MemoryStore(path.join(tmpRoot, 'bad\0path', 'memories.db'));
+  }
+
+  it('fallback：置顶行更新 content 不传 pinned → 仍置顶；带 tags 不传 → tags 保留', async () => {
+    const s = newFallback();
+    expect(s.stats().backend).toBe('memory');
+    const first = s.save({ type: 'project', name: 'fb-keep', content: 'v1', pinned: true, tags: ['m'] });
+    s.save({ type: 'project', name: 'fb-keep', content: 'v2' }); // 不传 pinned/tags
+    const row = await s.get(first.id!);
+    expect(row).toBeDefined();
+    expect(row!.pinned).toBe(true);
+    expect(row!.tags).toEqual(['m']);
+    // 显式 false/[] 仍覆盖
+    s.save({ type: 'project', name: 'fb-keep', content: 'v3', pinned: false, tags: [] });
+    const row2 = await s.get(first.id!);
+    expect(row2!.pinned).toBe(false);
+    expect(row2!.tags).toEqual([]);
+    s.close();
+  });
+
+  it('fallback：内容不变只改 pinned/tags → 必须落库', async () => {
+    const s = newFallback();
+    const first = s.save({ type: 'project', name: 'fb-only', content: 'same', pinned: true, tags: ['keep'] });
+    s.save({ type: 'project', name: 'fb-only', content: 'same', pinned: false, tags: [] });
+    const row = await s.get(first.id!);
+    expect(row!.pinned).toBe(false);
+    expect(row!.tags).toEqual([]);
+    s.close();
+  });
+
+  it('fallback：内容与全部治理字段均未变 → true no-op，updatedAt 不被搅动', async () => {
+    const s = newFallback();
+    const first = s.save({ type: 'project', name: 'fb-noop', content: 'c', pinned: true, tags: ['a'], personaTags: ['p'], source: 'x', confidence: 0.5 });
+    const before = (await s.get(first.id!))!.updatedAt;
+    await new Promise((r) => setTimeout(r, 10));
+    const again = s.save({ type: 'project', name: 'fb-noop', content: 'c', pinned: true, tags: ['a'], personaTags: ['p'], source: 'x', confidence: 0.5 });
+    expect(again.id).toBe(first.id);
+    expect((await s.get(first.id!))!.updatedAt).toBe(before); // 未被搅动，与 SQL 路径一致
+    s.close();
+  });
+
+  it('fallback：空白归一化后的同内容（a␣␣␣b vs a␣b）按 contentHash 判同 → true no-op', async () => {
+    const s = newFallback();
+    const first = s.save({ type: 'project', name: 'fb-ws', content: 'a   b' }); // 多空格
+    const before = (await s.get(first.id!))!.updatedAt;
+    await new Promise((r) => setTimeout(r, 10));
+    s.save({ type: 'project', name: 'fb-ws', content: 'a b' }); // 单空格，规范化后 hash 相同
+    const row = await s.get(first.id!);
+    expect(row!.updatedAt).toBe(before); // hash 归一判同 → 不覆盖、不搅动时间
+    s.close();
+  });
+});

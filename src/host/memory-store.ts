@@ -91,6 +91,29 @@ function sameStringArray(a: readonly string[], b: readonly string[]): boolean {
   return sa.every((v, i) => v === sb[i]);
 }
 
+/** 同名更新时，既有行的治理字段投影（SQL row 与 fallback MemoryRow 都能投影成它）。 */
+export interface ExistingGovernanceFields {
+  pinned: boolean;
+  tags: string[];
+  personaTags: string[];
+  source?: string;
+  confidence?: number;
+}
+
+/**
+ * M10-7.1：同名 save() 的治理字段合并语义——未传即保留原值，显式传值（含 false/[]）则覆盖。
+ * SQL 持久化路径与内存 fallback 路径共用本函数，避免再次分叉。
+ */
+export function mergeUpdateGovernance(existing: ExistingGovernanceFields, params: SaveMemoryParams) {
+  return {
+    pinned: params.pinned ?? existing.pinned,
+    tags: params.tags ?? existing.tags,
+    personaTags: params.personaTags ?? existing.personaTags,
+    source: params.source ?? existing.source,
+    confidence: params.confidence ?? existing.confidence,
+  };
+}
+
 /**
  * FTS5 查询串构造：每个空白分词加双引号成短语，OR 连接。
  * 内部双引号翻倍防注入；返回 null 表示无有效分词（走 LIKE 兜底）。
@@ -325,8 +348,26 @@ export class MemoryStore implements MemoryStoreV2 {
       if (existing) {
         const valid = existing.invalid_at === null || existing.invalid_at === undefined;
         const existingHash = typeof existing.content_hash === 'string' ? existing.content_hash : '';
-        const existingTags = parseJsonArray(existing.tags_json);
-        if (valid && existingHash === hash && sameStringArray(existingTags, tags)) {
+        const existingGov: ExistingGovernanceFields = {
+          pinned: existing.pinned === 1,
+          tags: parseJsonArray(existing.tags_json),
+          personaTags: parseJsonArray(existing.persona_tags_json),
+          source: typeof existing.source === 'string' ? existing.source : undefined,
+          confidence: typeof existing.confidence === 'number' ? existing.confidence : undefined,
+        };
+        // M10-7.1：未传治理字段保留原值，显式传值（含 false/[]）才覆盖。
+        const merged = mergeUpdateGovernance(existingGov, params);
+        // 无变化判断必须覆盖全部治理字段：内容或任一治理字段有变都要落库；
+        // 只比 contentHash+tags 会吞掉“同内容、仅改 pinned/personaTags/source/confidence”的更新。
+        const unchanged =
+          valid &&
+          existingHash === hash &&
+          merged.pinned === existingGov.pinned &&
+          sameStringArray(merged.tags, existingGov.tags) &&
+          sameStringArray(merged.personaTags, existingGov.personaTags) &&
+          (merged.source ?? undefined) === existingGov.source &&
+          (merged.confidence ?? undefined) === existingGov.confidence;
+        if (unchanged) {
           return { ok: true, id: String(existing.id) }; // 无变化，不搅动 updatedAt
         }
         const rid = existing.rid as number;
@@ -335,12 +376,12 @@ export class MemoryStore implements MemoryStoreV2 {
           `UPDATE memories SET content = ?, tags_json = ?, pinned = ?, source = ?, confidence = ?,
            persona_tags_json = ?, content_hash = ?, invalid_at = NULL, updated_at = ? WHERE id = ?`,
         ).run(
-          params.content, JSON.stringify(tags), (params.pinned ?? false) ? 1 : 0,
-          params.source ?? null, params.confidence ?? null, JSON.stringify(personaTags), hash, now,
+          params.content, JSON.stringify(merged.tags), merged.pinned ? 1 : 0,
+          merged.source ?? null, merged.confidence ?? null, JSON.stringify(merged.personaTags), hash, now,
           String(existing.id),
         );
         this.db.prepare('INSERT INTO memories_fts(rowid, name, content, tags) VALUES (?, ?, ?, ?)')
-          .run(rid, params.name, params.content, tags.join(' '));
+          .run(rid, params.name, params.content, merged.tags.join(' '));
         return { ok: true, id: String(existing.id) };
       }
 
@@ -366,10 +407,26 @@ export class MemoryStore implements MemoryStoreV2 {
     // M10-5：同 SQL 路径——有效行优先，否则复活最近一条同名作废行。
     const target = sameName.find((m) => m.invalidAt === null) ?? sameName[sameName.length - 1];
     if (target) {
+      // M10-7.1：与 SQL 路径同一合并语义——未传治理字段保留原值。
+      const merged = mergeUpdateGovernance(target, params);
+      // 与 SQL 对齐的 true no-op：行仍有效、content 与全部治理字段均未变 → 直接返回，不改 updatedAt。
+      // 内容口径必须与 SQL 一致：走规范化 contentHash（压缩连续空白），不用精确字符串比较。
+      const unchanged =
+        target.invalidAt === null &&
+        contentHash(target.type, target.name, target.content) === hash &&
+        merged.pinned === target.pinned &&
+        sameStringArray(merged.tags, target.tags) &&
+        sameStringArray(merged.personaTags, target.personaTags) &&
+        (merged.source ?? undefined) === target.source &&
+        (merged.confidence ?? undefined) === target.confidence;
+      if (unchanged) {
+        return { ok: true, id: target.id };
+      }
       const idx = this.fallback!.indexOf(target);
       this.fallback![idx] = {
-        ...target, content: params.content, tags, pinned: params.pinned ?? target.pinned,
-        source: params.source, confidence: params.confidence, personaTags, invalidAt: null, updatedAt: now,
+        ...target, content: params.content, tags: merged.tags, pinned: merged.pinned,
+        source: merged.source, confidence: merged.confidence, personaTags: merged.personaTags,
+        invalidAt: null, updatedAt: now,
       } as MemoryRow;
       return { ok: true, id: target.id };
     }
