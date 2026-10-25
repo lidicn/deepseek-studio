@@ -168,6 +168,23 @@ export function resolveWindowsScript(argv0: string): string | null {
   return null;
 }
 
+/**
+ * D-2：Windows ENOENT 可操作 hint。
+ *
+ * 仅在 win32 且底层错误码为 ENOENT 时给出一句指引：shell_exec 按 argv 直接调用可执行文件，
+ * 不经过 PowerShell；若目标其实是 PowerShell cmdlet，应改用 powershell -Command "..."。
+ * 不得据此自动把命令转交给 PowerShell，也不得在 hint 中泄露 PATH/环境变量/系统路径清单。
+ * 非 Windows 或非 ENOENT 错误一律返回 undefined。
+ */
+export function windowsEnoentHint(err: unknown): string | undefined {
+  if (process.platform !== 'win32') return undefined;
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  if (code !== 'ENOENT') return undefined;
+  return 'shell_exec 直接按 argv 调用可执行文件，不经过 PowerShell；' +
+    '若目标是 PowerShell cmdlet，请改用 powershell -Command "..."' +
+    '（中文参数本能力会自动改用 -EncodedCommand）。';
+}
+
 export function createShellCapability(options: ShellCapabilityOptions = {}): ExecutableCapability {
   // 兼容可变工作区代理：未配置（configured === false）时视同无工作区边界，
   // cwd 回落宿主默认（与 v0.5 静态 null 工作区语义一致）。
@@ -283,10 +300,15 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
             stdio: ['ignore', 'pipe', 'pipe'],
           });
         } catch (err) {
+          // D-2：同步抛错路径同样补 ENOENT hint
+          const hint = windowsEnoentHint(err);
           resolve({
             ok: false,
             error: 'spawn-failed',
-            data: { message: err instanceof Error ? err.message : String(err) },
+            data: {
+              message: err instanceof Error ? err.message : String(err),
+              ...(hint ? { hint } : {}),
+            },
           });
           return;
         }
@@ -355,7 +377,9 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
           if (!r.keep) truncated = true;
         });
         child.on('error', (err: Error) => {
-          finish({ ok: false, error: 'spawn-failed', data: { ...common(), message: err.message } });
+          // D-2：异步 error 路径（ENOENT 的主路径）补 hint
+          const hint = windowsEnoentHint(err);
+          finish({ ok: false, error: 'spawn-failed', data: { ...common(), message: err.message, ...(hint ? { hint } : {}) } });
         });
         child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
           if (timedOut) {

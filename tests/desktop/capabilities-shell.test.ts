@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createShellCapability, hasShellSyntax, resolveWindowsScript, tokenizeCommand } from '../../src/capabilities/shell';
+import { createShellCapability, hasShellSyntax, resolveWindowsScript, tokenizeCommand, windowsEnoentHint } from '../../src/capabilities/shell';
 import { createFileTools } from '../../src/capabilities/file';
 import { createWorkspace } from '../../src/host/workspace';
 
@@ -364,5 +364,60 @@ describe('file.* —— 工作区边界（纵深防御）', () => {
     const r = await t['file.write'].execute({ path: path.join(tmp, 'b.txt') });
     expect(r.ok).toBe(false);
     expect(r.error).toBe('missing-content');
+  });
+});
+
+describe('D-2 Windows ENOENT 可操作 hint', () => {
+  const winIt = process.platform === 'win32' ? it : it.skip;
+
+  winIt('不存在命令 → spawn-failed 且 data.hint 提示改用 powershell -Command', async () => {
+    const cap = createShellCapability();
+    const r = await cap.execute({ argv: ['definitely-not-a-real-exe-xyz-99999'] });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('spawn-failed');
+    const data = r.data as { hint?: string; message?: string };
+    expect(typeof data.hint).toBe('string');
+    expect(data.hint).toContain('powershell -Command');
+    // hint 不泄露 PATH / 环境变量 / 系统路径清单
+    expect(data.hint).not.toMatch(/PATH|C:\\Windows|System32/i);
+  });
+
+  winIt('非零退出 → spawn 成功，不带 ENOENT hint', async () => {
+    const cap = createShellCapability();
+    const r = await cap.execute({ argv: [node, '-e', 'process.exit(3)'] });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('nonzero-exit');
+    expect((r.data as { hint?: string }).hint).toBeUndefined();
+  });
+
+  winIt('超时 → 不带 ENOENT hint', async () => {
+    const cap = createShellCapability({ timeoutMs: 300 });
+    const r = await cap.execute({ argv: [node, '-e', 'setTimeout(() => {}, 30000)'] });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('timeout');
+    expect((r.data as { hint?: string }).hint).toBeUndefined();
+  });
+
+  it('正常命令仍成功', async () => {
+    const cap = createShellCapability();
+    const r = await cap.execute({ argv: [node, '-e', 'console.log("d2-ok")'] });
+    expect(r.ok).toBe(true);
+    expect((r.data as { stdout: string }).stdout).toContain('d2-ok');
+  });
+
+  it('windowsEnoentHint：仅 ENOENT 才给出 hint，其他错误码为 undefined', () => {
+    const enoent = new Error('spawn failed') as NodeJS.ErrnoException;
+    enoent.code = 'ENOENT';
+    const hint = windowsEnoentHint(enoent);
+    if (process.platform === 'win32') {
+      expect(hint).toBeDefined();
+      expect(hint).toContain('powershell -Command');
+    } else {
+      expect(hint).toBeUndefined();
+    }
+    const eacces = new Error('denied') as NodeJS.ErrnoException;
+    eacces.code = 'EACCES';
+    expect(windowsEnoentHint(eacces)).toBeUndefined();
+    expect(windowsEnoentHint(new Error('plain'))).toBeUndefined();
   });
 });
