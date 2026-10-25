@@ -56,6 +56,7 @@ export interface SaveMemoryResult {
   readonly ok: boolean;
   readonly id?: string;
   readonly error?: string;
+  readonly reason?: string;
 }
 
 /** 默认记忆存储路径：~/.config/deepseek-studio/memories.db */
@@ -95,6 +96,32 @@ function sameStringArray(a: readonly string[], b: readonly string[]): boolean {
   const sa = [...a].sort();
   const sb = [...b].sort();
   return sa.every((v, i) => v === sb[i]);
+}
+
+/** M10-7.3：有效记忆容量上限。新写入导致 valid 超过此值时软归档最旧非 pinned。 */
+export const MAX_MEMORIES = 500;
+
+/**
+ * M10-7.3：确定性软归档淘汰选择。
+ * 排序：① project 非 pinned 最旧优先；② project 不足再 user 非 pinned；
+ * ③ pinned 永不淘汰；④ 同级 updatedAt ASC → createdAt ASC → id ASC。
+ * 返回应归档的行（最多 need 条）；若候选数 < need 返回 null（调用方须报容量错误并不写入）。
+ */
+function pickEviction(rows: MemoryRow[], need: number): MemoryRow[] | null {
+  if (need <= 0) return [];
+  const candidates = rows
+    .filter((r) => r.invalidAt === null && !r.pinned)
+    .sort((a, b) => {
+      // project=0 先于 user=1
+      const ta = a.type === 'project' ? 0 : 1;
+      const tb = b.type === 'project' ? 0 : 1;
+      if (ta !== tb) return ta - tb;
+      if (a.updatedAt !== b.updatedAt) return a.updatedAt - b.updatedAt;
+      if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+  if (candidates.length < need) return null;
+  return candidates.slice(0, need);
 }
 
 /** 同名更新时，既有行的治理字段投影（SQL row 与 fallback MemoryRow 都能投影成它）。 */
@@ -403,6 +430,10 @@ export class MemoryStore implements MemoryStoreV2 {
         if (unchanged) {
           return { ok: true, id: String(existing.id) }; // 无变化，不搅动 updatedAt
         }
+        // M10-7.3 P1-1：归档行复活 delta=1，须先做容量预算；全 pinned 时拒绝，归档行保持 invalid。
+        const deltaValid: 0 | 1 = valid ? 0 : 1;
+        const budget = this.prepareEviction(deltaValid);
+        if (!budget.ok) return { ok: false, error: 'memory-capacity', reason: 'resurrect-archive-at-capacity-all-pinned' };
         const rid = existing.rid as number;
         this.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(rid);
         this.db.prepare(
@@ -415,6 +446,7 @@ export class MemoryStore implements MemoryStoreV2 {
         );
         this.db.prepare('INSERT INTO memories_fts(rowid, name, content, tags) VALUES (?, ?, ?, ?)')
           .run(rid, params.name, params.content, merged.tags.join(' '));
+        this.applyEviction(budget.evict, now);
         return { ok: true, id: String(existing.id) };
       }
 
@@ -452,6 +484,10 @@ export class MemoryStore implements MemoryStoreV2 {
         if (unchanged) {
           return { ok: true, id: crossId };
         }
+        // M10-7.3 P1-1：跨名归档行复活 delta=1，须先做容量预算。
+        const deltaValid: 0 | 1 = valid ? 0 : 1;
+        const budget = this.prepareEviction(deltaValid);
+        if (!budget.ok) return { ok: false, error: 'memory-capacity', reason: 'resurrect-cross-at-capacity-all-pinned' };
         const rid = cross.rid as number;
         this.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(rid);
         this.db.prepare(
@@ -465,9 +501,13 @@ export class MemoryStore implements MemoryStoreV2 {
         // name 保留原值，FTS 仍按原 name 索引。
         this.db.prepare('INSERT INTO memories_fts(rowid, name, content, tags) VALUES (?, ?, ?, ?)')
           .run(rid, crossName, params.content, merged.tags.join(' '));
+        this.applyEviction(budget.evict, now);
         return { ok: true, id: crossId };
       }
 
+      // M10-7.3：写前容量预算。全 pinned 无法腾容量时拒绝本次写入，不落地、不部分改动。
+      const budget = this.prepareEviction(1);
+      if (!budget.ok) return { ok: false, error: 'memory-capacity', reason: 'valid-memories-at-capacity-and-all-pinned' };
       const id = genId();
       this.db.prepare(
         `INSERT INTO memories
@@ -480,6 +520,7 @@ export class MemoryStore implements MemoryStoreV2 {
       const rid = (this.db.prepare('SELECT last_insert_rowid() AS rid').get()?.rid as number) ?? 0;
       this.db.prepare('INSERT INTO memories_fts(rowid, name, content, tags) VALUES (?, ?, ?, ?)')
         .run(rid, params.name, params.content, tags.join(' '));
+      this.applyEviction(budget.evict, now);
       return { ok: true, id };
     }
 
@@ -505,12 +546,17 @@ export class MemoryStore implements MemoryStoreV2 {
       if (unchanged) {
         return { ok: true, id: target.id };
       }
+      // M10-7.3 P1-1：fallback 同名归档行复活 delta=1，须先做容量预算。
+      const deltaValid: 0 | 1 = target.invalidAt === null ? 0 : 1;
+      const budget = this.prepareEviction(deltaValid);
+      if (!budget.ok) return { ok: false, error: 'memory-capacity', reason: 'resurrect-archive-at-capacity-all-pinned' };
       const idx = this.fallback!.indexOf(target);
       this.fallback![idx] = {
         ...target, content: params.content, tags: merged.tags, pinned: merged.pinned,
         source: merged.source, confidence: merged.confidence, personaTags: merged.personaTags,
         invalidAt: null, updatedAt: now,
       } as MemoryRow;
+      this.applyEviction(budget.evict, now);
       return { ok: true, id: target.id };
     }
 
@@ -533,21 +579,30 @@ export class MemoryStore implements MemoryStoreV2 {
       if (unchanged) {
         return { ok: true, id: crossTarget.id };
       }
+      // M10-7.3 P1-1：fallback 跨名归档行复活 delta=1，须先做容量预算。
+      const deltaValid: 0 | 1 = crossTarget.invalidAt === null ? 0 : 1;
+      const budget = this.prepareEviction(deltaValid);
+      if (!budget.ok) return { ok: false, error: 'memory-capacity', reason: 'resurrect-cross-at-capacity-all-pinned' };
       const idx = this.fallback!.indexOf(crossTarget);
       this.fallback![idx] = {
         ...crossTarget, content: params.content, tags: merged.tags, pinned: merged.pinned,
         source: merged.source, confidence: merged.confidence, personaTags: merged.personaTags,
         invalidAt: null, updatedAt: now,
       } as MemoryRow;
+      this.applyEviction(budget.evict, now);
       return { ok: true, id: crossTarget.id };
     }
 
+    // M10-7.3：写前容量预算，与 SQL 路径同一淘汰排序语义。全 pinned 无法腾容量则拒绝。
+    const budget = this.prepareEviction(1);
+    if (!budget.ok) return { ok: false, error: 'memory-capacity', reason: 'valid-memories-at-capacity-and-all-pinned' };
     const id = genId();
     this.fallback!.push({
       id, type: params.type as MemoryType, name: params.name, content: params.content, tags,
       pinned: params.pinned ?? false, source: params.source, confidence: params.confidence,
       personaTags, invalidAt: null, createdAt: now, updatedAt: now,
     } as MemoryRow);
+    this.applyEviction(budget.evict, now);
     return { ok: true, id };
   }
 
@@ -743,6 +798,40 @@ export class MemoryStore implements MemoryStoreV2 {
   /** 仅有效记忆行（invalidAt === null）。 */
   private validRows(): MemoryRow[] {
     return this.allRows().filter((m) => m.invalidAt === null);
+  }
+
+  /**
+   * M10-7.3：写前容量预算。deltaValid=1 表示本次写入会新增一条有效（新建或复活归档行）。
+   * 投影 valid 超过 MAX_MEMORIES 时选应归档行；候选不足（全 pinned）返回 ok:false 供调用方拒绝写入。
+   */
+  private prepareEviction(deltaValid: 0 | 1): { ok: true; evict: MemoryRow[] } | { ok: false } {
+    if (deltaValid === 0) return { ok: true, evict: [] };
+      const valid = this.validRows();
+      const projected = valid.length + deltaValid;
+      if (projected <= MAX_MEMORIES) return { ok: true, evict: [] };
+      const need = projected - MAX_MEMORIES;
+      const evict = pickEviction(valid, need);
+      if (!evict) return { ok: false };
+      return { ok: true, evict };
+  }
+
+  /** M10-7.3：落库后执行软归档（设 invalid_at，不硬删除），SQL 与 fallback 共用。 */
+  private applyEviction(evict: MemoryRow[], now: number): void {
+    if (evict.length === 0) return;
+    if (this.db) {
+      const upd = this.db.prepare(
+        'UPDATE memories SET invalid_at = ?, updated_at = ? WHERE id = ? AND invalid_at IS NULL',
+      );
+      for (const r of evict) upd.run(now, now, r.id);
+    } else if (this.fallback) {
+      for (const r of evict) {
+        const idx = this.fallback.findIndex((m) => m.id === r.id);
+        if (idx >= 0) {
+          const old = this.fallback[idx];
+          this.fallback[idx] = { ...old, invalidAt: now, updatedAt: now };
+        }
+      }
+    }
   }
 
   private sortRows(rows: MemoryRow[]): MemoryRow[] {

@@ -24,13 +24,20 @@ function newStore(): MemoryStore {
   return new MemoryStore(path.join(tmpRoot, `mem-${seq}.db`));
 }
 
-beforeEach(() => {
-  fs.rmSync(tmpRoot, { recursive: true, force: true });
+beforeEach(async () => {
+  for (let i = 0; i < 8; i++) {
+    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); break; }
+    catch { await new Promise((r) => setTimeout(r, 300)); }
+  }
   fs.mkdirSync(tmpRoot, { recursive: true });
 });
 
-afterEach(() => {
-  fs.rmSync(tmpRoot, { recursive: true, force: true });
+afterEach(async () => {
+  // Windows SQLite 关闭后文件句柄可能延迟释放，等待并重试删除
+  for (let i = 0; i < 8; i++) {
+    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); break; }
+    catch { await new Promise((r) => setTimeout(r, 300)); }
+  }
 });
 
 describe('M10-5 重名复活：作废后同名 save 复活原行', () => {
@@ -549,5 +556,368 @@ describe('M10-7.2 跨名称同内容去重', () => {
     expect(s.stats().total).toBe(1);
     s.close();
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+import { MAX_MEMORIES } from '../../src/host/memory-store';
+import crypto from 'node:crypto';
+
+// 与生产 contentHash/dedupeHash 同口径（本地复算，源码内函数未导出）。
+function normContent(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+function dedupeHashForTest(type: string, content: string): string {
+  return crypto.createHash('sha1').update(`${type}\n${normContent(content).toLowerCase()}`).digest('hex');
+}
+function contentHashForTest(type: string, name: string, content: string): string {
+  return crypto.createHash('sha1').update(`${type}\n${name.toLowerCase()}\n${normContent(content)}`).digest('hex');
+}
+
+interface SeedRow {
+  id: string;
+  type: 'project' | 'user';
+  name: string;
+  content: string;
+  pinned?: boolean;
+  invalidAt?: number | null;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+/** P2：事务批量种子，直接写 memories 表，避免每条用例串行 save 500 次。 */
+function seedRowsSql(s: MemoryStore, rows: SeedRow[]): void {
+  const db = s.getDb()!;
+  const stmt = db.prepare(
+    `INSERT INTO memories (id,type,name,content,tags_json,pinned,source,confidence,persona_tags_json,content_hash,dedupe_hash,invalid_at,created_at,updated_at)
+     VALUES (?,?,?,?,'[]',?,NULL,NULL,'[]',?,?,?,?,?)`,
+  );
+  db.prepare('BEGIN').run();
+  for (const r of rows) {
+    const ts = r.updatedAt ?? r.createdAt ?? 1000;
+    stmt.run(
+      r.id, r.type, r.name, r.content, r.pinned ? 1 : 0,
+      contentHashForTest(r.type, r.name, r.content),
+      dedupeHashForTest(r.type, r.content),
+      r.invalidAt ?? null,
+      r.createdAt ?? 1000, ts,
+    );
+  }
+  db.prepare('COMMIT').run();
+}
+
+/** P2：fallback 批量种子，直接推进内存数组。 */
+function seedRowsFb(s: MemoryStore, rows: SeedRow[]): void {
+  const fb = (s as unknown as { fallback: Array<Record<string, unknown>> }).fallback!;
+  for (const r of rows) {
+    const ts = r.updatedAt ?? r.createdAt ?? 1000;
+    fb.push({
+      id: r.id, type: r.type, name: r.name, content: r.content,
+      tags: [], pinned: r.pinned ?? false, source: undefined, confidence: undefined,
+      personaTags: [], dedupeHash: dedupeHashForTest(r.type, r.content),
+      invalidAt: r.invalidAt ?? null, createdAt: r.createdAt ?? 1000, updatedAt: ts,
+    });
+  }
+}
+
+function invalidatedIdsSql(s: MemoryStore): string[] {
+  return (s.getDb()!.prepare('SELECT id FROM memories WHERE invalid_at IS NOT NULL ORDER BY id ASC').all() as Array<{ id: string }>).map((r) => r.id);
+}
+function rowInvalidSql(s: MemoryStore, id: string): boolean {
+  const r = s.getDb()!.prepare('SELECT invalid_at FROM memories WHERE id = ?').get(id) as { invalid_at: number | null };
+  return r.invalid_at !== null;
+}
+function rowInvalidFb(s: MemoryStore, id: string): boolean {
+  const fb = (s as unknown as { fallback: Array<{ id: string; invalidAt: number | null }> }).fallback!;
+  return fb.find((x) => x.id === id)!.invalidAt !== null;
+}
+function newFallback(): MemoryStore {
+  return new MemoryStore(path.join(tmpRoot, 'bad\0path', 'memories.db'));
+}
+
+describe('M10-7.3 容量软归档', () => {
+  function fill(s: MemoryStore, n: number, opts: { type?: 'project' | 'user'; pinned?: boolean; prefix?: string } = {}): void {
+    for (let i = 0; i < n; i++) {
+      const r = s.save({
+        type: opts.type ?? 'project',
+        name: `${opts.prefix ?? 'm'}-${i}`,
+        content: `${opts.prefix ?? 'm'}-content-${i}`,
+        pinned: opts.pinned ?? false,
+      });
+      if (!r.ok) throw new Error('fill failed at ' + i + ' err=' + r.error);
+    }
+  }
+
+  function seedSql(s: MemoryStore, n: number, opts: { type?: 'project' | 'user'; pinned?: boolean; prefix?: string } = {}): void {
+    const type = opts.type ?? 'project';
+    const prefix = opts.prefix ?? 'seed';
+    seedRowsSql(
+      s,
+      Array.from({ length: n }, (_, i) => ({
+        id: `mem-${prefix}-${i}`, type, name: `${prefix}-${i}`, content: `${prefix}-content-${i}`,
+        pinned: opts.pinned ?? false, createdAt: 1000 + i, updatedAt: 1000 + i,
+      })),
+    );
+  }
+
+  /**
+   * 基准数据集：valid=500、total=501、invalidated=1。
+   * 500 条有效非 pinned project（v-0..v-499，时间戳递增，v-0 最旧=淘汰首选）
+   * + 1 条归档 victim（archived-victim，name=victim-name，content=victim-content）。
+   */
+  function baseDataset(victimName = 'victim-name', victimContent = 'victim-content'): SeedRow[] {
+    const rows: SeedRow[] = [];
+    for (let i = 0; i < MAX_MEMORIES; i++) {
+      rows.push({ id: `v-${i}`, type: 'project', name: `v-${i}`, content: `v-content-${i}`, createdAt: 1000 + i, updatedAt: 1000 + i });
+    }
+    rows.push({ id: 'archived-victim', type: 'project', name: victimName, content: victimContent, invalidAt: 999999, createdAt: 500, updatedAt: 500 });
+    return rows;
+  }
+
+  /** P1-E 数据集：500 条有效全部 pinned + 1 条归档 victim。 */
+  function allPinnedDataset(): SeedRow[] {
+    const rows: SeedRow[] = [];
+    for (let i = 0; i < MAX_MEMORIES; i++) {
+      rows.push({ id: `v-${i}`, type: 'project', name: `v-${i}`, content: `v-content-${i}`, pinned: true, createdAt: 1000 + i, updatedAt: 1000 + i });
+    }
+    rows.push({ id: 'archived-victim', type: 'project', name: 'victim-name', content: 'victim-content', invalidAt: 999999, createdAt: 500, updatedAt: 500 });
+    return rows;
+  }
+
+  /** P1-F 数据集：495 条较新行(updatedAt=2000) + 5 条并列最旧(updatedAt=createdAt=1000，id 故意乱序)。 */
+  function deterministicDataset(): SeedRow[] {
+    const rows: SeedRow[] = [];
+    for (let i = 0; i < MAX_MEMORIES - 5; i++) {
+      rows.push({ id: `n-${i}`, type: 'project', name: `n-${i}`, content: `n-content-${i}`, createdAt: 2000 + i, updatedAt: 2000 + i });
+    }
+    for (const id of ['t-echo', 't-alpha', 't-foxtrot', 't-beta', 't-delta']) {
+      rows.push({ id, type: 'project', name: id, content: `${id}-content`, createdAt: 1000, updatedAt: 1000 });
+    }
+    return rows;
+  }
+
+  it(`SQL: MAX+5 后 valid 恰为 ${MAX_MEMORIES}，total 不减少（连续 save）`, () => {
+    const s = newStore();
+    fill(s, MAX_MEMORIES, { type: 'project' });
+    const beforeTotal = s.stats().total;
+    fill(s, 5, { type: 'project', prefix: 'new' });
+    const st = s.stats();
+    expect(st.valid).toBe(MAX_MEMORIES);
+    expect(st.total).toBe(beforeTotal + 5);
+    expect(st.invalidated).toBe(5);
+    s.close();
+  });
+
+  it('SQL: project 非 pinned 先于 user 被淘汰', () => {
+    const s = newStore();
+    seedSql(s, 100, { type: 'user', prefix: 'u-old' });
+    seedSql(s, MAX_MEMORIES - 100, { type: 'project', prefix: 'p-old' });
+    fill(s, 3, { type: 'project', prefix: 'p-new' });
+    expect(s.stats().valid).toBe(MAX_MEMORIES);
+    for (let i = 0; i < 3; i++) {
+      expect(rowInvalidSql(s, `mem-p-old-${i}`)).toBe(true);
+    }
+    for (let i = 0; i < 100; i++) {
+      expect(rowInvalidSql(s, `mem-u-old-${i}`)).toBe(false);
+    }
+    s.close();
+  });
+
+  it('project 全 pinned 时淘汰最旧 user 非 pinned，pinned 保留', () => {
+    const s = newStore();
+    seedSql(s, 300, { type: 'project', prefix: 'p' });
+    seedSql(s, 200, { type: 'user', prefix: 'u' });
+    s.getDb()!.prepare('UPDATE memories SET pinned = 1 WHERE type = ?').run('project');
+    fill(s, 2, { type: 'user', prefix: 'u-new' });
+    expect(s.stats().valid).toBe(MAX_MEMORIES);
+    expect(rowInvalidSql(s, 'mem-u-0')).toBe(true);
+    expect(rowInvalidSql(s, 'mem-u-1')).toBe(true);
+    expect(rowInvalidSql(s, 'mem-u-2')).toBe(false);
+    const pValid = s.getDb()!.prepare("SELECT COUNT(*) c FROM memories WHERE type='project' AND invalid_at IS NULL AND pinned=1").get() as { c: number };
+    expect(pValid.c).toBe(300);
+    s.close();
+  });
+
+  it('SQL: 新建满容量且全 pinned 返回 memory-capacity 且行数不变', () => {
+    const s = newStore();
+    seedSql(s, MAX_MEMORIES, { type: 'project' });
+    s.getDb()!.prepare('UPDATE memories SET pinned = 1').run();
+    const r = s.save({ type: 'project', name: 'one-more', content: 'x' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('memory-capacity');
+    expect(s.stats().total).toBe(MAX_MEMORIES);
+    expect(s.stats().valid).toBe(MAX_MEMORIES);
+    s.close();
+  });
+
+  it('P1-A: SQL 同名复活 archived victim，满容量(500)复活导致 501，必须再淘汰一条有效行', () => {
+    const s = newStore();
+    seedRowsSql(s, baseDataset());
+    expect(s.stats().valid).toBe(MAX_MEMORIES);
+    expect(s.stats().total).toBe(MAX_MEMORIES + 1);
+    expect(s.stats().invalidated).toBe(1);
+
+    const before = s.stats();
+    // 用归档行真实 name 做同名 save，内容改为新值
+    const r = s.save({ type: 'project', name: 'victim-name', content: 'victim-content-v2' });
+    expect(r.ok).toBe(true);
+    expect(r.id).toBe('archived-victim');
+
+    const st = s.stats();
+    expect(st.valid).toBe(MAX_MEMORIES);
+    expect(st.total).toBe(before.total); // 501，复活复用原行，不新增
+    expect(st.invalidated).toBe(1);
+
+    // victim 已复活为有效
+    expect(rowInvalidSql(s, 'archived-victim')).toBe(false);
+    // 本轮另有一条原本有效的非 pinned 行被软归档：最旧的 v-0
+    expect(rowInvalidSql(s, 'v-0')).toBe(true);
+    expect(rowInvalidSql(s, 'v-1')).toBe(false);
+    s.close();
+  });
+
+  it('P1-B: SQL 跨名复活 archived victim（不同 name 同 content），容量治理确实执行', () => {
+    const s = newStore();
+    seedRowsSql(s, baseDataset());
+    expect(s.stats().valid).toBe(MAX_MEMORIES);
+    expect(s.stats().invalidated).toBe(1);
+
+    const before = s.stats();
+    // 不同 name、相同 content → 跨名命中归档 victim，满容量仍须淘汰一条
+    const r = s.save({ type: 'project', name: 'totally-other-name', content: 'victim-content' });
+    expect(r.ok).toBe(true);
+    expect(r.id).toBe('archived-victim');
+
+    const st = s.stats();
+    expect(st.valid).toBe(MAX_MEMORIES);
+    expect(st.total).toBe(before.total);
+    expect(st.invalidated).toBe(1);
+
+    // 容量治理确实执行：v-0 被软归档；victim 复活
+    expect(rowInvalidSql(s, 'v-0')).toBe(true);
+    expect(rowInvalidSql(s, 'archived-victim')).toBe(false);
+    // 跨名去重保留原 name
+    const v = s.getDb()!.prepare('SELECT name FROM memories WHERE id = ?').get('archived-victim') as { name: string };
+    expect(v.name).toBe('victim-name');
+    s.close();
+  });
+
+  it('P1-C: fallback 同名复活 archived victim（用 victim.name），容量守恒', () => {
+    const s = newFallback();
+    expect(s.stats().backend).toBe('memory');
+    seedRowsFb(s, baseDataset());
+    expect(s.stats().valid).toBe(MAX_MEMORIES);
+    expect(s.stats().total).toBe(MAX_MEMORIES + 1);
+    expect(s.stats().invalidated).toBe(1);
+
+    const fb = (s as unknown as { fallback: Array<{ name: string }> }).fallback!;
+    const victimName = fb.find((m) => m.name === 'victim-name')!.name;
+    const before = s.stats();
+    const r = s.save({ type: 'project', name: victimName, content: 'victim-content-v2' });
+    expect(r.ok).toBe(true);
+    expect(r.id).toBe('archived-victim');
+
+    const st = s.stats();
+    expect(st.valid).toBe(MAX_MEMORIES);
+    expect(st.total).toBe(before.total);
+    expect(st.invalidated).toBe(1);
+
+    expect(rowInvalidFb(s, 'archived-victim')).toBe(false);
+    expect(rowInvalidFb(s, 'v-0')).toBe(true);
+    s.close();
+  });
+
+  it('P1-D: fallback 跨名复活 archived victim（不同 name 同 content），容量守恒', () => {
+    const s = newFallback();
+    expect(s.stats().backend).toBe('memory');
+    seedRowsFb(s, baseDataset());
+    expect(s.stats().valid).toBe(MAX_MEMORIES);
+    expect(s.stats().invalidated).toBe(1);
+    const before = s.stats();
+
+    const r = s.save({ type: 'project', name: 'totally-other-name', content: 'victim-content' });
+    expect(r.ok).toBe(true);
+    expect(r.id).toBe('archived-victim');
+
+    const st = s.stats();
+    expect(st.valid).toBe(MAX_MEMORIES);
+    expect(st.total).toBe(before.total);
+    expect(st.invalidated).toBe(1);
+
+    expect(rowInvalidFb(s, 'archived-victim')).toBe(false);
+    expect(rowInvalidFb(s, 'v-0')).toBe(true);
+    s.close();
+  });
+
+  it('P1-E: SQL 全 pinned 同名复活被拒，victim 仍 invalid、total/valid 零改动', () => {
+    const s = newStore();
+    seedRowsSql(s, allPinnedDataset());
+    expect(s.stats().valid).toBe(MAX_MEMORIES);
+    expect(s.stats().invalidated).toBe(1);
+    const beforeTotal = s.stats().total;
+    const beforeValid = s.stats().valid;
+
+    const r = s.save({ type: 'project', name: 'victim-name', content: 'x' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('memory-capacity');
+    expect(s.stats().total).toBe(beforeTotal);
+    expect(s.stats().valid).toBe(beforeValid);
+    expect(rowInvalidSql(s, 'archived-victim')).toBe(true); // 仍为 invalid，未复活
+    s.close();
+  });
+
+  it('P1-E: fallback 全 pinned 同名复活被拒，victim 仍 invalid、total/valid 零改动', () => {
+    const s = newFallback();
+    expect(s.stats().backend).toBe('memory');
+    seedRowsFb(s, allPinnedDataset());
+    expect(s.stats().valid).toBe(MAX_MEMORIES);
+    const beforeTotal = s.stats().total;
+    const beforeValid = s.stats().valid;
+
+    const r = s.save({ type: 'project', name: 'victim-name', content: 'x' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('memory-capacity');
+    expect(s.stats().total).toBe(beforeTotal);
+    expect(s.stats().valid).toBe(beforeValid);
+    expect(rowInvalidFb(s, 'archived-victim')).toBe(true);
+    s.close();
+  });
+
+  it('P1-F: 两份相同数据集 + 相同新增 → 归档 id 集合完全相同（updatedAt/createdAt 相同按 id ASC）', () => {
+    function runOnce(): { evicted: string[]; survivors: string[] } {
+      const s = newStore();
+      seedRowsSql(s, deterministicDataset());
+      expect(s.stats().valid).toBe(MAX_MEMORIES);
+      // 连续新增 2 条 → 每次 projected=501、淘汰 1 条最旧
+      fill(s, 2, { type: 'project', prefix: 'probe' });
+      expect(s.stats().valid).toBe(MAX_MEMORIES);
+      const evicted = invalidatedIdsSql(s);
+      // 并列最旧 5 行中，未被淘汰的应存活：delta/echo/foxtrot（id 较大者）
+      const survivors = ['t-delta', 't-echo', 't-foxtrot'].filter((id) => !rowInvalidSql(s, id));
+      s.close();
+      return { evicted, survivors };
+    }
+    const a = runOnce();
+    const b = runOnce();
+    // 并列 (updatedAt=1000, createdAt=1000) 候选中，按 id ASC 淘汰 id 最小的 alpha/beta
+    expect(a.evicted).toEqual(['t-alpha', 't-beta']);
+    expect(b.evicted).toEqual(['t-alpha', 't-beta']);
+    expect(a.survivors).toEqual(['t-delta', 't-echo', 't-foxtrot']);
+    expect(b.survivors).toEqual(['t-delta', 't-echo', 't-foxtrot']);
+    expect(a.evicted).toEqual(b.evicted); // 两份独立数据集结果一致
+  });
+
+  it('fallback: MAX+5 后 valid=500（连续 save）', () => {
+    const s = newFallback();
+    expect(s.stats().backend).toBe('memory');
+    seedRowsFb(s, Array.from({ length: MAX_MEMORIES }, (_, i) => ({
+      id: `fb-${i}`, type: 'project' as const, name: `fb-${i}`, content: `fb-content-${i}`, createdAt: 1000 + i, updatedAt: 1000 + i,
+    })));
+    const beforeTotal = s.stats().total;
+    fill(s, 5, { type: 'project', prefix: 'new' });
+    const st = s.stats();
+    expect(st.valid).toBe(MAX_MEMORIES);
+    expect(st.total).toBe(beforeTotal + 5);
+    expect(st.invalidated).toBe(5);
+    s.close();
   });
 });
