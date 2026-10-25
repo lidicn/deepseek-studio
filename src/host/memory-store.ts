@@ -25,7 +25,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import type { Memory, MemoryStoreV2 } from './bot/types';
-import { MEMORY_INJECT_LIMIT } from '../inject/untrusted-memory';
+import { MEMORY_INJECT_LIMIT, formatMemoryLine, selectMemoryInjectRows } from '../inject/untrusted-memory';
 
 export type MemoryType = 'user' | 'project';
 
@@ -728,16 +728,12 @@ export class MemoryStore implements MemoryStoreV2 {
     return this.sortRows(rows);
   }
 
-  /** 格式化注入系统提示词（格式与 v1 一致：- #id [type] name: content）。 */
+  /** 格式化注入系统提示词（格式与 v1 一致：- #id [type] name: content）。
+   *  M10-8A：与页端共用 selectMemoryInjectRows——行数预算(40)与 token 预算(1800)取更早触发者。 */
   formatForPrompt(memories: readonly Memory[], limit = MEMORY_INJECT_LIMIT): string {
-    const list = memories.slice(0, Math.max(0, limit));
-    if (list.length === 0) return '';
-    return list
-      .map((m) => {
-        const scope = m.type === 'project' ? 'project ' : '';
-        return `- #${m.id} [${scope}${m.type}] ${m.name}: ${m.content}`;
-      })
-      .join('\n');
+    const selected = selectMemoryInjectRows(memories, { rowLimit: limit });
+    if (selected.length === 0) return '';
+    return selected.map(formatMemoryLine).join('\n');
   }
 
   // ===== 辅助 API（契约外，供 UI / 诊断 / Curator）=====

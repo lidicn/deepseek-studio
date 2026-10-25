@@ -137,6 +137,42 @@ describe('M10-7b 注入预算：两侧共用 40', () => {
     expect(MEMORY_INJECT_LIMIT).toBe(40);
     expect(block.split('\n').filter((l) => l.startsWith('- #')).length).toBe(40);
   });
+
+  it('M10-8A 宿主侧：长记忆在 40 行之前被 token 预算截断', () => {
+    const s = newStore();
+    // 每行 ~200 CJK ≈ 204 token，1800 容不下 40 行 → token 先触顶
+    const rows = Array.from({ length: 50 }, (_, i) => ({
+      id: `h-${i}`, type: 'user' as const, name: `hn-${i}`, content: '啊'.repeat(200),
+    })) as unknown as Parameters<typeof s.formatForPrompt>[0];
+    const lines = s.formatForPrompt(rows).split('\n').filter((l) => l.startsWith('- #'));
+    expect(lines.length).toBeLessThan(40);
+    expect(lines[0]).toContain('- #h-0 ');
+    s.close();
+  });
+
+  it('M10-8A：宿主 formatForPrompt 与页端 formatUntrustedMemoriesBlock 选中行完全一致', () => {
+    const s = newStore();
+    // pinned → user → updated_at 顺序由调用方给定；两侧只取同一前缀
+    const rows = Array.from({ length: 45 }, (_, i) => ({
+      id: `both-${i}`, type: (i % 2 === 0 ? 'user' : 'project') as 'user' | 'project',
+      name: `bn-${i}`, content: '啊'.repeat(120),
+    }));
+    const hostLines = s.formatForPrompt(rows as unknown as Parameters<typeof s.formatForPrompt>[0])
+      .split('\n').filter((l) => l.startsWith('- #'));
+    const pageBlock = formatUntrustedMemoriesBlock(rows);
+    const pageLines = pageBlock.split('\n').filter((l) => l.startsWith('- #'));
+    expect(hostLines).toEqual(pageLines); // 两侧选中的行集合与顺序逐字一致
+    expect(hostLines.length).toBeGreaterThan(0);
+    expect(hostLines.length).toBeLessThanOrEqual(40);
+    s.close();
+  });
+
+  it('M10-8A：空列表两侧都返回空串', () => {
+    const s = newStore();
+    expect(s.formatForPrompt([])).toBe('');
+    expect(formatUntrustedMemoriesBlock([])).toBe('');
+    s.close();
+  });
 });
 
 describe('M10-6 source 由宿主赋值', () => {
