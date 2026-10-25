@@ -11,6 +11,8 @@
  */
 
 import { spawn } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { isWorkspaceConfigured, type WorkspaceContext } from '../host/workspace';
 import type { CapabilityContext, ExecutableCapability, ExecuteResult } from './types';
 
@@ -110,6 +112,62 @@ function clampTimeout(requested: unknown, fallback: number): number {
   return Math.max(1, Math.min(MAX_TIMEOUT_MS, Math.floor(requested)));
 }
 
+function defaultPathExts(): string[] {
+  const pathext = process.env.PATHEXT;
+  if (pathext) {
+    return pathext.split(';').map((e) => e.trim()).filter(Boolean);
+  }
+  return ['.COM', '.EXE', '.BAT', '.CMD'];
+}
+
+/**
+ * D-1：Windows 可执行解析。npx/pnpm/yarn 等在 Windows 上是 .cmd shim，
+ * shell:false 的 CreateProcess 无法直接运行 → ENOENT。
+ *
+ * 规则：
+ * - argv[0] 含路径分隔符（/ 或 \）→ 检查该路径本身及 PATHEXT 候选；
+ * - 否则遍历 PATH × PATHEXT；
+ * - 仅当最终命中真实存在的 .cmd/.bat 文件时返回其绝对路径（调用方据此加 cmd /c）；
+ * - 命中 .exe/.com → 返回 null（CreateProcess 自行 PATH 解析，不加 cmd）；
+ * - 无扩展名普通文件不终止搜索，继续尝试后续 PATHEXT 候选；
+ * - 全部候选都找不到 → 返回 null（spawn 随后报 spawn-failed）。
+ *
+ * 不扩充 CMD_BUILTINS 名单；非 Windows 调用方不得调用本函数。
+ */
+export function resolveWindowsScript(argv0: string): string | null {
+  if (!argv0) return null;
+  const exts = defaultPathExts();
+  const candidates: string[] = [];
+  const hasSep = argv0.includes('/') || argv0.includes('\\');
+  if (hasSep) {
+    candidates.push(argv0);
+    for (const ext of exts) candidates.push(`${argv0}${ext}`);
+  } else {
+    const pathEnv = process.env.PATH ?? '';
+    for (const dir of pathEnv.split(path.delimiter)) {
+      const d = dir.trim();
+      if (!d) continue;
+      candidates.push(path.join(d, argv0));
+      for (const ext of exts) candidates.push(path.join(d, `${argv0}${ext}`));
+    }
+  }
+  for (const c of candidates) {
+    try {
+      const st = fs.statSync(c);
+      if (!st.isFile()) continue;
+      const lower = c.toLowerCase();
+      if (lower.endsWith('.cmd') || lower.endsWith('.bat')) return c;
+      // .exe/.com：CreateProcess 可直接 spawn，无需 cmd
+      if (lower.endsWith('.exe') || lower.endsWith('.com')) return null;
+      // 无扩展名普通文件：不能在此终止搜索，继续尝试后续 PATHEXT 候选
+      // （例如同目录可能另有 probe.cmd 影子脚本）。
+    } catch {
+      // 该候选不存在 / 无权限：继续下一个
+    }
+  }
+  return null;
+}
+
 export function createShellCapability(options: ShellCapabilityOptions = {}): ExecutableCapability {
   // 兼容可变工作区代理：未配置（configured === false）时视同无工作区边界，
   // cwd 回落宿主默认（与 v0.5 静态 null 工作区语义一致）。
@@ -173,6 +231,31 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
           }
         }
         argv = ['cmd', '/c', ...argv];
+      }
+
+      // D-1：Windows .cmd/.bat 路由。npx/pnpm/yarn 等是 .cmd shim，CreateProcess(shell:false)
+      // 无法直接运行 → ENOENT。按 PATH × PATHEXT 解析 argv[0]，仅当命中真实 .cmd/.bat
+      // 才加 cmd /c；.exe/.com 由 CreateProcess 自行 PATH 解析，不加 cmd；找不到则原样
+      // 交给 spawn（随后报 spawn-failed）。不扩充 CMD_BUILTINS、不引入 shell:true。
+      // 走 cmd /c 的脚本参数继续拒绝 & | < > ^，且全程保持 argv，绝不拼接命令串交给 cmd。
+      if (process.platform === 'win32') {
+        const resolvedScript = resolveWindowsScript(argv[0]);
+        if (resolvedScript) {
+          const CMD_METACHARS = /[&|<>^]/;
+          for (let i = 1; i < argv.length; i += 1) {
+            if (CMD_METACHARS.test(argv[i])) {
+              return {
+                ok: false,
+                error: 'shell-metachar-in-cmd-builtin',
+                data: {
+                  hint: `脚本 ${argv[0]} 经 cmd /c 执行，其参数含 cmd 元字符（& | < > ^），` +
+                    '会被 cmd 二次解释导致命令注入。请改用 argv 数组显式传递参数。',
+                },
+              };
+            }
+          }
+          argv = ['cmd', '/c', resolvedScript, ...argv.slice(1)];
+        }
       }
 
       // v0.9：Windows 中文路径编码修复——powershell -Command 的参数经 argv 传递时

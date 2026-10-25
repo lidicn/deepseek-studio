@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createShellCapability, hasShellSyntax, tokenizeCommand } from '../../src/capabilities/shell';
+import { createShellCapability, hasShellSyntax, resolveWindowsScript, tokenizeCommand } from '../../src/capabilities/shell';
 import { createFileTools } from '../../src/capabilities/file';
 import { createWorkspace } from '../../src/host/workspace';
 
@@ -150,6 +150,119 @@ describe('shell.exec —— argv 执行与安全红线', () => {
     const r = await cap.execute({ argv: [node, '-e', 'console.log(1)'], timeoutMs: -5 });
     expect(r.ok).toBe(true);
     expect((r.data as { argv: string[] }).argv[0]).toBe(node);
+  });
+});
+
+describe('D-1 Windows .cmd/.bat 路由', () => {
+  const winIt = process.platform === 'win32' ? it : it.skip;
+  let tmp: string;
+
+  beforeEach(async () => {
+    tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'studio-d1-'));
+  });
+  afterEach(async () => {
+    await fsp.rm(tmp, { recursive: true, force: true });
+  });
+  async function writeFixtureCmd(name: string, body: string): Promise<string> {
+    const p = path.join(tmp, name);
+    await fsp.writeFile(p, body.replace(/\n/g, '\r\n'), 'utf8');
+    return p;
+  }
+
+  winIt('fixture .cmd 正控：经 cmd /c 执行并回传 stdout（不依赖开发机是否装了 npx）', async () => {
+    const cap = createShellCapability();
+    const cmdPath = await writeFixtureCmd('hello.cmd', '@echo off\necho studio-cmd-ok %1');
+    const r = await cap.execute({ argv: [cmdPath, 'alpha'] });
+    expect(r.ok).toBe(true);
+    expect((r.data as { stdout: string }).stdout).toContain('studio-cmd-ok alpha');
+  });
+
+  winIt('.exe 负控：node 不被加 cmd /c，argv[0] 保持原可执行、输出是版本号', async () => {
+    const cap = createShellCapability();
+    const r = await cap.execute({ argv: [node, '--version'] });
+    expect(r.ok).toBe(true);
+    const data = r.data as { argv: string[]; stdout: string };
+    expect(data.argv[0]).toBe(node); // 未被改写成 cmd
+    expect(data.argv[0]).not.toBe('cmd');
+    expect(data.stdout.trim().startsWith('v')).toBe(true);
+  });
+
+  winIt('.cmd 参数含 & 被拒绝（cmd 二次解释注入面）', async () => {
+    const cap = createShellCapability();
+    const cmdPath = await writeFixtureCmd('bad.cmd', '@echo off\necho %1');
+    const r = await cap.execute({ argv: [cmdPath, 'a & whoami'] });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('shell-metachar-in-cmd-builtin');
+  });
+
+  winIt('不存在的命令返回 spawn-failed', async () => {
+    const cap = createShellCapability();
+    const r = await cap.execute({ argv: ['definitely-not-a-real-exe-xyz-99999'] });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('spawn-failed');
+  });
+
+  it('resolveWindowsScript：.cmd 绝对路径命中返回路径、.exe 文件返回 null、不存在返回 null', async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'studio-d1-unit-'));
+    try {
+      const cmdPath = path.join(dir, 'probe.cmd');
+      await fsp.writeFile(cmdPath, '@echo off\r\necho hi\r\n', 'utf8');
+      expect(resolveWindowsScript(cmdPath)).toBe(cmdPath);
+
+      const exePath = path.join(dir, 'probe.exe');
+      await fsp.writeFile(exePath, 'fake-bytes', 'utf8');
+      expect(resolveWindowsScript(exePath)).toBeNull();
+
+      expect(resolveWindowsScript(path.join(dir, 'nope.cmd'))).toBeNull();
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('resolveWindowsScript：argv0 显式带 .cmd 时直接命中原路径，不重复追加扩展名', async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'studio-d1-explicit-'));
+    try {
+      const cmdPath = path.join(dir, 'tool.cmd');
+      await fsp.writeFile(cmdPath, '@echo off\r\necho hi\r\n', 'utf8');
+      // 显式 .cmd：原样返回，不会再去找 tool.cmd.CMD / tool.cmd.EXE
+      expect(resolveWindowsScript(cmdPath)).toBe(cmdPath);
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  winIt('真实 PATH 影子：临时目录同时放无扩展名 probe 和 probe.cmd，probe 必须命中 .cmd 并经 cmd /c 执行', async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'studio-d1-shadow-'));
+    try {
+      await fsp.writeFile(path.join(dir, 'probe'), 'fake-no-ext', 'utf8');
+      await fsp.writeFile(path.join(dir, 'probe.cmd'), '@echo off\r\necho probe-shadow-ok %1\r\n', 'utf8');
+
+      const savedPath = process.env.PATH;
+      const savedPathext = process.env.PATHEXT;
+      process.env.PATH = `${dir}${path.delimiter}${savedPath ?? ''}`;
+      process.env.PATHEXT = '.EXE;.CMD';
+      try {
+        const expectedCmd = path.join(dir, 'probe.cmd');
+        // 1) 纯解析：无扩展名 probe 不能终止搜索，必须落到 probe.cmd
+        //    （PATHEXT 候选可能为大写 .CMD，Windows 大小写不敏感，按小写比较）
+        expect((resolveWindowsScript('probe') ?? '').toLowerCase()).toBe(expectedCmd.toLowerCase());
+
+        // 2) 端到端：cap.execute 实际经 cmd /c 跑通
+        const cap = createShellCapability();
+        const r = await cap.execute({ argv: ['probe', 'beta'] });
+        expect(r.ok).toBe(true);
+        expect((r.data as { stdout: string }).stdout).toContain('probe-shadow-ok beta');
+        const usedArgv = (r.data as { argv: string[] }).argv;
+        expect(usedArgv[0]).toBe('cmd');
+        expect(usedArgv[1]).toBe('/c');
+        expect(usedArgv[2].toLowerCase()).toBe(expectedCmd.toLowerCase());
+      } finally {
+        process.env.PATH = savedPath;
+        process.env.PATHEXT = savedPathext;
+      }
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
   });
 });
 
