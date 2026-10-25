@@ -96,12 +96,18 @@ const MODEL_INVOCATION_TOOLS: Record<string, UpstreamToolMapping> = Object.assig
   },
   memory_save: {
     id: 'memory.save',
-    adapt: (p) => ({
-      type: typeof p.type === 'string' ? p.type : 'user',
-      name: typeof p.name === 'string' ? p.name : '',
-      content: typeof p.content === 'string' ? p.content : '',
-      tags: Array.isArray(p.tags) ? p.tags : [],
-    }),
+    // D-5：有则转、无则不传。旧实现把缺省 tags 填成 []、并整块丢弃 pinned，
+    // 导致同名保存把已有治理字段清空（2026-10-26 真机验收）。
+    adapt: (p) => {
+      const out: Record<string, unknown> = {
+        type: typeof p.type === 'string' ? p.type : 'user',
+        name: typeof p.name === 'string' ? p.name : '',
+        content: typeof p.content === 'string' ? p.content : '',
+      };
+      if (Array.isArray(p.tags)) out.tags = p.tags;
+      if (typeof p.pinned === 'boolean') out.pinned = p.pinned;
+      return out;
+    },
   },
   python_exec: {
     id: 'python.exec',

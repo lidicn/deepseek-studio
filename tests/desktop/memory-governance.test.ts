@@ -244,7 +244,7 @@ describe('M10-6 source 由宿主赋值', () => {
     }
   });
 
-  it('映射层是真正的收口点：memory_save 只转发 type/name/content/tags', async () => {
+  it('映射层是真正的收口点：memory_save 不转发 source/confidence/personaTags', async () => {
     const { mapUpstreamToolInvocation } = await import('../../src/shared/tool-contract');
     const mapped = mapUpstreamToolInvocation('memory_save', {
       type: 'user',
@@ -256,7 +256,8 @@ describe('M10-6 source 由宿主赋值', () => {
       pinned: true,
     });
     expect(mapped).not.toBeNull();
-    expect(mapped!.params).toEqual({ type: 'user', name: 'n', content: 'c', tags: [] });
+    // D-5：pinned 现在按「有则转」放行；缺省的 tags 不再被填成 []。
+    expect(mapped!.params).toEqual({ type: 'user', name: 'n', content: 'c', pinned: true });
   });
 });
 

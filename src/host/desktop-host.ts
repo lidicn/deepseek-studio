@@ -95,6 +95,7 @@ import { createShellCapability } from '../capabilities/shell';
 import { createFileTools } from '../capabilities/file';
 import { createFileEditCapability } from '../capabilities/edit-engine';
 import { getMemoryStore } from './memory-store';
+import { normalizeMemorySaveParams } from './memory-tool-params';
 import { scanSkills, ensureSkillsDir, resolveSkillsDir } from './skill-store';
 import { getMcpController, ensureMcpConfig, getMcpServer, removeMcpServer } from './mcp-controller';
 import { createAutomationManager, type AutomationManager } from './automation';
@@ -501,21 +502,12 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           id: 'memory.save',
           async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
             const store = getMemoryStore();
-            const result = store.save({
-              type: String(params.type ?? 'user'),
-              name: String(params.name ?? ''),
-              content: String(params.content ?? ''),
-              tags: Array.isArray(params.tags) ? params.tags.map(String) : [],
-              pinned: Boolean(params.pinned),
-              // M10-6：治理字段一律由宿主决定，不接受调用方传入。
-              // 第一道收口在映射层（tool-contract.ts 的 memory_save 只转发 type/name/content/tags），
-              // 这里是第二道：即便别的调用路径送来 source/confidence/personaTags，也不采信。
-              // 本工具面只有模型可调（面板无保存入口），故 source 固定 'agent'；
-              // 旧 memories.json 导入路径记 'import'（见 memory-store.migrateLegacyJson）。
-              // confidence / personaTags 当前零写入方、零（或近零）读取点，宁可不写，
-              // 也不写一个模型能左右、却没人校验的假权威值。
-              source: 'agent',
-            });
+            // M10-6：治理字段一律由宿主决定。
+            // D-5：归一逻辑收敛到 normalizeMemorySaveParams，缺省字段不固化成 []/false，
+            // 否则同名保存会把已有 tags / pinned 当成「显式清空」。
+            // confidence / personaTags 当前零写入方、零（或近零）读取点，宁可不写，
+            // 也不写一个模型能左右、却没人校验的假权威值。
+            const result = store.save(normalizeMemorySaveParams(params));
             if (!result.ok) {
               return { ok: false, error: result.error };
             }

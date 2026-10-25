@@ -287,6 +287,9 @@ describe('v0.9: 本机执行语义对齐（tool-contract 映射）', () => {
 
     const mapped3 = mapUpstreamToolInvocation('memory_save', {});
     expect(mapped3?.params.type).toBe('user');
-    expect(mapped3?.params.tags).toEqual([]);
+    // D-5：缺省字段不再被固化成 []/false，改由 store 在插入时套默认值。
+    // 否则同名保存会把已有 tags/pinned 当成「显式清空」（2026-10-26 真机回归）。
+    expect(mapped3?.params).not.toHaveProperty('tags');
+    expect(mapped3?.params).not.toHaveProperty('pinned');
   });
 });

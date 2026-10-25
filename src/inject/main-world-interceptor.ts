@@ -480,7 +480,7 @@ const TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
 - file_edit — 局部改写文件（优先于整文件覆写），参数：path、edits（[{oldString,newString}]）、expectedSha256（可选）、dryRun（可选）
 - search_files — 检索文件/内容，参数：operation（list/grep）、root、query、pattern、regex（可选）、glob（可选）、limit（可选）
 - shell_exec — 执行命令行，参数：command（优先用 PowerShell，路径用正斜杠）
-- memory_save — 保存长期记忆，参数：type（user/project）、name、content、tags（可选）
+- memory_save — 保存长期记忆，参数：type（user/project）、name、content、tags（可选）、pinned（可选，布尔）
 - python_exec — 执行 Python 代码，参数：code（Python 源代码字符串）
 - mcp_list — 列出已配置的 MCP 服务器及其工具（无参数）
 - mcp_call — 调用 MCP 工具，参数：serverId、tool、args（参数对象）
@@ -498,7 +498,7 @@ const TOOL_CATALOG_TEXT = `## 可用工具
 - file_edit — 局部改写文件（优先于整文件覆写），参数：path、edits（[{oldString,newString}]）、expectedSha256（可选）、dryRun（可选）
 - search_files — 检索文件/内容，参数：operation（list/grep）、root、query、pattern、regex（可选）、glob（可选）、limit（可选）
 - shell_exec — 执行命令行，参数：command（优先用 PowerShell，路径用正斜杠）
-- memory_save — 保存长期记忆，参数：type（user/project）、name、content、tags（可选）
+- memory_save — 保存长期记忆，参数：type（user/project）、name、content、tags（可选）、pinned（可选，布尔）
 - python_exec — 执行 Python 代码，参数：code（Python 源代码字符串）
 - mcp_list — 列出已配置的 MCP 服务器及其工具（无参数）
 - mcp_call — 调用 MCP 工具，参数：serverId、tool、args（参数对象）
@@ -526,6 +526,11 @@ export function capabilityPromptToolNames(): string[] {
 /** 续跑 prompt 里引用的目录工具名。 */
 export function catalogTextToolNames(): string[] {
   return toolCatalogNames(TOOL_CATALOG_TEXT);
+}
+
+/** D-5：续跑目录原文，供测试校验参数声明（例如 memory_save 必须列出 pinned）。 */
+export function catalogText(): string {
+  return TOOL_CATALOG_TEXT;
 }
 
 // v1.7：hasToolIntent / computeIntent 已删除。之前用正则猜「要不要用工具」会漏掉
