@@ -84,6 +84,8 @@ export class SqliteChatMessageStore implements ChatMessageStore {
   private readonly db: Db | null;
   /** 降级模式下的内存存储：roomId → 消息列表。 */
   private readonly mem = new Map<string, ChatMessage[]>();
+  /** audit P2-52：已见最大 timestamp，保证 append 单调递增。 */
+  private maxSeenTs = 0;
 
   constructor(memoryStore: MemoryStore) {
     this.db = memoryStore.getDb();
@@ -119,10 +121,13 @@ export class SqliteChatMessageStore implements ChatMessageStore {
       senderId: msg.senderId,
       senderType: msg.senderType,
       content: msg.content,
-      timestamp: msg.timestamp ?? Date.now(),
+      // audit P2-52（D-4 P1 修正）：仅对缺省 timestamp 做单调钳制；
+      // 显式传入的 timestamp 原样保留（测试/回放需要），不得向后/向前钳成同一毫秒。
+      timestamp: this.clampTimestamp(msg.timestamp),
       mentions: msg.mentions ?? [],
       ...(msg.insights ? { insights: msg.insights } : {}),
     };
+    this.maxSeenTs = Math.max(this.maxSeenTs, full.timestamp);
 
     if (this.db) {
       const stmt = this.db.prepare(
@@ -147,18 +152,37 @@ export class SqliteChatMessageStore implements ChatMessageStore {
     return full;
   }
 
+  /**
+   * audit P2-52（D-4 P1 修正）：显式 timestamp 原样返回；仅当调用方未给时才用墙钟，
+   * 并保证缺省值不早于该房间已见最大时间，让 append 缺省路径单调递增。
+   */
+  private clampTimestamp(ts: number | undefined): number {
+    if (typeof ts === 'number' && Number.isFinite(ts)) return ts;
+    return Math.max(Date.now(), this.maxSeenTs);
+  }
+
   getMessages(
     roomId: string,
     opts?: { throughMessageId?: string; limit?: number },
   ): ChatMessage[] {
+    const through = opts?.throughMessageId;
+    const limit = opts?.limit;
+    // audit P2-51：SQL 路径下推 LIMIT，避免整房间全表加载后再内存 slice。
+    if (this.db && through === undefined && typeof limit === 'number' && limit >= 0) {
+      // audit P2-51：SQL 下推取最近 N 条（先倒序 LIMIT 再正序返回），避免整房间全表加载。
+      const rows = this.db
+        .prepare(
+          'SELECT * FROM (SELECT id, room_id, sender_id, sender_type, content, timestamp, mentions_json, insights_json FROM chat_messages WHERE room_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?) ORDER BY timestamp ASC, id ASC',
+        )
+        .all(roomId, limit) as unknown as ChatMessageRow[];
+      return rows.map(rowToMessage);
+    }
     const all = this.loadRoom(roomId);
     let selected = all;
-    const through = opts?.throughMessageId;
     if (through !== undefined) {
       const idx = all.findIndex((m) => m.id === through);
       selected = idx >= 0 ? all.slice(0, idx + 1) : [];
     }
-    const limit = opts?.limit;
     if (typeof limit === 'number' && limit >= 0 && selected.length > limit) {
       selected = selected.slice(selected.length - limit);
     }
@@ -200,7 +224,7 @@ export class SqliteChatMessageStore implements ChatMessageStore {
     return true;
   }
 
-  /** 读取某房间全部消息，按 (timestamp, id) 升序。 */
+  /** 读取某房间全部消息，按 timestamp 升序；并列时 mem 走单调插入序，SQL 走 id 兜底。 */
   private loadRoom(roomId: string): ChatMessage[] {
     if (this.db) {
       const rows = this.db
@@ -211,6 +235,7 @@ export class SqliteChatMessageStore implements ChatMessageStore {
       return rows.map(rowToMessage);
     }
     const list = this.mem.get(roomId) ?? [];
-    return [...list].sort((a, b) => a.timestamp - b.timestamp || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    // D-4 P1：同 timestamp 不按随机 id 排序；JS sort 稳定，tie 时保留 list 即插入序。
+    return [...list].sort((a, b) => a.timestamp - b.timestamp);
   }
 }
