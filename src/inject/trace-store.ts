@@ -49,7 +49,12 @@ export function getAllTraces(): TraceRecord[] {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    // audit P2-34：过滤缺 id / steps 形状损坏的旧记录，避免下游 trace.steps.map 抛错。
+    return parsed.filter(
+      (t): t is TraceRecord =>
+        !!t && typeof t.id === 'string' && Array.isArray((t as TraceRecord).steps),
+    );
   } catch {
     return [];
   }
@@ -69,7 +74,8 @@ export function saveTrace(trace: TraceRecord): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(traces));
   } catch {
-    // 存储满了，忽略
+    // audit P2-35：配额满不再静默丢，显式告警一次。
+    console.warn('[trace-store] localStorage 写入失败（配额满），本次 trace 未落盘');
   }
 }
 

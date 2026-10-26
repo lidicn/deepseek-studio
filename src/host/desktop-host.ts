@@ -416,8 +416,20 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     homedir: os.homedir(),
     readFile: (p) => fs.readFileSync(p),
     writeFile: (p, d) => fs.writeFileSync(p, d),
-    readJson: (p) => JSON.parse(fs.readFileSync(p, 'utf-8')),
-    writeJson: (p, d) => fs.writeFileSync(p, JSON.stringify(d, null, 2), 'utf-8'),
+    readJson: (p) => {
+      // audit P2-7：文件缺失/JSON 损坏不抛，返回 null 让上层走默认值。
+      try {
+        return JSON.parse(fs.readFileSync(p, 'utf-8'));
+      } catch {
+        return null;
+      }
+    },
+    // audit E-15：writeJson 走 tmp+rename 原子替换，防崩溃半截损坏配置。
+    writeJson: (p, d) => {
+      const tmp = `${p}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(d, null, 2), 'utf-8');
+      fs.renameSync(tmp, p);
+    },
     exists: (p) => fs.existsSync(p),
     mkdirp: (p) => fs.mkdirSync(p, { recursive: true }),
     unlink: (p) => fs.unlinkSync(p),
@@ -1225,7 +1237,10 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     automationManager: automationManager as NonNullable<import('../api/server').ApiServerOptions['automationManager']>,
     debugEval: (code) => new Promise((resolve) => {
       const requestId = 'dbg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-      const timer = setTimeout(() => resolve({ ok: false, error: 'timeout 5s' }), 5000);
+      const timer = setTimeout(() => {
+        debugEvalPending.delete(requestId); // audit P2-10：超时分支也清 map，避免条目残留
+        resolve({ ok: false, error: 'timeout 5s' });
+      }, 5000);
       debugEvalPending.set(requestId, { resolve, timer });
       hub?.broadcastDebugEval(requestId, code);
     }),
@@ -1243,10 +1258,31 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     }
     return kvCache[key];
   }
+  // audit P1-6：KV 写盘防抖批量——高频写（执行索引/会话事件）合并到 100ms 窗口一次 writeBatch，
+  // 避免每键全量重写 storage.json（O(N²) + 崩溃半截损坏风险）。读仍走 cache 立即一致。
+  let kvFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  const pendingKvSet: Record<string, unknown> = {};
+  const pendingKvRemove: string[] = [];
+  function scheduleKvFlush(): void {
+    if (kvFlushTimer) return;
+    kvFlushTimer = setTimeout(() => {
+      kvFlushTimer = null;
+      const set = { ...pendingKvSet };
+      const remove = [...pendingKvRemove];
+      for (const k of Object.keys(pendingKvSet)) delete pendingKvSet[k];
+      pendingKvRemove.length = 0;
+      kvBackend.writeBatch({ set, remove }).catch((err) => {
+        console.warn('[kv] flush failed:', err);
+      });
+    }, 100);
+  }
   async function kvSet(key: string, value: unknown): Promise<void> {
     await kvGet(key); // ensure loaded
     kvCache[key] = value;
-    await kvBackend.writeBatch({ set: { [key]: value }, remove: [] });
+    pendingKvSet[key] = value;
+    const ri = pendingKvRemove.indexOf(key);
+    if (ri >= 0) pendingKvRemove.splice(ri, 1);
+    scheduleKvFlush();
     if (key === STUDIO_EXECUTION_INDEX_KEY && isStudioExecutionIndex(value)) {
       emitExecutionIndex(value);
     } else if (key.startsWith(STUDIO_EXECUTION_SESSION_PREFIX) && isStudioExecutionSession(value)) {
@@ -1256,7 +1292,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   async function kvRemove(key: string): Promise<void> {
     await kvGet(key);
     delete kvCache[key];
-    await kvBackend.writeBatch({ set: {}, remove: [key] });
+    delete pendingKvSet[key];
+    if (!pendingKvRemove.includes(key)) pendingKvRemove.push(key);
+    scheduleKvFlush();
     if (key === STUDIO_EXECUTION_INDEX_KEY) emitExecutionCleared();
   }
 
