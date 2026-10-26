@@ -162,6 +162,14 @@ const UI_ONLY_TOOLS: Record<string, UpstreamToolMapping> = Object.assign(
   },
   'mcp.remove': { id: 'mcp.remove', adapt: (p) => p },
   'mcp.get': { id: 'mcp.get', adapt: (p) => p },
+  // E1（2026-10-26 线上故障）：9d093dc 把点号形式从**模型表**移除（防模型直调宿主 id，方向正确），
+  // 但没把它们迁进本表——页端 UI / interceptor 直调的 mcp.list / shell.exec / file.read 因此
+  // 在 mapUpstreamToolInvocation 返回 null，回执 unknown-tool：MCP 工具目录 10 次加载全失败、
+  // 技能面板「在文件夹中显示」「查看 SKILL.md」整条不可达。此处按原语义补登记（仅 UI 可达，
+  // 仍不进 SUPPORTED_INVOCATION_NAMES，模型面权限不扩）。
+  'mcp.list': { id: 'mcp.list', adapt: () => ({}) },
+  'shell.exec': { id: 'shell.exec', adapt: (p) => p },
+  'file.read': { id: 'file.read', adapt: (p) => p },
   'memory.delete': { id: 'memory.delete', adapt: (p) => p },
   // M10-5：归档两态（恢复 / 彻底删除 / 已归档列表），同样只对 UI 开放。
   'memory.unarchive': { id: 'memory.unarchive', adapt: (p) => ({ id: String(p.id ?? '') }) },
