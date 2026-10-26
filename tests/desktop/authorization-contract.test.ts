@@ -47,6 +47,7 @@ const BASELINE: Record<string, ApprovalClass> = {
   // chat-insert 同为页侧写出动作，按 always 收口（bot 内部预授权另标源，见 A3）
   'chat-insert': 'always',
   'python.exec': 'always',
+  'consent.whitelist.revoke': 'always',
   'mcp.call': 'always',
   'mcp.save': 'always',
   'mcp.remove': 'always',
@@ -62,6 +63,8 @@ const BASELINE: Record<string, ApprovalClass> = {
   'mcp.get': 'none',
   'memory.list': 'none',
   'memory.listArchived': 'none',
+  'memory.select': 'none',
+  'consent.whitelist.list': 'none',
   'settings.get': 'none',
   'project.list': 'none',
   'project.create': 'none',
