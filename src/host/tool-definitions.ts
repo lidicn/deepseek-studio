@@ -311,6 +311,35 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     allowedOrigins: [DEEPSEEK_ORIGIN],
     approvalClass: 'none',
   },
+  // B1（R-3）：按任务预取记忆候选。只读，返回内容本就要注入 system prompt。
+  {
+    id: 'memory.select',
+    title: '按任务预取记忆',
+    description: '宿主按当前任务文本选择相关记忆候选（只读，自动放行）。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
+  },
+  // A4（R-2）：项目规则（持久白名单 v2）列表与撤销。list 只读；revoke 是配置变更面。
+  {
+    id: 'consent.whitelist.list',
+    title: '列出项目规则',
+    description: '列出当前工作区的持久项目规则（只读，自动放行）。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
+  },
+  {
+    id: 'consent.whitelist.revoke',
+    title: '撤销项目规则',
+    description: '撤销一条已持久化的项目规则（配置变更，需用户同意）。',
+    risk: 'privileged',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'always',
+  },
   // v1.1：设置工作区（改写后续文件工具的可信边界——高危，必须用户同意）。
   // QD-R2-04 修复：原 risk:'read' 会被自动放行，模型自调即可把文件根指向任意目录。
   {

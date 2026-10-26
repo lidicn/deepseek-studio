@@ -168,6 +168,11 @@ const UI_ONLY_TOOLS: Record<string, UpstreamToolMapping> = Object.assign(
   'memory.purge': { id: 'memory.purge', adapt: (p) => ({ id: String(p.id ?? '') }) },
   'memory.listArchived': { id: 'memory.listArchived', adapt: () => ({}) },
   'memory.list': { id: 'memory.list', adapt: () => ({}) },
+  // B1（R-3）：页端预取记忆候选，只走 UI→宿主 RPC，不暴露给模型。
+  'memory.select': { id: 'memory.select', adapt: (p) => ({ taskText: typeof p.taskText === 'string' ? p.taskText : '' }) },
+  // A4（R-2）：项目规则（持久白名单 v2）列表与撤销。
+  'consent.whitelist.list': { id: 'consent.whitelist.list', adapt: () => ({}) },
+  'consent.whitelist.revoke': { id: 'consent.whitelist.revoke', adapt: (p) => ({ id: String(p.id ?? '') }) },
   'workspace.set': { id: 'workspace.set', adapt: (p) => p },
   'policy.set': { id: 'policy.set', adapt: (p) => p },
   'settings.get': { id: 'settings.get', adapt: (p) => p },
