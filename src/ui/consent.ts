@@ -8,8 +8,11 @@
  */
 
 import { POLICY_MODE_LABELS, isPolicyMode } from '../shared/policy-contract';
+import type { ConsentDecision as _CD, ConsentMeta as _CM } from '../shared/consent-contract';
 
-export type ConsentDecision = 'allow-once' | 'deny' | 'allow-session';
+// A5：单一真源在 shared/consent-contract.ts；这里 re-export 保持旧 import 路径不破。
+export type ConsentDecision = _CD;
+export type ConsentMeta = _CM;
 
 export interface ConsentRequest {
   tool: string;
@@ -19,13 +22,6 @@ export interface ConsentRequest {
   timeoutMs?: number;
   /** 风险呈现信息（由宿主翻译成展示字符串后下发，本模块不做枚举翻译）。 */
   meta?: ConsentMeta;
-}
-
-export interface ConsentMeta {
-  riskLabel?: string;
-  modeLabel?: string;
-  riskFlagLabels?: readonly string[];
-  outside?: boolean;
 }
 
 export type ConsentCallback = (decision: ConsentDecision) => void;
@@ -147,8 +143,12 @@ export function showConsent(request: ConsentRequest, onDecision: ConsentCallback
   const btnAllowOnce = mkButton(presentation.allowOnceLabel, 'ds-consent-allow-once');
   const btnDeny = mkButton('拒绝', 'ds-consent-deny');
   const btnAllowSession = mkButton(presentation.allowSessionLabel, 'ds-consent-allow-session');
-
-  actions.append(btnAllowOnce, btnDeny, btnAllowSession);
+  // A5：动态按钮——meta.hideAllowSession 为 true 时不渲染「本次会话允许」。
+  if (request.meta?.hideAllowSession) {
+    actions.append(btnAllowOnce, btnDeny);
+  } else {
+    actions.append(btnAllowOnce, btnDeny, btnAllowSession);
+  }
   card.append(title, tool, ...(badges ? [badges] : []), summary, actions);
   overlay.append(card);
   doc.body.append(overlay);

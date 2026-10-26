@@ -11,24 +11,11 @@
  */
 
 import type { ExecuteResult } from '../capabilities/types';
+import type { ConsentDecision as _CD, ConsentMeta as _CM } from '../shared/consent-contract';
 
-export type ConsentDecision = 'allow-once' | 'deny' | 'allow-session';
-
-/**
- * 同意请求的呈现元数据（v0.5）。
- * 全部为「已翻译好的展示字符串」而非枚举：注入页打包产物不应为了显示几个标签
- * 而整包引入 policy.ts（含全部风险正则），体积与攻击面都不划算。
- */
-export interface ConsentMeta {
-  /** 风险等级展示名（如「特权级」）。 */
-  riskLabel?: string;
-  /** 当前审批档位展示名（如「询问审批」）。 */
-  modeLabel?: string;
-  /** 命中的风险项中文标签（如「递归删除」「提权执行」）。 */
-  riskFlagLabels?: readonly string[];
-  /** 是否越出工作区（用于显示越界徽标）。 */
-  outside?: boolean;
-}
+// A5：单一真源在 shared/consent-contract.ts；这里 re-export 保持旧 import 路径不破。
+export type ConsentDecision = _CD;
+export type ConsentMeta = _CM;
 
 /** 宿主 → 注入页 */
 export type HostToPageMessage =

@@ -1453,6 +1453,11 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           modeLabel: POLICY_MODE_LABELS[policyMode],
           outside: verdict?.reason === 'outside-workspace',
           riskFlagLabels: (verdict?.riskFlags ?? []).map(riskLabel),
+          // A5：审计字段透传给页端，便于排查 UI 行为；不改展示逻辑。
+          ...(ctx.approvalClass ? { approvalClass: ctx.approvalClass } : {}),
+          ...(ctx.grantScope ? { grantScope: ctx.grantScope } : {}),
+          ...(ctx.hardRule ? { hardRule: ctx.hardRule } : {}),
+          ...(ctx.canonicalTarget ? { canonicalTarget: ctx.canonicalTarget } : {}),
         };
       }
       const decision = await ensureConsent(name, params, randomCallId(), consentMeta, botId);

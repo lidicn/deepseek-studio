@@ -23,6 +23,34 @@ export const CONSENT_BUTTON_LABELS: Readonly<Record<ConsentDecision, string>> = 
   'allow-session': '本次会话允许此操作',
 };
 
+/**
+ * 同意请求的呈现元数据（v0.5 / A5）。
+ * 全部为「已翻译好的展示字符串」或宿主侧枚举透传，页端不再翻译 policy 字符串。
+ *
+ * A5 收口：原 src/host/protocol.ts 和 src/ui/consent.ts 各复制了一份，加字段必须三处同步。
+ * 现以本文件为唯一真源，另两处只做 `export type ... from` 重导出。
+ */
+export interface ConsentMeta {
+  /** 风险等级展示名（如「特权级」）。 */
+  riskLabel?: string;
+  /** 当前审批档位展示名（如「询问审批」）。 */
+  modeLabel?: string;
+  /** 命中的风险项中文标签（如「递归删除」「提权执行」）。 */
+  riskFlagLabels?: readonly string[];
+  /** 是否越出工作区（用于显示越界徽标）。 */
+  outside?: boolean;
+  /** A5：审计字段——本次调用的 approvalClass（透传，不做翻译）。 */
+  approvalClass?: ApprovalClass;
+  /** A5：审计字段——用户点允许后采用的 grantScope 建议值。 */
+  grantScope?: GrantScope;
+  /** A5：审计字段——硬拒绝规则 id（仅当命中 hard-deny 时下发）。 */
+  hardRule?: string;
+  /** A5：审计字段——规范目标类型（path/argv/memory-id/...）。 */
+  canonicalTarget?: string;
+  /** A5：动态按钮开关——true 时不渲染「本次会话允许」按钮（如 hard-deny/once-only 场景）。 */
+  hideAllowSession?: boolean;
+}
+
 /** 审批类别：这类工具调用是否需要人工确认。 */
 export const APPROVAL_CLASSES = ['none', 'mode', 'always', 'hard-deny'] as const;
 export type ApprovalClass = (typeof APPROVAL_CLASSES)[number];
