@@ -205,7 +205,9 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   const policyDesc: Record<(typeof PANEL_POLICY_MODES)[number], string> = {
     workspace: '文件读写与命令执行仅限工作区根目录，越界一律拒绝。最收敛。',
     auto: '低风险操作自动执行，高风险操作弹出确认。默认档。',
-    full: '所有工具调用自动执行，无需确认。适合完全信任的环境。',
+    // A1（交接单_20261026 §1.2）：full 是"执行范围放开"，不是"审批永久关闭"。
+    // 文案必须同时说清两件事，否则用户会以为高风险动作也不再询问。
+    full: '执行范围完全放开：文件与命令类工具不再逐次确认；高风险动作仍需确认或直接拒绝。',
   };
   for (const mode of PANEL_POLICY_MODES) {
     const option = el('div', { className: `studio-policy-option${mode === globalState.policyMode ? ' selected' : ''}`, attrs: { 'data-mode': mode } });

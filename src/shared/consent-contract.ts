@@ -2,7 +2,15 @@
  * 审批决策契约（共享层）
  *
  * 唯一允许的三种审批结果。禁止出现"始终允许"。
- * allow-session 的语义：工具 + 参数指纹 + 10 分钟 TTL。
+ *
+ * A1 起把「是否审批」与「批准后作用域」拆成独立轴（交接
+ * 班_20261026 §1）：
+ * - approvalClass：这类工具是否需要人工确认（none/mode/always/hard-deny）。
+ *   与 tool-registry 的 risk（能力触达面）不是一回事，不能互相顶替。
+ * - grantScope：用户点「允许」之后放行到什么程度、何时失效。
+ *   allow-session 的语义改为「会话 + 工作区 + 工具 + 动作类 + 规范目标」，
+ *   生命周期到会话结束/工作区变化/策略变化/撤销为止；10 分钟 TTL 只保留给
+ *   temporary（always 类的高级二次放行）。
  */
 
 export type ConsentDecision = 'allow-once' | 'deny' | 'allow-session';
@@ -12,5 +20,46 @@ export const CONSENT_DECISIONS = ['allow-once', 'deny', 'allow-session'] as cons
 export const CONSENT_BUTTON_LABELS: Readonly<Record<ConsentDecision, string>> = {
   'allow-once': '允许一次',
   deny: '拒绝',
-  'allow-session': '本次会话允许（10 分钟）',
+  'allow-session': '本次会话允许此操作',
 };
+
+/** 审批类别：这类工具调用是否需要人工确认。 */
+export const APPROVAL_CLASSES = ['none', 'mode', 'always', 'hard-deny'] as const;
+export type ApprovalClass = (typeof APPROVAL_CLASSES)[number];
+
+export const APPROVAL_CLASS_LABELS: Readonly<Record<ApprovalClass, string>> = {
+  none: '无需确认',
+  mode: '按档位',
+  always: '始终确认',
+  'hard-deny': '直接拒绝',
+};
+
+/** 授权作用域：一次人工批准放行到什么范围、何时失效。 */
+export const GRANT_SCOPES = ['once', 'turn', 'session', 'project', 'global', 'temporary'] as const;
+export type GrantScope = (typeof GRANT_SCOPES)[number];
+
+export const GRANT_SCOPE_LABELS: Readonly<Record<GrantScope, string>> = {
+  once: '仅本次调用',
+  turn: '本轮对话内',
+  session: '本会话内此目标',
+  project: '本项目规则',
+  global: '跨项目规则',
+  temporary: '临时放行（10 分钟）',
+};
+
+/**
+ * 规范目标类型：grant 绑定的"动作对象"是哪一类实体。
+ * - 'generic'：无越权意义的只读/低风险能力，不参与 grant 复用（A1 决定，
+ *   见交接单 §1.4 硬规则 3——禁止用"同工具名"当授权 key）。
+ */
+export const CANONICAL_TARGET_KINDS = [
+  'path',
+  'argv',
+  'memory-id',
+  'mcp-call',
+  'policy-mode',
+  'workspace-root',
+  'chat-action',
+  'generic',
+] as const;
+export type CanonicalTargetKind = (typeof CANONICAL_TARGET_KINDS)[number];

@@ -4,7 +4,12 @@
  * 面板三档口径（用户选定，2026-10-10 需求访谈）：
  *   1. workspace 仅工作区——文件读写限于工作区内，shell 与越界一律硬拒绝
  *   2. auto    风险审批——工作区内读/写自动放行，仅 shell / 删除 / 越界等风险弹审批（默认档）
- *   3. full    完全放开——不询问，仅审计
+ *   3. full    执行范围完全放开——只免掉 approvalClass=mode 这类工具（file.*、
+ *              shell.exec、mcp.test）的逐次确认；approvalClass=always 的工具
+ *              （policy.set / workspace.set / memory.delete|purge|unarchive /
+ *              chat-send / python.exec / mcp.call|save|remove）在 full 下仍必须人工
+ *              确认，hard-deny 类动作（磁盘格式化、关机、盘根递归删除、敏感凭据路径、
+ *              未知工具/来源）在 full 下仍直接拒绝。见交接单_20261026 §1.2。
  * 旧档 ask（询问审批：shell 无风险也审批）保留为合法值以兼容既有配置与测试，
  * 但面板 UI 只暴露上面三档。
  *
@@ -15,6 +20,9 @@
  * | ask       | 放行         | 审批         | 审批        | 审批          |
  * | auto      | 放行         | 审批         | 放行        | 审批          |
  * | full      | 放行         | 放行         | 放行        | 放行          |
+ *
+ * 本矩阵只描述 **approvalClass=mode** 这一类工具在策略层的结论。它不是全局放行：
+ * always 类工具根本不走 evaluatePolicy，hard-deny 由 consent-router 的硬规则先行拒绝。
  *
  * 两条不可协商的红线（即便 full 档也保持）：
  *   1. shell 一律 argv 执行，启用 full 也不会打开 shell 解释器——

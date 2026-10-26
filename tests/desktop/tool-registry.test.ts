@@ -13,8 +13,24 @@ import { createDesktopHost } from '../../src/host/desktop-host';
 import type { ApiConfig } from '../../src/api/types';
 
 const defs: ToolDefinition[] = [
-  { id: 'echo', title: 'Echo', description: 'd', risk: 'read', allowedOrigins: ['https://chat.deepseek.com'] },
-  { id: 'chat-send', title: 'Send', description: 'd', risk: 'send', allowedOrigins: ['https://chat.deepseek.com', 'https://chat.deepseek.cn'] },
+  {
+    id: 'echo',
+    title: 'Echo',
+    description: 'd',
+    risk: 'read',
+    approvalClass: 'none',
+    allowedOrigins: ['https://chat.deepseek.com'],
+  },
+  {
+    id: 'chat-send',
+    title: 'Send',
+    description: 'd',
+    risk: 'send',
+    approvalClass: 'always',
+    canonicalTargetKind: 'chat-action',
+    grantScopes: ['once'],
+    allowedOrigins: ['https://chat.deepseek.com', 'https://chat.deepseek.cn'],
+  },
 ];
 
 describe('tool registry (governance data layer)', () => {
@@ -65,7 +81,14 @@ describe('tool registry (governance data layer)', () => {
   it('register：运行时补充登记后即刻生效', () => {
     const r = createToolRegistry([]);
     expect(r.has('echo')).toBe(false);
-    r.register({ id: 'echo', title: 'Echo', description: 'd', risk: 'read', allowedOrigins: ['https://chat.deepseek.com'] });
+    r.register({
+      id: 'echo',
+      title: 'Echo',
+      description: 'd',
+      risk: 'read',
+      approvalClass: 'none',
+      allowedOrigins: ['https://chat.deepseek.com'],
+    });
     expect(r.has('echo')).toBe(true);
     expect(r.isOriginAllowed('echo', 'https://chat.deepseek.com')).toBe(true);
   });

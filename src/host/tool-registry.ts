@@ -10,6 +10,13 @@
  * 不持有任何密钥、不参与 grant 签名（签名在 authority.ts）。
  */
 
+import {
+  APPROVAL_CLASSES,
+  type ApprovalClass,
+  type CanonicalTargetKind,
+  type GrantScope,
+} from '../shared/consent-contract';
+
 /**
  * 能力风险等级：read < insert < send < privileged。
  * - read：只读，不改变任何状态（低风险，自动放行）。
@@ -55,6 +62,24 @@ export function riskRank(risk: ToolRisk): number {
   return RISK_ORDER[risk];
 }
 
+/**
+ * 审批类别取值（A1）。运行期若拿到缺省/非法值一律 fail-closed 到 'always'：
+ * 宁可多问一次，也不能因为漏标让某个特权能力在 full 档下静默执行。
+ * 注意默认值不是 'mode'——'mode' 的含义是"跟随档位"，在 full 下等于免审。
+ */
+export function approvalClassOf(
+  def: Pick<ToolDefinition, 'approvalClass'> | Partial<ToolDefinition> | undefined,
+): ApprovalClass {
+  const value = def?.approvalClass;
+  return value && (APPROVAL_CLASSES as readonly string[]).includes(value) ? value : 'always';
+}
+
+/** 这类调用是否需要人工确认（approvalClass 口径，与 risk 阈值口径正交）。 */
+export function requiresApproval(def: ToolDefinition): boolean {
+  const cls = approvalClassOf(def);
+  return cls === 'mode' || cls === 'always';
+}
+
 export interface ToolDefinition {
   readonly id: string;
   readonly title: string;
@@ -72,6 +97,17 @@ export interface ToolDefinition {
    * 否则会被 `desktop-host` 的页端优先路由误派发到页面。
    */
   readonly execution?: ExecutionSide;
+  /**
+   * 审批类别（A1，交接单_20261026 §1.1/§1.3）：这类调用是否需要人工确认。
+   * 与 risk 正交——risk 描述"能力触达面"，approvalClass 描述"是否逐次问人"。
+   * 必填：新工具必须显式归类，禁止静默落到 mode（= full 档下自动执行）。
+   * 运行期缺/非法值一律 fail-closed 到 'always'，绝不回落 'mode'。
+   */
+  readonly approvalClass: ApprovalClass;
+  /** 批准后允许发放的 grant 作用域（缺省 = 仅 once）。 */
+  readonly grantScopes?: readonly GrantScope[];
+  /** 规范目标类型：grant 绑定哪个动作对象（缺省 = 'generic'，不参与 grant 复用）。 */
+  readonly canonicalTargetKind?: CanonicalTargetKind;
 }
 
 export type ToolRegistryDenyCode = 'unknown-tool' | 'origin-denied';
@@ -105,10 +141,11 @@ function normalizeOrigin(origin: string): string {
 
 export function createToolRegistry(defs: readonly ToolDefinition[] = []): ToolRegistry {
   const map = new Map<string, ToolDefinition>();
-  // 归一化：无论构造期还是运行期 register，入库对象都必须带确定的 execution，
-  // 避免调用方读到一个 undefined 而回落到「页端执行」这种危险默认值。
+  // 归一化：无论构造期还是运行期 register，入库对象都必须带确定的 execution 与
+  // approvalClass，避免调用方读到 undefined 而回落到「页端执行 / 跟随档位」这种危险默认值。
+  // approvalClass 缺/非法 → fail-closed 到 'always'（不静默免审）。
   const put = (d: ToolDefinition): void => {
-    map.set(d.id, { ...d, execution: executionSide(d) });
+    map.set(d.id, { ...d, execution: executionSide(d), approvalClass: approvalClassOf(d) });
   };
   for (const d of defs) put(d);
 

@@ -28,6 +28,7 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     description: '最小回显能力，用于证明「授权 → 执行」链路（v0.2 骨架）。',
     risk: 'read',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
   },
   {
     id: 'chat-read',
@@ -35,6 +36,7 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     description: '读取当前 DeepSeek 对话的消息列表（只读，低风险，自动放行）。',
     risk: 'read',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
   },
   {
     id: 'chat-insert',
@@ -42,6 +44,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     description: '向当前对话输入框写入文本（中风险，需用户同意）。',
     risk: 'insert',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'always',
+    canonicalTargetKind: 'chat-action',
+    grantScopes: ['once'],
   },
   {
     id: 'chat-send',
@@ -49,6 +54,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     description: '提交当前输入框内容、向 DeepSeek 发送一条消息（高风险，需用户同意）。',
     risk: 'send',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'always',
+    canonicalTargetKind: 'chat-action',
+    grantScopes: ['once'],
   },
   // —— v0.5 宿主侧能力：最高风险等级 + 宿主执行侧 ——
   {
@@ -58,6 +66,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'mode',
+    canonicalTargetKind: 'argv',
+    grantScopes: ['once', 'session', 'temporary'],
   },
   {
     id: 'file.read',
@@ -66,6 +77,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'mode',
+    canonicalTargetKind: 'path',
+    grantScopes: ['once', 'session'],
   },
   {
     id: 'file.write',
@@ -74,6 +88,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'mode',
+    canonicalTargetKind: 'path',
+    grantScopes: ['once', 'session'],
   },
   {
     id: 'file.edit',
@@ -82,6 +99,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'mode',
+    canonicalTargetKind: 'path',
+    grantScopes: ['once', 'session'],
   },
   {
     id: 'file.list',
@@ -90,6 +110,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'mode',
+    canonicalTargetKind: 'path',
+    grantScopes: ['once', 'session'],
   },
   {
     id: 'file.stat',
@@ -98,6 +121,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'mode',
+    canonicalTargetKind: 'path',
+    grantScopes: ['once', 'session'],
   },
   // v0.9：本地技能目录。
   {
@@ -107,6 +133,7 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
   },
   // ORD-001：本地文件检索（listFiles + grepFiles）。
   {
@@ -116,6 +143,7 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
   },
   // ORD-002：网页抓取。
   {
@@ -125,6 +153,7 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
   },
   // ORD-003：网页搜索。
   {
@@ -134,6 +163,7 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
   },
   // v1.0：长期记忆（移植自 deepseek++）。
   {
@@ -143,6 +173,7 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
   },
   // v1.0：Python 代码执行（移植自 deepseek++）。
   {
@@ -152,6 +183,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'always',
+    canonicalTargetKind: 'argv',
+    grantScopes: ['once', 'temporary'],
   },
   // v1.0：MCP 工具列表（只读，自动放行）。
   {
@@ -161,6 +195,7 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
   },
   // v1.0：MCP 工具调用（特权级）。
   {
@@ -170,6 +205,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'always',
+    canonicalTargetKind: 'mcp-call',
+    grantScopes: ['once', 'temporary'],
   },
   // v1.1：MCP 连接测试（R4-P0-1：会 spawn 任意命令，改为 privileged 级别）。
   {
@@ -179,6 +217,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'mode',
+    canonicalTargetKind: 'mcp-call',
+    grantScopes: ['once', 'session'],
   },
   // v1.1：MCP 配置保存（R4-P0-1：写配置文件，改为 privileged 级别）。
   {
@@ -188,6 +229,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'always',
+    canonicalTargetKind: 'mcp-call',
+    grantScopes: ['once', 'temporary'],
   },
   // v1.9：读取单台 MCP 服务器配置（只读，自动放行）。
   {
@@ -197,6 +241,7 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
   },
   // v1.1：删除 MCP 配置（R4-P0-1：删除配置文件，改为 privileged 级别）。
   {
@@ -206,6 +251,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'always',
+    canonicalTargetKind: 'mcp-call',
+    grantScopes: ['once', 'temporary'],
   },
   // v1.1：归档记忆（M10-1 提级需同意；M10-5 改为软删，可从「已归档」恢复）。
   {
@@ -215,6 +263,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'always',
+    canonicalTargetKind: 'memory-id',
+    grantScopes: ['once', 'temporary'],
   },
   // M10-5：恢复已归档记忆（写回注入面，需用户同意）。
   {
@@ -224,6 +275,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'insert',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'always',
+    canonicalTargetKind: 'memory-id',
+    grantScopes: ['once', 'temporary'],
   },
   // M10-5：彻底删除已归档记忆（不可恢复，必须人工同意）。
   {
@@ -233,6 +287,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'always',
+    canonicalTargetKind: 'memory-id',
+    grantScopes: ['once', 'temporary'],
   },
   // M10-5：已归档列表（面板两态视图，只读）。
   {
@@ -242,6 +299,7 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
   },
   // M10-5：生效中列表（面板取数口——广播只做实时刷新，不能当唯一来源）。
   {
@@ -251,6 +309,7 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
   },
   // v1.1：设置工作区（改写后续文件工具的可信边界——高危，必须用户同意）。
   // QD-R2-04 修复：原 risk:'read' 会被自动放行，模型自调即可把文件根指向任意目录。
@@ -261,6 +320,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'always',
+    canonicalTargetKind: 'workspace-root',
+    grantScopes: ['once'],
   },
   // v1.1：设置策略模式（直接改写同意闸门松紧——最高危，必须用户同意）。
   // QD-R2-04 修复：原 risk:'read' 会被自动放行，模型自调一次 policy.set=full 即可拆掉所有闸。
@@ -271,6 +333,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'always',
+    canonicalTargetKind: 'policy-mode',
+    grantScopes: ['once'],
   },
   // v1.9：读取当前生效设置（只读，自动放行）。
   {
@@ -280,6 +345,7 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
   },
   // v1.1：项目列表（只读，自动放行）。
   {
@@ -289,6 +355,7 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
   },
   // v1.1：创建项目（配置管理，自动放行）。
   {
@@ -298,6 +365,7 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
   },
   // v1.1：选择文件夹（配置管理，自动放行；需 Tauri dialog 或环境变量回退）。
   {
@@ -307,5 +375,6 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
   },
 ];
