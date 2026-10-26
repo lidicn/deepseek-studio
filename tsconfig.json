@@ -17,11 +17,8 @@
     "noEmit": true,
     "types": ["vitest/globals"],
     "baseUrl": ".",
-    "paths": {
-      "deepseek-pp/*": ["./deepseek-pp/src/*"],
-      "deepseek-pp/src/*": ["./deepseek-pp/src/*"]
-    }
+    "paths": {}
   },
   "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
-  "exclude": ["deepseek-pp", "node_modules"]
+  "exclude": ["node_modules"]
 }

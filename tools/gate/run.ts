@@ -39,6 +39,10 @@ const infoSteps: Step[] = [
   { name: 'symbols', cmd: 'npx tsx tools/audit/symbols.ts' },
   { name: 'm3-clean', cmd: 'npx tsx tools/audit/m3-clean.ts' },
   { name: 'security', cmd: 'npx tsx tools/audit/security.ts' },
+  // E3：漂移检测此前存在但从未被任何流程调用——它判定「漂移超阈值」的红色结论永不送达。
+  // 先以信息级接入（移植文件与上游有意分叉，红是真实待办而非噪音）；待 7 个移植文件
+  // 与上游对齐后再升阻塞级。需能读到 E:\NAS\deepseek-pp，缺失时脚本自行 exit 1 不崩闸门。
+  { name: 'upstream-drift', cmd: 'node scripts/check-upstream-drift.mjs' },
 ];
 
 function main(): void {

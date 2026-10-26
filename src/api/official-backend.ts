@@ -1,8 +1,16 @@
 /**
  * 上游后端适配
  *
- * 真实实现经动态 import 接入 deepseek-pp/src/core/deepseek/official-api.ts（OpenAI 兼容客户端），
- * 把其流式 delta 转成 ChatCompletionChunk。测试注入 fake backend，不加载上游。
+ * 本文件只提供 fake backend：studio 不持有 API key，真实模型调用走页面会话
+ * （chat.deepseek.com 的 web 登录态），本地 8760 API 面是给局域网 agent 接入的 stub。
+ *
+ * 曾有 createUpstreamOfficialBackend() 经动态 import 读内嵌 dpp 快照的 official-api，
+ * 三条证据表明它从未生效，已随快照一并移除（见 docs/dpp/上游快照锚点-UPSTREAM.md）：
+ *  - tsconfig 别名与实际说明符拼接后指向 deepseek-pp/src/src/...（不存在）；
+ *  - 全仓零调用者，运行时恒用 createFakeOfficialBackend；
+ *  - 变量形式的动态 import 躲过静态检查，所以 typecheck 也不报。
+ * 若将来要接真实上游客户端，正确路径是把上游 core 发布为可依赖的包（或独立构建产物），
+ * 而不是跨仓库 import 源码——该待办登记在项目总路线图 M7（真实 API key 缺项）。
  */
 
 import type { ChatCompletionChunk, ChatCompletionRequest } from './types';
@@ -34,20 +42,5 @@ export function chunk(model: string, content: string, reasoning?: string): ChatC
     model,
     created: Math.floor(Date.now() / 1000),
     choices: [{ index: 0, delta: { content, ...(reasoning ? { reasoning_content: reasoning } : {}) } }],
-  };
-}
-
-export async function createUpstreamOfficialBackend(): Promise<OfficialBackend> {
-  const spec = 'deepseek-pp/src/core/deepseek/official-api';
-  const mod = (await import(spec)) as unknown as {
-    createOfficialApiClient: (...args: unknown[]) => {
-      chatCompletion: (req: ChatCompletionRequest, signal?: AbortSignal) => AsyncIterable<ChatCompletionChunk>;
-      models: () => Promise<string[]>;
-    };
-  };
-  const client = mod.createOfficialApiClient();
-  return {
-    chatCompletion: (req, signal) => client.chatCompletion(req, signal),
-    models: () => client.models(),
   };
 }
