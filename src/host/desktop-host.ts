@@ -750,6 +750,38 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             };
           },
         },
+        // A4：列出当前工作区的持久白名单（v2）。
+        'consent.whitelist.list': {
+          id: 'consent.whitelist.list',
+          async execute(): Promise<ExecuteResult> {
+            const entries = whitelistStore.list();
+            return {
+              ok: true,
+              data: {
+                entries: entries.map((e) => ({
+                  id: e.id,
+                  toolId: e.toolId,
+                  action: e.action,
+                  targetPattern: e.targetPattern,
+                  grantScope: e.grantScope,
+                  workspaceHash: e.workspaceHash,
+                  createdAt: e.createdAt,
+                  ...(e.ttlMs ? { ttlMs: e.ttlMs } : {}),
+                })),
+              },
+            };
+          },
+        },
+        // A4：按 id 撤销一条持久白名单。
+        'consent.whitelist.revoke': {
+          id: 'consent.whitelist.revoke',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const id = String(params.id ?? '');
+            if (!id) return { ok: false, error: 'id is required' };
+            const r = whitelistStore.remove(id);
+            return r.ok ? { ok: true } : { ok: false, error: r.error };
+          },
+        },
         // v1.1：设置工作区根目录。
         'workspace.set': {
           id: 'workspace.set',

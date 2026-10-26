@@ -135,6 +135,7 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
     for (const [id, content] of Object.entries(tabContents)) {
       content.classList.toggle('active', id === tabId);
     }
+    if (tabId === 'policy' && typeof reloadWhitelist === 'function') void reloadWhitelist();
   }
 
   for (const tabDef of tabDefs) {
@@ -227,6 +228,51 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   policyTab.appendChild(policyOptions);
   const policyHint = el('p', { className: 'studio-form-hint', text: '' });
   policyTab.appendChild(policyHint);
+
+  // A4：持久项目规则（v2 白名单）撤销列表。
+  const wlSection = el('div', { style: 'margin-top:18px;border-top:1px solid #eef0f5;padding-top:12px;' });
+  wlSection.appendChild(el('div', { style: 'font-size:13px;font-weight:600;color:#333;margin-bottom:6px;', text: '项目规则（已自动放行）' }));
+  const wlList = el('div', { className: 'studio-memory-list' });
+  const wlHint = el('p', { className: 'studio-form-hint', text: '' });
+  wlSection.appendChild(wlList);
+  wlSection.appendChild(wlHint);
+  policyTab.appendChild(wlSection);
+
+  type WlRow = { id: string; toolId: string; action: string; targetPattern: string; grantScope: string; createdAt: number };
+  async function reloadWhitelist(): Promise<void> {
+    const r = await callHostTool('consent.whitelist.list', {});
+    const rows = r.ok && r.data && typeof r.data === 'object'
+      ? (r.data as { entries?: unknown }).entries
+      : undefined;
+    wlList.replaceChildren();
+    if (!Array.isArray(rows) || rows.length === 0) {
+      wlList.appendChild(el('div', { className: 'studio-empty-state', style: 'padding:16px 0;', text: '暂无项目规则' }));
+      return;
+    }
+    for (const row of rows as WlRow[]) {
+      const item = el('div', { className: 'studio-mcp-server-item' });
+      item.innerHTML = `
+        <div class="studio-mcp-server-info">
+          <div class="studio-mcp-server-name">${escapeHtml(row.toolId)} <span class="studio-mcp-transport">${escapeHtml(row.grantScope)}</span></div>
+          <div class="studio-mcp-server-cmd">${escapeHtml(row.action)} · ${escapeHtml(row.targetPattern)}</div>
+        </div>
+        <div class="studio-mcp-server-actions"></div>
+      `;
+      const actions = item.querySelector('.studio-mcp-server-actions')!;
+      const revokeBtn = el('button', { className: 'studio-btn sm danger', text: '撤销' });
+      revokeBtn.addEventListener('click', async () => {
+        const rr = await callHostTool('consent.whitelist.revoke', { id: row.id });
+        if (!rr.ok) {
+          wlHint.textContent = `撤销失败：${rr.error ?? '未知错误'}`;
+          return;
+        }
+        wlHint.textContent = '';
+        void reloadWhitelist();
+      });
+      actions.appendChild(revokeBtn);
+      wlList.appendChild(item);
+    }
+  }
   tabContents['policy'] = policyTab;
   contentPane.appendChild(policyTab);
 
