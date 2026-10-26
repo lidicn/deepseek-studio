@@ -125,6 +125,46 @@ export interface MainWorldInterceptorHandle {
 // v1.0：记忆列表缓存（由宿主推送，用于注入系统提示词的 "Existing Memories" 部分）
 let currentMemories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }> = [];
 
+/** M10-8B（B1）：按任务预取记忆的有界等待状态。feature flag 默认关。 */
+const memorySelectState: {
+  enabled: boolean;
+  pending: Promise<Array<{ id: string; type: string; name: string; content: string; tags: string[] }>> | null;
+  lastTask: string;
+  invoke: ((taskText: string) => Promise<{ ok: boolean; data?: { memories?: unknown } }>) | null;
+} = { enabled: false, pending: null, lastTask: '', invoke: null };
+
+export function configureMemorySelect(opts: {
+  enabled: boolean;
+  invoke?: (taskText: string) => Promise<{ ok: boolean; data?: { memories?: unknown } }>;
+}): void {
+  memorySelectState.enabled = opts.enabled;
+  memorySelectState.invoke = opts.invoke ?? null;
+}
+
+/** 启动一次新的预取（若 taskText 与上次相同则复用 in-flight）。 */
+function kickMemorySelect(taskText: string): void {
+  if (!memorySelectState.enabled || !memorySelectState.invoke) return;
+  const trimmed = taskText.trim();
+  if (!trimmed) return;
+  if (memorySelectState.pending && memorySelectState.lastTask === trimmed) return;
+  memorySelectState.lastTask = trimmed;
+  memorySelectState.pending = memorySelectState.invoke(trimmed).then((r) => {
+    const rows = r.ok && Array.isArray(r.data?.memories) ? r.data!.memories as Array<{ id: string; type: string; name: string; content: string; tags: string[] }> : [];
+    return rows;
+  }).catch(() => []);
+}
+
+/** 有界等待预取结果；超时/失败保持上一帧 currentMemories，不阻塞请求。 */
+async function awaitMemorySelectBudget(limitMs = 120): Promise<void> {
+  if (!memorySelectState.pending) return;
+  const budget = new Promise<null>((resolve) => setTimeout(() => resolve(null), limitMs));
+  const rows = await Promise.race([memorySelectState.pending, budget]);
+  if (rows) {
+    currentMemories = rows;
+  }
+  memorySelectState.pending = null;
+}
+
 // v1.0：MCP 工具列表缓存（启动时从宿主拉取，用于动态注入提示词，让 agent 知道有哪些 MCP 工具可用）
 let currentMcpTools: Array<{ serverId: string; name: string; description: string }> = [];
 
@@ -813,6 +853,8 @@ function captureChatRequest(body: string, loopState: LoopState, diag: Intercepto
       idleContinueCount = 0;
       interceptorTrace.record({ t: 'turn.start', turnId: traceTurnId });
       loopState.onNewUserMessage?.();
+      // M10-8B（B1）：feature flag 开时，按任务文本预取记忆候选。
+      kickMemorySelect(userText);
     }
   } catch {
     // 非 JSON 请求体不参与会话识别。
@@ -839,6 +881,11 @@ function installFetchHook(
     diag(`fetch ${method} ${url} bodyType=${typeof init?.body}`);
     if (isDeepSeekChatEndpoint(url, method) && loopState && typeof init?.body === 'string') {
       captureChatRequest(init.body, loopState, diag);
+    }
+
+    // M10-8B（B1）：首轮发送前有界等待 memory.select 结果（≤120ms）；超时回落上一帧。
+    if (memorySelectState.enabled && isDeepSeekChatEndpoint(url, method) && !loopState?.inFirstAttemptResend) {
+      await awaitMemorySelectBudget(120);
     }
 
     // 请求侧回填：把累积的工具结果写进下一次对话请求的 prompt

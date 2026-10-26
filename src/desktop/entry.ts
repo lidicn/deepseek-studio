@@ -19,7 +19,7 @@ import { createChatReadCapability } from '../capabilities/chat-read';
 import { createChatInsertCapability } from '../capabilities/chat-insert';
 import { createChatSendCapability } from '../capabilities/chat-send';
 import { createHostClient, type HostClient } from './host-client';
-import { installMainWorldInterceptor, setInterceptorTraceSink } from '../inject/main-world-interceptor';
+import { installMainWorldInterceptor, setInterceptorTraceSink, configureMemorySelect } from '../inject/main-world-interceptor';
 import { installTraceReportHandle } from '../inject/main-world-interceptor';
 import { globalEvents, globalState } from '../ui/studio-ui-core';
 import { createChatRoom, type ChatRoomRuntimeConfig } from '../ui/studio-chat-room';
@@ -277,6 +277,13 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
           globalEvents.emit('ui:memories-updated');
         },
         chatUI,
+      });
+      // M10-8B（B1）：feature flag 默认关。开启时页端在首轮 fetch 前有界等待 memory.select。
+      configureMemorySelect({
+        enabled: typeof (globalThis as { __studioMemorySelect?: boolean }).__studioMemorySelect === 'boolean'
+          ? Boolean((globalThis as { __studioMemorySelect?: boolean }).__studioMemorySelect)
+          : false,
+        invoke: (taskText) => host.sendToolCall({ callId: `msel_${Date.now()}_${Math.random().toString(36).slice(2,8)}`, invocationName: 'memory.select', params: { taskText } }) as Promise<{ ok: boolean; data?: { memories?: unknown } }>,
       });
     } catch (err) {
       options.reportError?.('failed to install main-world interceptor', err);

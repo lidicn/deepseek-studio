@@ -782,6 +782,26 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             return r.ok ? { ok: true } : { ok: false, error: r.error };
           },
         },
+        // M10-8B（B1）：按任务预取记忆候选。pinned 全集 + search(taskText,{limit:12})，按 id 去重。
+        // feature flag 默认关：页端不发请求时本工具不会被调用；返回结构不变。
+        'memory.select': {
+          id: 'memory.select',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const taskText = typeof params.taskText === 'string' ? params.taskText : '';
+            const store = getMemoryStore();
+            const all = await store.list();
+            const pinned = all.filter((m) => (m as { pinned?: boolean }).pinned);
+            const related = taskText.trim() ? await store.search(taskText, { limit: 12 }) : [];
+            const seen = new Set<string>();
+            const selected: Array<Record<string, unknown>> = [];
+            for (const m of [...pinned, ...related]) {
+              if (seen.has(m.id)) continue;
+              seen.add(m.id);
+              selected.push({ id: m.id, type: m.type, name: m.name, content: m.content, tags: m.tags });
+            }
+            return { ok: true, data: { memories: selected, selection: related.length > 0 ? 'related' : 'fallback' } };
+          },
+        },
         // v1.1：设置工作区根目录。
         'workspace.set': {
           id: 'workspace.set',
