@@ -1468,6 +1468,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     let consentMeta: ConsentMeta | undefined;
     if (auth.decision === 'ask') {
       if (governed) {
+        const allowed: readonly string[] = Array.isArray(auth.allowedGrantScopes) ? auth.allowedGrantScopes : [];
         consentMeta = {
           riskLabel: '特权级',
           modeLabel: POLICY_MODE_LABELS[policyMode],
@@ -1478,6 +1479,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           ...(ctx.grantScope ? { grantScope: ctx.grantScope } : {}),
           ...(ctx.hardRule ? { hardRule: ctx.hardRule } : {}),
           ...(ctx.canonicalTarget ? { canonicalTarget: ctx.canonicalTarget } : {}),
+          // R-4：生产端赋值——mode 类默认允许 session；always/hard-deny 类不允许。
+          ...(allowed.length > 0 ? { allowedGrantScopes: [...allowed] } : {}),
+          hideAllowSession: !allowed.includes('session'),
         };
       }
       const decision = await ensureConsent(name, params, randomCallId(), consentMeta, botId);

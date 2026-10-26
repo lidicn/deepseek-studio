@@ -76,4 +76,18 @@ describe('同意模态', () => {
     expect(card.textContent).not.toContain('root:');
     handle.dispose();
   });
+
+  it('R-4: hideAllowSession=true 时不渲染第三按钮', () => {
+    showConsent({ tool: 'shell.exec', meta: { hideAllowSession: true } }, () => {});
+    expect(document.querySelector('.ds-consent-allow-session')).toBeNull();
+    expect(document.querySelector('.ds-consent-allow-once')).not.toBeNull();
+    expect(document.querySelector('.ds-consent-deny')).not.toBeNull();
+  });
+
+  it('R-4: 默认（无 hideAllowSession）渲染三按钮', () => {
+    showConsent({ tool: 'shell.exec' }, () => {});
+    expect(document.querySelector('.ds-consent-allow-once')).not.toBeNull();
+    expect(document.querySelector('.ds-consent-deny')).not.toBeNull();
+    expect(document.querySelector('.ds-consent-allow-session')).not.toBeNull();
+  });
 });

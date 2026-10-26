@@ -49,6 +49,8 @@ export interface ConsentMeta {
   canonicalTarget?: string;
   /** A5：动态按钮开关——true 时不渲染「本次会话允许」按钮（如 hard-deny/once-only 场景）。 */
   hideAllowSession?: boolean;
+  /** R-4：本次审批允许的 grantScope 列表（host 生产端透传）。 */
+  allowedGrantScopes?: readonly string[];
 }
 
 /** 审批类别：这类工具调用是否需要人工确认。 */
