@@ -14,6 +14,7 @@
  */
 
 import type { ExecutionSide, ToolRisk } from './tool-registry';
+import type { ApprovalClass, GrantScope } from '../shared/consent-contract';
 
 /** 执行决策档位（与 policy 档位同构；字符串字面量联合是结构化类型，两处声明可互相赋值）。 */
 export type AuditMode = 'workspace' | 'ask' | 'auto' | 'full';
@@ -75,6 +76,17 @@ export interface ToolExecutionRecord {
   /** 命令 / 路径摘要：截断且不脱敏以外的正文不入审计。 */
   readonly summary?: string;
   readonly ok: boolean;
+  /**
+   * A2：审批类别。审计必须能回答"这次为什么问/为什么没问"，
+   * 只有 risk 是不够的——full 档下 mode 免审、always 仍问，靠这一列区分。
+   */
+  readonly approvalClass?: ApprovalClass;
+  /** A2：本次放行所依据的 grant 作用域（无 grant 时缺省）。 */
+  readonly grantScope?: GrantScope;
+  /** A2：命中的硬规则 id（hard-deny 时必填）。 */
+  readonly hardRule?: string;
+  /** A2：规范目标摘要（路径 / argv / memory id 等），用于还原授权链。 */
+  readonly canonicalTarget?: string;
 }
 
 /** 写入审计的输入：除 id/at/ok 由本模块补全外，其余由调用方提供。 */

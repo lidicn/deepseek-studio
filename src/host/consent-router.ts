@@ -78,8 +78,11 @@ export function classifyAction(toolId: string, params: Readonly<Record<string, u
   }
 }
 
-/** 硬拒绝地板：任何档位都拦，用户同意也不能覆盖。 */
-function checkHardDeny(
+/**
+ * 硬拒绝地板：任何档位都拦，用户同意也不能覆盖。
+ * A2 起对外导出：统一授权解析器复用同一张地板表，避免出现第二套硬拒绝定义。
+ */
+export function checkHardDeny(
   toolId: string,
   params: Readonly<Record<string, unknown>>,
   realPath: string | null | undefined,

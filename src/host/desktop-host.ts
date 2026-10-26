@@ -13,7 +13,7 @@ import { createApiServer, type ApiServer, type RateLimitOptions } from '../api/s
 import { createBearerAuthenticator } from '../api/auth';
 import { createFakeOfficialBackend } from '../api/official-backend';
 import { createPlatformDesktop, type PlatformDesktop } from './platform-desktop';
-import { createSecretRing, type SecretRing, DEFAULT_SECRET_GRACE_MS } from './host-token';
+import { createSecretRing, type SecretRing } from './host-token';
 import { createEchoCapability } from '../capabilities/echo';
 import { createChatReadCapability } from '../capabilities/chat-read';
 import { createChatInsertCapability } from '../capabilities/chat-insert';
@@ -22,7 +22,7 @@ import {
   createToolRegistry,
   DEFAULT_EXECUTION,
   executionSide,
-  needsConsent,
+  approvalClassOf,
   type ExecutionSide,
   type ToolDefinition,
   type ToolRegistry,
@@ -73,12 +73,20 @@ import {
   evaluatePolicy,
   isFileTool,
   isProcessTool,
+  EXECUTION_TOOLS,
+  type PolicyVerdict,
   POLICY_MODES,
   POLICY_MODE_LABELS,
   riskLabel,
   type PolicyMode,
 } from './policy';
-import { routeConsent } from './consent-router';
+import { checkHardDeny, routeConsent } from './consent-router';
+import {
+  canonicalTargetOf,
+  grantKeyOf,
+  resolveAuthorization,
+  type GrantMatch,
+} from './authorization';
 import { createWhitelistStore } from './consent-whitelist-store';
 import { createShadowStore } from './shadow-store';
 import {
@@ -326,8 +334,6 @@ function createHostResourceScope(): ContentResourceScope {
   };
 }
 
-/** QD-R2-08：用户点 allow-session 的默认 TTL（与密钥轮换宽限期同族，10min）。 */
-const DEFAULT_SESSION_GRANT_TTL_MS = DEFAULT_SECRET_GRACE_MS;
 
 /** 页端只需要渲染记忆列表所需字段，不把治理字段带出宿主。 */
 async function listMemoryBroadcastRows(): Promise<
@@ -1354,72 +1360,69 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     if (grantOrigin !== HOST_INTERNAL_ORIGIN && !registry.isOriginAllowed(name, grantOrigin)) {
       return finish('origin-denied', 'origin-denied');
     }
-    // 4) 策略闸门（v0.5）：宿主本机型能力（shell / file）先过三档策略。
-    //    受管辖工具以策略结论为准；其它工具沿用 risk 阈值闸门。
+    // 4) 统一授权判定（A2）：所有工具走同一条顺序，不再维护「policy 分支 + risk 阈值」两套真源。
+    //    顺序：hard-deny → 资源/工作区 deny → always 新鲜确认 → mode 有效 grant → policyMode → none。
+    //    纯判定在 authorization.ts；本处只准备输入（策略结论、硬规则、grant、身份）。
     const paramsBag = (params ?? {}) as Record<string, unknown>;
-    let consentMeta: ConsentMeta | undefined;
-    let requiresHumanConsent = needsConsent(def);
-    /** 本次调用是否被批准越出工作区（仅由策略结论或用户同意置真）。 */
-    let outsideApproved = false;
-
-    if (isFileTool(name) || isProcessTool(name)) {
-      // 传给策略层的永远是当前真实工作区（可变代理解引用），保持 policy 纯函数语义。
-      // v0.9：额外可信目录（STUDIO_TRUSTED_DIRS 环境变量，分号分隔）。
-      const trustedDirs = (process.env.STUDIO_TRUSTED_DIRS ?? '').split(';').filter(Boolean);
-      const verdict = evaluatePolicy({
-        tool: name,
-        params: paramsBag,
-        mode: policyMode,
-        workspace: mutableWorkspace.current,
-        trustedDirs,
-      });
-      ctx = { ...ctx, mode: policyMode };
-      requiresHumanConsent = verdict.decision === 'require-consent';
-      // 越界授权只能来自两个来源：策略直接放行（full 档），或下面用户明确同意。
-      // 绝不允许调用方自己在 params 里声明「我已授权」。
-      outsideApproved = verdict.reason === 'outside-workspace' && verdict.decision === 'allow';
-
-      if (verdict.decision === 'deny') return finish('policy-denied', verdict.reason);
-
-      consentMeta = {
-        riskLabel: '特权级',
-        modeLabel: POLICY_MODE_LABELS[policyMode],
-        outside: verdict.reason === 'outside-workspace',
-        riskFlagLabels: (verdict.riskFlags ?? []).map(riskLabel),
-      };
-
-      // M8-E1：白名单命中则跳过人工 consent
-      if (requiresHumanConsent && !outsideApproved) {
-        const wsRoot = mutableWorkspace.current?.root ?? null;
-        const resolvedPath = typeof paramsBag.path === 'string' ? paramsBag.path : null;
-        const relPath = resolvedPath && wsRoot
-          ? path.relative(wsRoot, resolvedPath).replace(/\\/g, '/')
-          : null;
-        const wsHash = wsRoot ? createHash('sha1').update(wsRoot).digest('hex').slice(0, 12) : '';
-        const wlResult = routeConsent({
-          toolId: name,
+    const wsRoot = mutableWorkspace.current?.root ?? null;
+    const workspaceHash = wsRoot ? createHash('sha1').update(wsRoot).digest('hex').slice(0, 12) : '';
+    const governed = isFileTool(name) || isProcessTool(name) || EXECUTION_TOOLS.includes(name);
+    const verdict = governed
+      ? evaluatePolicy({
+          tool: name,
           params: paramsBag,
           mode: policyMode,
-          policy: verdict.decision,
-          policyReason: verdict.reason,
-          resolvedPath,
-          relPath,
-          outside: verdict.reason === 'outside-workspace',
-          workspaceRoot: wsRoot,
-          workspaceHash: wsHash,
-          whitelist: whitelistStore.list(wsHash),
-          now: Date.now(),
-        });
-        if (wlResult.verdict === 'safe' && wlResult.reason === 'whitelist-hit') {
-          requiresHumanConsent = false;
-        }
-      }
+          workspace: mutableWorkspace.current,
+          // v0.9：额外可信目录（STUDIO_TRUSTED_DIRS 环境变量，分号分隔）。
+          trustedDirs: (process.env.STUDIO_TRUSTED_DIRS ?? '').split(';').filter(Boolean),
+        })
+      : null;
+    // 硬拒绝地板对所有档位都跑：旧实现只在 require-consent 时才走到 routeConsent，
+    // 于是 full 档下 format C: / 盘根递归删除根本没被检查——A2 顺带堵上这个洞。
+    const hardRule = checkHardDeny(name, paramsBag, hardDenyPath(paramsBag));
+    // 用户持久白名单（M8-E1 / A4）：只对 mode 类、且目标在工作区内时才免审。
+    const projectRuleHit =
+      approvalClassOf(def) === 'mode' &&
+      verdict?.decision === 'require-consent' &&
+      whitelistHit(name, paramsBag, verdict, workspaceHash);
+    const auth = resolveAuthorization({
+      tool: name,
+      def,
+      params: paramsBag,
+      mode: policyMode,
+      policyVerdict: verdict,
+      hardRule,
+      grant: lookupGrant(name, paramsBag, def, botId, workspaceHash),
+      projectRuleHit,
+      workspaceHash,
+      principal: botId ?? 'main',
+      now: Date.now(),
+    });
+    ctx = {
+      ...ctx,
+      mode: policyMode,
+      approvalClass: auth.approvalClass,
+      ...(auth.grantScope ? { grantScope: auth.grantScope } : {}),
+      ...(auth.hardRule ? { hardRule: auth.hardRule } : {}),
+      ...(auth.canonicalTarget ? { canonicalTarget: auth.canonicalTarget } : {}),
+    };
+
+    if (auth.decision === 'deny') {
+      // 拒绝必须有原因码且必过审计出口；outcome 沿用既有分类，便于既有回归断言。
+      return finish(auth.reason === 'hard-deny' ? 'policy-denied' : auth.reason === 'unknown-capability' ? 'unknown-capability' : 'policy-denied', auth.reason);
     }
 
-    //    同意闸门必须以「阈值比较」判定风险等级 ≥ insert，<｜hy_place▁holder▁no▁813｜>写成
-    //    `risk === 'insert' || risk === 'send'`：那种写法在新增更高等级时
-    //    TS 不报错、测试全绿，却会静默绕过同意闸门。
-    if (requiresHumanConsent) {
+    let outsideApproved = auth.outsideApproved;
+    let consentMeta: ConsentMeta | undefined;
+    if (auth.decision === 'ask') {
+      if (governed) {
+        consentMeta = {
+          riskLabel: '特权级',
+          modeLabel: POLICY_MODE_LABELS[policyMode],
+          outside: verdict?.reason === 'outside-workspace',
+          riskFlagLabels: (verdict?.riskFlags ?? []).map(riskLabel),
+        };
+      }
       const decision = await ensureConsent(name, params, randomCallId(), consentMeta, botId);
       if (decision === 'consent-unavailable') return finish('consent-unavailable', 'consent-unavailable');
       if (decision === 'consent-denied') return finish('consent-denied', 'consent-denied');
@@ -1446,9 +1449,101 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     return (botId && botRegistry.getState(botId)?.sessionAllowlist) || sessionAllowlist;
   }
 
+  /**
+   * A3：把当前调用折算成 grant 视图交给统一解析器。
+   * 三类来源分别处理：
+   *  - user grant：按 grantKey 精确命中（同工具不同参数不复用）；
+   *  - internal preauth：bot 启动时给 chat-insert / chat-send 发的工具级预授权，
+   *    标 `source='internal-bot'`，审计上与"用户允许了 chat-send"分开；
+   *  - legacy allow-session（旧的参数指纹 + 10min TTL）：仍生效，但只映射成 temporary
+   *    语义，避免历史行为回归（既有测试依赖它）。
+   */
+  function lookupGrant(
+    tool: string,
+    params: Readonly<Record<string, unknown>>,
+    def: ToolDefinition,
+    botId: string | undefined,
+    workspaceHash: string,
+  ): GrantMatch | null {
+    const allowlist = allowlistFor(botId);
+    const target = canonicalTargetOf(def, params);
+    const cls = approvalClassOf(def);
+    const key = grantKeyOf({
+      principal: botId ?? 'main',
+      workspaceHash,
+      toolId: tool,
+      approvalClass: cls,
+      canonicalTarget: target.target,
+    });
+    const user = allowlist.hasUserGrant(key);
+    if (user) return { scope: user.grantScope, key, expiresAt: user.expiresAt, source: 'user' };
+    if (allowlist.hasInternalPreauth(tool)) {
+      return { scope: 'session', key, source: 'internal-bot' };
+    }
+    if (allowlist.has(tool, params)) {
+      // legacy 指纹命中：当作精确 temporary 放行（不带 session 语义）。
+      return { scope: 'temporary', key, source: 'user' };
+    }
+    return null;
+  }
+
+  /**
+   * 硬拒绝检查用的"真实路径"：把参数里的 path 解析成绝对路径并尝试 realpath。
+   * 旧实现把 realPath 留空，导致 sensitive-path（.ssh / .aws / C:\Windows）在宿主链路上
+   * 从未真正生效——A2 顺带补上。文件不存在时 realpath 抛错，回退原路径做字符串判定。
+   */
+  function hardDenyPath(params: Readonly<Record<string, unknown>>): string | null {
+    const raw =
+      typeof params.path === 'string' && params.path.trim()
+        ? params.path.trim()
+        : typeof params.filePath === 'string' && params.filePath.trim()
+          ? params.filePath.trim()
+          : typeof params.root === 'string' && params.root.trim()
+            ? params.root.trim()
+            : null;
+    if (!raw) return null;
+    const abs = path.isAbsolute(raw) ? raw : path.resolve(mutableWorkspace.current?.root ?? process.cwd(), raw);
+    try {
+      return fs.realpathSync(abs);
+    } catch {
+      return abs;
+    }
+  }
+
+  /**
+   * 用户持久白名单命中（M8-E1）。只对 mode 类、且策略结论是 require-consent 且未越界时查询。
+   * 返回 true 时统一解析器会把它当作 project 级免审依据。
+   */
+  function whitelistHit(
+    tool: string,
+    params: Readonly<Record<string, unknown>>,
+    verdict: PolicyVerdict,
+    workspaceHash: string,
+  ): boolean {
+    if (verdict.reason === 'outside-workspace') return false; // 越界永不白名单（既有语义）
+    const wsRoot = mutableWorkspace.current?.root ?? null;
+    const resolvedPath = typeof params.path === 'string' ? params.path : null;
+    const relPath = resolvedPath && wsRoot ? path.relative(wsRoot, resolvedPath).replace(/\\/g, '/') : null;
+    const result = routeConsent({
+      toolId: tool,
+      params,
+      mode: policyMode,
+      policy: verdict.decision,
+      policyReason: verdict.reason,
+      resolvedPath,
+      realPath: hardDenyPath(params),
+      relPath,
+      outside: false,
+      workspaceRoot: wsRoot,
+      workspaceHash,
+      whitelist: whitelistStore.list(workspaceHash),
+      now: Date.now(),
+    });
+    return result.verdict === 'safe' && (result.reason === 'whitelist-hit' || result.reason === 'policy-allow');
+  }
+
   async function ensureConsent(tool: string, params: unknown, callId: string, meta?: ConsentMeta, botId?: string): Promise<ConsentGate> {
     const allowlist = allowlistFor(botId);
-    if (allowlist.has(tool, params)) return 'session-approved';
     if (!hub) return 'consent-unavailable'; // 宿主尚未就绪，无法征求用户同意 → fail-closed
     // 「没有人类在场」与「人类点了拒绝」成因不同，审计必须能区分：
     // 前者是环境问题（窗口关了），后者是用户决策。两者都 fail-closed 拒绝。
@@ -1462,8 +1557,32 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     }
     const decision = await hub.requestConsent(callId, tool, params, meta, botId);
     if (decision === 'allow-session') {
-      // QD-R2-08：绑工具+参数指纹+10min TTL，不再永久全局放行。
-      allowlist.addTemporary(tool, params, DEFAULT_SESSION_GRANT_TTL_MS);
+      // A3：allow-session 只给 mode 类发 session grant，且绑「工作区 + 工具 + 审批类别 + 规范目标」。
+      //  - always 类不发 session（§1.4 硬规则 4）：本次批准只作用于这一次调用；
+      //  - session 不设固定 TTL，靠生命周期清理（改档位 / 改工作区 / bot 断开 / 撤销）；
+      //  - 10min TTL 只保留给 temporary 高级放行（A5 的二次确认流程才发）。
+      const def = registry.get(tool);
+      const cls = approvalClassOf(def);
+      if (def && cls === 'mode') {
+        const wsRoot = mutableWorkspace.current?.root ?? null;
+        const workspaceHash = wsRoot ? createHash('sha1').update(wsRoot).digest('hex').slice(0, 12) : '';
+        const target = canonicalTargetOf(def, (params ?? {}) as Record<string, unknown>);
+        allowlist.grant({
+          key: grantKeyOf({
+            principal: botId ?? 'main',
+            workspaceHash,
+            toolId: tool,
+            approvalClass: cls,
+            canonicalTarget: target.target,
+          }),
+          toolId: tool,
+          approvalClass: cls,
+          grantScope: 'session',
+          workspaceHash,
+          canonicalTarget: target.target,
+          source: 'user',
+        });
+      }
     }
     return decision !== 'deny' ? 'approved' : 'consent-denied';
   }
@@ -1706,8 +1825,12 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         },
         onConnect: () => agentChannel?.broadcastState(),
         // T5：页端断开 → pendingRuns 全部未完成 runId 标 failed/page-disconnected 并清空（无定时器）。
-        onDisconnect: () => {
+        onDisconnect: (info) => {
           failPendingRunsOnDisconnect(pendingRuns, emitToolRun);
+          // A3（§6.3 第 5 条）：页面关闭 = 没有人在为这些会话级放行负责 → 撤销用户 grant。
+          // 只清用户来源，保留 bot 内部预授权（chat-insert/chat-send），否则断线重连后
+          // AgentLoop 会突然卡在同意闸门上。
+          allowlistFor(info?.botId).clearUserGrants();
           agentChannel?.broadcastState();
         },
         // v0.9：页端 auto-continue 推送的模型回复（不渲染到 DOM）。
