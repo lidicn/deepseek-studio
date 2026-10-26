@@ -230,8 +230,8 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   policyTab.appendChild(policyHint);
 
   // A4：持久项目规则（v2 白名单）撤销列表。
-  const wlSection = el('div', { style: 'margin-top:18px;border-top:1px solid #eef0f5;padding-top:12px;' });
-  wlSection.appendChild(el('div', { style: 'font-size:13px;font-weight:600;color:#333;margin-bottom:6px;', text: '项目规则（已自动放行）' }));
+  const wlSection = el('div', { style: { marginTop: '18px', borderTop: '1px solid #eef0f5', paddingTop: '12px' } });
+  wlSection.appendChild(el('div', { style: { fontSize: '13px', fontWeight: '600', color: '#333', marginBottom: '6px' }, text: '项目规则（已自动放行）' }));
   const wlList = el('div', { className: 'studio-memory-list' });
   const wlHint = el('p', { className: 'studio-form-hint', text: '' });
   wlSection.appendChild(wlList);
@@ -246,7 +246,7 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
       : undefined;
     wlList.replaceChildren();
     if (!Array.isArray(rows) || rows.length === 0) {
-      wlList.appendChild(el('div', { className: 'studio-empty-state', style: 'padding:16px 0;', text: '暂无项目规则' }));
+      wlList.appendChild(el('div', { className: 'studio-empty-state', style: { padding: '16px 0' }, text: '暂无项目规则' }));
       return;
     }
     for (const row of rows as WlRow[]) {
