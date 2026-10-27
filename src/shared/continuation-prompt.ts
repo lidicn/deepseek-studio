@@ -27,6 +27,8 @@ export interface PendingResult {
   result?: unknown;
   /** 失败时的错误文案。 */
   error?: string;
+  /** W2：该结果产生时归属的 chat_session_id（captureChatRequest 捕获）。 */
+  sessionId?: string;
 }
 
 interface NormalizedToolResult {

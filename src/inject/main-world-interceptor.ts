@@ -783,7 +783,29 @@ function augmentInit(
   taskText = '',
 ): RequestInit | undefined {
   if (typeof init?.body !== 'string') return init;
-  const newBody = prepareOutgoingBody(init.body, pending, taskText);
+  // W2：工具结果按会话归属。当前请求 body 携带的 chat_session_id 与 pending 条目
+  // 产生时的归属不一致 → 丢弃该结果（SPA 切会话后迟到的结果不得污染下一个请求）。
+  let currentSession: string | undefined;
+  try {
+    const parsed = JSON.parse(init.body) as Record<string, unknown>;
+    const raw = parsed.chat_session_id ?? parsed.chatSessionId ?? parsed.session_id ?? parsed.conversation_id;
+    if (typeof raw === 'string' || typeof raw === 'number') currentSession = String(raw).trim() || undefined;
+  } catch { /* 非 JSON 不校验 */ }
+  let filtered = pending;
+  if (currentSession) {
+    const dropped = pending.filter((p) => p.sessionId && p.sessionId !== currentSession);
+    if (dropped.length > 0) {
+      interceptorTrace.record({
+        t: 'pending.cross-session',
+        turnId: traceTurnId,
+        current: currentSession,
+        droppedCount: dropped.length,
+        droppedNames: dropped.map((d) => d.invocationName),
+      });
+      filtered = pending.filter((p) => !p.sessionId || p.sessionId === currentSession);
+    }
+  }
+  const newBody = prepareOutgoingBody(init.body, filtered, taskText);
   if (newBody === null) return init;
   return { ...init, body: newBody };
 }
@@ -1544,6 +1566,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
         invocationName: call.invocationName,
         ok: false,
         error: `invalid-tool-json: ${call.params.__error}. Raw body: ${String(call.params.__raw ?? '').slice(0, 300)}`,
+        sessionId: loopState.newChatSessionId,
       };
       pending.push(r);
       collectedExecutions.push(r);
@@ -1564,7 +1587,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     void sender({ callId, invocationName: call.invocationName, params: call.params })
       .then((r: ExecuteResult) => {
         d(`forward: done ok=${r.ok} err=${r.error ?? ''}`);
-        const pr: PendingResult = { invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error };
+        const pr: PendingResult = { invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error, sessionId: loopState.newChatSessionId };
         pending.push(pr);
         collectedExecutions.push(pr);
         // v1.3：更新步骤流工具条目
@@ -1595,7 +1618,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       })
       .catch((e: unknown) => {
         d(`forward: failed ${e instanceof Error ? e.message : String(e)}`);
-        const pr: PendingResult = { invocationName: call.invocationName, ok: false, error: e instanceof Error ? e.message : String(e) };
+        const pr: PendingResult = { invocationName: call.invocationName, ok: false, error: e instanceof Error ? e.message : String(e), sessionId: loopState.newChatSessionId };
         pending.push(pr);
         collectedExecutions.push(pr);
         // v1.3：更新步骤流工具条目
