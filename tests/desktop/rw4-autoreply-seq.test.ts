@@ -9,7 +9,7 @@ describe('R-W4: autoReply 去重键 = 单调 replySeq（不是 loopDepth）', ()
   function makeConsume() {
     const lastConsumedSeq = new WeakMap<object, number>();
     let counter = 0;
-    function onReply(state: object, text: string, loop: number) {
+    function onReply(_state: object, text: string, loop: number) {
       counter += 1;
       return { text, loop, seq: counter, fresh: true, updatedAt: Date.now() };
     }
