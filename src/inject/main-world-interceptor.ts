@@ -1468,6 +1468,9 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       // 这里只负责首轮原始请求，否则会抢在业务 handler 之前把它吃掉。
       if (loopState.inAutoContinue) return false;
       d(`stream end: no completion sentinel, bytes=${loopState.streamBytes ?? 0}, retries-sent=${firstAttemptBudget(traceTurnId).sent}`);
+      // W1 清理：原 1480-1489 的 stream-incomplete appendError 包装在此处不可达——
+      // 1469 已对 inAutoContinue 续跑轮 return false，1471 的 !inAutoContinue 恒真并在 1478 return。
+      // 首轮流断的 UX 文案由 1474 escalateFirstAttemptFailure 统一上报，不重复 appendError。
       if (!loopState.inAutoContinue) {
         // status=0/429/5xx 与 200 截断在回调层同构，只有原样重发才能区分
         // 「网络抖动」和「模型半句截断」。预算内重发，耗尽由 escalate 统一上报。
@@ -1477,16 +1480,6 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
         );
         return true;
       }
-      interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'stream-incomplete' });
-      try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
-      loopState.chatUI?.appendError(
-        'stream-incomplete',
-        firstAttemptBudget(traceTurnId).sent > 0
-          ? `模型回复未完整接收（连接中断），已自动重试 ${firstAttemptBudget(traceTurnId).sent} 次仍失败。请稍后手动重试。`
-          : '模型回复未完整接收（连接中断），本轮不会自动重试。请重新发送该请求。',
-      );
-      loopState.chatUI?.setBusy(false);
-      return true;
     }
     return false;
   }
@@ -2035,6 +2028,23 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               continuationRetryPending = true;
               autoContinueTimer = setTimeout(() => { autoContinueTimer = null; void autoContinueWithPow(); }, delay);
               interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: `error-retry-${verdict.reason}`, triggered: true });
+            } else if (
+              !loopState.streamSawDone &&
+              (loopState.streamBytes ?? 0) > 0 &&
+              xhr.status >= 200 && xhr.status < 300
+            ) {
+              // W1：续跑轮 2xx 但无完成哨兵 = 流被截断。
+              // 此前这个分支会落到 else 成功路径，记一条 turn.finished:true completed 假账。
+              // 这里走与 retryable 同构的退避重发（continuationRetryPending=true），不记 completed。
+              errorRetryCount += 1;
+              loopState.streamActive = false;
+              try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+              if (autoContinueTimer) clearTimeout(autoContinueTimer);
+              const delay = errorBackoffMs(errorRetryCount - 1);
+              d(`auto-continue truncated continuation: bytes=${loopState.streamBytes}, retry ${errorRetryCount}/${MAX_ERROR_RETRIES} in ${delay}ms`);
+              continuationRetryPending = true;
+              autoContinueTimer = setTimeout(() => { autoContinueTimer = null; void autoContinueWithPow(); }, delay);
+              interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'continuation-truncated', triggered: true });
             } else if (loopDepth >= MAX_LOOP) {
               // 达工具续跑步数上限：正常结束。
               d('auto-continue reached MAX_LOOP, stop');

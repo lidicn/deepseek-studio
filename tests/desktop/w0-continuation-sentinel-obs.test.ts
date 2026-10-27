@@ -2,14 +2,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
 /**
- * W0：续跑轮哨兵观测。
+ * W0+W1：续跑轮哨兵观测 + 截断判定。
  *
- * 断言续跑 XHR readyState===4 时落一条 continuation.stream trace，
- * sawSentinel 反映本轮续跑响应是否真正带完成哨兵。
+ * W0：续跑 XHR readyState===4 落 continuation.stream trace。
+ * W1：续跑 2xx 无完成哨兵 = 截断 → 走退避重发（不记 completed、不下发半截工具文本）。
  */
 
 vi.mock('../../src/inject/pow', () => ({
-  createPowHeaders: vi.fn(async () => ({ 'X-DS-PoW-Response': 'w0-stub' })),
+  createPowHeaders: vi.fn(async () => ({ 'X-DS-PoW-Response': 'w1-stub' })),
 }));
 
 import { installMainWorldInterceptor, interceptorTraceSnapshot } from '../../src/inject/main-world-interceptor';
@@ -57,6 +57,7 @@ function installHarness() {
   (globalThis as Record<string, unknown>).XMLHttpRequest = FakeXHR;
   vi.stubGlobal('location', { href: 'https://chat.deepseek.com/' });
   const sender = vi.fn(async () => ({ ok: true, data: { stdout: 'hi', exitCode: 0 } }));
+  const onAssistantReply = vi.fn();
   const chatUI = {
     sessionKey: 'test:session',
     activateSession: vi.fn(async () => undefined),
@@ -71,12 +72,21 @@ function installHarness() {
     startToolCard: vi.fn(() => true),
     finishToolCard: vi.fn(),
   };
-  const handle = installMainWorldInterceptor({ sender, chatUI: chatUI as never, diag: () => {} });
-  return { FakeXHR, handle, sender, chatUI };
+  const handle = installMainWorldInterceptor({ sender, chatUI: chatUI as never, diag: () => {}, onAssistantReply });
+  return { FakeXHR, handle, sender, chatUI, onAssistantReply };
 }
 
 function chatRequests(FakeXHR: ReturnType<typeof makeFakeXhrClass>) {
   return FakeXHR.instances.filter((x) => x.url.endsWith('/api/v0/chat/completion'));
+}
+
+function fireFirstRound(FakeXHR: ReturnType<typeof makeFakeXhrClass>, sessionId: string) {
+  const first = new FakeXHR();
+  first.open('POST', CHAT_URL);
+  first.onreadystatechange = () => {};
+  first.send(JSON.stringify({ prompt: 'hi', chat_session_id: sessionId }));
+  first.respond(200, sseTool() + sseDone());
+  return first;
 }
 
 describe('W0：续跑轮哨兵观测', () => {
@@ -84,52 +94,56 @@ describe('W0：续跑轮哨兵观测', () => {
     vi.useFakeTimers();
     const { FakeXHR, handle } = installHarness();
     try {
-      const first = new FakeXHR();
-      first.open('POST', CHAT_URL);
-      first.onreadystatechange = () => {};
-      first.send(JSON.stringify({ prompt: 'hi', chat_session_id: 'w0-ok' }));
-      // 首轮带工具调用 → 触发续跑
-      first.respond(200, sseTool() + sseDone());
+      fireFirstRound(FakeXHR, 'w0-ok');
       await vi.advanceTimersByTimeAsync(2_000);
-
       const requests = chatRequests(FakeXHR);
-      // 第 2 条 = 续跑
       expect(requests.length).toBeGreaterThanOrEqual(2);
-      const continuation = requests[1];
-      continuation.respond(200, sseText('继续回答') + sseDone());
+      requests[1].respond(200, sseText('继续回答') + sseDone());
       await vi.advanceTimersByTimeAsync(5_000);
-
       const events = interceptorTraceSnapshot().filter((e) => e.t === 'continuation.stream');
-      expect(events.length).toBeGreaterThanOrEqual(1);
       expect(events.at(-1)).toMatchObject({ sawSentinel: true, status: 200 });
-    } finally {
-      handle.stop();
-      vi.useRealTimers();
-    }
+    } finally { handle.stop(); vi.useRealTimers(); }
   });
 
   it('续跑响应被截断 → continuation.stream sawSentinel=false', async () => {
     vi.useFakeTimers();
     const { FakeXHR, handle } = installHarness();
     try {
-      const first = new FakeXHR();
-      first.open('POST', CHAT_URL);
-      first.onreadystatechange = () => {};
-      first.send(JSON.stringify({ prompt: 'hi', chat_session_id: 'w0-trunc' }));
-      first.respond(200, sseTool() + sseDone());
+      fireFirstRound(FakeXHR, 'w0-trunc');
       await vi.advanceTimersByTimeAsync(2_000);
-
       const requests = chatRequests(FakeXHR);
       expect(requests.length).toBeGreaterThanOrEqual(2);
-      requests[1].respond(200, sseText('只说了半句')); // 无完成哨兵
+      requests[1].respond(200, sseText('只说了半句'));
       await vi.advanceTimersByTimeAsync(5_000);
-
       const events = interceptorTraceSnapshot().filter((e) => e.t === 'continuation.stream');
-      expect(events.length).toBeGreaterThanOrEqual(1);
       expect(events.at(-1)).toMatchObject({ sawSentinel: false, status: 200 });
-    } finally {
-      handle.stop();
-      vi.useRealTimers();
-    }
+    } finally { handle.stop(); vi.useRealTimers(); }
+  });
+});
+
+describe('W1：续跑截断走退避重发，不记 completed', () => {
+  it('续跑 2xx 无哨兵 → 发生重发、trace 无 completed、不下发半截工具文本', async () => {
+    vi.useFakeTimers();
+    const { FakeXHR, handle, onAssistantReply } = installHarness();
+    try {
+      fireFirstRound(FakeXHR, 'w1-trunc');
+      await vi.advanceTimersByTimeAsync(2_000);
+      // 此时已有 2 条请求（首轮 + 第 1 次续跑）
+      expect(chatRequests(FakeXHR).length).toBe(2);
+      // 记录基线 turn.end 数（trace 是模块级单例，跨用例累积）
+      const baselineEnds = interceptorTraceSnapshot().filter((e) => e.t === 'turn.end').length;
+      // 第 2 条续跑响应截半
+      chatRequests(FakeXHR)[1].respond(200, sseText('<shell_exec>半截'));
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // 断言①：发生重发（≥3 条对话请求）
+      expect(chatRequests(FakeXHR).length).toBeGreaterThanOrEqual(3);
+      // 断言②：本轮新增 trace 无 turn.finished:true completed
+      const newEnds = interceptorTraceSnapshot().filter((e) => e.t === 'turn.end').slice(baselineEnds);
+      expect(newEnds.some((e) => e.finished === true && e.stopReason === 'completed')).toBe(false);
+      // 断言③：onAssistantReply 没收到含 <shell_exec> 前缀的半截文本
+      const leaked = onAssistantReply.mock.calls.some((c) => String(c[0]).includes('<shell_exec>'));
+      expect(leaked).toBe(false);
+    } finally { handle.stop(); vi.useRealTimers(); }
   });
 });
