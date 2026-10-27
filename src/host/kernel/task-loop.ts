@@ -127,14 +127,17 @@ function hasTaskComplete(text: string): boolean {
 
 /** 从 history 拼一段给引擎的上下文（纯文本，M3 再接真实协议）。 */
 /**
- * 把 history 的 ChatMessage[] 序列化成引擎输入（JSON 消息数组）。
- * S7：不再做 role/content 裸 join；直接以消息数组为单位序列化，
- * 未来换消息协议时只改这里。ModelEngine.send 现签名收 string，故序列化为 JSON 串。
+ * W3：只发本轮增量——最后一条用户消息。会话历史由页面自身承载，
+ * 不再把 history.all() 全量 JSON 灌进引擎（F-1 活路径全量历史问题自然消解）。
+ * 不改 TaskLoop 对外契约：run() 返回形状、round 计数、TaskLoopError、
+ * history.restore(snap.history) 语义原样。
  */
 function buildPrompt(history: MessageHistory): string {
   const all = history.all();
   if (all.length === 0) return '';
-  return JSON.stringify(all.map((m) => ({ role: m.role, content: m.content })));
+  const lastUser = [...all].reverse().find((m) => m.role === 'user');
+  if (!lastUser) return '';
+  return JSON.stringify([{ role: 'user', content: lastUser.content }]);
 }
 
 /** 把一条工具记录格式化成 role:'tool' 的可见内容。 */
