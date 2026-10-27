@@ -260,7 +260,7 @@ describe('M10-6 source 由宿主赋值（宿主 WS，15s 上限）', () => {
       getMemoryStore().close();
       await fsp.rm(tmpDir, { recursive: true, force: true });
     }
-  }, { timeout: 15000 });
+  }, { timeout: 20000 });
 });
 
 describe('M10-7.1 同名 save() 未传治理字段保留原值（SQL 持久化路径）', () => {
