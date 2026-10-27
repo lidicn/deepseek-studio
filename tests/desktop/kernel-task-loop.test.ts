@@ -417,18 +417,15 @@ describe('TaskLoop 自驱（M2-3）', () => {
     expect(history.size()).toBe(2);
   });
 
-  it('31. S7：发往引擎的入参是合法 JSON 消息数组', async () => {
+  it('31. R-W3：发往引擎的入参是带角色标签的纯文本（含 [user] 标签）', async () => {
     const history = createMessageHistory();
     const engine = fakeEngine([{ content: 'ok', toolCalls: 0 }]);
     const loop = createTaskLoop({ engine, history });
     await loop.run('hi');
-    const parsed = JSON.parse(engine.texts[0]) as { role: string; content: string }[];
-    expect(Array.isArray(parsed)).toBe(true);
-    expect(parsed[0].role).toBe('user');
-    expect(parsed[0].content).toBe('hi');
+    expect(engine.texts[0]).toContain('[user] hi');
   });
 
-  it('32. W3：多轮时入参只含最后一条用户消息（增量，历史由页面承载）', async () => {
+  it('32. R-W3：续跑轮输入含上一轮工具信息，且不是 JSON 包装', async () => {
     const history = createMessageHistory();
     const engine = fakeEngine([
       { content: '中间', toolCalls: 1, toolCallRecords: [rec('a', true)] },
@@ -436,10 +433,12 @@ describe('TaskLoop 自驱（M2-3）', () => {
     ]);
     const loop = createTaskLoop({ engine, history, maxRounds: 2 });
     await loop.run('问题');
-    const round2 = JSON.parse(engine.texts[1]) as { role: string; content: string }[];
-    // W3：只发本轮增量 = 最后一条用户消息；assistant/tool 由页面续跑机制承载。
-    expect(round2.map((m) => m.role)).toEqual(['user']);
-    expect(round2[0].content).toBe('问题');
+    const round2 = engine.texts[1];
+    // 续跑轮输入含上一轮工具信息（纯文本标签格式，不是 JSON）
+    expect(round2).toContain('[tool]');
+    expect(round2).toContain('a');
+    // 不以 JSON 数组开头
+    expect(round2.startsWith('[{')).toBe(false);
   });
 
   it('33. S7：空 history 入参为空串', async () => {
@@ -452,7 +451,7 @@ describe('TaskLoop 自驱（M2-3）', () => {
     expect(engine.texts[0]).not.toBe('');
   });
 
-  it('34. W3：续跑轮入参只含用户消息（tool 记录由页面续跑承载，不进引擎 prompt）', async () => {
+  it('34. R-W3：续跑轮不重复插入用户文本（chat-insert 文本数组无重复）', async () => {
     const history = createMessageHistory();
     const engine = fakeEngine([
       { content: '跑工具', toolCalls: 1, toolCallRecords: [rec('shell_exec', true)] },
@@ -460,18 +459,19 @@ describe('TaskLoop 自驱（M2-3）', () => {
     ]);
     const loop = createTaskLoop({ engine, history, maxRounds: 2 });
     await loop.run('ls');
-    const msgs = JSON.parse(engine.texts[1]) as { role: string; content: string }[];
-    // W3：增量语义下，引擎 prompt 只带最后一条用户消息；tool 结果由页面续跑机制注入。
-    expect(msgs).toEqual([{ role: 'user', content: 'ls' }]);
+    // 续跑轮输入含工具信息，但不含用户原文 "ls"（避免重复 chat-insert）
+    expect(engine.texts[1]).toContain('[tool]');
+    expect(engine.texts[1]).toContain('shell_exec');
+    expect(engine.texts[1]).not.toContain('ls');
   });
 
-  it('35. S7：入参不再是裸 "role: content" 拼接', async () => {
+  it('35. R-W3：入参是 [role] content 标签格式，不是 JSON', async () => {
     const history = createMessageHistory();
     const engine = fakeEngine([{ content: 'ok', toolCalls: 0 }]);
     const loop = createTaskLoop({ engine, history });
     await loop.run('hello world');
-    expect(engine.texts[0]).toMatch(/^\[/);
-    expect(engine.texts[0]).toContain('"role"');
+    expect(engine.texts[0]).toContain('[user] hello world');
+    expect(engine.texts[0].startsWith('[{')).toBe(false);
   });
 
   it('36. S7：S6 端到端语义回归', async () => {

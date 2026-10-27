@@ -125,19 +125,36 @@ function hasTaskComplete(text: string): boolean {
   return TASK_COMPLETE_RE.test(text);
 }
 
-/** 从 history 拼一段给引擎的上下文（纯文本，M3 再接真实协议）。 */
 /**
- * W3：只发本轮增量——最后一条用户消息。会话历史由页面自身承载，
- * 不再把 history.all() 全量 JSON 灌进引擎（F-1 活路径全量历史问题自然消解）。
- * 不改 TaskLoop 对外契约：run() 返回形状、round 计数、TaskLoopError、
- * history.restore(snap.history) 语义原样。
+ * R-W3：把 history 渲染成带角色标签的纯文本有界窗口（去 JSON 包装）。
+ * 窗口参数：
+ *   - 最多保留最近 12 条消息（够多轮工具链用，有界）
+ *   - 总字符上限 4000（约 2k token，避免上下文膨胀）
+ *   - 超长时从头部截断，保留最近对话
+ * 续跑轮（round>1）跳过最后一条 user 消息——它已在首轮 chat-insert 写入页面，
+ * 重发会导致输入框重复插入同一条用户文本。
  */
-function buildPrompt(history: MessageHistory): string {
+const PROMPT_MAX_MESSAGES = 12;
+const PROMPT_MAX_CHARS = 4000;
+
+function buildPrompt(history: MessageHistory, round = 1): string {
   const all = history.all();
   if (all.length === 0) return '';
-  const lastUser = [...all].reverse().find((m) => m.role === 'user');
-  if (!lastUser) return '';
-  return JSON.stringify([{ role: 'user', content: lastUser.content }]);
+  // 续跑轮：跳过最后一条 user 消息（已在首轮插入页面，避免重复 chat-insert）
+  const msgs = round > 1 ? all.filter((m) => m.role !== 'user') : all;
+  if (msgs.length === 0) return '';
+  // 取最近 N 条
+  const recent = msgs.slice(-PROMPT_MAX_MESSAGES);
+  const lines = recent.map((m) => {
+    const role = m.role === 'tool' ? 'tool' : m.role;
+    return `[${role}] ${m.content}`;
+  });
+  let out = lines.join('\n');
+  // 超长从头部截断，保留尾部
+  if (out.length > PROMPT_MAX_CHARS) {
+    out = out.slice(out.length - PROMPT_MAX_CHARS);
+  }
+  return out;
 }
 
 /** 把一条工具记录格式化成 role:'tool' 的可见内容。 */
@@ -228,7 +245,7 @@ export function createTaskLoop(opts: TaskLoopOptions): TaskLoop {
       let roundTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         result = await Promise.race([
-          sendWithAbort(engine, buildPrompt(history), signal),
+          sendWithAbort(engine, buildPrompt(history, round), signal),
           new Promise<never>((_, reject) => {
             roundTimer = setTimeout(() => reject(new RoundTimeoutError()), roundTimeoutMs);
           }),
