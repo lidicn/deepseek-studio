@@ -144,16 +144,26 @@ describe('T8-2：overlay 清理反控', () => {
     // afterEach 会清掉。此用例自身不 dispose，依赖全局清理。
   });
 
-  it('同文件连续运行不叠加 overlay（反控：2 次 show 后 overlay 数为 1）', () => {
-    mkHandle({ tool: 'shell.exec' }, () => {});
-    const firstOverlays = document.querySelectorAll('.ds-consent-overlay').length;
-    expect(firstOverlays).toBe(1);
-    mkHandle({ tool: 'file.read' }, () => {});
-    const secondOverlays = document.querySelectorAll('.ds-consent-overlay').length;
-    // 每次 showConsent 会替换 overlay 引用（不会叠加两个），但上一条没 dispose 仍残留在 DOM
-    // 验证：document 里 overlay 总数不超过预期（2 次没 dispose → 2 个）
-    // T8-2 反控点：showConsent 内部必须先 dispose 旧 overlay 再建新的，避免堆叠
-    // 这里断言是为了暴露堆叠缺陷——当前实现确实会堆叠，靠 afterEach 收尸
-    void secondOverlays; // 不严格断言，交给 afterEach 统一清理
+  it('新 consent 到来时旧请求 fail-closed 拒绝，DOM 只保留一个 overlay', () => {
+    let firstDecision = '';
+    mkHandle({ tool: 'shell.exec' }, (decision) => { firstDecision = decision; });
+    expect(document.querySelectorAll('.ds-consent-overlay').length).toBe(1);
+
+    let secondDecision = '';
+    const second = mkHandle({ tool: 'memory.save' }, (decision) => { secondDecision = decision; });
+
+    // 旧请求必须已被拒绝，而不是在 DOM 里继续等待超时。
+    expect(firstDecision).toBe('deny');
+    expect(document.querySelectorAll('.ds-consent-overlay').length).toBe(1);
+
+    const card = document.querySelector('.ds-consent-card') as HTMLElement;
+    expect(card.textContent).toContain('保存记忆');
+    expect(card.textContent).not.toContain('执行终端命令');
+
+    // 当前模态必须仍可正常决策，且只回调第二条请求。
+    (document.querySelector('.ds-consent-allow-once') as HTMLButtonElement).click();
+    expect(firstDecision).toBe('deny');
+    expect(secondDecision).toBe('allow-once');
+    second.dispose();
   });
 });

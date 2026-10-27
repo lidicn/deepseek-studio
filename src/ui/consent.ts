@@ -41,6 +41,9 @@ interface ConsentPresentation {
 
 const STYLE_ID = 'ds-consent-style';
 
+// 同一时刻只保留一个审批模态；新请求到达时，旧请求必须 fail-closed 结算。
+let activeConsentDismiss: (() => void) | undefined;
+
 const CSS = `
 .ds-consent-overlay {
   position: fixed; inset: 0; z-index: 2147483647;
@@ -112,6 +115,10 @@ export function showConsent(request: ConsentRequest, onDecision: ConsentCallback
   const timeoutMs = request.timeoutMs ?? 60_000;
   let settled = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+
+  // 并发 consent 不能叠加成多个模态。旧请求按 fail-closed 立即拒绝并完成回调，
+  // 否则底层调用会一直等到超时，且用户可能只看到最后一个请求。
+  activeConsentDismiss?.();
 
   ensureStyles();
   const overlay = doc.createElement('div');
@@ -190,7 +197,12 @@ export function showConsent(request: ConsentRequest, onDecision: ConsentCallback
     if (timer) clearTimeout(timer);
     overlay.remove();
     doc.removeEventListener('keydown', onKey);
+    if (activeConsentDismiss === dismissCurrent) activeConsentDismiss = undefined;
     onDecision(decision);
+  }
+
+  function dismissCurrent(): void {
+    settle('deny');
   }
 
   function onKey(e: KeyboardEvent): void {
@@ -206,14 +218,18 @@ export function showConsent(request: ConsentRequest, onDecision: ConsentCallback
   });
   doc.addEventListener('keydown', onKey);
 
+  activeConsentDismiss = dismissCurrent;
   timer = setTimeout(() => settle('deny'), timeoutMs);
 
   return {
     decide: settle,
     dispose() {
+      if (settled) return;
+      settled = true;
       if (timer) clearTimeout(timer);
       overlay.remove();
       doc.removeEventListener('keydown', onKey);
+      if (activeConsentDismiss === dismissCurrent) activeConsentDismiss = undefined;
     },
   };
 }
