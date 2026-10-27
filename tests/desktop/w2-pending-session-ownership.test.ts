@@ -94,7 +94,7 @@ describe('R-W2：跨会话迟到结果在续跑注入路径被丢弃', () => {
       await vi.advanceTimersByTimeAsync(1_000);
 
       // 3) A 的 sender 迟到 resolve → autoContinue 会用 lastChatBody(B) 发起续跑
-      resolveSender?.({ ok: true, data: { stdout: 'A-result', exitCode: 0 } });
+      (resolveSender as unknown as (r: { ok: boolean; data: { stdout: string; exitCode: number } }) => void)({ ok: true, data: { stdout: 'A-result', exitCode: 0 } });
       await vi.advanceTimersByTimeAsync(5_000);
 
       // autoContinue 发出的续跑请求体里，pending 中的 A 结果应被过滤（currentSession=B）
@@ -105,7 +105,7 @@ describe('R-W2：跨会话迟到结果在续跑注入路径被丢弃', () => {
       // 必须落一条 pending.cross-session trace（droppedNames 至少含 shell_exec）
       const crossEvents = interceptorTraceSnapshot().filter((e) => e.t === 'pending.cross-session');
       expect(crossEvents.length).toBeGreaterThanOrEqual(1);
-      const droppedNames = crossEvents.flatMap((e) => (e as { droppedNames?: string[] }).droppedNames ?? []);
+      const droppedNames = crossEvents.flatMap((e) => (e as unknown as { droppedNames: readonly string[] }).droppedNames ?? []);
       expect(droppedNames).toContain('shell_exec');
     } finally {
       handle.stop();
@@ -141,7 +141,7 @@ describe('R-W2：跨会话迟到结果在续跑注入路径被丢弃', () => {
       await vi.advanceTimersByTimeAsync(1_000);
 
       // sender 同会话 resolve
-      resolveSender?.({ ok: true, data: { stdout: 'A-same-session', exitCode: 0 } });
+      (resolveSender as unknown as (r: { ok: boolean; data: { stdout: string; exitCode: number } }) => void)({ ok: true, data: { stdout: 'A-same-session', exitCode: 0 } });
       await vi.advanceTimersByTimeAsync(5_000);
 
       // 同会话：不应触发跨会话过滤
