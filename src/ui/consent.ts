@@ -142,7 +142,8 @@ export function showConsent(request: ConsentRequest, onDecision: ConsentCallback
   const meta = request.meta;
   const scopeHint = doc.createElement('div');
   scopeHint.className = 'ds-consent-scope-hint';
-  const toolLabel = request.tool;
+  // 注意：scopeHint 只放自然语言显示名，原始协议名（request.tool）只进 trace/日志。
+  const toolLabel = describeConsentRequest(request).headline;
   const classLabel = meta?.approvalClass === 'always' ? '高风险（始终审批）'
     : meta?.approvalClass === 'hard-deny' ? '硬拒绝'
     : meta?.approvalClass === 'mode' ? '按档位'
@@ -217,6 +218,30 @@ export function showConsent(request: ConsentRequest, onDecision: ConsentCallback
   };
 }
 
+/**
+ * 协议级工具名 → 用户可见的自然语言操作名。
+ * 未知工具不得把原始协议名直接展示给用户——原始名只进 trace/日志。
+ */
+const TOOL_DISPLAY_MAP: Record<string, string> = {
+  'policy.set': '修改审批档位',
+  'workspace.set': '修改工作区',
+  'shell.exec': '执行终端命令',
+  'file.read': '读取文件',
+  'file.write': '写入文件',
+  'file.edit': '编辑文件',
+  'search_files': '搜索文件',
+  'search_code': '搜索代码',
+  'chat-send': '发送对话',
+  'chat-read': '读取对话',
+  'memory.select': '查询记忆',
+  'memory.save': '保存记忆',
+  'memory.delete': '删除记忆',
+};
+
+function toolDisplayName(tool: string): string {
+  return TOOL_DISPLAY_MAP[tool] ?? '该操作';
+}
+
 /** 把协议级工具名和参数翻译成用户能直接判断后果的文案。 */
 export function describeConsentRequest(request: ConsentRequest): ConsentPresentation {
   if (request.tool === 'policy.set') {
@@ -226,8 +251,8 @@ export function describeConsentRequest(request: ConsentRequest): ConsentPresenta
       title: 'Studio 请求修改审批档位',
       headline: `将审批档位改为「${modeLabel}」`,
       summary: rawMode === 'full'
-        ? '允许后，后续工具将按“完全放开”执行，普通操作可能不再逐次向你确认。请确认你了解这项变更的影响。'
-        : `允许后，后续工具将按“${modeLabel}”档位执行。该设置会改变工具执行前的确认强度。`,
+        ? '允许后，后续工具将按"完全放开"执行，普通操作可能不再逐次向你确认。请确认你了解这项变更的影响。'
+        : `允许后，后续工具将按"${modeLabel}"档位执行。该设置会改变工具执行前的确认强度。`,
       allowOnceLabel: '允许本次修改',
       allowSessionLabel: '本次会话允许修改',
     };
@@ -245,14 +270,19 @@ export function describeConsentRequest(request: ConsentRequest): ConsentPresenta
     };
   }
 
+  const displayName = toolDisplayName(request.tool);
   return {
     title: 'DeepSeek++ Studio 请求执行工具',
-    headline: request.tool,
+    headline: displayName,
     summary: summarizeParams(request.params),
     allowOnceLabel: '允许一次',
     allowSessionLabel: '本次会话允许',
   };
 }
+
+/** 导出供测试验证与宿主 trace 使用。宿主日志仍可直接读 request.tool 原始名。 */
+export { toolDisplayName };
+export function getRawToolName(request: ConsentRequest): string { return request.tool; }
 
 /**
  * 组装风险徽标行。用户看到的信息必须能回答三个问题：
