@@ -64,3 +64,15 @@ npx vitest run tests/desktop/ui-tool-wiring.test.ts
 
 - 若重建宿主 + 全新 entry.js 后仍报 unknown-tool，则不是陈旧构建，需按 `page-runtime.ts:424` 断点复查实际 `msg.invocationName`——此时另立卡。
 - 「单靠 build:inject 会漏宿主」是部署流程陷阱，建议在发布/验收清单里显式区分「页端产物 vs 宿主产物」两条重建路径（登记为流程改进，不改代码）。
+
+## 6. 附：真机记忆治理三缺陷（T1）同属陈旧构建，非活代码 bug
+
+2026-10-26 真机验收（HEAD `af4989a`）报：同名再存清空 tags/pinned、`pinned:true` 首存落库仍 0、`confidence` 落库 NULL。经核对提交时序与现码：
+
+- `af4989a`（真机验收时 HEAD）= **10-26 00:18**；D-5 修复（`f985766`「记忆工具边界不再把未传当成显式清空」）= **10-26 07:11**（晚 7h）+；E1（`1329088`）= 10-26 22:23。
+- 现码 `src/host/memory-tool-params.ts` 的 `normalizeMemorySaveParams` = 「有则转、无则不传」，缺省字段不固化成 `[]/false`；`memory-store` 的 `mergeUpdateGovernance` 据此 `params.tags ?? existing.tags` 保留原值。
+- `confidence` 无写入方，宿主按设计不落值 → NULL 属预期（`normalizeMemorySaveParams` 根本不转 confidence）。
+
+⇒ **T1 的三条「缺陷」= 真机跑的 `af4989a`（D-5 前）的旧 bug，现码已修**。Trae 的 T1（`3013c5c`）只加测试、零生产码改动是**正确**的：它把现码已正确的语义（未传保留 / 显式覆盖 / confidence NULL 允许）锁成回归。与 mcp.list 完全同根：**运行中的 app 停在旧提交**。
+
+**由此，真机遗留的全部异常（mcp unknown-tool、设置面板崩溃、pinned/tags 异常）指向同一动作：按当前 HEAD 重建页端 + 重启/重建宿主，再跑真机复验（T8 人工部分）。** 在旧构建上复测无意义。
