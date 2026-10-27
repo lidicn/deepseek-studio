@@ -913,8 +913,10 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   // 审计环：全链路执行留痕（还清 v0.3 遗留 3.2.4）。
   const audit: AuditLog = createAuditLog(options.auditCapacity ?? DEFAULT_AUDIT_CAPACITY);
 
-  // W5：记录每个 bot state 上次消费的 autoReply loop 号，防单槽覆盖写丢回复。
-  const lastConsumedLoop = new WeakMap<object, number>();
+  // R-W4：replySeq 单调代次——loopDepth 每条新消息归零（:1846），不能当去重键。
+  // 每次 onAssistantReply 自增一个全局 seq，消费时比对 seq > lastConsumedSeq。
+  const lastConsumedSeq = new WeakMap<object, number>();
+  let replySeqCounter = 0;
 
   // —— M1 智能体：BotRegistry（v0.23 多 bot 化）——
   // 原单 agent 装配（agentToolCounter/stopFlag/listeners/lastAutoReply/webEngine/agentLoop）
@@ -967,13 +969,13 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         isStopped: () => state.stopFlag.stopped,
         getAutoReply: () => state.lastAutoReply,
         consumeAutoReply: () => {
-          // W5：只有 loop 号大于上次消费的才算 fresh，防单槽覆盖写丢回复。
+          // R-W4：用单调 replySeq 判 fresh，loopDepth 每条新消息归零不能当去重键。
           const r = { ...state.lastAutoReply };
-          const consumed = lastConsumedLoop.get(state) ?? -1;
-          if (r.loop <= consumed) {
+          const consumed = lastConsumedSeq.get(state) ?? -1;
+          if (r.seq <= consumed) {
             return { ...r, fresh: false };
           }
-          lastConsumedLoop.set(state, r.loop);
+          lastConsumedSeq.set(state, r.seq);
           state.lastAutoReply.fresh = false;
           return r;
         },
@@ -1909,8 +1911,11 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           console.log(`[desktop-host] onAssistantReply loop=${loop} len=${text.length} botId=${botId ?? 'main'}`);
           const state = botRegistry.getState(botId ?? 'main');
           if (!state) return;
+          // R-W4：replySeq 全局自增，不随 loopDepth 归零
+          replySeqCounter += 1;
           state.lastAutoReply.text = text;
           state.lastAutoReply.loop = loop;
+          state.lastAutoReply.seq = replySeqCounter;
           state.lastAutoReply.updatedAt = Date.now();
           state.lastAutoReply.fresh = true;
         },

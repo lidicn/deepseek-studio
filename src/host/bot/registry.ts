@@ -23,6 +23,8 @@ import type { BotInstance, BotRegistry, Persona } from './types';
 export interface AutoReplyBuffer {
   text: string;
   loop: number;
+  /** R-W4：单调代次，不随 loopDepth 归零；消费时比对 seq > lastConsumedSeq。 */
+  seq: number;
   updatedAt: number;
   fresh: boolean;
 }
@@ -294,7 +296,7 @@ function freshState(): BotInternalState {
   return {
     toolCallCounter: { current: 0 },
     stopFlag: { stopped: false },
-    lastAutoReply: { text: '', loop: 0, updatedAt: 0, fresh: false },
+    lastAutoReply: { text: '', loop: 0, seq: 0, updatedAt: 0, fresh: false },
     sessionAllowlist: new SessionAllowlist(),
   };
 }
