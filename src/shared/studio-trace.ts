@@ -27,6 +27,8 @@ export type StudioTraceEventType =
   | 'tool.parsed'
   | 'tool.exec'
   | 'continuation.decision'
+  | 'continuation.stream'
+  | 'pending.cross-session'
   | 'turn.end';
 
 /** SSE 帧分类：文本 / 思考 / 工具。 */
@@ -98,6 +100,22 @@ export interface StudioTurnEndEvent extends BaseTraceEvent {
   readonly stopReason: string;
 }
 
+/** W0：续跑轮 readyState===4 哨兵观测。 */
+export interface StudioContinuationStreamEvent extends BaseTraceEvent {
+  readonly t: 'continuation.stream';
+  readonly sawSentinel: boolean;
+  readonly bytes: number;
+  readonly status: number;
+}
+
+/** W2：跨会话迟到工具结果被丢弃。 */
+export interface StudioPendingCrossSessionEvent extends BaseTraceEvent {
+  readonly t: 'pending.cross-session';
+  readonly current: string;
+  readonly droppedCount: number;
+  readonly droppedNames: readonly string[];
+}
+
 export type StudioTraceEvent =
   | StudioTurnStartEvent
   | StudioRequestSentEvent
@@ -105,6 +123,8 @@ export type StudioTraceEvent =
   | StudioToolParsedEvent
   | StudioToolExecEvent
   | StudioContinuationDecisionEvent
+  | StudioContinuationStreamEvent
+  | StudioPendingCrossSessionEvent
   | StudioTurnEndEvent;
 
 /**
