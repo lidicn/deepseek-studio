@@ -594,6 +594,87 @@ describe('M10-7.2 跨名称同内容去重', () => {
     s.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  // ===== T1 补齐：跨名 dedupe 路径下治理字段保留/覆盖等价用例（SQL） =====
+  it('跨名 dedupe 命中后未传治理字段 → 保留原 pinned/tags（SQL 路径）', async () => {
+    const s = newStore();
+    const first = s.save({ type: 'user', name: 'orig', content: 'unique-body', pinned: true, tags: ['a', 'b'], confidence: 0.7 });
+    // 不同 name、同 content → 跨名 dedupe 命中，未传治理字段
+    const second = s.save({ type: 'user', name: 'cross', content: 'unique-body' });
+    expect(second.id).toBe(first.id);
+    const row = await s.get(first.id!);
+    expect(row!.pinned).toBe(true);
+    expect(row!.tags).toEqual(['a', 'b']);
+    expect(row!.confidence).toBe(0.7);
+    // raw sqlite 断言：不依赖 rowToMemory 转换
+    const raw = s.getDb()!.prepare(
+      'SELECT pinned, tags_json, confidence FROM memories WHERE id = ?',
+    ).get(first.id!) as { pinned: number; tags_json: string; confidence: number | null };
+    expect(raw.pinned).toBe(1); // 原始整数 1
+    expect(JSON.parse(raw.tags_json)).toEqual(['a', 'b']);
+    expect(raw.confidence).toBe(0.7);
+    s.close();
+  });
+
+  it('跨名 dedupe 命中后显式 pinned=false + tags=[] → 必须覆盖（SQL 路径）', async () => {
+    const s = newStore();
+    const first = s.save({ type: 'user', name: 'orig2', content: 'unique-body-2', pinned: true, tags: ['keep'] });
+    const second = s.save({ type: 'user', name: 'cross2', content: 'unique-body-2', pinned: false, tags: [] });
+    expect(second.id).toBe(first.id);
+    const row = await s.get(first.id!);
+    expect(row!.pinned).toBe(false);
+    expect(row!.tags).toEqual([]);
+    s.close();
+  });
+
+  it('fallback 路径：跨名 dedupe 命中后未传治理字段 → 保留原值', async () => {
+    // 复用 M10-7.1 的 bad\0path trick 触发降级
+    const fb = new MemoryStore(path.join(tmpRoot, 'bad\0path', 'cross-fb.db'));
+    expect(fb.stats().backend).toBe('memory');
+    const first = fb.save({ type: 'project', name: 'fb-orig', content: 'fb-body', pinned: true, tags: ['m'] });
+    const second = fb.save({ type: 'project', name: 'fb-cross', content: 'fb-body' }); // 不传 pinned/tags
+    expect(second.id).toBe(first.id);
+    const row = await fb.get(first.id!);
+    expect(row!.pinned).toBe(true);
+    expect(row!.tags).toEqual(['m']);
+    fb.close();
+  });
+
+  it('fallback 路径：跨名 dedupe 命中后显式 pinned=false + tags=[] → 必须覆盖', async () => {
+    const fb = new MemoryStore(path.join(tmpRoot, 'bad\0path', 'cross-fb2.db'));
+    expect(fb.stats().backend).toBe('memory');
+    const first = fb.save({ type: 'project', name: 'fb-orig2', content: 'fb-body2', pinned: true, tags: ['keep'] });
+    const second = fb.save({ type: 'project', name: 'fb-cross2', content: 'fb-body2', pinned: false, tags: [] });
+    expect(second.id).toBe(first.id);
+    const row = await fb.get(first.id!);
+    expect(row!.pinned).toBe(false);
+    expect(row!.tags).toEqual([]);
+    fb.close();
+  });
+});
+
+// ===== T1 补齐：confidence NULL 允许用例（首存不传 confidence → schema 允许 NULL） =====
+describe('T1-3 confidence 落库：正向值与 NULL 均允许', () => {
+  it('首存不传 confidence → sqlite raw confidence 列是 NULL（schema 允许）', () => {
+    const s = newStore();
+    const saved = s.save({ type: 'user', name: 'no-conf', content: 'body' });
+    const raw = s.getDb()!.prepare(
+      'SELECT confidence FROM memories WHERE id = ?',
+    ).get(saved.id!) as { confidence: number | null };
+    expect(raw.confidence).toBeNull(); // 设计允许 NULL
+    // 契约 Memory 对象里，confidence 缺省时不出现
+    s.close();
+  });
+
+  it('首存显式 confidence:1.0 → sqlite raw 列存 1.0', () => {
+    const s = newStore();
+    const saved = s.save({ type: 'user', name: 'full-conf', content: 'body', confidence: 1.0 });
+    const raw = s.getDb()!.prepare(
+      'SELECT confidence FROM memories WHERE id = ?',
+    ).get(saved.id!) as { confidence: number | null };
+    expect(raw.confidence).toBe(1.0);
+    s.close();
+  });
 });
 
 import { MAX_MEMORIES } from '../../src/host/memory-store';
