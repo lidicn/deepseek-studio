@@ -69,7 +69,12 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
   // emit 把它戳到每条事件上，供 UI 按 roomId 过滤（多房间隔离）。
   let currentRoomId: string | undefined;
 
+  // W4：emit 入口统一守卫——watchdog 已触发或已 settled 后丢弃后续事件，
+  // 覆盖原 :127 tool、:175 assistant 两处未守卫的分支（:117 status 已有 watchdogFired 守卫）。
+  let settled = false;
   const emit = (event: AgentLoopEvent): void => {
+    if (settled) return;
+    if (event.type === 'done') settled = true;
     const stamped: AgentLoopEvent = botId ? { ...event, botId } : { ...event };
     if (currentRoomId !== undefined) stamped.roomId = currentRoomId;
     options.onEvent(stamped);

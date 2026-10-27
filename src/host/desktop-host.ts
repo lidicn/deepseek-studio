@@ -913,6 +913,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   // 审计环：全链路执行留痕（还清 v0.3 遗留 3.2.4）。
   const audit: AuditLog = createAuditLog(options.auditCapacity ?? DEFAULT_AUDIT_CAPACITY);
 
+  // W5：记录每个 bot state 上次消费的 autoReply loop 号，防单槽覆盖写丢回复。
+  const lastConsumedLoop = new WeakMap<object, number>();
+
   // —— M1 智能体：BotRegistry（v0.23 多 bot 化）——
   // 原单 agent 装配（agentToolCounter/stopFlag/listeners/lastAutoReply/webEngine/agentLoop）
   // 收敛进 BotRegistry：主 bot（botId='main'）作为第一个 BotInstance 启动时创建，
@@ -964,7 +967,13 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         isStopped: () => state.stopFlag.stopped,
         getAutoReply: () => state.lastAutoReply,
         consumeAutoReply: () => {
+          // W5：只有 loop 号大于上次消费的才算 fresh，防单槽覆盖写丢回复。
           const r = { ...state.lastAutoReply };
+          const consumed = lastConsumedLoop.get(state) ?? -1;
+          if (r.loop <= consumed) {
+            return { ...r, fresh: false };
+          }
+          lastConsumedLoop.set(state, r.loop);
           state.lastAutoReply.fresh = false;
           return r;
         },

@@ -212,15 +212,22 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
       options.onDelta?.(text);
     },
     async health() {
-      // M9：health 探测加 5 秒超时，避免页端无响应时挂死
-      const r = await Promise.race([
-        options.dispatch('chat-read', {}),
-        new Promise<{ ok: false; error: string }>((resolve) =>
-          setTimeout(() => resolve({ ok: false, error: 'health-timeout' }), 5000),
-        ),
-      ]);
-      if (r.ok) return { ok: true };
-      return { ok: false, reason: r.error ?? 'chat-read-failed' };
+      // M9：health 探测加 5 秒超时，避免页端无响应时挂死。
+      // W7：race 结束统一 clearTimeout，赢家分支不再悬空 timer（原 Promise.race 输掉分支不撤 dispatch）。
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const r = await Promise.race([
+          options.dispatch('chat-read', {}),
+          new Promise<{ ok: false; error: string }>((resolve) =>
+            // 保留 dispatch 取消标志；timer 句柄透出供 finally 清理。
+            (timer = setTimeout(() => resolve({ ok: false, error: 'health-timeout' }), 5000)),
+          ),
+        ]);
+        if (r.ok) return { ok: true };
+        return { ok: false, reason: r.error ?? 'chat-read-failed' };
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
     },
     async send(text: string): Promise<EngineSendResult> {
       // 工具调用计数从本轮起点清零

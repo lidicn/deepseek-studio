@@ -1053,7 +1053,9 @@ function installFetchHook(
           loopState.streamActive = false;
           // QD-R4-02/03：fetch 路径此前完全没有断流判定。XHR 一侧的 isDone 分支
           // 只挂在 XHR 上，fetch 拉流时工具标签被截断 / 无完成哨兵依旧静默无反馈。
-          settleStreamEnd?.(loopState, pending, undefined, streamId);
+          // W6：fetch 路径把 response.status 传入 settleStreamEnd，与 XHR 路径同语义
+          // （此前传 undefined → httpVerdict=null → 一律误报 stream-incomplete）。
+          settleStreamEnd?.(loopState, pending, response.status, streamId);
           // 竞态修复：同 XHR 路径，工具结果先于流结束返回时通过 onStreamEnd 补触发
           // QD-R7-01（F6）：结算命中不再吞掉收尾——此前 settle 返回 true 时这里
           // 整段被跳过，页面侧那条助手消息永远不收尾，污染下一轮父节点。
