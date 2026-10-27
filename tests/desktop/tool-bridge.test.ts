@@ -171,8 +171,17 @@ describe('host-client sendToolCall round-trip', () => {
       capabilities: [],
     });
     host.connect();
-    // 等待 ws 连接建立
-    await new Promise((r) => setTimeout(r, 50));
+    // 等待 ws 连接建立：事件驱动 + 有界 2s 超时（原固定 50ms 睡眠在全量并行负载下竞态失败）
+    await new Promise<void>((resolve, reject) => {
+      const off = host.onConnected(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+      const timer = setTimeout(() => {
+        off();
+        reject(new Error('ws 连接超时：host-client 未能在 2s 内建立 WebSocket 连接'));
+      }, 2000);
+    });
 
     const res = await host.sendToolCall({ callId: 'c9', invocationName: 'shell_exec', params: { command: 'ls' } });
     expect(res.ok).toBe(true);
