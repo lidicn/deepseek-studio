@@ -19,6 +19,8 @@ import path from 'node:path';
 import {
   MODEL_INVOCATION_DECLARED_NAMES,
   SUPPORTED_INVOCATION_NAMES,
+  UI_ONLY_INVOCATION_NAMES,
+  isSupportedUpstreamTool,
   mapUpstreamToolInvocation,
 } from '../../src/shared/tool-contract';
 import { DEFAULT_TOOL_DEFINITIONS } from '../../src/host/tool-definitions';
@@ -121,5 +123,29 @@ describe('E1 页端直调工具名接线守卫', () => {
     expect(leaked, `点号形式的宿主 RPC 泄漏进模型可调表: ${leaked.join(', ')}`).toEqual([]);
     // 交叉校验：模型面声明名集合与映射表模型段一致（GAP-1 同源防线）。
     expect([...MODEL_INVOCATION_DECLARED_NAMES].sort()).toEqual([...SUPPORTED_INVOCATION_NAMES].sort());
+  });
+
+  // ===== T2: memory 工具集存在性守卫 =====
+  it('M10 完整记忆工具集均已登记进 DEFAULT_TOOL_DEFINITIONS（7 个）', () => {
+    const ALL_MEMORY_IDS = [
+      'memory.save', 'memory.delete', 'memory.list', 'memory.listArchived',
+      'memory.unarchive', 'memory.purge', 'memory.select',
+    ];
+    const missing = ALL_MEMORY_IDS.filter((id) => !DEF_IDS.has(id));
+    expect(missing, `memory 工具未在 DEFAULT_TOOL_DEFINITIONS 注册: ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('memory 只读/删/归档工具全在 UI_ONLY_TOOLS（agent 可见集只保留 memory.save）', () => {
+    // memory.save 是唯一对 agent 开放的记忆工具（模型通过 memory_save 下划线名调用）；
+    // delete/purge/unarchive 是高危，list/listArchived 是 UI 内部，select 是页面选择器——
+    // 它们全应被排除在 SUPPORTED_INVOCATION_NAMES 之外。
+    const AGENT_CLOSED = [
+      'memory.delete', 'memory.list', 'memory.listArchived', 'memory.unarchive', 'memory.purge', 'memory.select',
+    ];
+    for (const id of AGENT_CLOSED) {
+      expect(SUPPORTED_INVOCATION_NAMES, `${id} 不应出现在 agent 可见集`).not.toContain(id);
+      expect(UI_ONLY_INVOCATION_NAMES, `${id} 应为 UI_ONLY`).toContain(id);
+    }
+    expect(isSupportedUpstreamTool('memory_save')).toBe(true); // 下划线形式可达
   });
 });
