@@ -10,6 +10,7 @@
  * - v2 条目同时回写 pathPattern 别名，供既有 consent-router.matchWhitelist 不改。
  */
 
+import path from 'node:path';
 import type { ActionKind, WhitelistEntry } from './consent-router';
 
 export interface WhitelistFileV2 {
@@ -102,14 +103,21 @@ export function createWhitelistStore(deps: {
   readFile(p: string): string;
   writeFile(p: string, data: string): void;
   mkdirp(p: string): void;
+  /** T3 可选 override：显式指定 configDir，优先于 STUDIO_CONFIG_DIR 与 homedir 回落；测试中使用。 */
+  configDir?: string;
 }): WhitelistStore {
-  const path = `${deps.homedir}/.config/deepseek-studio/consent-whitelist.json`;
+  // 对齐 memory-store.ts / workspace.ts / mcp-controller.ts：STUDIO_CONFIG_DIR 优先，
+  // 否则回落 ~/.config/deepseek-studio。deps.configDir 允许测试直接钉住目录。
+  const configDir = deps.configDir
+    ?? process.env.STUDIO_CONFIG_DIR
+    ?? path.join(deps.homedir, '.config', 'deepseek-studio');
+  const filePath = path.join(configDir, 'consent-whitelist.json');
   let cache: WhitelistFileV2 | null = null;
 
   function loadInternal(): { entries: readonly WhitelistEntryV2[]; error?: WhitelistError; migrated?: boolean } {
     if (cache) return { entries: cache.entries };
     try {
-      const raw = deps.readFile(path);
+      const raw = deps.readFile(filePath);
       const parsed = JSON.parse(raw) as { version?: number; entries?: Array<Record<string, unknown>> };
       const rawEntries = Array.isArray(parsed.entries) ? parsed.entries : [];
       const normalized: WhitelistEntryV2[] = [];
@@ -126,14 +134,14 @@ export function createWhitelistStore(deps: {
   }
 
   function save(entries: readonly WhitelistEntryV2[]): void {
-    deps.mkdirp(`${deps.homedir}/.config/deepseek-studio`);
+    deps.mkdirp(configDir);
     const data = JSON.stringify({ version: 2, entries }, null, 2);
-    deps.writeFile(path, data);
+    deps.writeFile(filePath, data);
     cache = { version: 2, entries };
   }
 
   return {
-    path,
+    path: filePath,
     load: loadInternal,
     add(input) {
       if (!input.pathPattern || input.pathPattern.length > MAX_PATTERN_LEN) {

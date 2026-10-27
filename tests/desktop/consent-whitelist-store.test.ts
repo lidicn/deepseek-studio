@@ -1,14 +1,16 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import path from 'node:path';
 import { createWhitelistStore } from '../../src/host/consent-whitelist-store';
 
 function makeHomedir() {
   const files = new Map<string, string>();
   const mkdirs = new Set<string>();
+  const home = process.platform === 'win32' ? 'C:\\Users\\u' : '/home/u';
   return {
     files,
     mkdirs,
     deps: {
-      homedir: '/home/u',
+      homedir: home,
       readFile: (p: string) => {
         if (!files.has(p)) throw new Error('ENOENT');
         return files.get(p)!;
@@ -16,7 +18,7 @@ function makeHomedir() {
       writeFile: (p: string, data: string) => files.set(p, data),
       mkdirp: (p: string) => mkdirs.add(p),
     },
-    path: '/home/u/.config/deepseek-studio/consent-whitelist.json',
+    path: path.join(home, '.config', 'deepseek-studio', 'consent-whitelist.json'),
   };
 }
 
@@ -122,5 +124,54 @@ describe('consent-whitelist-store v2', () => {
     expect(s.list()).toHaveLength(2);
     expect(s.invalidateWorkspace('wh_1')).toBe(1);
     expect(s.list()).toHaveLength(1);
+  });
+
+  // ===== T3：STUDIO_CONFIG_DIR 优先于 homedir 回落 =====
+  it('STUDIO_CONFIG_DIR 环境变量存在时 → 文件落在该目录（不落 homedir）', () => {
+    const saved = process.env.STUDIO_CONFIG_DIR;
+    const tmp = path.join('C:', 'fake-studio-config');
+    process.env.STUDIO_CONFIG_DIR = tmp;
+    try {
+      const files = new Map<string, string>();
+      const mkdirs = new Set<string>();
+      const store = createWhitelistStore({
+        homedir: '/unused', // 应被 STUDIO_CONFIG_DIR 覆盖
+        readFile: (p) => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p)!; },
+        writeFile: (p, d) => files.set(p, d),
+        mkdirp: (p) => mkdirs.add(p),
+      });
+      store.add({ toolId: 'file.read', action: 'read', pathPattern: 'src/**', workspaceHash: 'wh_x' });
+      // 路径验证：应落 STUDIO_CONFIG_DIR 下
+      const expectedPath = path.join(tmp, 'consent-whitelist.json');
+      expect(store.path).toBe(expectedPath);
+      expect(files.has(expectedPath)).toBe(true);
+      expect(mkdirs.has(tmp)).toBe(true);
+      expect(store.list()).toHaveLength(1);
+      // revoke 后 list 变短
+      store.list().forEach((e) => store.remove(e.id));
+      expect(store.list()).toHaveLength(0);
+    } finally {
+      if (saved === undefined) delete process.env.STUDIO_CONFIG_DIR;
+      else process.env.STUDIO_CONFIG_DIR = saved;
+    }
+  });
+
+  it('deps.configDir 最高优先级（覆盖 STUDIO_CONFIG_DIR 与 homedir）', () => {
+    const saved = process.env.STUDIO_CONFIG_DIR;
+    process.env.STUDIO_CONFIG_DIR = path.join('C:', 'env-dir');
+    try {
+      const files = new Map<string, string>();
+      const store = createWhitelistStore({
+        homedir: '/unused',
+        configDir: path.join('C:', 'dep-dir'),
+        readFile: (p) => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p)!; },
+        writeFile: (p, d) => files.set(p, d),
+        mkdirp: () => { /* noop */ },
+      });
+      expect(store.path).toBe(path.join('C:', 'dep-dir', 'consent-whitelist.json'));
+    } finally {
+      if (saved === undefined) delete process.env.STUDIO_CONFIG_DIR;
+      else process.env.STUDIO_CONFIG_DIR = saved;
+    }
   });
 });
