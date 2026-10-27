@@ -1968,6 +1968,16 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
             loopState.inAutoContinue = false;
             // 正常完成后必须重置 streamActive，否则后续工具结果无法触发续跑
             loopState.streamActive = false;
+            // W0：续跑轮哨兵观测（纯观测，不改任何返回值/分支/文案）。
+            // streamSawDone / streamBytes 由流内 SSE parser 在本轮续跑 XHR 上累积，
+            // readyState===4 时反映「续跑响应是否真正带 [DONE] 哨兵」。
+            interceptorTrace.record({
+              t: 'continuation.stream',
+              turnId: traceTurnId,
+              sawSentinel: !!loopState.streamSawDone,
+              bytes: loopState.streamBytes ?? 0,
+              status: xhr.status,
+            });
             // v0.9：把 auto-continue 收到的模型回复推送给宿主（不渲染到 DOM）
             const reply = loopState.autoReplyText.trim();
             const hadTools = loopState.autoReplyHadTools;
