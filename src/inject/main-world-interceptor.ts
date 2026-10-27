@@ -736,6 +736,24 @@ function formatMemoriesBlock(): string {
   return formatUntrustedMemoriesBlock(currentMemories);
 }
 
+/**
+ * R-W2：从 outgoing body 里取 chat_session_id 的唯一真源（返回原始值，不归一化）。
+ * 与 captureChatRequest 同一组候选键。调用方需要比对时自行 normalizeChatSessionKey。
+ */
+function extractChatSessionIdFromBody(rawBody: string): string | undefined {
+  try {
+    const parsed = JSON.parse(rawBody) as Record<string, unknown>;
+    const raw = parsed.chat_session_id ?? parsed.chatSessionId ?? parsed.session_id ?? parsed.conversation_id;
+    if (typeof raw === 'string' || typeof raw === 'number') {
+      const value = String(raw).trim();
+      return value || undefined;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function prepareOutgoingBody(rawBody: string, pending: PendingResult[], taskText = ''): string | null {
   let parsed: Record<string, unknown>;
   try {
@@ -743,12 +761,35 @@ function prepareOutgoingBody(rawBody: string, pending: PendingResult[], taskText
   } catch {
     return null;
   }
+  // R-W2：续跑注入路径（XHR hook :1157 / fetch 侧同构）也走这里。
+  // 先按当前请求 body 的 chat_session_id 过滤跨会话迟到结果，再注入。
+  // currentSession 未知时（undefined）按现网行为保留全部 pending 并记 trace，不误杀。
+  const rawCurrentSession = extractChatSessionIdFromBody(rawBody);
+  const currentSession = rawCurrentSession ? normalizeChatSessionKey(rawCurrentSession) : undefined;
+  let effectivePending = pending;
+  if (currentSession) {
+    // PendingResult.sessionId 由 captureChatRequest 写入时已 normalize，这里直接比对。
+    const dropped = pending.filter((p) => {
+      if (!p.sessionId) return false;
+      return p.sessionId !== currentSession;
+    });
+    if (dropped.length > 0) {
+      interceptorTrace.record({
+        t: 'pending.cross-session',
+        turnId: traceTurnId,
+        current: currentSession,
+        droppedCount: dropped.length,
+        droppedNames: dropped.map((d) => d.invocationName),
+      });
+      effectivePending = pending.filter((p) => !p.sessionId || normalizeChatSessionKey(p.sessionId) === currentSession);
+    }
+  }
   // v1.7：无条件注入工具能力提示词。要不要用工具由模型自己判断，前提是模型
   // 始终知道有工具可用。之前用正则猜意图（hasToolIntent）会漏掉「审计」「bug」
   // 「代码」等关键词，导致模型不知道有工具而只聊天。修复：不再猜，直接注入。
   // hasToolIntent 仅用于避免重复注入（已注入则跳过），不再用于决定「是否注入」。
-  const hasResults = pending.length > 0;
-  const block = hasResults ? formatToolResultBlock(pending.slice()) : '';
+  const hasResults = effectivePending.length > 0;
+  const block = hasResults ? formatToolResultBlock(effectivePending.slice()) : '';
   const memoriesBlock = formatMemoriesBlock();
   if (Array.isArray(parsed.messages)) {
     let msgs: unknown[] = parsed.messages as unknown[];
@@ -768,7 +809,7 @@ function prepareOutgoingBody(rawBody: string, pending: PendingResult[], taskText
     // 旧请求体可能已经带过能力提示；先剔除带结束标记的旧块，再按当前任务重建。
     const cleanPrompt = stripCapabilityPromptFromText(prompt);
     prompt = `${buildCapabilityPrompt(taskText)}${memoriesBlock}\n\n${cleanPrompt}`;
-    if (hasResults) prompt = reinjectIntoPrompt(prompt, pending.slice());
+    if (hasResults) prompt = reinjectIntoPrompt(prompt, effectivePending.slice());
     parsed.prompt = prompt;
   } else {
     return null;
@@ -783,29 +824,9 @@ function augmentInit(
   taskText = '',
 ): RequestInit | undefined {
   if (typeof init?.body !== 'string') return init;
-  // W2：工具结果按会话归属。当前请求 body 携带的 chat_session_id 与 pending 条目
-  // 产生时的归属不一致 → 丢弃该结果（SPA 切会话后迟到的结果不得污染下一个请求）。
-  let currentSession: string | undefined;
-  try {
-    const parsed = JSON.parse(init.body) as Record<string, unknown>;
-    const raw = parsed.chat_session_id ?? parsed.chatSessionId ?? parsed.session_id ?? parsed.conversation_id;
-    if (typeof raw === 'string' || typeof raw === 'number') currentSession = String(raw).trim() || undefined;
-  } catch { /* 非 JSON 不校验 */ }
-  let filtered = pending;
-  if (currentSession) {
-    const dropped = pending.filter((p) => p.sessionId && p.sessionId !== currentSession);
-    if (dropped.length > 0) {
-      interceptorTrace.record({
-        t: 'pending.cross-session',
-        turnId: traceTurnId,
-        current: currentSession,
-        droppedCount: dropped.length,
-        droppedNames: dropped.map((d) => d.invocationName),
-      });
-      filtered = pending.filter((p) => !p.sessionId || p.sessionId === currentSession);
-    }
-  }
-  const newBody = prepareOutgoingBody(init.body, filtered, taskText);
+  // R-W2：跨会话过滤已下沉到 prepareOutgoingBody（续跑注入路径共用）。
+  // 这里只做首轮防御，不再重复过滤。
+  const newBody = prepareOutgoingBody(init.body, pending, taskText);
   if (newBody === null) return init;
   return { ...init, body: newBody };
 }
@@ -831,14 +852,8 @@ function captureChatRequest(body: string, loopState: LoopState, diag: Intercepto
   try {
     const parsed = JSON.parse(body) as Record<string, unknown>;
     loopState.newChatSessionId = undefined;
-    const rawSessionId = parsed.chat_session_id
-      ?? parsed.chatSessionId
-      ?? parsed.session_id
-      ?? parsed.conversation_id;
-    if (typeof rawSessionId === 'string' || typeof rawSessionId === 'number') {
-      const value = String(rawSessionId).trim();
-      if (value) loopState.newChatSessionId = value;
-    }
+    const rawSessionId = extractChatSessionIdFromBody(body);
+    if (rawSessionId) loopState.newChatSessionId = normalizeChatSessionKey(rawSessionId);
     let userText = typeof parsed.prompt === 'string' ? parsed.prompt : '';
     if (!userText && Array.isArray(parsed.messages)) {
       for (let i = parsed.messages.length - 1; i >= 0; i--) {
@@ -1586,10 +1601,13 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       }
       return;
     }
+    // R-W2：sender 异步 resolve 时 newChatSessionId 可能已切到别的会话，
+    // 必须在调用 sender 那一刻捕获归属会话，否则迟到结果会错挂到当前会话。
+    const sessionAtCall = loopState.newChatSessionId;
     void sender({ callId, invocationName: call.invocationName, params: call.params })
       .then((r: ExecuteResult) => {
         d(`forward: done ok=${r.ok} err=${r.error ?? ''}`);
-        const pr: PendingResult = { invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error, sessionId: loopState.newChatSessionId };
+        const pr: PendingResult = { invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error, sessionId: sessionAtCall };
         pending.push(pr);
         collectedExecutions.push(pr);
         // v1.3：更新步骤流工具条目
@@ -1921,7 +1939,24 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       // v1.6：续跑 prompt 带原始任务 + 窗口化全部历史 + 工具目录（移植自 deepseek-pp
       // buildContinuationPrompt）。collectedExecutions 跨循环累积，pending 只是本轮回填缓冲。
       // 模型从此知道：用户要什么（originalTask）、之前做了什么（collectedExecutions）、还能用什么工具。
-      const continuationPrompt = buildContinuationPrompt(loopState.originalTask, collectedExecutions, TOOL_CATALOG_TEXT);
+      // R-W2：按当前请求 body 的 chat_session_id 过滤 collectedExecutions，
+      // 丢弃他会话迟到的工具结果（A 的 sender 在切会话后才 resolve，会污染 B 的续跑 prompt）。
+      const rawCurrentForExec = extractChatSessionIdFromBody(loopState.lastChatBody ?? '');
+      const currentSessionForExec = rawCurrentForExec ? normalizeChatSessionKey(rawCurrentForExec) : undefined;
+      const execForThisTurn = currentSessionForExec
+        ? collectedExecutions.filter((e) => !e.sessionId || e.sessionId === currentSessionForExec)
+        : collectedExecutions;
+      if (execForThisTurn.length !== collectedExecutions.length) {
+        const dropped = collectedExecutions.filter((e) => e.sessionId && e.sessionId !== currentSessionForExec);
+        interceptorTrace.record({
+          t: 'pending.cross-session',
+          turnId: traceTurnId,
+          current: currentSessionForExec ?? '',
+          droppedCount: dropped.length,
+          droppedNames: dropped.map((d) => d.invocationName),
+        });
+      }
+      const continuationPrompt = buildContinuationPrompt(loopState.originalTask, execForThisTurn, TOOL_CATALOG_TEXT);
 
       // F8 修复：清空 pending，避免 XHR hook 的 prepareOutgoingBody 再追加一份工具结果。
       // collectedExecutions 不清，续跑 prompt 要用完整历史。
