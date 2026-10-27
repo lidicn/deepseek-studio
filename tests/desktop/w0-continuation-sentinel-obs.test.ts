@@ -146,4 +146,43 @@ describe('W1：续跑截断走退避重发，不记 completed', () => {
       expect(leaked).toBe(false);
     } finally { handle.stop(); vi.useRealTimers(); }
   });
+
+  it('R-W1：持续截断直到预算耗尽，请求数有界（与 MAX_ERROR_RETRIES=3 同阶）', async () => {
+    vi.useFakeTimers();
+    const { FakeXHR, handle, onAssistantReply } = installHarness();
+    try {
+      fireFirstRound(FakeXHR, 'rw1-budget');
+      await vi.advanceTimersByTimeAsync(2_000);
+      const baselineEnds = interceptorTraceSnapshot().filter((e) => e.t === 'turn.end').length;
+      const baselineTruncated = interceptorTraceSnapshot().filter((e) => e.t === 'continuation.decision' && e.reason === 'continuation-truncated').length;
+
+      // 每出现一条新的续跑请求，都回成 2xx 半截（无哨兵）。
+      // 一直喂到预算耗尽，观察请求总数是否有界。
+      for (let i = 0; i < 20; i++) {
+        const reqs = chatRequests(FakeXHR);
+        const last = reqs[reqs.length - 1];
+        if (!last || last.readyState === 4) break;
+        last.respond(200, sseText('半句未完'));
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+
+      const total = chatRequests(FakeXHR).length;
+      // 上界：首轮 1 + 续跑 1 + MAX_ERROR_RETRIES(3) + 少量余量。绝不能 15+。
+      expect(total).toBeLessThanOrEqual(6);
+      expect(total).toBeGreaterThanOrEqual(4);
+
+      // 必须出现一次 finished:false 的收尾（continuation-truncated-budget-out / 同类）
+      const newEnds = interceptorTraceSnapshot().filter((e) => e.t === 'turn.end').slice(baselineEnds);
+      expect(newEnds.some((e) => e.finished === false)).toBe(true);
+      expect(newEnds.some((e) => e.finished === true && e.stopReason === 'completed')).toBe(false);
+
+      // continuation-truncated 决策次数 ≤ MAX_ERROR_RETRIES+1（含首次续跑截断）
+      const newTruncated = interceptorTraceSnapshot().filter((e) => e.t === 'continuation.decision' && e.reason === 'continuation-truncated').length - baselineTruncated;
+      expect(newTruncated).toBeLessThanOrEqual(4);
+
+      // 不下发半截文本
+      const leaked = onAssistantReply.mock.calls.some((c) => String(c[0]).includes('半句未完') || String(c[0]).includes('<shell_exec>'));
+      expect(leaked).toBe(false);
+    } finally { handle.stop(); vi.useRealTimers(); }
+  });
 });

@@ -2027,17 +2027,31 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               resolve();
               return;
             }
-            if (verdict.verdict === 'fatal' || (verdict.verdict === 'retryable' && errorRetryCount >= MAX_ERROR_RETRIES)) {
-              // 不可重试（401/403/402/400）或错误预算耗尽 → 停手上报，禁止落入 nudge/续跑。
-              d(`auto-continue ${verdict.verdict}: status=${xhr.status} reason=${verdict.reason} retries=${errorRetryCount}/${MAX_ERROR_RETRIES}, stop loop`);
+            // R-W1：截断判定提前算成布尔，便于在封顶判断里与 retryable 同预算口径。
+            // 此前截断分支在 verdict 链之后，verdict==='ok' 命不到 :2030 的 retryable 封顶，
+            // 导致持续截断时 errorRetryCount 无界自增。
+            const isTruncated =
+              !loopState.streamSawDone &&
+              (loopState.streamBytes ?? 0) > 0 &&
+              xhr.status >= 200 && xhr.status < 300;
+            const budgetExhausted =
+              verdict.verdict === 'fatal' ||
+              (verdict.verdict === 'retryable' && errorRetryCount >= MAX_ERROR_RETRIES) ||
+              (isTruncated && errorRetryCount >= MAX_ERROR_RETRIES);
+            if (budgetExhausted) {
+              // 不可重试（401/403/402/400）或错误预算耗尽（含持续截断）→ 停手上报。
+              const stopReason = isTruncated ? 'continuation-truncated' : verdict.reason;
+              d(`auto-continue ${stopReason}: status=${xhr.status} retries=${errorRetryCount}/${MAX_ERROR_RETRIES}, stop loop`);
               loopState.streamActive = false;
-              interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'error-budget-out', triggered: false });
-              interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: verdict.reason });
+              interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: isTruncated ? 'continuation-truncated-budget-out' : 'error-budget-out', triggered: false });
+              interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason });
               finishStepFlow({
-                code: verdict.reason,
-                message: verdict.reason === 'network-error'
-                  ? '服务器暂时无法访问，已停止自动续跑。请检查网络后手动重试。'
-                  : `自动续跑失败（${verdict.reason}），已停止重试。`,
+                code: stopReason,
+                message: isTruncated
+                  ? `模型回复持续不完整（${MAX_ERROR_RETRIES} 次重发仍截断），已停止自动续跑。请手动重试。`
+                  : verdict.reason === 'network-error'
+                    ? '服务器暂时无法访问，已停止自动续跑。请检查网络后手动重试。'
+                    : `自动续跑失败（${verdict.reason}），已停止重试。`,
               });
               loopDepth = 0;
             } else if (verdict.verdict === 'retryable') {
@@ -2053,14 +2067,9 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               continuationRetryPending = true;
               autoContinueTimer = setTimeout(() => { autoContinueTimer = null; void autoContinueWithPow(); }, delay);
               interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: `error-retry-${verdict.reason}`, triggered: true });
-            } else if (
-              !loopState.streamSawDone &&
-              (loopState.streamBytes ?? 0) > 0 &&
-              xhr.status >= 200 && xhr.status < 300
-            ) {
-              // W1：续跑轮 2xx 但无完成哨兵 = 流被截断。
-              // 此前这个分支会落到 else 成功路径，记一条 turn.finished:true completed 假账。
-              // 这里走与 retryable 同构的退避重发（continuationRetryPending=true），不记 completed。
+            } else if (isTruncated) {
+              // W1/R-W1：续跑轮 2xx 但无完成哨兵 = 流被截断。预算已在上方封顶判断里校验。
+              // 走与 retryable 同构的退避重发（continuationRetryPending=true），不记 completed。
               errorRetryCount += 1;
               loopState.streamActive = false;
               try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
