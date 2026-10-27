@@ -36,9 +36,17 @@ describe('W1 托盘唯一 + 菜单接线', () => {
     expect(matches).toHaveLength(1);
   });
 
-  it('on_menu_event 分支含 "open-workbench"', () => {
-    expect(mainRs).toContain('"open-workbench"');
-    expect(mainRs).toContain('open_workbench(app.clone())');
+  it('on_menu_event 不含 open-workbench（托盘只保留 show/hide/quit），但兼容命令仍存在', () => {
+    // 方案 A：托盘菜单已简化为 show / hide / quit，不再暴露 open-workbench。
+    // 函数 open_workbench 保留给兼容/诊断调用（generate_handler! 已注册）。
+    expect(mainRs).not.toContain('"open-workbench"');
+    // 兼容命令存在：函数定义 + handler 注册
+    expect(mainRs).toContain('fn open_workbench(');
+    expect(mainRs).toMatch(/generate_handler!\[.*open_workbench/s);
+    // 托盘菜单只应有 show / hide / quit
+    expect(mainRs).toContain('MenuItemBuilder::with_id("show"');
+    expect(mainRs).toContain('MenuItemBuilder::with_id("hide"');
+    expect(mainRs).toContain('MenuItemBuilder::with_id("quit"');
   });
 
   it('main.rs 含 MenuBuilder 或 MenuItemBuilder', () => {
