@@ -99,9 +99,48 @@ function upstreamChangesSince(repoPath, commit) {
   }
 }
 
+/**
+ * 生产侧 importer 计数（死移植甄别）。
+ *
+ * 移植进来但**没有任何 src 生产代码引用**的文件，是纯负债：既要跟上游漂移，又不产出功能。
+ * 计数方式：按 `from '<...>/<base>'` 的**裸模块名**匹配（import 路径写法五花八门——相对深度、
+ * 扩展名有无——只认 basename，避免漏计）。tests/ 不算生产引用：测试单向喂不叫"接线"。
+ *
+ * @returns {{count:number, importers:string[]}}
+ */
+function countProductionImporters(localPath) {
+  const base = localPath.replace(/\\/g, '/').replace(/\.ts$/, '').split('/').pop();
+  const re = new RegExp('from\\s+[\'"][^"\']*\\/' + base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:\\.ts)?[\'"]');
+  const importers = [];
+  for (const dir of scanRoots) {
+    for (const f of walkTs(dir)) {
+      if (f === localPath) continue;
+      if (re.test(readFileSync(f, 'utf8'))) importers.push(f.slice(ROOT.length + 1).replace(/\\/g, '/'));
+    }
+  }
+  return { count: importers.length, importers };
+}
+
+/** 递归列出目录下所有 .ts（跳过 node_modules）。 */
+function* walkTsIter(dir) {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, e.name);
+    if (e.isDirectory()) {
+      if (e.name === 'node_modules') continue;
+      yield* walkTsIter(full);
+    } else if (e.name.endsWith('.ts')) {
+      yield full;
+    }
+  }
+}
+function walkTs(dir) {
+  return [...walkTsIter(dir)];
+}
+
 let drifted = 0;
 let unchanged = 0;
 let anchorIssues = 0;
+let deadPorts = 0;
 
 console.log('=== 上游漂移检测（E2：SHA256 判据）===');
 console.log('上游目录: ' + upstream);
@@ -114,9 +153,16 @@ for (const localPath of files) {
   const commit = content.match(/@upstream-commit\s+([0-9a-f]{7,40})/)?.[1];
   const upstreamPath = content.match(/@upstream-path\s+(\S+)/)?.[1];
 
+  const imp = countProductionImporters(localPath);
+  if (imp.count === 0) deadPorts++;
+  const impNote = imp.count === 0
+    ? '☠️ 死移植：src 生产代码 0 引用'
+    : 'importers ' + imp.count + ' (' + imp.importers.slice(0, 3).join(', ') + (imp.importers.length > 3 ? ' …' : '') + ')';
+
   const upstreamFull = join(upstream, upstreamPath);
   if (!existsSync(upstreamFull)) {
     console.log('⚠️  ' + rel + ': 上游不存在 ' + upstreamPath + '（上游已改名/删除，需人工订正锚点）');
+    console.log('   ' + impNote);
     anchorIssues++;
     drifted++;
     continue;
@@ -126,7 +172,7 @@ for (const localPath of files) {
   const upHash = sha256(readFileSync(upstreamFull));
   if (localHash === upHash) {
     unchanged++;
-    console.log('✅ ' + rel + ' 与上游当前版本一致');
+    console.log('✅ ' + rel + ' 与上游当前版本一致 | ' + impNote);
     continue;
   }
 
@@ -138,12 +184,16 @@ for (const localPath of files) {
       ? '上游自锚点后未改此文件 → 差异全部来自本地改动，应核对本地改动是否该回灌上游'
       : '上游自锚点后改动 ' + changes + ' 次 → 本地可能缺上游修复，优先核对';
   console.log('📊 ' + rel);
+  console.log('   ' + impNote);
   console.log('   锚点 ' + (commit || '?').slice(0, 7) + ' | 本地 ' + localHash.slice(0, 12) + ' | 上游 ' + upHash.slice(0, 12));
   console.log('   ' + note);
 }
 
 console.log('\n=== 汇总 ===');
-console.log('一致: ' + unchanged + ' | 漂移: ' + drifted + ' | 锚点/路径异常: ' + anchorIssues);
+console.log('一致: ' + unchanged + ' | 漂移: ' + drifted + ' | 锚点/路径异常: ' + anchorIssues + ' | 死移植: ' + deadPorts);
+if (deadPorts > 0) {
+  console.log('   （死移植 = 已移植但 src 生产代码 0 引用；要么接线，要么删件，别继续背漂移债）');
+}
 
 if (drifted > 0) {
   console.log('\n❌ 存在上游漂移（gate 信息级：不阻塞提交，待办见 docs/dpp/上游快照锚点-UPSTREAM.md）');
