@@ -428,7 +428,7 @@ describe('TaskLoop 自驱（M2-3）', () => {
     expect(parsed[0].content).toBe('hi');
   });
 
-  it('32. S7：多轮时入参累积全部历史消息', async () => {
+  it('32. W3：多轮时入参只含最后一条用户消息（增量，历史由页面承载）', async () => {
     const history = createMessageHistory();
     const engine = fakeEngine([
       { content: '中间', toolCalls: 1, toolCallRecords: [rec('a', true)] },
@@ -437,8 +437,9 @@ describe('TaskLoop 自驱（M2-3）', () => {
     const loop = createTaskLoop({ engine, history, maxRounds: 2 });
     await loop.run('问题');
     const round2 = JSON.parse(engine.texts[1]) as { role: string; content: string }[];
-    // user + assistant + tool
-    expect(round2.map((m) => m.role)).toEqual(['user', 'assistant', 'tool']);
+    // W3：只发本轮增量 = 最后一条用户消息；assistant/tool 由页面续跑机制承载。
+    expect(round2.map((m) => m.role)).toEqual(['user']);
+    expect(round2[0].content).toBe('问题');
   });
 
   it('33. S7：空 history 入参为空串', async () => {
@@ -451,7 +452,7 @@ describe('TaskLoop 自驱（M2-3）', () => {
     expect(engine.texts[0]).not.toBe('');
   });
 
-  it('34. S7：tool 记录作为 role:tool 消息进数组', async () => {
+  it('34. W3：续跑轮入参只含用户消息（tool 记录由页面续跑承载，不进引擎 prompt）', async () => {
     const history = createMessageHistory();
     const engine = fakeEngine([
       { content: '跑工具', toolCalls: 1, toolCallRecords: [rec('shell_exec', true)] },
@@ -460,7 +461,8 @@ describe('TaskLoop 自驱（M2-3）', () => {
     const loop = createTaskLoop({ engine, history, maxRounds: 2 });
     await loop.run('ls');
     const msgs = JSON.parse(engine.texts[1]) as { role: string; content: string }[];
-    expect(msgs.some((m) => m.role === 'tool')).toBe(true);
+    // W3：增量语义下，引擎 prompt 只带最后一条用户消息；tool 结果由页面续跑机制注入。
+    expect(msgs).toEqual([{ role: 'user', content: 'ls' }]);
   });
 
   it('35. S7：入参不再是裸 "role: content" 拼接', async () => {

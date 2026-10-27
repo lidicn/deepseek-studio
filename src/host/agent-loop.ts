@@ -92,15 +92,19 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
       active = true;
       currentRoomId = opts?.roomId;
       options.stopFlag.stopped = false;
+      // W4：新一轮 send 重置 settled 守卫，否则上一轮 done 后丢弃本回合事件。
+      settled = false;
       // v1.6：全局看门狗——任意 send 挂起超过 watchdogMs 置停止信号，防永久 agent-busy。
       // R2-01：watchdog 只置 stopFlag.stopped=true 并通知，**绝不释放 active**（active 的
       // 释放权唯一归属 finally），也**不立刻清掉 stopFlag**。原实现提前 active=false 会让
       // 新 send 通过 busy 检查形成并发回合，二者共享 stopFlag 互相改写；同 tick 内
       // stopped=true 又 false 使停止信号不可预测。仍挂起的 await 在下一回合边界读到
       // stopped=true 自行退出，finally 统一释放 active。
+      let watchdogFired = false;
       const watchdog = setTimeout(() => {
         if (!active) return;
         options.stopFlag.stopped = true;
+        watchdogFired = true;
         emit({ type: 'error', text: `全局看门狗触发（${Math.round(watchdogMs / 60000)} 分钟），强制结束本次循环` });
         emit({ type: 'done' });
       }, watchdogMs);
@@ -116,7 +120,10 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
 
         for (let step = 1; step <= maxSteps; step++) {
           if (options.stopFlag.stopped) {
-            emit({ type: 'status', text: '已被用户停止（上下文保留，可继续）', step });
+            // audit P2-1：看门狗已发 done，await 解除后不再补发 status（避免 done 后又收到事件）。
+            if (!watchdogFired) {
+              emit({ type: 'status', text: '已被用户停止（上下文保留，可继续）', step });
+            }
             break;
           }
           if (result.timedOut) {
@@ -134,7 +141,18 @@ export function createAgentLoop(options: AgentLoopOptions): AgentLoop {
             emit({ type: 'status', text: '工具结果已回填，等待页端续跑…', step: step + 1 });
             // P0：两次请求之间随机 2.5-6.5s 节流，避免触发风控（测试可关）
             if (options.throttleBetweenSteps !== false) {
-              await waitBetweenRequests(new AbortController().signal);
+              // audit P2-2：节流等待响应外部 stop——轮询 stopFlag，到点即中止等待。
+              const throttleCtrl = new AbortController();
+              const poll = setInterval(() => {
+                if (options.stopFlag.stopped) throttleCtrl.abort();
+              }, 100);
+              try {
+                await waitBetweenRequests(throttleCtrl.signal);
+              } catch {
+                /* abort 即提前结束节流 */
+              } finally {
+                clearInterval(poll);
+              }
             }
             if (options.engine.waitForNextReply) {
               result = await options.engine.waitForNextReply();
