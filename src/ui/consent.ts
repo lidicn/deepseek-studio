@@ -137,6 +137,23 @@ export function showConsent(request: ConsentRequest, onDecision: ConsentCallback
   summary.className = 'ds-consent-summary';
   summary.textContent = presentation.summary;
 
+  // T4（2026-10-27 E-01）：审批弹窗作用域 + 时长副文案，让用户一眼看懂
+  // 「允许一次」与「本会话允许」的区别，以及 hideAllowSession=true 时为何只有前者。
+  const meta = request.meta;
+  const scopeHint = doc.createElement('div');
+  scopeHint.className = 'ds-consent-scope-hint';
+  const toolLabel = request.tool;
+  const classLabel = meta?.approvalClass === 'always' ? '高风险（始终审批）'
+    : meta?.approvalClass === 'hard-deny' ? '硬拒绝'
+    : meta?.approvalClass === 'mode' ? '按档位'
+    : meta?.approvalClass === 'none' ? '免审批'
+    : meta?.approvalClass ? meta.approvalClass : '';
+  const targetLabel = meta?.canonicalTarget ? `目标：${meta.canonicalTarget}` : '';
+  const scopeParts = [toolLabel, classLabel, targetLabel].filter(Boolean);
+  if (scopeParts.length > 0) {
+    scopeHint.textContent = scopeParts.join(' · ');
+  }
+
   const actions = doc.createElement('div');
   actions.className = 'ds-consent-actions';
 
@@ -144,12 +161,25 @@ export function showConsent(request: ConsentRequest, onDecision: ConsentCallback
   const btnDeny = mkButton('拒绝', 'ds-consent-deny');
   const btnAllowSession = mkButton(presentation.allowSessionLabel, 'ds-consent-allow-session');
   // A5：动态按钮——meta.hideAllowSession 为 true 时不渲染「本次会话允许」。
-  if (request.meta?.hideAllowSession) {
+  if (meta?.hideAllowSession) {
     actions.append(btnAllowOnce, btnDeny);
   } else {
     actions.append(btnAllowOnce, btnDeny, btnAllowSession);
   }
-  card.append(title, tool, ...(badges ? [badges] : []), summary, actions);
+  // T4：hideAllowSession=true 时追加说明——该工具属 always 类，会话级 grant 会绕过逐次确认。
+  const sessionHint = doc.createElement('div');
+  sessionHint.className = 'ds-consent-session-hint';
+  if (meta?.hideAllowSession) {
+    const reasonForNoSession = meta.approvalClass === 'always'
+      ? '此操作属高风险类，本会话放行将绕过后续逐次确认，因此仅提供「允许一次」。'
+      : '此操作不支持会话级放行，仅提供「允许一次」。';
+    sessionHint.textContent = reasonForNoSession;
+  }
+
+  card.append(title, tool, ...(badges ? [badges] : []), summary,
+    ...(scopeParts.length > 0 ? [scopeHint] : []),
+    actions,
+    ...(meta?.hideAllowSession ? [sessionHint] : []));
   overlay.append(card);
   doc.body.append(overlay);
 

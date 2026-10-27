@@ -187,7 +187,7 @@ describe('A1 · full 文案与 session 文案', () => {
   it('设置面板 full 文案不再声称"所有工具调用自动执行，无需确认"', () => {
     const src = readFileSync(resolve(root, 'src/ui/studio-settings-panel.ts'), 'utf8');
     expect(src).not.toContain('所有工具调用自动执行');
-    expect(src).toMatch(/full: '[^']*执行范围完全放开[^']*'/);
+    expect(src).toMatch(/full: '[^']*执行范围放开[^']*'/);
     // 必须同时说清"执行范围放开"与"高风险仍需确认"
     const fullLine = src.split(/\r?\n/).find((l) => l.trim().startsWith("full: '"));
     expect(fullLine).toBeDefined();

@@ -13,7 +13,7 @@
  * 旧档 ask（询问审批：shell 无风险也审批）保留为合法值以兼容既有配置与测试，
  * 但面板 UI 只暴露上面三档。
  *
- * 判定矩阵：
+ * 判定矩阵（本矩阵只描述 approvalClass=mode 这一类工具在策略层的结论）：
  * | 档位      | 文件·工作区内 | 文件·工作区外 | shell·无风险 | shell·命中风险 |
  * |-----------|--------------|--------------|-------------|---------------|
  * | workspace | 放行         | 拒绝         | 拒绝        | 拒绝          |
@@ -21,8 +21,14 @@
  * | auto      | 放行         | 审批         | 放行        | 审批          |
  * | full      | 放行         | 放行         | 放行        | 放行          |
  *
- * 本矩阵只描述 **approvalClass=mode** 这一类工具在策略层的结论。它不是全局放行：
- * always 类工具根本不走 evaluatePolicy，hard-deny 由 consent-router 的硬规则先行拒绝。
+ * full 档对 approvalClass=always 与 hard-deny 工具的补充说明（不在上表范围内，
+ * 因为它们根本不走 evaluatePolicy，由 consent-router 前置闸门处理）：
+ *   - approvalClass=always（policy.set / workspace.set / memory.delete|purge|unarchive /
+ *     chat-send / python.exec / mcp.call|save|remove / consent.whitelist.revoke
+ *     / memory.select / memory.list / memory.listArchived 等）——full 下仍必须
+ *     人工确认，**不会被"完全放开"覆盖**。
+ *   - hard-deny（磁盘格式化 / 关机 / 盘根递归删除 / 敏感凭据路径 / 未知工具或
+ *     来源）——full 下仍直接拒绝，不改判定。
  *
  * 两条不可协商的红线（即便 full 档也保持）：
  *   1. shell 一律 argv 执行，启用 full 也不会打开 shell 解释器——
