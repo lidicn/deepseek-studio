@@ -175,7 +175,7 @@ describe('M10-7b 注入预算：两侧共用 40', () => {
   });
 });
 
-describe('M10-6 source 由宿主赋值', () => {
+describe('M10-6 source 由宿主赋值（无宿主/纯函数，默认 5s 上限）', () => {
   it('旧 memories.json 导入记为 import', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-mem-import-'));
     fs.writeFileSync(
@@ -191,6 +191,24 @@ describe('M10-6 source 由宿主赋值', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it('映射层是真正的收口点：memory_save 不转发 source/confidence/personaTags', async () => {
+    const { mapUpstreamToolInvocation } = await import('../../src/shared/tool-contract');
+    const mapped = mapUpstreamToolInvocation('memory_save', {
+      type: 'user',
+      name: 'n',
+      content: 'c',
+      source: 'user',
+      confidence: 1,
+      personaTags: ['audit'],
+      pinned: true,
+    });
+    expect(mapped).not.toBeNull();
+    // D-5：pinned 现在按「有则转」放行；缺省的 tags 不再被填成 []。
+    expect(mapped!.params).toEqual({ type: 'user', name: 'n', content: 'c', pinned: true });
+  });
+});
+
+describe('M10-6 source 由宿主赋值（宿主 WS，15s 上限）', () => {
   it('memory.save 经宿主执行时忽略调用方传入的 source', async () => {
     const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'studio-mem-src-host-'));
     const previousConfigDir = process.env.STUDIO_CONFIG_DIR;
@@ -242,23 +260,7 @@ describe('M10-6 source 由宿主赋值', () => {
       getMemoryStore().close();
       await fsp.rm(tmpDir, { recursive: true, force: true });
     }
-  });
-
-  it('映射层是真正的收口点：memory_save 不转发 source/confidence/personaTags', async () => {
-    const { mapUpstreamToolInvocation } = await import('../../src/shared/tool-contract');
-    const mapped = mapUpstreamToolInvocation('memory_save', {
-      type: 'user',
-      name: 'n',
-      content: 'c',
-      source: 'user',
-      confidence: 1,
-      personaTags: ['audit'],
-      pinned: true,
-    });
-    expect(mapped).not.toBeNull();
-    // D-5：pinned 现在按「有则转」放行；缺省的 tags 不再被填成 []。
-    expect(mapped!.params).toEqual({ type: 'user', name: 'n', content: 'c', pinned: true });
-  });
+  }, { timeout: 15000 });
 });
 
 describe('M10-7.1 同名 save() 未传治理字段保留原值（SQL 持久化路径）', () => {
