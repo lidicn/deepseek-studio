@@ -1,0 +1,750 @@
+VITEST_FLIGHT_BEGIN @ 2026-10-23 22:57:08
+HEAD=9d093dc fix(studio-tools): 修复重复执行与技能误注入
+DIRTY_total=202 DIRTY_src_tools_tests=63
+COPIES_ON_DISK=0
+
+[1m[7m[36m RUN [39m[27m[22m [36mv2.1.9 [39m[90mE:/NAS/deepseek-studio[39m
+
+ [32m✓[39m tests/desktop/kernel-task-loop.test.ts [2m([22m[2m57 tests[22m[2m)[22m[33m 32299[2mms[22m[39m
+   [33m[2m✓[22m[39m TaskLoop 自驱（M2-3）[2m > [22m9. maxRounds:2 跑两轮，第二轮 toolCalls:0 终停 [33m2004[2mms[22m[39m
+   [33m[2m✓[22m[39m TaskLoop 自驱（M2-3）[2m > [22m11. 跑满 maxRounds 仍有工具调用 → 终态 max-rounds [33m2012[2mms[22m[39m
+   [33m[2m✓[22m[39m TaskLoop 自驱（M2-3）[2m > [22m13. S2：第 2 轮命中 no-tool-calls 立刻停，不跑第 3 轮 [33m2006[2mms[22m[39m
+   [33m[2m✓[22m[39m TaskLoop 自驱（M2-3）[2m > [22m15. S2：跨轮工具记录累积（第 1、2 轮的 tool 都落库） [33m2016[2mms[22m[39m
+   [33m[2m✓[22m[39m TaskLoop 自驱（M2-3）[2m > [22m16. S2：每轮 assistant 都落库（轮数 = assistant 数） [33m2004[2mms[22m[39m
+   [33m[2m✓[22m[39m TaskLoop 自驱（M2-3）[2m > [22m17. S2：连续工具调用跑满 maxRounds=3，终态 max-rounds、round=3 [33m4014[2mms[22m[39m
+   [33m[2m✓[22m[39m TaskLoop 自驱（M2-3）[2m > [22m26. S5：抛出的错带 round 号（TaskLoopError.round） [33m2013[2mms[22m[39m
+   [33m[2m✓[22m[39m TaskLoop 自驱（M2-3）[2m > [22m27. S5：抛错前成功的轮次记录保留 [33m2014[2mms[22m[39m
+   [33m[2m✓[22m[39m TaskLoop 自驱（M2-3）[2m > [22m32. S7：多轮时入参累积全部历史消息 [33m2013[2mms[22m[39m
+   [33m[2m✓[22m[39m TaskLoop 自驱（M2-3）[2m > [22m34. S7：tool 记录作为 role:tool 消息进数组 [33m2010[2mms[22m[39m
+   [33m[2m✓[22m[39m TaskLoop 自驱（M2-3）[2m > [22m36. S7：S6 端到端语义回归 [33m2013[2mms[22m[39m
+   [33m[2m✓[22m[39m TaskLoop 自驱（M2-3）[2m > [22m41. S9：aborted 不回滚已写消息 [33m2007[2mms[22m[39m
+   [33m[2m✓[22m[39m TaskLoop 自驱（M2-3）[2m > [22m50. S11：每轮结束 store.save 被调 [33m2015[2mms[22m[39m
+   [33m[2m✓[22m[39m TaskLoop 自驱（M2-3）[2m > [22m51. S11：重启后从 store 恢复历史 [33m2002[2mms[22m[39m
+   [33m[2m✓[22m[39m TaskLoop 自驱（M2-3）[2m > [22m57. S15：多轮时每轮都回调 [33m2001[2mms[22m[39m
+(node:11224) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/desktop/bot-chat-room-runtime.test.ts [2m([22m[2m17 tests[22m[2m)[22m[33m 2949[2mms[22m[39m
+   [33m[2m✓[22m[39m chat-room-runtime 真摘要器[2m > [22m摘要器专属超时：send 不 resolve 时按 timeoutMs 抛错，不等全局看门狗 [33m1565[2mms[22m[39m
+[90mstdout[2m | tests/desktop/web-engine-transport.test.ts[2m > [22m[2mWebEngine as ModelEngine transport (M1-2)[2m > [22m[2m3. metrics injected: recordToolCall changes snapshot numbers
+[22m[39mbefore: {"toolCallsTotal":0,"successCount":0,"failureCount":0,"skipCount":0,"toolRounds":0,"nudgeRounds":0,"nudgeRate":0,"noNudgeCompletionRate":1}
+after : {"toolCallsTotal":0,"successCount":0,"failureCount":0,"skipCount":0,"toolRounds":2,"nudgeRounds":0,"nudgeRate":0,"noNudgeCompletionRate":1}
+
+ [32m✓[39m tests/desktop/web-engine-transport.test.ts [2m([22m[2m30 tests[22m[2m)[22m[33m 5246[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine as ModelEngine transport (M1-2)[2m > [22m4. two consecutive send rounds: buffers are independent [33m416[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine as ModelEngine transport (M1-2)[2m > [22m13. send() with dispatch failure returns completion=disconnected [33m2013[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine as ModelEngine transport (M1-2)[2m > [22m16. disconnected completion bumps nudgeRounds [33m2015[2mms[22m[39m
+ [32m✓[39m tests/desktop/studio-chat-css.test.ts [2m([22m[2m103 tests[22m[2m)[22m[90m 29[2mms[22m[39m
+(node:33056) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/desktop/bot-chat-room-event.test.ts [2m([22m[2m11 tests[22m[2m)[22m[33m 1596[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-hooks.test.ts [2m([22m[2m25 tests[22m[2m)[22m[90m 20[2mms[22m[39m
+ [32m✓[39m tests/desktop/agent-loop.test.ts [2m([22m[2m16 tests[22m[2m)[22m[90m 15[2mms[22m[39m
+[90mstderr[2m | tests/desktop/bot-report-store.test.ts[2m > [22m[2mFileReportStore · 子报告读回[2m > [22m[2m坏 JSON 文件跳过不抛（不阻塞 merge）
+[22m[39m[report-store] skip unreadable report C:\Users\lidicn\AppData\Local\Temp\studio-report-store-test-1792767485304\runs\batch-1\zz-broken.report.json: Expected property name or '}' in JSON at position 2 (line 1 column 3)
+
+ [32m✓[39m tests/desktop/bot-report-store.test.ts [2m([22m[2m28 tests[22m[2m)[22m[33m 852[2mms[22m[39m
+ [32m✓[39m tests/desktop/policy.test.ts [2m([22m[2m24 tests[22m[2m)[22m[90m 17[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-offline-runner.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 76[2mms[22m[39m
+ [32m✓[39m tests/desktop/capabilities-shell.test.ts [2m([22m[2m22 tests[22m[2m)[22m[33m 1865[2mms[22m[39m
+   [33m[2m✓[22m[39m shell.exec —— argv 执行与安全红线[2m > [22m超时上限生效：子进程被杀而不再挂住宿主（R1-03/R1-08：timedOut:true、exitCode:null） [33m920[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-slot-runtime-integration.test.ts [2m([22m[2m13 tests[22m[2m)[22m[90m 18[2mms[22m[39m
+ [32m✓[39m tests/desktop/sse-text-extractor.test.ts [2m([22m[2m19 tests[22m[2m)[22m[90m 22[2mms[22m[39m
+(node:31464) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/desktop/bot-audit-meeting-integration.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 672[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-bridge.test.ts [2m([22m[2m13 tests[22m[2m)[22m[90m 189[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-event-bus.test.ts [2m([22m[2m19 tests[22m[2m)[22m[90m 24[2mms[22m[39m
+ [32m✓[39m tests/desktop/v09-skills-tools-contract.test.ts [2m([22m[2m24 tests[22m[2m)[22m[90m 284[2mms[22m[39m
+(node:27652) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/desktop/bot-meeting-state.test.ts [2m([22m[2m20 tests[22m[2m)[22m[33m 933[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-round-orchestrator.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 10[2mms[22m[39m
+(node:6564) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m5.2 限流与并发[2m > [22m[2m超出令牌桶 → 429 且带 Retry-After
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m5.2 限流与并发[2m > [22m[2m并发上限生效：上限 1 时第二个请求被拒
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m5.5 CORS 严格化（fail-closed）[2m > [22m[2m本地回环源获得放行头
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m5.5 CORS 严格化（fail-closed）[2m > [22m[2m非本地源不获得放行头（浏览器自会拦截）
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m5.5 CORS 严格化（fail-closed）[2m > [22m[2m非本地源的预检请求直接 403
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m5.1 令牌轮换与宽限期[2m > [22m[2m轮换后新令牌立即生效，旧令牌在宽限期内仍可用
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m审计经 HTTP 可读（3.2.4）[2m > [22m[2mGET /v1/tools/audit 返回执行记录
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m审计经 HTTP 可读（3.2.4）[2m > [22m[2m未配置审计读取时返回 501（不伪装成空列表）
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m5.4 完整性探测与宿主降级[2m > [22m[2m页端上报篡改后，宿主不再把工具派发给该页
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstderr[2m | tests/desktop/security-v05.test.ts[2m > [22m[2m5.4 完整性探测与宿主降级[2m > [22m[2m页端上报篡改后，宿主不再把工具派发给该页
+[22m[39m[page-runtime] integrity violation: page=23cfe2e2-e015-4c10-99fe-44cf734bd4ea reason=member-replaced detail=host [90mundefined[39m
+
+ [32m✓[39m tests/desktop/security-v05.test.ts [2m([22m[2m15 tests[22m[2m)[22m[33m 606[2mms[22m[39m
+   [33m[2m✓[22m[39m 5.4 完整性探测与宿主降级[2m > [22m页端上报篡改后，宿主不再把工具派发给该页 [33m340[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-contract-model-surface.test.ts [2m([22m[2m26 tests[22m[2m)[22m[90m 28[2mms[22m[39m
+(node:16624) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstderr[2m | tests/desktop/memory-store-v2.test.ts[2m > [22m[2m记忆层 v2：迁移与降级[2m > [22m[2m旧 memories.json 首次启动自动导入（原文件保留）
+[22m[39m[memory] migrated 1 memories from C:\Users\lidicn\AppData\Local\Temp\studio-mem-v2-test-1792767503212\memories.json (file kept as backup)
+
+[90mstderr[2m | tests/desktop/memory-store-v2.test.ts[2m > [22m[2m记忆层 v2：迁移与降级[2m > [22m[2mnode:sqlite 不可用时降级内存存储，读写检索仍可用
+[22m[39m[memory] sqlite unavailable, degraded to in-memory store: The argument 'path' must be a string, Uint8Array, or URL without null bytes. Received 'C:\\Users\\lidicn\\AppData\\Local\\Temp\\studio-mem-v2-test-1792767503212\\bad\x00path'
+
+ [32m✓[39m tests/desktop/memory-store-v2.test.ts [2m([22m[2m18 tests[22m[2m)[22m[33m 1666[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-result-format.test.ts [2m([22m[2m33 tests[22m[2m)[22m[90m 18[2mms[22m[39m
+ [32m✓[39m tests/desktop/agent-channel-chat-room-event.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 788[2mms[22m[39m
+   [33m[2m✓[22m[39m agent-channel —— v0.28 ChatRoomEvent 广播[2m > [22mhost 无 onChatRoomEvent（向后兼容）→ agent-channel 正常工作不崩 [33m524[2mms[22m[39m
+ [32m✓[39m tests/desktop/agent-channel-multibot.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 260[2mms[22m[39m
+ [32m✓[39m tests/desktop/capabilities-file-edit.test.ts [2m([22m[2m22 tests[22m[2m)[22m[33m 381[2mms[22m[39m
+[90mstdout[2m | tests/desktop/mutable-workspace.test.ts[2m > [22m[2mv1.9：settings.get / workspace.set / policy.set 落盘链路[2m > [22m[2mworkspace.set 与 policy.set 会把值写进 STUDIO_CONFIG_DIR 的 config.json
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/mutable-workspace.test.ts[2m > [22m[2mv1.9：settings.get / workspace.set / policy.set 落盘链路[2m > [22m[2mworkspace.set 指向不存在的目录 → 失败且不落盘（fail-closed）
+[22m[39m[automation] started, 0 tasks loaded
+
+ [32m✓[39m tests/desktop/mutable-workspace.test.ts [2m([22m[2m17 tests[22m[2m)[22m[90m 113[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-slot-scheduler.test.ts [2m([22m[2m16 tests[22m[2m)[22m[33m 547[2mms[22m[39m
+(node:29068) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m宿主侧能力执行侧解析[2m > [22m[2mshell / file 解析为 host 侧，既有 chat-* 仍为 page 侧
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m宿主侧能力绝不经过页面（核心不变量）[2m > [22m[2m有页端连接时，shell.exec 仍只在宿主内执行，页面收不到 dispatch
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m宿主侧能力绝不经过页面（核心不变量）[2m > [22m[2m页端若声称能执行 shell.exec，宿主也不会把命令交给它
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m三档策略在宿主链路上的行为[2m > [22m[2mask 档 + 无页端：命令需审批但无人可问 → consent-unavailable
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m三档策略在宿主链路上的行为[2m > [22m[2mfull 档 + 无页端：直接执行，不阻塞在同意闸门上
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m三档策略在宿主链路上的行为[2m > [22m[2mauto 档：常规命令无需审批即执行
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m三档策略在宿主链路上的行为[2m > [22m[2mauto 档：命中风险命令仍要审批（无页 → 拒绝）
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m文件能力受工作区约束[2m > [22m[2m未配置工作区 → file.* 被策略硬拒绝（不弹窗，直接 deny）
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m文件能力受工作区约束[2m > [22m[2m工作区内读写放行，区外按档位处理
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/host-side-tools.test.ts[2m > [22m[2m文件能力受工作区约束[2m > [22m[2mask 档越界访问需审批，且页端收到越界徽标
+[22m[39m[automation] started, 0 tasks loaded
+
+ [32m✓[39m tests/desktop/host-side-tools.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 1098[2mms[22m[39m
+ [32m✓[39m tests/desktop/harness-events.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 13[2mms[22m[39m
+ [32m✓[39m tests/desktop/capabilities-search-files.test.ts [2m([22m[2m17 tests[22m[2m)[22m[33m 394[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-audit-meeting.test.ts [2m([22m[2m14 tests[22m[2m)[22m[90m 21[2mms[22m[39m
+(node:4600) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/desktop/bot-context-engine.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 941[2mms[22m[39m
+ [32m✓[39m tests/desktop/v08-tool-loop.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 16[2mms[22m[39m
+ [32m✓[39m tests/desktop/consent-router.test.ts [2m([22m[2m24 tests[22m[2m)[22m[90m 11[2mms[22m[39m
+ [32m✓[39m tests/desktop/v10-sandbox-executor.test.ts [2m([22m[2m17 tests[22m[2m)[22m[33m 6668[2mms[22m[39m
+   [33m[2m✓[22m[39m v0.10: 沙箱执行器（execPythonInSandbox）[2m > [22m简单 print 执行成功（需要系统 python） [33m542[2mms[22m[39m
+   [33m[2m✓[22m[39m v0.10: 沙箱执行器（execPythonInSandbox）[2m > [22m超时控制：无限循环被超时终止（需要系统 python） [33m2136[2mms[22m[39m
+   [33m[2m✓[22m[39m v0.10: 工件代码执行入口（runArtifactCode）[2m > [22m支持自定义超时 [33m1617[2mms[22m[39m
+ [32m✓[39m tests/desktop/v11-sidebar-ui.test.ts [2m([22m[2m18 tests[22m[2m)[22m[90m 12[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-report-protocol.test.ts [2m([22m[2m18 tests[22m[2m)[22m[90m 11[2mms[22m[39m
+ [32m✓[39m tests/desktop/api-engine.test.ts [2m([22m[2m19 tests[22m[2m)[22m[90m 17[2mms[22m[39m
+ [32m✓[39m tests/desktop/studio-trace.test.ts [2m([22m[2m17 tests[22m[2m)[22m[90m 23[2mms[22m[39m
+(node:16068) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstdout[2m | tests/desktop/audit-page-runtime.test.ts[2m > [22m[2mR2-03 ws upgrade Origin 闸门[2m > [22m[2m公网恶意 Origin → 握手被拒，无可用页端
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstderr[2m | tests/desktop/audit-page-runtime.test.ts[2m > [22m[2mR2-03 ws upgrade Origin 闸门[2m > [22m[2m公网恶意 Origin → 握手被拒，无可用页端
+[22m[39m[page-runtime] ws upgrade rejected: origin not allowed (https://evil.example.com) [90mundefined[39m
+
+[90mstdout[2m | tests/desktop/audit-page-runtime.test.ts[2m > [22m[2mR2-02 pickClient 只派发 hello-ready 连接[2m > [22m[2m已连接但从不发 hello 的进程 → 不派发（no-page-runtime）
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/audit-page-runtime.test.ts[2m > [22m[2mR2-02 pickClient 只派发 hello-ready 连接[2m > [22m[2m握手 Origin 与 hello 自报 origin 不一致 → 判 untrusted，不派发
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstderr[2m | tests/desktop/audit-page-runtime.test.ts[2m > [22m[2mR2-02 pickClient 只派发 hello-ready 连接[2m > [22m[2m握手 Origin 与 hello 自报 origin 不一致 → 判 untrusted，不派发
+[22m[39m[page-runtime] hello origin mismatch: claimed=https://evil.example.com handshake=https://chat.deepseek.com [90mundefined[39m
+
+[90mstdout[2m | tests/desktop/audit-page-runtime.test.ts[2m > [22m[2mR2-04 / R2-05 无页回退与内部 origin[2m > [22m[2mR2-04：无页时 DOM 能力 chat-read 明确失败（no-page-for-dom-capability），不假成功
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/audit-page-runtime.test.ts[2m > [22m[2mR2-04 / R2-05 无页回退与内部 origin[2m > [22m[2mR2-05：宿主内部调用（HOST_INTERNAL_ORIGIN）不被 origin 闸门拒绝，echo 回退成功
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/audit-page-runtime.test.ts[2m > [22m[2mQD-R2-03 入站 result/consent-decision 连接级身份门[2m > [22m[2m连接 B 伪造连接 A 的 result → host 不被蒙混，只认 A 的真回执
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/audit-page-runtime.test.ts[2m > [22m[2mQD-R2-03 入站 result/consent-decision 连接级身份门[2m > [22m[2m未握手（!ready）连接发的 result 一律忽略，不崩不泄露
+[22m[39m[automation] started, 0 tasks loaded
+
+ [32m✓[39m tests/desktop/audit-page-runtime.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 827[2mms[22m[39m
+   [33m[2m✓[22m[39m QD-R2-03 入站 result/consent-decision 连接级身份门[2m > [22m连接 B 伪造连接 A 的 result → host 不被蒙混，只认 A 的真回执 [33m452[2mms[22m[39m
+ [32m✓[39m tests/desktop/engine-tool-records.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 327[2mms[22m[39m
+(node:25036) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstdout[2m | tests/desktop/page-runtime-multibot.test.ts[2m > [22m[2mpage-runtime —— v0.24 多 bot 寻址[2m > [22m[2minvokeTool 带 botId → dispatch 只到该 bot 的窗口
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime-multibot.test.ts[2m > [22m[2mpage-runtime —— v0.24 多 bot 寻址[2m > [22m[2m不传 botId → 向后兼容，落到任一可信页（行为不变）
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime-multibot.test.ts[2m > [22m[2mpage-runtime —— v0.24 多 bot 寻址[2m > [22m[2m不存在的 botId → 不走错窗口（无匹配页 → echo 走 Node 回退）
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime-multibot.test.ts[2m > [22m[2mpage-runtime —— v0.24 多 bot 寻址[2m > [22m[2m同意闸门按 botId 路由：chat-send 只问该 bot 的窗口
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime-multibot.test.ts[2m > [22m[2mpage-runtime —— v0.24 多 bot 寻址[2m > [22m[2m指定 botId 但该 bot 窗口不在场 → consent-unavailable（不拿别人的同意）
+[22m[39m[automation] started, 0 tasks loaded
+
+ [32m✓[39m tests/desktop/page-runtime-multibot.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 155[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-strategy-generator.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 67[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-registry.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 9[2mms[22m[39m
+ [32m✓[39m tests/desktop/qd-r7-real-body-sentinel.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 49[2mms[22m[39m
+ [32m✓[39m tests/desktop/kernel-message-history.test.ts [2m([22m[2m15 tests[22m[2m)[22m[90m 12[2mms[22m[39m
+[90mstderr[2m | tests/desktop/v07-storage-runtime.test.ts[2m > [22m[2mv0.7: file-storage-backend 持久化[2m > [22m[2m文件损坏时 readAll 返回空对象并打警告（不崩溃）
+[22m[39m[storage] failed to read C:\Users\lidicn\AppData\Local\Temp\studio-v07-test-1792767537943\corrupt.json, starting empty: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+
+ [32m✓[39m tests/desktop/v07-storage-runtime.test.ts [2m([22m[2m12 tests[22m[2m)[22m[33m 333[2mms[22m[39m
+ [32m✓[39m tests/desktop/studio-execution-store.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 195[2mms[22m[39m
+(node:31932) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/desktop/bot-room-summary.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 1179[2mms[22m[39m
+[90mstdout[2m | tests/desktop/web-engine-reconnect.test.ts[2m > [22m[2mWebEngine S4: reconnect on disconnect[2m > [22m[2m6. waitForNextReply also reconnects on disconnect
+[22m[39m[web-engine] waitForNextReply start, hasConsume=false
+
+ [32m✓[39m tests/desktop/web-engine-reconnect.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 3007[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S4: reconnect on disconnect[2m > [22m1. no disconnect → reconnectAttempts stays 0 [33m516[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S4: reconnect on disconnect[2m > [22m7. send() with chat-send failure → disconnected immediately (no reconnect) [33m2023[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-loop.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 12[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-account-lock.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 128[2mms[22m[39m
+ [32m✓[39m tests/desktop/continuation-prompt.test.ts [2m([22m[2m24 tests[22m[2m)[22m[90m 14[2mms[22m[39m
+ [32m✓[39m tests/desktop/inject-loader.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 52[2mms[22m[39m
+ [32m✓[39m tests/desktop/agent-channel-execution-session.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 158[2mms[22m[39m
+(node:25996) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/desktop/bot-chat-room-store.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 552[2mms[22m[39m
+ [32m✓[39m tests/desktop/response-classifier.test.ts [2m([22m[2m17 tests[22m[2m)[22m[90m 14[2mms[22m[39m
+(node:320) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/desktop/bot-chat-relay-integration.test.ts [2m([22m[2m2 tests[22m[2m)[22m[90m 195[2mms[22m[39m
+ [32m✓[39m tests/desktop/audit-mcp-controller.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 62[2mms[22m[39m
+ [32m✓[39m tests/desktop/audit-api-security.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 1294[2mms[22m[39m
+   [33m[2m✓[22m[39m R1-06 并发拒绝如实计入 rejectedByConcurrency[2m > [22m超限请求 429，queue/status 报告 rejectedByConcurrency≥1 [33m438[2mms[22m[39m
+   [33m[2m✓[22m[39m R1-04 SSE 客户端断开 → 中止上游[2m > [22m客户端 abort 触发上游 AbortSignal（不再白耗配额、空占并发位） [33m731[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-persona-registry.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 190[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-report-merge.test.ts [2m([22m[2m9 tests[22m[2m)[22m[90m 22[2mms[22m[39m
+ [32m✓[39m tests/desktop/shadow-store.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 9[2mms[22m[39m
+(node:16576) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstdout[2m | tests/desktop/tool-registry.test.ts[2m > [22m[2mv0.3.1 allowlist 端到端闸门（desktop-host）
+[22m[39m[automation] started, 0 tasks loaded
+
+ [32m✓[39m tests/desktop/tool-registry.test.ts [2m([22m[2m13 tests[22m[2m)[22m[90m 72[2mms[22m[39m
+ [32m✓[39m tests/desktop/http-api.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 157[2mms[22m[39m
+ [32m✓[39m tests/desktop/agent-lan-access.test.ts [2m([22m[2m21 tests[22m[2m)[22m[90m 15[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-instructions.test.ts [2m([22m[2m9 tests[22m[2m)[22m[90m 7[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-slot-runtime.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 11[2mms[22m[39m
+ [32m✓[39m tests/desktop/web-engine-retry.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 5659[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S8: send() retry with backoff[2m > [22m1. first attempt succeeds → no retry [33m509[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S8: send() retry with backoff[2m > [22m2. transient failure on first attempt → retry succeeds [33m556[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S8: send() retry with backoff[2m > [22m3. all retries exhausted → disconnected [33m2004[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S8: send() retry with backoff[2m > [22m4. exponential backoff: 500ms then 1500ms [33m2027[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S8: send() retry with backoff[2m > [22m6. retry succeeds on chat-send failure [33m561[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-meeting-commands.test.ts [2m([22m[2m15 tests[22m[2m)[22m[90m 12[2mms[22m[39m
+ [32m✓[39m tests/desktop/audit.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 11[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-mention-parser.test.ts [2m([22m[2m17 tests[22m[2m)[22m[90m 13[2mms[22m[39m
+ [32m✓[39m tests/desktop/bridge-runtime.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 30[2mms[22m[39m
+ [32m✓[39m tests/desktop/metrics-report.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 13[2mms[22m[39m
+ [32m✓[39m tests/desktop/web-engine-input-validation.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 2629[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S19: input validation[2m > [22m1. send("") still works (no crash) [33m507[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S19: input validation[2m > [22m2. send(超长文本) does not crash [33m512[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S19: input validation[2m > [22m3. send(中文/emoji/换行) normal [33m502[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S19: input validation[2m > [22m5. onRoundComplete fires with correct structure [33m514[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S19: input validation[2m > [22m6. no onRoundComplete → silent [33m513[2mms[22m[39m
+ [32m✓[39m tests/desktop/tools-contract.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 7[2mms[22m[39m
+ [32m✓[39m tests/desktop/kernel-edit-engine.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 112[2mms[22m[39m
+(node:29708) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstdout[2m | tests/desktop/page-runtime.test.ts[2m > [22m[2mpage-runtime + 宿主路由[2m > [22m[2mecho 经页端路由返回成功
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime.test.ts[2m > [22m[2mpage-runtime + 宿主路由[2m > [22m[2mchat-send 需用户同意，allow-once 放行
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime.test.ts[2m > [22m[2mpage-runtime + 宿主路由[2m > [22m[2mchat-send 用户拒绝 → consent-denied
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime.test.ts[2m > [22m[2mpage-runtime + 宿主路由[2m > [22m[2m无页端连接 → chat-send fail-closed 拒绝（无人可问，记 consent-unavailable）
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime.test.ts[2m > [22m[2mpage-runtime + 宿主路由[2m > [22m[2mecho 无页端 → Node 回退（snapshot）
+[22m[39m[automation] started, 0 tasks loaded
+
+ [32m✓[39m tests/desktop/page-runtime.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 178[2mms[22m[39m
+ [32m✓[39m tests/desktop/agent-pwa-assets.test.ts [2m([22m[2m15 tests[22m[2m)[22m[90m 17[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-mention-router.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 11[2mms[22m[39m
+ [32m✓[39m tests/desktop/host-client-timeout.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 7[2mms[22m[39m
+ [32m✓[39m tests/desktop/shadow-api-migration.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 602[2mms[22m[39m
+   [33m[2m✓[22m[39m 旧 Shadow API 迁移清单与源码一致（W5）[2m > [22m7 个旧面板的引用方收敛在白名单内（F4 后 4 个经 settings-entry 可达） [33m474[2mms[22m[39m
+ [32m✓[39m tests/desktop/capabilities-web-fetch.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 21[2mms[22m[39m
+ [32m✓[39m tests/desktop/kernel-tool-bridge.test.ts [2m([22m[2m12 tests[22m[2m)[22m[90m 8[2mms[22m[39m
+(node:5368) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstdout[2m | tests/e2e/smoke.test.ts[2m > [22m[2mv0.2 最小闭环
+[22m[39m[automation] started, 0 tasks loaded
+
+ [32m✓[39m tests/e2e/smoke.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 118[2mms[22m[39m
+(node:33056) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstdout[2m | tests/desktop/page-runtime-owner-scope.test.ts[2m > [22m[2mpage-runtime pending 按连接归属清理[2m > [22m[2m关闭闲置页不会结算另一个页正在等待的工具调用
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime-owner-scope.test.ts[2m > [22m[2mpage-runtime pending 按连接归属清理[2m > [22m[2m关闭 botA 的页不会代替 botB 的待决同意做 deny
+[22m[39m[automation] started, 0 tasks loaded
+
+ [32m✓[39m tests/desktop/page-runtime-owner-scope.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 991[2mms[22m[39m
+   [33m[2m✓[22m[39m page-runtime pending 按连接归属清理[2m > [22m关闭闲置页不会结算另一个页正在等待的工具调用 [33m558[2mms[22m[39m
+   [33m[2m✓[22m[39m page-runtime pending 按连接归属清理[2m > [22m关闭 botA 的页不会代替 botB 的待决同意做 deny [33m432[2mms[22m[39m
+[90mstdout[2m | tests/desktop/desktop-entry.test.ts[2m > [22m[2m注入装配（entry + shims）[2m > [22m[2minstallStudio 装配直连桥并挂 window.__deepseekStudio
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+[90mstderr[2m | tests/desktop/desktop-entry.test.ts[2m > [22m[2m注入装配（entry + shims）[2m > [22m[2minstallStudio 装配直连桥并挂 window.__deepseekStudio
+[22m[39m[StudioUI] chat room skipped: no __studioChatConfig (config.json missing chatRooms?)
+
+ [32m✓[39m tests/desktop/desktop-entry.test.ts [2m([22m[2m2 tests[22m[2m)[22m[90m 23[2mms[22m[39m
+ [32m✓[39m tests/desktop/tauri-workbench.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 11[2mms[22m[39m
+ [32m✓[39m tests/desktop/kernel-history-store.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 8[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-authority.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 16[2mms[22m[39m
+ [32m✓[39m tests/desktop/kernel-e2e-tool-round.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 4027[2mms[22m[39m
+   [33m[2m✓[22m[39m S6 端到端：无 nudge 完成一个工具回合[2m > [22m完整回合：用户问 → 工具执行 → 回填 → 最终答案，stopReason=completed [33m2016[2mms[22m[39m
+   [33m[2m✓[22m[39m S6 端到端：无 nudge 完成一个工具回合[2m > [22m工具失败也能闭环（不卡死在 nudge） [33m2009[2mms[22m[39m
+ [32m✓[39m tests/desktop/studio-context-budget.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 6[2mms[22m[39m
+ [32m✓[39m tests/desktop/tools-audit.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 6[2mms[22m[39m
+ [32m✓[39m tests/desktop/streaming-tool-parser.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 10[2mms[22m[39m
+ [32m✓[39m tests/desktop/studio-controls-store.test.ts [2m([22m[2m3 tests[22m[2m)[22m[90m 7[2mms[22m[39m
+(node:3688) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstdout[2m | tests/desktop/page-runtime-disconnect.test.ts[2m > [22m[2mpage-runtime 断线结算（C4 回归）[2m > [22m[2m同意前页端断开 → pendingConsent 立即结算，不干等 60s
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/page-runtime-disconnect.test.ts[2m > [22m[2mpage-runtime 断线结算（C4 回归）[2m > [22m[2m派发后页端断开 → pendingDispatch 立即结算，不干等 30s
+[22m[39m[automation] started, 0 tasks loaded
+
+ [32m✓[39m tests/desktop/page-runtime-disconnect.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 419[2mms[22m[39m
+ [32m✓[39m tests/desktop/kernel-session-manager.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 13[2mms[22m[39m
+ [32m✓[39m tests/desktop/bridge-storage-concurrency.test.ts [2m([22m[2m2 tests[22m[2m)[22m[90m 29[2mms[22m[39m
+[90mstdout[2m | tests/desktop/web-engine-edge.test.ts[2m > [22m[2mWebEngine S16: edge cases[2m > [22m[2m5. waitForNextReply with consumeAutoReply returns complete immediately
+[22m[39m[web-engine] waitForNextReply start, hasConsume=true
+
+ [32m✓[39m tests/desktop/web-engine-edge.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 2534[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S16: edge cases[2m > [22m1. send() with chat-insert failing → immediately disconnected [33m2021[2mms[22m[39m
+   [33m[2m✓[22m[39m WebEngine S16: edge cases[2m > [22m4. send() empty text still works [33m509[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-handoff-parser.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 13[2mms[22m[39m
+ [32m✓[39m tests/desktop/deepseek-sse-frame-decoder.test.ts [2m([22m[2m3 tests[22m[2m)[22m[90m 6[2mms[22m[39m
+ [32m✓[39m tests/desktop/task-loop-integration.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 4008[2mms[22m[39m
+   [33m[2m✓[22m[39m TaskLoop 集成[2m > [22m场景2：工具调用 + task_complete → stopReason=completed [33m2002[2mms[22m[39m
+   [33m[2m✓[22m[39m TaskLoop 集成[2m > [22m场景3：跑满 maxRounds → stopReason=max-rounds [33m2002[2mms[22m[39m
+ [32m✓[39m tests/desktop/policy-contract.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 37[2mms[22m[39m
+(node:22580) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstdout[2m | tests/desktop/search-files-host.test.ts[2m > [22m[2msearch_files 接线[2m > [22m[2m默认 list：能列出工作区根下的文件
+[22m[39m[automation] started, 0 tasks loaded
+
+[90mstdout[2m | tests/desktop/search-files-host.test.ts[2m > [22m[2msearch_files 接线[2m > [22m[2m默认 list：能列出工作区根下的文件
+[22m[39mLIST result: {
+  "ok": true,
+  "data": {
+    "root": "C:\\Users\\lidicn\\AppData\\Local\\Temp\\sf-host-wWYCxE",
+    "entries": [
+      {
+        "path": "a.txt",
+        "type": "file",
+        "size": 5
+      },
+      {
+        "path": "sub",
+        "type": "dir"
+      },
+      {
+        "path": "sub/b.txt",
+        "type": "file",
+        "size": 5
+      }
+    ],
+    "total": 3,
+    "truncated": false
+  }
+}
+
+[90mstdout[2m | tests/desktop/search-files-host.test.ts[2m > [22m[2msearch_files 接线[2m > [22m[2mgrep：能在工作区内搜内容
+[22m[39m[automation] started, 0 tasks loaded
+
+ [32m✓[39m tests/desktop/search-files-host.test.ts [2m([22m[2m2 tests[22m[2m)[22m[90m 97[2mms[22m[39m
+ [32m✓[39m tests/desktop/capabilities-web-search.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 7[2mms[22m[39m
+ [32m✓[39m tests/desktop/bridge-storage.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 11[2mms[22m[39m
+ [32m✓[39m tests/desktop/metrics-replay.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 6[2mms[22m[39m
+ [32m✓[39m tests/desktop/tools-doc-drift-security.test.ts [2m([22m[2m9 tests[22m[2m)[22m[90m 193[2mms[22m[39m
+ [32m✓[39m tests/desktop/capabilities-token-cost.test.ts [2m([22m[2m9 tests[22m[2m)[22m[90m 6[2mms[22m[39m
+ [32m✓[39m tests/desktop/stream-completion-sentinel.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 5[2mms[22m[39m
+ [32m✓[39m tests/desktop/agent-lan-preflight.test.ts [2m([22m[2m3 tests[22m[2m)[22m[90m 73[2mms[22m[39m
+ [32m✓[39m tests/desktop/task-loop-snapshot.test.ts [2m([22m[2m1 test[22m[2m)[22m[90m 4[2mms[22m[39m
+ [32m✓[39m tests/desktop/kernel-adapter.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 2014[2mms[22m[39m
+   [33m[2m✓[22m[39m BotAdapter（S16）[2m > [22m4. 多轮工具回合闭环 [33m2008[2mms[22m[39m
+ [32m✓[39m tests/desktop/bot-participant-resolver.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 5[2mms[22m[39m
+ [32m✓[39m tests/desktop/direct-bridge.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 6[2mms[22m[39m
+ [32m✓[39m tests/desktop/capabilities-context-compress.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 6[2mms[22m[39m
+ [32m✓[39m tests/desktop/kernel-real-tool-executor.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 8[2mms[22m[39m
+ [32m✓[39m tests/desktop/tools-symbols.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 6[2mms[22m[39m
+ [32m✓[39m tests/desktop/plan-gate.test.ts [2m([22m[2m9 tests[22m[2m)[22m[90m 5[2mms[22m[39m
+ [32m✓[39m tests/desktop/shared-context-budget.test.ts [2m([22m[2m3 tests[22m[2m)[22m[90m 5[2mms[22m[39m
+ [32m✓[39m tests/desktop/pi-transport-probe.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 12[2mms[22m[39m
+ [32m✓[39m tests/desktop/telemetry-store.test.ts [2m([22m[2m3 tests[22m[2m)[22m[90m 32[2mms[22m[39m
+ [32m✓[39m tests/desktop/host-client.test.ts [2m([22m[2m1 test[22m[2m)[22m[90m 40[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-definitions-v04.test.ts [2m([22m[2m3 tests[22m[2m)[22m[90m 4[2mms[22m[39m
+ [32m✓[39m tests/desktop/bridge-transport-origin.test.ts [2m([22m[2m1 test[22m[2m)[22m[90m 7[2mms[22m[39m
+ [32m✓[39m tests/desktop/tools-bench.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 7[2mms[22m[39m
+ [32m✓[39m tests/desktop/automation-overlap.test.ts [2m([22m[2m1 test[22m[2m)[22m[90m 56[2mms[22m[39m
+ [32m✓[39m tests/desktop/transport-webview.test.ts [2m([22m[2m1 test[22m[2m)[22m[90m 234[2mms[22m[39m
+ [32m✓[39m tests/desktop/pow-expiry.test.ts [2m([22m[2m3 tests[22m[2m)[22m[90m 5[2mms[22m[39m
+ [32m✓[39m tests/desktop/tools-m3-clean.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 4[2mms[22m[39m
+ [32m✓[39m tests/desktop/studio-ui-lifecycle.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 4[2mms[22m[39m
+ [32m✓[39m tests/desktop/ui-shadow-root.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 6[2mms[22m[39m
+ [32m✓[39m tests/desktop/ui-tokens.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 6[2mms[22m[39m
+ [32m✓[39m tests/desktop/task-loop-reply.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 10[2mms[22m[39m
+ [32m✓[39m tests/desktop/ui-contract.test.ts [2m([22m[2m3 tests[22m[2m)[22m[90m 10[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-call-dedupe.test.ts [2m([22m[2m2 tests[22m[2m)[22m[90m 5[2mms[22m[39m
+[90mstdout[2m | tests/desktop/kernel-test-runner.test.ts[2m > [22m[2mC-2 test-runner[2m > [22m[2m跑测试返回结构化结果
+[22m[39mresult: {"ok":false,"passed":0,"failed":0,"total":0}
+
+ [32m✓[39m tests/desktop/kernel-test-runner.test.ts [2m([22m[2m1 test[22m[2m)[22m[90m 20[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-card-ui.redesign.test.ts [2m([22m[2m23 tests[22m[2m)[22m[33m 364[2mms[22m[39m
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m默认可见；测量到 composer 后避开内容区，并支持 Ctrl+Shift+H 往返
+[22m[39m[studio-chat-ui] createStudioChatUI start, injecting styles= [33mfalse[39m
+[studio-chat-ui] composer settled at [33m560[39m px, reveal overlay
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay hidden
+[studio-chat-ui] overlay shown
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m测不到 composer 时保持 pending，不用 Studio 层遮挡原生页面
+[22m[39m[studio-chat-ui] createStudioChatUI start, injecting styles= [33mfalse[39m
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m工具卡只写入 .ds-sc-msg-assistant，原生消息树完全不变
+[22m[39m[studio-chat-ui] createStudioChatUI start, injecting styles= [33mfalse[39m
+[studio-chat-ui] composer settled at [33m560[39m px, reveal overlay
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2mWorkbench Inspector 已吸收到主视图：可展开并显示工具终态
+[22m[39m[studio-chat-ui] createStudioChatUI start, injecting styles= [33mfalse[39m
+[studio-chat-ui] composer settled at [33m560[39m px, reveal overlay
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m最终答复走 Markdown 清洗，错误卡显示中文错误码并写持久化记录
+[22m[39m[studio-chat-ui] createStudioChatUI start, injecting styles= [33mfalse[39m
+[studio-chat-ui] composer settled at [33m560[39m px, reveal overlay
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m工具结果晚于气泡定稿返回时，仍回写原 callId 卡片而不是新回合
+[22m[39m[studio-chat-ui] createStudioChatUI start, injecting styles= [33mfalse[39m
+[studio-chat-ui] composer settled at [33m560[39m px, reveal overlay
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m切换会话会从持久化记录恢复最终答复
+[22m[39m[studio-chat-ui] createStudioChatUI start, injecting styles= [33mfalse[39m
+[studio-chat-ui] composer settled at [33m560[39m px, reveal overlay
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m切换会话会从持久化记录恢复最终答复
+[22m[39m[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m切换会话恢复工具记录时保留原始参数
+[22m[39m[studio-chat-ui] createStudioChatUI start, injecting styles= [33mfalse[39m
+[studio-chat-ui] composer settled at [33m560[39m px, reveal overlay
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m切换会话恢复工具记录时保留原始参数
+[22m[39m[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m重放历史错误折叠成一条汇总，不逐张刷卡片
+[22m[39m[studio-chat-ui] createStudioChatUI start, injecting styles= [33mfalse[39m
+[studio-chat-ui] composer settled at [33m560[39m px, reveal overlay
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m孤儿错误不入账：没有 user-message 的回合错误被丢弃
+[22m[39m[studio-chat-ui] createStudioChatUI start, injecting styles= [33mfalse[39m
+[studio-chat-ui] composer settled at [33m560[39m px, reveal overlay
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+
+[90mstderr[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m孤儿错误不入账：没有 user-message 的回合错误被丢弃
+[22m[39m[studio-chat-ui] drop orphan system-error, no user-message in turn: network-error
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m激活 route: 临时桶按空白会话处理，不放纵历史残留
+[22m[39m[studio-chat-ui] createStudioChatUI start, injecting styles= [33mfalse[39m
+[studio-chat-ui] composer settled at [33m560[39m px, reveal overlay
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m侧栏收起态 fab 避让：overlay 首带被裁掉，fab 可点击
+[22m[39m[studio-chat-ui] createStudioChatUI start, injecting styles= [33mfalse[39m
+[studio-chat-ui] composer settled at [33m560[39m px, reveal overlay
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m44[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m44[39m )
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2mfab 嵌在 #root 深层时也能测到（body 直接子元素里没有它）
+[22m[39m[studio-chat-ui] createStudioChatUI start, injecting styles= [33mfalse[39m
+[studio-chat-ui] composer settled at [33m560[39m px, reveal overlay
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m52[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m52[39m )
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m侧栏展开态不做 fab 避让：变量归零，不裁任何区域
+[22m[39m[studio-chat-ui] createStudioChatUI start, injecting styles= [33mfalse[39m
+[studio-chat-ui] composer settled at [33m560[39m px, reveal overlay
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m268[39m px (sidebarRight= [33m260[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m268[39m px (sidebarRight= [33m260[39m , fabGuard= [33m0[39m )
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m上下文预算提示：有文案时可见，空串清除，且不产生消息气泡
+[22m[39m[studio-chat-ui] createStudioChatUI start, injecting styles= [33mfalse[39m
+[studio-chat-ui] composer settled at [33m560[39m px, reveal overlay
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m切换会话会清掉上一条预算提示，避免旧告警挂到新会话
+[22m[39m[studio-chat-ui] createStudioChatUI start, injecting styles= [33mfalse[39m
+[studio-chat-ui] composer settled at [33m560[39m px, reveal overlay
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+
+[90mstdout[2m | tests/desktop/studio-chat-ui.test.ts[2m > [22m[2mStudio 主视图[2m > [22m[2m清空记录同时清掉预算提示
+[22m[39m[studio-chat-ui] createStudioChatUI start, injecting styles= [33mfalse[39m
+[studio-chat-ui] composer settled at [33m560[39m px, reveal overlay
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+[studio-chat-ui] overlay layout: bottom= [33m248[39m px (composerTop= [33m560[39m ), left= [33m0[39m px (sidebarRight= [33m0[39m , fabGuard= [33m0[39m )
+
+ [32m✓[39m tests/desktop/studio-chat-ui.test.ts [2m([22m[2m17 tests[22m[2m)[22m[33m 662[2mms[22m[39m
+[90mstdout[2m | tests/desktop/qd-r4-stream-break-regression.test.ts[2m > [22m[2mQD-R4-01 自动续跑的重试不再被自己的 pending 守卫挡死[2m > [22m[2mCONTROL：续跑回复里再出现工具调用时会继续发出下一轮续跑
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+[interceptor] forward: shell_exec {"command":"echo one"}
+
+[90mstdout[2m | tests/desktop/qd-r4-stream-break-regression.test.ts[2m > [22m[2mQD-R4-01 自动续跑的重试不再被自己的 pending 守卫挡死[2m > [22m[2mCONTROL：续跑回复里再出现工具调用时会继续发出下一轮续跑
+[22m[39m[interceptor] forward: shell_exec {"command":"echo two"}
+
+[90mstdout[2m | tests/desktop/qd-r4-stream-break-regression.test.ts[2m > [22m[2mQD-R4-01 自动续跑的重试不再被自己的 pending 守卫挡死[2m > [22m[2m429 后按退避重发，且重试不消耗工具续跑步数
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+[interceptor] forward: shell_exec {"command":"echo one"}
+
+[90mstdout[2m | tests/desktop/qd-r4-stream-break-regression.test.ts[2m > [22m[2mQD-R4-02 被截断的工具标签不再静默消失[2m > [22m[2m流在工具标签中间结束时报错，且不当成正常完成
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+[90mstdout[2m | tests/desktop/qd-r4-stream-break-regression.test.ts[2m > [22m[2mQD-R4-03 无完成哨兵的流不再被当成正常完成[2m > [22m[2m无工具的回复被截断时给出可见错误
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+[90mstdout[2m | tests/desktop/qd-r4-stream-break-regression.test.ts[2m > [22m[2mQD-R4-03 无完成哨兵的流不再被当成正常完成[2m > [22m[2m带完成哨兵的正常流不报错
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+[90mstdout[2m | tests/desktop/qd-r4-stream-break-regression.test.ts[2m > [22m[2mQD-R4-04 用户点停止后循环真的停[2m > [22m[2mabort 后不再发出续跑，也不弹网络错误
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+[interceptor] forward: shell_exec {"command":"echo one"}
+
+[90mstdout[2m | tests/desktop/qd-r4-stream-break-regression.test.ts[2m > [22m[2mQD-R4-05 新用户消息不继承上一回合的 pending[2m > [22m[2m任务 B 的 prompt 尾部没有任务 A 的工具结果
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+[interceptor] forward: shell_exec {"command":"echo one"}
+
+[90mstdout[2m | tests/desktop/qd-r4-stream-break-regression.test.ts[2m > [22m[2mQD-R6-01 非对话 XHR 不参与断流判定[2m > [22m[2mCONTROL：settings / history 这类非对话请求结束时不报断流、不排重发
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+[90mstdout[2m | tests/desktop/qd-r4-stream-break-regression.test.ts[2m > [22m[2mQD-R6-01 非对话 XHR 不参与断流判定[2m > [22m[2m对照：真正的 completion 断流仍会被判定并报错
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+ [32m✓[39m tests/desktop/qd-r4-stream-break-regression.test.ts [2m([22m[2m9 tests[22m[2m)[22m[90m 66[2mms[22m[39m
+[90mstdout[2m | tests/desktop/qd-r7-stream-sentinel-ownership.test.ts[2m > [22m[2mQD-R7-01 / F1：EOF 必须 flush 帧缓冲[2m > [22m[2m流尾不带空行时，完成哨兵仍被识别（不再误报截断）
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+[90mstdout[2m | tests/desktop/qd-r7-stream-sentinel-ownership.test.ts[2m > [22m[2mQD-R7-01 / F1：EOF 必须 flush 帧缓冲[2m > [22m[2m对照：真的没有哨兵时仍判截断（负控，确保上一条不是空绿）
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+[90mstdout[2m | tests/desktop/qd-r7-stream-sentinel-ownership.test.ts[2m > [22m[2mQD-R7-02 / F2：0 字节 = no-stream，不算截断也不吃预算[2m > [22m[2m空响应体的对话请求静默收尾，不产生错误卡、不排重发
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+[90mstdout[2m | tests/desktop/qd-r7-stream-sentinel-ownership.test.ts[2m > [22m[2mQD-R7-03 / F4：哨兵与结算归属到单条流[2m > [22m[2m并发两条流时，晚到的旧流结算不污染当前轮（不报错、不排重发）
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+[90mstdout[2m | tests/desktop/qd-r7-stream-sentinel-ownership.test.ts[2m > [22m[2mQD-R7-04 / F8：重试幂等（重放体逐字节相等）[2m > [22m[2m首轮断流后的重发与原请求逐字节相同，且不改写 parent_message_id
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+[90mstdout[2m | tests/desktop/qd-r7-stream-sentinel-ownership.test.ts[2m > [22m[2mQD-R7-05 / F10：预算按真实发出的重试计数[2m > [22m[2m连续 429 只发 2 次重试，文案报「已自动重试 2 次」而不是虚报
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+ [32m✓[39m tests/desktop/qd-r7-stream-sentinel-ownership.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 40[2mms[22m[39m
+[90mstdout[2m | tests/desktop/qd-r5-first-attempt-retry.test.ts[2m > [22m[2mQD-R5-01 首轮断流自动重试[2m > [22m[2m首轮 network-error 自动重发，最多 2 次后停下并告知已重试
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+[90mstdout[2m | tests/desktop/qd-r5-first-attempt-retry.test.ts[2m > [22m[2mQD-R5-01 首轮断流自动重试[2m > [22m[2m无完成哨兵的截断流也走自动重试
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+[90mstdout[2m | tests/desktop/qd-r5-first-attempt-retry.test.ts[2m > [22m[2mQD-R5-01 首轮断流自动重试[2m > [22m[2m致命错误（401）不重试，保持 fail-closed
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+[90mstdout[2m | tests/desktop/qd-r5-first-attempt-retry.test.ts[2m > [22m[2mQD-R5-01 首轮断流自动重试[2m > [22m[2m用户点停止后不重试（abort 优先于重试预算）
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+ [32m✓[39m tests/desktop/qd-r5-first-attempt-retry.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 27[2mms[22m[39m
+ [32m✓[39m tests/desktop/studio-composer-actions.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 287[2mms[22m[39m
+[90mstderr[2m | tests/desktop/studio-composer-actions.test.ts[2m > [22m[2mStudio composer quick actions[2m > [22m[2m没有原生锚点时隐藏且不遮挡页面
+[22m[39m[StudioUI] composer actions hidden: native 深度思考/智能搜索 anchor not found
+
+[90mstdout[2m | tests/desktop/qd-r4-fetch-path-regression.test.ts[2m > [22m[2mQD-R4-02 fetch 路径：截断的工具标签不再静默消失[2m > [22m[2m流在工具标签中间结束时报 tool-call-truncated，且不当成正常完成
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+[90mstdout[2m | tests/desktop/qd-r4-fetch-path-regression.test.ts[2m > [22m[2mQD-R4-02 fetch 路径：截断的工具标签不再静默消失[2m > [22m[2m完整流（带完成哨兵）不报错
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+[interceptor] forward: shell_exec {"command":"echo hi"}
+
+[90mstdout[2m | tests/desktop/qd-r4-fetch-path-regression.test.ts[2m > [22m[2mQD-R4-06 fetch 路径：读流中途抛错不再卡死[2m > [22m[2mUI 收尾并给出可见错误（修复前 streamActive 永为 true、无任何反馈）
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+[interceptor] forward: shell_exec {"command":"echo one"}
+
+ [32m✓[39m tests/desktop/qd-r4-fetch-path-regression.test.ts [2m([22m[2m3 tests[22m[2m)[22m[90m 141[2mms[22m[39m
+ [32m✓[39m tests/desktop/studio-chat-room-audit-ui.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 524[2mms[22m[39m
+   [33m[2m✓[22m[39m v0.30 审计报告卡 UI[2m > [22mtask-progress → 渲染蓝边进度行 [33m345[2mms[22m[39m
+ [32m✓[39m tests/desktop/theme-toggle.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 27[2mms[22m[39m
+ [32m✓[39m tests/desktop/inspector-attachments.test.ts [2m([22m[2m12 tests[22m[2m)[22m[90m 237[2mms[22m[39m
+ [32m✓[39m tests/desktop/layout-breakpoints.test.ts [2m([22m[2m14 tests[22m[2m)[22m[90m 45[2mms[22m[39m
+[90mstdout[2m | tests/desktop/qd-r8-busy-status.test.ts[2m > [22m[2mQD-R8-01：普通回合结束后状态栏必须复位[2m > [22m[2m有正文、无工具的回合：流结束后 setBusy(false) 被调用
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+[90mstdout[2m | tests/desktop/qd-r8-busy-status.test.ts[2m > [22m[2mQD-R8-01：普通回合结束后状态栏必须复位[2m > [22m[2m只有思考、正文为空的回合：也必须复位，并明确告知本轮没有可见回复
+[22m[39m[interceptor] installed, fetch hook + XHR hook ready
+
+ [32m✓[39m tests/desktop/qd-r8-busy-status.test.ts [2m([22m[2m2 tests[22m[2m)[22m[90m 30[2mms[22m[39m
+ [32m✓[39m tests/desktop/workbench-components.test.ts [2m([22m[2m14 tests[22m[2m)[22m[90m 97[2mms[22m[39m
+ [32m✓[39m tests/desktop/desktop-hint.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 44[2mms[22m[39m
+ [32m✓[39m tests/desktop/mobile-viewport.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 34[2mms[22m[39m
+[90mstdout[2m | tests/desktop/studio-settings-entry.test.ts[2m > [22m[2mF4: Studio 设置入口[2m > [22m[2m找到账号菜单锚点，并把入口插在外层菜单项之后（不是内层 span）
+[22m[39m[StudioUI] settings entry injected next to 系统设置
+
+[90mstdout[2m | tests/desktop/studio-settings-entry.test.ts[2m > [22m[2mF4: Studio 设置入口[2m > [22m[2m注入项保留官方菜单项的图标（不再是无图标纯文字）
+[22m[39m[StudioUI] settings entry injected next to 系统设置
+
+[90mstdout[2m | tests/desktop/studio-settings-entry.test.ts[2m > [22m[2mF4: Studio 设置入口[2m > [22m[2m点击账号后（菜单异步出现）也能注入
+[22m[39m[StudioUI] settings panel mounted
+[StudioUI] skills panel mounted
+[StudioUI] mcp dialog mounted
+[StudioUI] project picker mounted
+[StudioUI] composer actions installed
+[StudioUI] settings entry injected next to 系统设置
+
+[90mstderr[2m | tests/desktop/studio-settings-entry.test.ts[2m > [22m[2mF4: Studio 设置入口[2m > [22m[2m点击账号后（菜单异步出现）也能注入
+[22m[39m[StudioUI] composer actions hidden: native 深度思考/智能搜索 anchor not found
+
+[90mstdout[2m | tests/desktop/studio-settings-entry.test.ts[2m > [22m[2mF4: Studio 设置入口[2m > [22m[2m点击入口会触发 ui:settings
+[22m[39m[StudioUI] settings panel mounted
+[StudioUI] skills panel mounted
+[StudioUI] mcp dialog mounted
+[StudioUI] project picker mounted
+[StudioUI] composer actions installed
+[StudioUI] settings entry injected next to 系统设置
+
+[90mstderr[2m | tests/desktop/studio-settings-entry.test.ts[2m > [22m[2mF4: Studio 设置入口[2m > [22m[2m点击入口会触发 ui:settings
+[22m[39m[StudioUI] composer actions hidden: native 深度思考/智能搜索 anchor not found
+
+[90mstdout[2m | tests/desktop/studio-settings-entry.test.ts[2m > [22m[2mF4: Studio 设置入口[2m > [22m[2mdestroy 移除入口并解绑
+[22m[39m[StudioUI] settings panel mounted
+[StudioUI] skills panel mounted
+[StudioUI] mcp dialog mounted
+[StudioUI] project picker mounted
+[StudioUI] composer actions installed
+[StudioUI] settings entry injected next to 系统设置
+
+[90mstderr[2m | tests/desktop/studio-settings-entry.test.ts[2m > [22m[2mF4: Studio 设置入口[2m > [22m[2mdestroy 移除入口并解绑
+[22m[39m[StudioUI] composer actions hidden: native 深度思考/智能搜索 anchor not found
+
+[90mstdout[2m | tests/desktop/studio-settings-entry.test.ts[2m > [22m[2mF4: Studio 设置入口[2m > [22m[2m幂等：重复调用不重复插入
+[22m[39m[StudioUI] settings entry injected next to 系统设置
+
+ [32m✓[39m tests/desktop/studio-settings-entry.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 797[2mms[22m[39m
+   [33m[2m✓[22m[39m F4: Studio 设置入口[2m > [22m点击账号后（菜单异步出现）也能注入 [33m476[2mms[22m[39m
+ [32m✓[39m tests/desktop/inspector-mirror.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 160[2mms[22m[39m
+ [32m✓[39m tests/desktop/workbench-state.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 6[2mms[22m[39m
+ [32m✓[39m tests/desktop/workbench-execution-view.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 201[2mms[22m[39m
+ [32m✓[39m tests/desktop/agent-channel-tool-run.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 9[2mms[22m[39m
+ [32m✓[39m tests/desktop/step-flow-ui.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 190[2mms[22m[39m
+ [32m✓[39m tests/desktop/workbench-shell.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 65[2mms[22m[39m
+ [32m✓[39m tests/desktop/consent.test.ts [2m([22m[2m6 tests[22m[2m)[22m[90m 218[2mms[22m[39m
+[90mstderr[2m | tests/desktop/host-layout-adapter.test.ts[2m > [22m[2mhost-layout-adapter 三档快照/退订/降级 warn（W8/M12）[2m > [22m[2mobserve 退订后 resize 不再回调；dispose 幂等
+[22m[39m[host-layout] degraded { level: [32m'L2'[39m, degradeReason: [32m'composer-not-found'[39m }
+[host-layout] degraded { level: [32m'L2'[39m, degradeReason: [32m'disposed'[39m }
+
+ [32m✓[39m tests/desktop/host-layout-adapter.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 35[2mms[22m[39m
+ [32m✓[39m tests/desktop/chat-capabilities.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 43[2mms[22m[39m
+ [32m✓[39m tests/desktop/studio-settings-panel-controls.test.ts [2m([22m[2m2 tests[22m[2m)[22m[90m 211[2mms[22m[39m
+ [32m✓[39m tests/desktop/chat-send-confirm.test.ts [2m([22m[2m2 tests[22m[2m)[22m[90m 36[2mms[22m[39m
+ [32m✓[39m tests/desktop/ui-dialog.test.ts [2m([22m[2m3 tests[22m[2m)[22m[90m 95[2mms[22m[39m
+ [32m✓[39m tests/desktop/focus-mode.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 108[2mms[22m[39m
+ [32m✓[39m tests/desktop/markdown-sanitize.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 85[2mms[22m[39m
+ [32m✓[39m tests/desktop/inspector-drawer.test.ts [2m([22m[2m1 test[22m[2m)[22m[90m 14[2mms[22m[39m
+ [32m✓[39m tests/desktop/sanitizer.test.ts [2m([22m[2m3 tests[22m[2m)[22m[90m 14[2mms[22m[39m
+ [32m✓[39m tests/desktop/ui-error-codes.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 4[2mms[22m[39m
+ [32m✓[39m tests/desktop/tool-run-event.test.ts [2m([22m[2m3 tests[22m[2m)[22m[90m 5[2mms[22m[39m
+ [32m✓[39m tests/desktop/workbench-statusbar.test.ts [2m([22m[2m2 tests[22m[2m)[22m[90m 7[2mms[22m[39m
+ [32m✓[39m tests/desktop/navigation-route-callback.test.ts [2m([22m[2m1 test[22m[2m)[22m[90m 21[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m174 passed[39m[22m[90m (174)[39m
+[2m      Tests [22m [1m[32m1715 passed[39m[22m[90m (1715)[39m
+[2m   Start at [22m 22:57:17
+[2m   Duration [22m 286.11s[2m (transform 5.75s, setup 0ms, collect 19.55s, tests 99.35s, environment 67.29s, prepare 34.06s)[22m
+
+SRC_LATEST_MTIME=1792764834.5520662000 tests/desktop/bot-chat-room-runtime.test.ts
+VITEST_FLIGHT_END @ 2026-10-23 23:02:05

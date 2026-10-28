@@ -1,0 +1,352 @@
+R8M_BEGIN @ 2026-10-23 23:07:16
+HEAD=9d093dc fix(studio-tools): 修复重复执行与技能误注入
+DIRTY_src_tools_tests=63
+PRE_latest_mtime=1792764789.4882773000 src/host/bot/chat-room-runtime.ts
+PRE_memstore=[2026-10-15 16:58:56.162116500 +0800]
+PRE_deskhost=[2026-10-23 22:05:11.320511200 +0800]
+PRE_toollist=[2026-10-20 21:47:35.955171700 +0800]
+
+[1m[7m[36m RUN [39m[27m[22m [36mv2.1.9 [39m[90mE:/NAS/deepseek-studio[39m
+
+(node:12500) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [31m×[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-01 memory.delete 过不过 consent 闸门（A.1 第 1 行）[2m > [22m复现：删除记忆应达 CONSENT_MIN_RISK 以上、需人工同意
+[31m   → risk=read 低于阈值 insert: expected 1 to be greater than or equal to 2[39m
+ [32m✓[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-01 memory.delete 过不过 consent 闸门（A.1 第 1 行）[2m > [22m正控：同族 privileged 工具确实被闸门认下（证明上一条的红不是尺坏）
+ [32m✓[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-01 memory.delete 过不过 consent 闸门（A.1 第 1 行）[2m > [22m正控：无页端连接时 consent 词表存在（fail-closed 的词汇面在位）
+ [31m×[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-02 execution-policy.ts 死码（A.1 第 2 行）[2m > [22m复现：孤儿策略模块应被删除或接入执行链
+[31m   → src/inject/execution-policy.ts 仍在盘: expected true to be false // Object.is equality[39m
+ [32m✓[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-02 execution-policy.ts 死码（A.1 第 2 行）[2m > [22m正控：该模块确实无人 import（否则上一条只是「未接入 consent」而非死码）
+ [32m✓[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-02 execution-policy.ts 死码（A.1 第 2 行）[2m > [22m正控：构建产物面无该模块残留（A.1 第 2 行点名的产物副本）
+ [32m✓[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-03 删除后广播（A.1 第 3 行）[2m > [22m正控：memory.save 广播仍在位（改造不得回归这一条）
+ [31m×[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-03 删除后广播（A.1 第 3 行）[2m > [22m复现：memory.delete 成功后应向页端广播（payload 不含被删 id 的校验才有对象）
+[31m   → 删除路径无广播：面板与宿主从此两套账: expected '\'memory.delete\': {\r\n          id:…' to contain 'broadcastMemories'[39m
+ [31m×[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-04 envelope 形态（A.1 第 4 行）[2m > [22m复现：不可信记忆信封模块应存在（[[STUDIO_UNTRUSTED_MEMORY_*]] 的唯一提供者）
+[31m   → expected false to be true // Object.is equality[39m
+ [31m×[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-04 envelope 形态（A.1 第 4 行）[2m > [22m复现：页端活格式器必须恰好包一层并中和内嵌哨兵
+[31m   → expected 'function formatMemoriesBlock(): strin…' to contain 'STUDIO_UNTRUSTED_MEMORY'[39m
+ [31m×[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-04 envelope 形态（A.1 第 4 行）[2m > [22m复现：空列表应返回空串（⛔ 把「没有记忆」当成一句正文喂进提示词）
+[31m   → expected '(No memories yet)' to be '' // Object.is equality[39m
+ [32m✓[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-04 envelope 形态（A.1 第 4 行）[2m > [22m正控：宿主侧 formatForPrompt 无生产消费者（活面是页端 formatMemoriesBlock）
+ [31m×[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-05 重名口径：invalidate 后同名 save（A.1 第 5 行）[2m > [22m复现：作废后同名再存应「复活原行」而⛔ 新增有效行
+[31m   → 总行数 1→2：同名重存另起一行: expected 2 to be 1 // Object.is equality[39m
+ [32m✓[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-05 重名口径：invalidate 后同名 save（A.1 第 5 行）[2m > [22m正控：现状仍是「一条有效 + 一条作废」，面板不会看到重复项（缺陷只在账本侧）
+ [31m×[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-06 source 可伪造性（A.1 第 6 行）[2m > [22m复现：宿主应覆盖调用方经 RPC 传入的 source（⛔ 原样透传）
+[31m   → memory.save 把 params.source 原样写入：模型可自封 source:"user": expected '\'memory.save\': {\r\n          id: \…' not to contain 'params.source'[39m
+ [32m✓[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-06 source 可伪造性（A.1 第 6 行）[2m > [22m正控：store 会如实落盘传入的 source（证明透传有牙齿，⛔ 死参）
+ [32m✓[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-07 注入预算与排序（A.1 第 7 行）[2m > [22m正控：置顶行排在最前（排序第一级在位）
+ [31m×[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-07 注入预算与排序（A.1 第 7 行）[2m > [22m复现：排序应有第二级 user 档（pinned → user → updated_at）
+[31m   → 现状只按 updatedAt 倒序：更新的 project 记忆挤掉个人记忆: expected [ 'proj-new', 'user-old' ] to deeply equal [ 'user-old', 'proj-new' ][39m
+ [31m×[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-07 注入预算与排序（A.1 第 7 行）[2m > [22m复现：注入预算应为 40 条（⛔ 50）[33m 1022[2mms[22m[39m
+[31m   → 实得 45 行: expected 45 to be less than or equal to 40[39m
+ [32m✓[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-07 注入预算与排序（A.1 第 7 行）[2m > [22m正控：页端活格式器的切片同样是 50（预算口径要两面一起改）
+ [32m✓[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-11 页端格式器执行面：记忆正文怎样落进提示词（A.1 第 8 行的可执行半格）[2m > [22m正控：桩化后能真跑出「## 已有记忆」块（先证明这把尺是活的）
+ [32m✓[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-11 页端格式器执行面：记忆正文怎样落进提示词（A.1 第 8 行的可执行半格）[2m > [22m正控：空列表执行后返回空串（与静态面同一口径）
+ [32m✓[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-11 页端格式器执行面：记忆正文怎样落进提示词（A.1 第 8 行的可执行半格）[2m > [22m正控：诱导串逐字进块＝注入面坐实（本腿绿＝危害的第一半，⛔ 模型响应的第二半）
+ [31m×[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-11 页端格式器执行面：记忆正文怎样落进提示词（A.1 第 8 行的可执行半格）[2m > [22m复现：正文进提示词前应先被包成「不可信数据」信封
+[31m   → 现状：零个信封标记: expected null to be truthy[39m
+ [31m×[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-11 页端格式器执行面：记忆正文怎样落进提示词（A.1 第 8 行的可执行半格）[2m > [22m复现：正文里伪造的信封哨兵执行后应被中和（原文出现 0 次）
+[31m   → 哨兵原样出现 1 次 ⇒ 模型可被正文提前关出信封: expected 1 to be +0 // Object.is equality[39m
+ [32m✓[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-11 页端格式器执行面：记忆正文怎样落进提示词（A.1 第 8 行的可执行半格）[2m > [22m负控：给真身打上「信封＋中和」两处补丁，上面两条复现腿就翻绿（红来自缺信封，⛔ 来自尺坏）
+
+[31m⎯⎯⎯⎯⎯⎯[1m[7m Failed Tests 12 [27m[22m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[31m[1m[7m FAIL [27m[22m[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-01 memory.delete 过不过 consent 闸门（A.1 第 1 行）[2m > [22m复现：删除记忆应达 CONSENT_MIN_RISK 以上、需人工同意
+[31m[1mAssertionError[22m: risk=read 低于阈值 insert: expected 1 to be greater than or equal to 2[39m
+[36m [2m❯[22m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts:[2m35:79[22m[39m
+    [90m 33| [39m    [35mconst[39m def [33m=[39m [33mDEFAULT_TOOL_DEFINITIONS[39m[33m.[39m[34mfind[39m((d) [33m=>[39m d[33m.[39mid [33m===[39m [32m'memory.[39m…
+    [90m 34| [39m    [34mexpect[39m(def[33m,[39m [32m'memory.delete 定义缺失'[39m)[33m.[39m[34mtoBeTruthy[39m()[33m;[39m
+    [90m 35| [39m    [34mexpect[39m([34mriskRank[39m(def[33m![39m[33m.[39mrisk)[33m,[39m [32m`risk=[39m[36m${[39mdef[33m![39m[33m.[39mrisk[36m}[39m[32m 低于阈值 [39m[36m${[39m[33mCONSENT_[39m…
+    [90m   | [39m                                                                              [31m^[39m
+    [90m 36| [39m      [34mriskRank[39m([33mCONSENT_MIN_RISK[39m)[33m,[39m
+    [90m 37| [39m    )[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/12]⎯[22m[39m
+
+[31m[1m[7m FAIL [27m[22m[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-02 execution-policy.ts 死码（A.1 第 2 行）[2m > [22m复现：孤儿策略模块应被删除或接入执行链
+[31m[1mAssertionError[22m: src/inject/execution-policy.ts 仍在盘: expected true to be false // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- false[39m
+[31m+ true[39m
+
+[36m [2m❯[22m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts:[2m57:116[22m[39m
+    [90m 55| [39m[34mdescribe[39m([32m'QD-R8m-02 execution-policy.ts 死码（A.1 第 2 行）'[39m[33m,[39m () [33m=>[39m {
+    [90m 56| [39m  [34mit[39m([32m'复现：孤儿策略模块应被删除或接入执行链'[39m[33m,[39m () [33m=>[39m {
+    [90m 57| [39m    [34mexpect[39m(fs[33m.[39m[34mexistsSync[39m(path[33m.[39m[34mjoin[39m([33mROOT[39m[33m,[39m [32m'src/inject/execution-policy.[39m…
+    [90m   | [39m                                                                                                                   [31m^[39m
+    [90m 58| [39m  })[33m;[39m
+    [90m 59| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/12]⎯[22m[39m
+
+[31m[1m[7m FAIL [27m[22m[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-03 删除后广播（A.1 第 3 行）[2m > [22m复现：memory.delete 成功后应向页端广播（payload 不含被删 id 的校验才有对象）
+[31m[1mAssertionError[22m: 删除路径无广播：面板与宿主从此两套账: expected '\'memory.delete\': {\r\n          id:…' to contain 'broadcastMemories'[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- broadcastMemories[39m
+[31m+ 'memory.delete': {[39m
+[31m+           id: 'memory.delete',[39m
+[31m+           async execute(params: Record<string, unknown>): Promise<ExecuteResult> {[39m
+[31m+             const id = String(params.id ?? '');[39m
+[31m+             if (!id) return { ok: false, error: 'id is required' };[39m
+[31m+             const store = getMemoryStore();[39m
+[31m+             const ok = store.remove(id);[39m
+[31m+             return { ok: ok ?? true };[39m
+[31m+           },[39m
+[31m+         },[39m
+[31m+         // v1.1：设置工作区根目录。[39m
+
+[36m [2m❯[22m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts:[2m100:40[22m[39m
+    [90m 98| [39m    [35mconst[39m body [33m=[39m [34mhandlerWindow[39m(host[33m,[39m [32m'memory.delete'[39m)[33m;[39m
+    [90m 99| [39m    [34mexpect[39m(body)[33m.[39m[34mtoContain[39m([32m'store.remove'[39m)[33m;[39m
+    [90m100| [39m    [34mexpect[39m(body[33m,[39m [32m'删除路径无广播：面板与宿主从此两套账'[39m)[33m.[39m[34mtoContain[39m([32m'br[39m…
+    [90m   | [39m                                       [31m^[39m
+    [90m101| [39m  })[33m;[39m
+    [90m102| [39m})[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/12]⎯[22m[39m
+
+[31m[1m[7m FAIL [27m[22m[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-04 envelope 形态（A.1 第 4 行）[2m > [22m复现：不可信记忆信封模块应存在（[[STUDIO_UNTRUSTED_MEMORY_*]] 的唯一提供者）
+[31m[1mAssertionError[22m: expected false to be true // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- true[39m
+[31m+ false[39m
+
+[36m [2m❯[22m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts:[2m106:78[22m[39m
+    [90m104| [39m[34mdescribe[39m([32m'QD-R8m-04 envelope 形态（A.1 第 4 行）'[39m[33m,[39m () [33m=>[39m {
+    [90m105| [39m  [34mit[39m([32m'复现：不可信记忆信封模块应存在（[[STUDIO_UNTRUSTED_MEMORY_*]] 的[39m…
+    [90m106| [39m    [34mexpect[39m(fs[33m.[39m[34mexistsSync[39m(path[33m.[39m[34mjoin[39m([33mROOT[39m[33m,[39m [32m'src/inject/untrusted-memory.[39m…
+    [90m   | [39m                                                                             [31m^[39m
+    [90m107| [39m  })[33m;[39m
+    [90m108| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/12]⎯[22m[39m
+
+[31m[1m[7m FAIL [27m[22m[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-04 envelope 形态（A.1 第 4 行）[2m > [22m复现：页端活格式器必须恰好包一层并中和内嵌哨兵
+[31m[1mAssertionError[22m: expected 'function formatMemoriesBlock(): strin…' to contain 'STUDIO_UNTRUSTED_MEMORY'[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- STUDIO_UNTRUSTED_MEMORY[39m
+[31m+ function formatMemoriesBlock(): string {[39m
+[31m+   if (currentMemories.length === 0) return '';[39m
+[31m+   const lines = currentMemories.slice(0, 50).map((m) => {[39m
+[31m+     const scope = m.type === 'project' ? 'project ' : '';[39m
+[31m+     return `- #${m.id} [${scope}${m.type}] ${m.name}: ${m.content}`;[39m
+[31m+   });[39m
+[31m+   return `\n\n## 已有记忆\n${lines.join('\n')}`;[39m
+[31m+ }[39m
+[31m+ [39m
+[31m+ function prepareOutgoingBody(rawBody: string, pending: PendingResult[], taskText = ''): string | null {[39m
+[31m+   let parsed: Record<string, unknown>;[39m
+[31m+   try {[39m
+[31m+     parsed = JSON.parse(rawBody) as Record<string, unknown>;[39m
+[31m+   } catch {[39m
+[31m+     return null;[39m
+[31m+   }[39m
+[31m+   // v1.7：无条件注入工具能力提示词。要不要用工具由模型自己判断，前提是模型[39m
+[31m+   // 始终知道有工具可用。之前用正则猜意图（hasToolIntent）会漏掉「审计」「bug」[39m
+[31m+   // 「代码」等关键词，导致模型不知道有工具而只聊天。修复：不再猜，直接注入。[39m
+[31m+   // hasToolIntent 仅用于避免重复注入（已注入则跳过），不再用于决定「是否注入」。[39m
+[31m+   const hasResults = pending.length > 0;[39m
+[31m+   const block = hasResults ? formatToolResultBlock(pending.slice()) : '';[39m
+[31m+   const memoriesBlock = formatMemoriesBlock();[39m
+[31m+   if (Array.isArray(parsed.messages)) {[39m
+[31m+     let msgs: unknown[] = parsed.messages as unknown[];[39m
+[31m+     // 每次发送都重建：技能选择必须跟随当前用户任务，不能沿用上一轮的全量技能块。[39m
+[31m+     msgs = injectInstructionIntoMessages(msgs, taskText);[39m
+[31m+     // 系统提示词后追加已有记忆[39m
+[31m+     if (memoriesBlock) {[39m
+[31m+       const first = msgs[0] as { role?: string; content?: unknown };[39m
+[31m+       if (first && first.role === 'system' && typeof first.content === 'string') {[39m
+[31m+         first.content = first.content + memoriesBlock;[39m
+[31m+       }[39m
+[31m+     }[39m
+[31m+     if (hasResults) msgs = appendResultsToMessages(msgs, block);[39m
+[31m+     parsed.messages = msgs;[39m
+[31m+   } else if (typeof parsed.prompt === 'string') {[39m
+[31m+     let prompt: string = parsed.pr[39m
+
+[36m [2m❯[22m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts:[2m114:18[22m[39m
+    [90m112| [39m    [34mexpect[39m(start)[33m.[39m[34mtoBeGreaterThanOrEqual[39m([34m0[39m)[33m;[39m
+    [90m113| [39m    [35mconst[39m body [33m=[39m inj[33m.[39m[34mslice[39m(start[33m,[39m start [33m+[39m [34m1600[39m)[33m;[39m
+    [90m114| [39m    [34mexpect[39m(body)[33m.[39m[34mtoContain[39m([32m'STUDIO_UNTRUSTED_MEMORY'[39m)[33m;[39m
+    [90m   | [39m                 [31m^[39m
+    [90m115| [39m    [34mexpect[39m(body[33m,[39m [32m'内容里伪造哨兵未被中和'[39m)[33m.[39m[34mtoMatch[39m([36m/replace\(|neutrali[39m…
+    [90m116| [39m  })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/12]⎯[22m[39m
+
+[31m[1m[7m FAIL [27m[22m[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-04 envelope 形态（A.1 第 4 行）[2m > [22m复现：空列表应返回空串（⛔ 把「没有记忆」当成一句正文喂进提示词）
+[31m[1mAssertionError[22m: expected '(No memories yet)' to be '' // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[31m+ (No memories yet)[39m
+
+[36m [2m❯[22m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts:[2m120:39[22m[39m
+    [90m118| [39m  [34mit[39m([32m'复现：空列表应返回空串（⛔ 把「没有记忆」当成一句正文喂进提示词）[39m…
+    [90m119| [39m    [35mconst[39m store [33m=[39m [35mnew[39m [33mMemoryStore[39m(path[33m.[39m[34mjoin[39m(fs[33m.[39m[34mmkdtempSync[39m(path[33m.[39m[34mjoin[39m(o…
+    [90m120| [39m    [34mexpect[39m(store[33m.[39m[34mformatForPrompt[39m([]))[33m.[39m[34mtoBe[39m([32m''[39m)[33m;[39m
+    [90m   | [39m                                      [31m^[39m
+    [90m121| [39m    store[33m.[39m[34mclose[39m()[33m;[39m
+    [90m122| [39m  })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/12]⎯[22m[39m
+
+[31m[1m[7m FAIL [27m[22m[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-05 重名口径：invalidate 后同名 save（A.1 第 5 行）[2m > [22m复现：作废后同名再存应「复活原行」而⛔ 新增有效行
+[31m[1mAssertionError[22m: 总行数 1→2：同名重存另起一行: expected 2 to be 1 // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 1[39m
+[31m+ 2[39m
+
+[36m [2m❯[22m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts:[2m147:71[22m[39m
+    [90m145| [39m    [34mexpect[39m(second[33m.[39mok)[33m.[39m[34mtoBe[39m([35mtrue[39m)[33m;[39m
+    [90m146| [39m    [35mconst[39m after [33m=[39m s[33m.[39m[34mstats[39m()[33m;[39m
+    [90m147| [39m    [34mexpect[39m(after[33m.[39mtotal[33m,[39m [32m`总行数 [39m[36m${[39mbeforeTotal[36m}[39m[32m→[39m[36m${[39mafter[33m.[39mtotal[36m}[39m[32m：同名重[39m…
+    [90m   | [39m                                                                      [31m^[39m
+    [90m148| [39m    [34mexpect[39m(after[33m.[39mvalid)[33m.[39m[34mtoBe[39m([34m1[39m)[33m;[39m
+    [90m149| [39m    [34mexpect[39m(after[33m.[39minvalidated[33m,[39m [32m'作废行未被同名新行复活'[39m)[33m.[39m[34mtoBe[39m([34m0[39m)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/12]⎯[22m[39m
+
+[31m[1m[7m FAIL [27m[22m[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-06 source 可伪造性（A.1 第 6 行）[2m > [22m复现：宿主应覆盖调用方经 RPC 传入的 source（⛔ 原样透传）
+[31m[1mAssertionError[22m: memory.save 把 params.source 原样写入：模型可自封 source:"user": expected '\'memory.save\': {\r\n          id: \…' not to contain 'params.source'[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- params.source[39m
+[31m+ 'memory.save': {[39m
+[31m+           id: 'memory.save',[39m
+[31m+           async execute(params: Record<string, unknown>): Promise<ExecuteResult> {[39m
+[31m+             const store = getMemoryStore();[39m
+[31m+             const result = store.save({[39m
+[31m+               type: String(params.type ?? 'user'),[39m
+[31m+               name: String(params.name ?? ''),[39m
+[31m+               content: String(params.content ?? ''),[39m
+[31m+               tags: Array.isArray(params.tags) ? params.tags.map(String) : [],[39m
+[31m+               pinned: Boolean(params.pinned),[39m
+[31m+               // v2：治理字段透传（来源/可信度/人设标签，缺省不传）[39m
+[31m+               ...(typeof params.source === 'string' ? { source: params.source } : {}),[39m
+[31m+               ...(typeof params.confidence === 'number' ? { confidence: params.confidence } : {}),[39m
+[31m+               ...(Array.isArray(params.personaTags) ? { personaTags: params.personaTags.map(String) } : {}),[39m
+[31m+             });[39m
+[31m+             if (!result.ok) {[39m
+[31m+               return { ok: false, error: result.error };[39m
+[31m+             }[39m
+[31m+             // 保存成功后推送记忆列表更新到页端。[39m
+[31m+             const memories = (await store.list()).map((m) => ({[39m
+[31m+               id: m.id, type: m.type, name: m.name, content: m.content, tags: m.tags,[39m
+[31m+             }));[39m
+[31m+             hub?.broadcastMemories(memories);[39m
+[31m+             return { ok: true, data: { id: result.id, saved: true } };[39m
+[31m+           },[39m
+[31m+         },[39m
+[31m+         // v0.10：Python 代码执行（沙箱隔离执行器）。[39m
+
+[36m [2m❯[22m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts:[2m169:78[22m[39m
+    [90m167| [39m  [34mit[39m([32m'复现：宿主应覆盖调用方经 RPC 传入的 source（⛔ 原样透传）'[39m[33m,[39m () [33m=>[39m…
+    [90m168| [39m    [35mconst[39m body [33m=[39m [34mhandlerWindow[39m([34mread[39m([32m'src/host/desktop-host.ts'[39m)[33m,[39m [32m'memo[39m…
+    [90m169| [39m    [34mexpect[39m(body[33m,[39m [32m'memory.save 把 params.source 原样写入：模型可自封 so[39m…
+    [90m   | [39m                                                                             [31m^[39m
+    [90m170| [39m  })[33m;[39m
+    [90m171| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/12]⎯[22m[39m
+
+[31m[1m[7m FAIL [27m[22m[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-07 注入预算与排序（A.1 第 7 行）[2m > [22m复现：排序应有第二级 user 档（pinned → user → updated_at）
+[31m[1mAssertionError[22m: 现状只按 updatedAt 倒序：更新的 project 记忆挤掉个人记忆: expected [ 'proj-new', 'user-old' ] to deeply equal [ 'user-old', 'proj-new' ][39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[2m  Array [[22m
+[32m-   "user-old",[39m
+[2m    "proj-new",[22m
+[31m+   "user-old",[39m
+[2m  ][22m
+
+[36m [2m❯[22m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts:[2m202:79[22m[39m
+    [90m200| [39m    s[33m.[39m[34msave[39m({ type[33m:[39m [32m'project'[39m[33m,[39m name[33m:[39m [32m'proj-new'[39m[33m,[39m content[33m:[39m [32m'p'[39m })[33m;[39m
+    [90m201| [39m    [35mconst[39m list [33m=[39m [35mawait[39m s[33m.[39m[34mlist[39m()[33m;[39m
+    [90m202| [39m    [34mexpect[39m(list[33m.[39m[34mmap[39m((m) [33m=>[39m m[33m.[39mname)[33m,[39m [32m'现状只按 updatedAt 倒序：更新的 p[39m…
+    [90m   | [39m                                                                              [31m^[39m
+    [90m203| [39m      [32m'user-old'[39m[33m,[39m
+    [90m204| [39m      [32m'proj-new'[39m[33m,[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/12]⎯[22m[39m
+
+[31m[1m[7m FAIL [27m[22m[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-07 注入预算与排序（A.1 第 7 行）[2m > [22m复现：注入预算应为 40 条（⛔ 50）
+[31m[1mAssertionError[22m: 实得 45 行: expected 45 to be less than or equal to 40[39m
+[36m [2m❯[22m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts:[2m214:50[22m[39m
+    [90m212| [39m    [35mconst[39m list [33m=[39m [35mawait[39m s[33m.[39m[34mlist[39m()[33m;[39m
+    [90m213| [39m    [35mconst[39m lines [33m=[39m s[33m.[39m[34mformatForPrompt[39m(list)[33m.[39m[34msplit[39m([32m'\n'[39m)[33m.[39m[34mfilter[39m((l) [33m=>[39m l[33m.[39m…
+    [90m214| [39m    [34mexpect[39m(lines[33m.[39mlength[33m,[39m [32m`实得 [39m[36m${[39mlines[33m.[39mlength[36m}[39m[32m 行`[39m)[33m.[39m[34mtoBeLessThanOrEqua[39m…
+    [90m   | [39m                                                 [31m^[39m
+    [90m215| [39m    s[33m.[39m[34mclose[39m()[33m;[39m
+    [90m216| [39m  })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/12]⎯[22m[39m
+
+[31m[1m[7m FAIL [27m[22m[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-11 页端格式器执行面：记忆正文怎样落进提示词（A.1 第 8 行的可执行半格）[2m > [22m复现：正文进提示词前应先被包成「不可信数据」信封
+[31m[1mAssertionError[22m: 现状：零个信封标记: expected null to be truthy[39m
+
+[32m- Expected:[39m 
+true
+
+[31m+ Received:[39m 
+null
+
+[36m [2m❯[22m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts:[2m286:79[22m[39m
+    [90m284| [39m  [34mit[39m([32m'复现：正文进提示词前应先被包成「不可信数据」信封'[39m[33m,[39m () [33m=>[39m {
+    [90m285| [39m    [35mconst[39m out [33m=[39m [34mrunFormatter[39m([34mpageFormatterBody[39m()[33m,[39m [{ id[33m:[39m [32m'9'[39m[33m,[39m type[33m:[39m [32m'p[39m…
+    [90m286| [39m    [34mexpect[39m(out[33m.[39m[34mmatch[39m([36m/不可信|仅供查阅|STUDIO_UNTRUSTED_MEMORY_BEGIN/g[39m)…
+    [90m   | [39m                                                                              [31m^[39m
+    [90m287| [39m  })[33m;[39m
+    [90m288| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/12]⎯[22m[39m
+
+[31m[1m[7m FAIL [27m[22m[39m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts[2m > [22mQD-R8m-11 页端格式器执行面：记忆正文怎样落进提示词（A.1 第 8 行的可执行半格）[2m > [22m复现：正文里伪造的信封哨兵执行后应被中和（原文出现 0 次）
+[31m[1mAssertionError[22m: 哨兵原样出现 1 次 ⇒ 模型可被正文提前关出信封: expected 1 to be +0 // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 0[39m
+[31m+ 1[39m
+
+[36m [2m❯[22m docs/审计报告/QD/复现用例/qd-r8m-memory.test.ts:[2m294:53[22m[39m
+    [90m292| [39m    ])[33m;[39m
+    [90m293| [39m    [35mconst[39m hits [33m=[39m out[33m.[39m[34msplit[39m([33mFAKE_SENTINEL[39m)[33m.[39mlength [33m-[39m [34m1[39m[33m;[39m
+    [90m294| [39m    [34mexpect[39m(hits[33m,[39m [32m`哨兵原样出现 [39m[36m${[39mhits[36m}[39m[32m 次 ⇒ 模型可被正文提前关出信封`[39m)…
+    [90m   | [39m                                                    [31m^[39m
+    [90m295| [39m  })[33m;[39m
+    [90m296| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/12]⎯[22m[39m
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m12 failed[39m[22m[2m | [22m[1m[32m14 passed[39m[22m[90m (26)[39m
+[2m   Start at [22m 23:07:23
+[2m   Duration [22m 3.40s[2m (transform 313ms, setup 0ms, collect 451ms, tests 1.97s, environment 0ms, prepare 283ms)[22m
+
+POST_latest_mtime=1792764789.4882773000 src/host/bot/chat-room-runtime.ts
+POST_memstore=[2026-10-15 16:58:56.162116500 +0800]
+POST_deskhost=[2026-10-23 22:05:11.320511200 +0800]
+POST_toollist=[2026-10-20 21:47:35.955171700 +0800]
+R8M_END @ 2026-10-23 23:07:28
