@@ -251,7 +251,11 @@ const TOOL_DISPLAY_MAP: Record<string, string> = {
   'chat-read': '读取对话',
   'memory.select': '查询记忆',
   'memory.save': '保存记忆',
-  'memory.delete': '删除记忆',
+  'memory.delete': '失效记忆',
+  // C1-UX1：补齐真实触达的记忆工具名，让审批弹窗不再裸奔原始协议名。
+  'memory.unarchive': '恢复已归档记忆',
+  'memory.purge': '永久删除记忆',
+  'memory.listArchived': '查看已归档记忆',
 };
 
 function toolDisplayName(tool: string): string {
@@ -283,6 +287,37 @@ export function describeConsentRequest(request: ConsentRequest): ConsentPresenta
       summary: `允许后，文件与命令操作将以「${shownRoot}」作为可信根目录。`,
       allowOnceLabel: '允许本次修改',
       allowSessionLabel: '本次会话允许修改',
+    };
+  }
+
+  // C1-UX1：高风险记忆操作定制弹窗文案——让用户明确知道"操作对象、后果、是否可恢复"。
+  if (request.tool === 'memory.purge') {
+    return {
+      title: '永久删除记忆（不可恢复）',
+      headline: '彻底删除一条记忆',
+      summary: '此操作会永久删除选中的记忆条目，不可撤销。确认前请仔细核对。',
+      allowOnceLabel: '确认永久删除',
+      allowSessionLabel: '本次会话允许永久删除',
+    };
+  }
+
+  if (request.tool === 'memory.unarchive') {
+    return {
+      title: '恢复已归档记忆',
+      headline: '将一条归档记忆恢复为有效状态',
+      summary: '允许后，该记忆将重新出现在有效列表中，可被查询和注入提示词。',
+      allowOnceLabel: '允许恢复',
+      allowSessionLabel: '本次会话允许恢复',
+    };
+  }
+
+  if (request.tool === 'memory.listArchived') {
+    return {
+      title: '查看已归档记忆',
+      headline: '请求列出已归档的记忆条目',
+      summary: '此操作只读，不会修改任何记忆数据。',
+      allowOnceLabel: '允许查看',
+      allowSessionLabel: '本次会话允许查看',
     };
   }
 
