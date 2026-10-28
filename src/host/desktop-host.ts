@@ -68,6 +68,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { ConsentMeta } from './protocol';
+
+// 一次 engine.send() 内含 WebEngine auto-continue 的整条工具链；
+// 真机多轮工具任务实测约 162s，TaskLoop 默认 120s 会把成功回合误判为 timeout。
+const AGENT_TASK_ROUND_TIMEOUT_MS = 300_000;
 import {
   DEFAULT_POLICY_MODE,
   evaluatePolicy,
@@ -1031,6 +1035,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             engine: mainBot.engine,
             history: kernelHistory,
             maxRounds: 25,
+            roundTimeoutMs: AGENT_TASK_ROUND_TIMEOUT_MS,
           });
           const result = await loop.run(`${AGENT_SENTINEL}${text}`);
           // content 已落 kernelHistory，签名是 Promise<void>
@@ -1059,6 +1064,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       engine: mainBot.engine,
       history: kernelHistory,
       maxRounds: 25,
+      roundTimeoutMs: AGENT_TASK_ROUND_TIMEOUT_MS,
     });
     const result = await loop.run(`${AGENT_SENTINEL}${text}`);
     return requireTaskLoopReply(result);
