@@ -435,7 +435,6 @@ export class MemoryStore implements MemoryStoreV2 {
         const budget = this.prepareEviction(deltaValid);
         if (!budget.ok) return { ok: false, error: 'memory-capacity', reason: 'resurrect-archive-at-capacity-all-pinned' };
         const rid = existing.rid as number;
-        this.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(rid);
         this.db.prepare(
           `UPDATE memories SET content = ?, tags_json = ?, pinned = ?, source = ?, confidence = ?,
            persona_tags_json = ?, content_hash = ?, dedupe_hash = ?, invalid_at = NULL, updated_at = ? WHERE id = ?`,
@@ -444,8 +443,8 @@ export class MemoryStore implements MemoryStoreV2 {
           merged.source ?? null, merged.confidence ?? null, JSON.stringify(merged.personaTags), hash, dedupe, now,
           String(existing.id),
         );
-        this.db.prepare('INSERT INTO memories_fts(rowid, name, content, tags) VALUES (?, ?, ?, ?)')
-          .run(rid, params.name, params.content, merged.tags.join(' '));
+        // C1-F2：FTS 同步降级处理，rowid 复用冲突不再阻断主保存。
+        this.syncFts(rid, params.name, params.content, merged.tags);
         this.applyEviction(budget.evict, now);
         return { ok: true, id: String(existing.id) };
       }
@@ -489,7 +488,6 @@ export class MemoryStore implements MemoryStoreV2 {
         const budget = this.prepareEviction(deltaValid);
         if (!budget.ok) return { ok: false, error: 'memory-capacity', reason: 'resurrect-cross-at-capacity-all-pinned' };
         const rid = cross.rid as number;
-        this.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(rid);
         this.db.prepare(
           `UPDATE memories SET content = ?, tags_json = ?, pinned = ?, source = ?, confidence = ?,
            persona_tags_json = ?, content_hash = ?, dedupe_hash = ?, invalid_at = NULL, updated_at = ? WHERE id = ?`,
@@ -498,9 +496,8 @@ export class MemoryStore implements MemoryStoreV2 {
           merged.source ?? null, merged.confidence ?? null, JSON.stringify(merged.personaTags),
           crossHash, dedupe, now, crossId,
         );
-        // name 保留原值，FTS 仍按原 name 索引。
-        this.db.prepare('INSERT INTO memories_fts(rowid, name, content, tags) VALUES (?, ?, ?, ?)')
-          .run(rid, crossName, params.content, merged.tags.join(' '));
+        // C1-F2：name 保留原值，FTS 仍按原 name 索引；同步降级处理防 rowid 冲突。
+        this.syncFts(rid, crossName, params.content, merged.tags);
         this.applyEviction(budget.evict, now);
         return { ok: true, id: crossId };
       }
@@ -518,8 +515,8 @@ export class MemoryStore implements MemoryStoreV2 {
         params.source ?? null, params.confidence ?? null, JSON.stringify(personaTags), hash, dedupe, null, now, now,
       );
       const rid = (this.db.prepare('SELECT last_insert_rowid() AS rid').get()?.rid as number) ?? 0;
-      this.db.prepare('INSERT INTO memories_fts(rowid, name, content, tags) VALUES (?, ?, ?, ?)')
-        .run(rid, params.name, params.content, tags.join(' '));
+      // C1-F2：FTS 同步降级处理；即使 rowid 被孤儿残留占用，主记录仍算成功。
+      this.syncFts(rid, params.name, params.content, tags);
       this.applyEviction(budget.evict, now);
       return { ok: true, id };
     }
@@ -818,7 +815,14 @@ export class MemoryStore implements MemoryStoreV2 {
       const upd = this.db.prepare(
         'UPDATE memories SET invalid_at = ?, updated_at = ? WHERE id = ? AND invalid_at IS NULL',
       );
-      for (const r of evict) upd.run(now, now, r.id);
+      for (const r of evict) {
+        try {
+          upd.run(now, now, r.id);
+        } catch (e) {
+          // C1-F2：容量淘汰是附属操作，失败不应阻断主保存。
+          console.warn('[memory] eviction failed (non-fatal, main record intact):', e instanceof Error ? e.message : String(e));
+        }
+      }
     } else if (this.fallback) {
       for (const r of evict) {
         const idx = this.fallback.findIndex((m) => m.id === r.id);
@@ -827,6 +831,22 @@ export class MemoryStore implements MemoryStoreV2 {
           this.fallback[idx] = { ...old, invalidAt: now, updatedAt: now };
         }
       }
+    }
+  }
+
+  /**
+   * C1-F2：FTS 搜索索引同步（DELETE-then-INSERT 幂等，防 rowid 复用冲突）。
+   * FTS 是搜索优化层，主记录完整性靠 memories 主表保证——任何 FTS 同步失败
+   * 都降级为 console.warn，不影响 save 返回 ok:true。
+   */
+  private syncFts(rid: number, name: string, content: string, tags: string[]): void {
+    if (!this.db) return;
+    try {
+      this.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(rid);
+      this.db.prepare('INSERT INTO memories_fts(rowid, name, content, tags) VALUES (?, ?, ?, ?)')
+        .run(rid, name, content, tags.join(' '));
+    } catch (e) {
+      console.warn('[memory] FTS sync failed (non-fatal, main record intact):', e instanceof Error ? e.message : String(e));
     }
   }
 
