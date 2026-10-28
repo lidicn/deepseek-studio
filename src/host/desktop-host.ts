@@ -531,7 +531,15 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             }
             // 保存成功后推送记忆列表更新到页端。
             hub?.broadcastMemories(await listMemoryBroadcastRows());
-            return { ok: true, data: { id: result.id, saved: true } };
+            return {
+              ok: true,
+              data: {
+                id: result.id,
+                saved: true,
+                partial: result.partial === true,
+                warnings: result.warnings ? [...result.warnings] : [],
+              },
+            };
           },
         },
         // v0.10：Python 代码执行（沙箱隔离执行器）。

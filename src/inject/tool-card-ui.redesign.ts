@@ -42,18 +42,22 @@ export interface ToolCardData {
     details?: Record<string, unknown>;
     isError?: boolean;
     terminate?: boolean;
+    // C1-F2：部分成功字段
+    partial?: boolean;
+    warnings?: unknown[];
   };
   durationMs?: number;
 }
 
-/** 六态语义：running / succeeded / failed / denied / cancelled / terminated。 */
+/** 七态语义：running / succeeded / failed / denied / cancelled / terminated / partial。 */
 export type ToolCallStatus =
   | 'running'
   | 'succeeded'
   | 'failed'
   | 'denied'
   | 'cancelled'
-  | 'terminated';
+  | 'terminated'
+  | 'partial';
 
 const STATUS_LABEL: Record<ToolCallStatus, string> = {
   running: '执行中',
@@ -62,6 +66,7 @@ const STATUS_LABEL: Record<ToolCallStatus, string> = {
   denied: '被拒',
   cancelled: '已取消',
   terminated: '已终止',
+  partial: '部分成功',
 };
 
 const LONG_RESULT_THRESHOLD = 2048;
@@ -205,11 +210,13 @@ function normalizeStatus(raw: unknown): ToolCallStatus | null {
 }
 
 /**
- * 六态派生（优先级从高到低）：
+ * 七态派生（优先级从高到低）：
  *   1) details.status/state/outcome 的结构化提示；
- *   2) result.terminate === true → terminated（沿用 v1.2 "已终止续跑" 语义）；
+ *   2) result.terminate === true → terminated；
  *   3) result.isError === true || result.ok === false → 失败家族；
- *   4) 失败家族内按 error/details 文本启发式细分 denied / cancelled，否则 failed。
+ *   4) 失败家族内按 error/details 文本启发式细分 denied / cancelled，否则 failed；
+ *   5) result.partial === true（或 details.partial === true）→ 部分成功；
+ *   6) 其余 ok=true → succeeded。
  * 无 result → running。
  */
 export function deriveToolStatus(result?: ToolCardData['result']): ToolCallStatus {
@@ -227,12 +234,18 @@ export function deriveToolStatus(result?: ToolCardData['result']): ToolCallStatu
   if (result.terminate === true) return 'terminated';
 
   const failed = result.isError === true || result.ok === false;
-  if (!failed) return 'succeeded';
+  if (failed) {
+    const blob = `${result.error ?? ''} ${formatJsonCompact(result.details ?? {})}`;
+    if (DENIED_PATTERN.test(blob)) return 'denied';
+    if (CANCEL_PATTERN.test(blob)) return 'cancelled';
+    return 'failed';
+  }
 
-  const blob = `${result.error ?? ''} ${formatJsonCompact(result.details ?? {})}`;
-  if (DENIED_PATTERN.test(blob)) return 'denied';
-  if (CANCEL_PATTERN.test(blob)) return 'cancelled';
-  return 'failed';
+  // C1-F2：主记录成功但附属操作有 warning → 部分成功
+  const detailsPartial = details && typeof details === 'object' && (details as Record<string, unknown>).partial === true;
+  if (result.partial === true || detailsPartial) return 'partial';
+
+  return 'succeeded';
 }
 
 /* ─────────────────────────────── 样式（一次性注入） ─────────────────────────────── */
@@ -252,6 +265,8 @@ const FLOW_STYLE = `
     --dsf-fail-tint: rgba(194, 53, 44, 0.055);
     --dsf-term: #a16207;
     --dsf-cancel: #7c848d;
+    --dsf-partial: #9a6700;
+    --dsf-partial-tint: rgba(154, 103, 0, 0.055);
     margin: 10px 0 14px;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
     font-size: 13px;
@@ -361,6 +376,7 @@ const FLOW_STYLE = `
     box-shadow: inset 0 0 0 1.5px var(--dsf-cancel);
   }
   .ds-flow-item[data-status='terminated'] .ds-flow-dot { background: var(--dsf-term); }
+  .ds-flow-item[data-status='partial'] .ds-flow-dot { background: var(--dsf-partial); }
 
   .ds-flow-tool {
     flex: 0 1 auto;
@@ -405,6 +421,7 @@ const FLOW_STYLE = `
   .ds-flow-item[data-status='denied'] .ds-flow-status { color: var(--dsf-fail); }
   .ds-flow-item[data-status='cancelled'] .ds-flow-status { color: var(--dsf-cancel); }
   .ds-flow-item[data-status='terminated'] .ds-flow-status { color: var(--dsf-term); }
+  .ds-flow-item[data-status='partial'] .ds-flow-status { color: var(--dsf-partial); }
 
   .ds-flow-time {
     flex: none;
@@ -420,6 +437,10 @@ const FLOW_STYLE = `
   .ds-flow-item[data-status='denied'] .ds-flow-row {
     background: var(--dsf-fail-tint);
     color: var(--dsf-fail);
+  }
+  .ds-flow-item[data-status='partial'] .ds-flow-row {
+    background: var(--dsf-partial-tint);
+    color: var(--dsf-partial);
   }
 
   /* 展开区：无卡片包裹，标签 + 缩进 + 等宽文本 */

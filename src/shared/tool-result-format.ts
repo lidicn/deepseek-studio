@@ -33,6 +33,10 @@ export interface ToolResultExtras {
   isError?: boolean;
   /** 提示跳过自动续跑（批次内全部为 true 时才生效）。 */
   terminate?: boolean;
+  /** C1-F2：主记录成功但有附属操作失败时为 true（部分成功）。 */
+  partial?: boolean;
+  /** C1-F2：附属操作失败的 warning 列表（partial=true 时必有内容）。 */
+  warnings?: unknown[];
 }
 
 /**

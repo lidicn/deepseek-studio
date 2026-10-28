@@ -1,20 +1,43 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { installMainWorldInterceptor, configureMemorySelect } from '../../src/inject/main-world-interceptor';
+import { describe, expect, it, vi, afterEach } from 'vitest';
+import { installMainWorldInterceptor, configureMemorySelect, type MainWorldInterceptorHandle } from '../../src/inject/main-world-interceptor';
+import type { ExecuteResult } from '../../src/capabilities/types';
 
 // @vitest-environment jsdom
 
-/**
- * C1-F1 回归：memory.select 自动预取闭环。
- *
- * 真机根因：
- *   1. feature flag 在 entry.ts 安装时一次性读取（注入时为 null → enabled=false 永久固化）。
- *   2. 真实聊天走 XHR 路径，proto.send 是同步函数没有 await 语义，导致有界等待缺失。
- *
- * 本文件覆盖 7 条必补测试，全部走红转绿后代码级验收。
- */
+/** vitest/jsdom 下扩展 globalThis feature flag 类型（真机由 desktop/entry.ts 注入）。 */
+declare global {
+  // eslint-disable-next-line no-var
+  var __studioMemorySelect: boolean | undefined;
+}
+
+/** 测试内部统一的 ToolCallRequest 形状（src/inject 模块内部类型不导出）。 */
+interface TestToolCallRequest {
+  invocationName: string;
+  params?: Record<string, unknown>;
+}
+
+/** 统一 sender 类型（用 ExecuteResult 让联合类型闭合，所有 invocationName 都有 ok + 完整 data 形状）。 */
+type TestSender = (req: TestToolCallRequest) => Promise<ExecuteResult>;
+
+/** 构造 sender 标准返回——覆盖所有已知 invocationName，让联合类型闭合。 */
+function defaultSenderResult(invocationName: string, memories?: unknown[]): ExecuteResult {
+  if (invocationName === 'mcp.list') return { ok: true, data: { tools: [] } };
+  if (invocationName === 'skill.list') return { ok: true, data: { skills: [] } };
+  if (invocationName === 'memory.select') return { ok: true, data: { memories: memories ?? [] } };
+  return { ok: true, data: { stdout: 'ok', exitCode: 0 } };
+}
+
+/** vitest fn 的统一 sender stub——所有 invocationName 都返回正确形状。 */
+function makeTestSender(): ReturnType<typeof vi.fn<TestSender>> {
+  return vi.fn(async (req: TestToolCallRequest) => defaultSenderResult(req.invocationName));
+}
+
+// ─── 常量 ───────────────────────────────────────────────────
 
 const CHAT_URL = 'https://chat.deepseek.com/api/v0/chat/completion';
 const NON_CHAT_URL = 'https://chat.deepseek.com/api/v0/client/settings';
+
+// ─── FakeXHR：加 sent 标志，让测试能断言 origSend 是否被延迟 ──
 
 function makeFakeXhrClass() {
   return class FakeXHR {
@@ -26,10 +49,15 @@ function makeFakeXhrClass() {
     url = '';
     method = 'GET';
     body: string | null = null;
+    /** origSend 是否被实际调用过（NEED_MEM_SELECT_WAIT 时会延迟）。 */
+    sent = false;
     constructor() { FakeXHR.instances.push(this); }
     open(m: string, u: string | URL) { this.method = m; this.url = String(u); this.readyState = 1; }
     setRequestHeader() { /* noop */ }
-    send(body?: string | null) { this.body = typeof body === 'string' ? body : null; }
+    send(body?: string | null) {
+      this.body = typeof body === 'string' ? body : null;
+      this.sent = true; // 只有 origSend 被调用时才设
+    }
     respond(status: number, text: string) {
       this.status = status; this.responseText = text; this.readyState = 3;
       this.onreadystatechange?.();
@@ -39,6 +67,8 @@ function makeFakeXhrClass() {
     abort() { this.status = 0; this.responseText = ''; this.readyState = 4; this.onreadystatechange?.(); }
   };
 }
+
+// ─── Chat UI stub ────────────────────────────────────────────
 
 function makeChatUI() {
   return {
@@ -57,47 +87,36 @@ function makeChatUI() {
   };
 }
 
-/** 等一个 macrotask，让 Promise.then / setTimeout 回调跑完。 */
+// ─── 辅助：等一个 tick，让 Promise.then 链跑完 ────────────────
+
 function nextTick(): Promise<void> {
-  return new Promise((r) => setTimeout(r, 5));
+  return Promise.resolve();
 }
 
-/** 统计 sender 被调用时 invocationName='memory.select' 的次数。 */
-function memorySelectCalls(sender: ReturnType<typeof vi.fn>) {
-  return sender.mock.calls.filter((c: unknown[]) => c[0].invocationName === 'memory.select');
+// ─── 辅助：统计 memory.select 调用次数 ───────────────────────
+
+function memorySelectCalls(sender: ReturnType<typeof vi.fn<TestSender>>) {
+  return sender.mock.calls.filter((c: unknown[]) => {
+    const req = c[0] as TestToolCallRequest;
+    return req?.invocationName === 'memory.select';
+  });
 }
 
-let globalFlag: boolean | undefined;
+// ─── Harness ────────────────────────────────────────────────
 
-beforeEach(() => {
-  globalFlag = undefined;
-  // 清掉模块级的 singleton state（configureMemorySelect 是 export 函数，
-  // 但 memorySelectState 是模块内 private 变量——已被前次测试污染 →
-  // configureMemorySelect 本身就是重置点：每次测试在 installMainWorldInterceptor
-  // 之后再调一次 configureMemorySelect，覆盖 enabled/invoke）。
-});
+interface Harness {
+  FakeXHR: ReturnType<typeof makeFakeXhrClass>;
+  handle: MainWorldInterceptorHandle;
+  sender: ReturnType<typeof vi.fn<TestSender>>;
+  chatUI: ReturnType<typeof makeChatUI>;
+}
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-  // 防泄漏：清 globalFlag
-  globalFlag = undefined;
-  delete (globalThis as Record<string, unknown>).__studioMemorySelect;
-});
-
-function installHarness(opts: { flagEnabled?: boolean | (() => boolean) } = {}) {
+function installHarness(opts: { flagEnabled?: boolean | (() => boolean) } = {}): Harness {
   const FakeXHR = makeFakeXhrClass();
   (globalThis as Record<string, unknown>).XMLHttpRequest = FakeXHR;
   vi.stubGlobal('location', { href: 'https://chat.deepseek.com/' });
 
-  const sender = vi.fn(async (req: { invocationName: string }) => {
-    if (req.invocationName === 'mcp.list') return { ok: true, data: { tools: [] } };
-    if (req.invocationName === 'skill.list') return { ok: true, data: { skills: [] } };
-    if (req.invocationName === 'memory.select') {
-      return { ok: true, data: { memories: [{ id: 'm1', type: 'memory', name: '用户偏好', content: '喜欢简洁', tags: ['pref'] }] } };
-    }
-    return { ok: true, data: { stdout: 'ok', exitCode: 0 } };
-  });
-
+  const sender = makeTestSender();
   const chatUI = makeChatUI();
   const handle = installMainWorldInterceptor({
     sender,
@@ -109,40 +128,56 @@ function installHarness(opts: { flagEnabled?: boolean | (() => boolean) } = {}) 
   const defaultEnabled: () => boolean = () => Boolean((globalThis as { __studioMemorySelect?: boolean }).__studioMemorySelect);
   configureMemorySelect({
     enabled: opts.flagEnabled ?? defaultEnabled,
-    invoke: (taskText: string) => sender({ invocationName: 'memory.select', params: { taskText } }) as Promise<{ ok: boolean; data?: { memories?: unknown } }>,
+    invoke: (taskText: string) => sender({ invocationName: 'memory.select', params: { taskText } })
+      .then((r) => r as { ok: boolean; data?: { memories?: unknown } }),
   });
 
   return { FakeXHR, handle, sender, chatUI };
 }
 
-function pageSend(FakeXHR: ReturnType<typeof makeFakeXhrClass>, url: string, body?: string): FakeXHR {
+function pageSend(FakeXHR: Harness['FakeXHR'], url: string, body?: string): InstanceType<Harness['FakeXHR']> {
   const xhr = new FakeXHR();
   xhr.open('POST', url);
   xhr.send(body);
   return xhr;
 }
 
+// ─── after ─────────────────────────────────────────
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  delete (globalThis as Record<string, unknown>).__studioMemorySelect;
+});
+
+// ════════════════════════════════════════════════════════════
+// C1-F1 回归：memory.select 自动预取闭环
+// ════════════════════════════════════════════════════════════
+
 describe('C1-F1 memory.select 自动预取闭环', () => {
 
-  it('【红转绿-1】注入时 flag=null，之后变 true → 自动预取能生效（运行期 getter）', async () => {
-    // 模拟 entry.ts 注入时 globalThis.__studioMemorySelect = null（真机实况）
+  // ─── 红转绿-1：注入时 flag=null，之后变 true → 自动预取能生效 ──
+
+  it('【红转绿-1】flag 运行期可生效：注入时 null → 设 true 后 chat XHR 会触发 memory.select', async () => {
     const { FakeXHR, handle, sender } = installHarness();
     try {
       // 初始：__studioMemorySelect 未设置（undefined → getter 读 false）
-      pageSend(FakeXHR, CHAT_URL, JSON.stringify({ prompt: '你好', chat_session_id: 's1' }));
+      const xhr1 = pageSend(FakeXHR, CHAT_URL, JSON.stringify({ prompt: '你好', chat_session_id: 's1' }));
       await nextTick();
-      // kickMemorySelect 应该不触发 —— enabled=false
+      // enabled=false → kick 不触发，XHR 不延迟、sent 立即 true
+      expect(xhr1.sent).toBe(true);
       expect(memorySelectCalls(sender)).toHaveLength(0);
 
       // 运行期：页端设置 flag=true
       (globalThis as { __studioMemorySelect: boolean }).__studioMemorySelect = true;
 
-      // 第二次聊天：enabled 动态求值为 true
+      // 第二次 chat：kickMemorySelect 触发 → 但 sender 很快 resolve → pending 很快被消费
+      // XHR 在 NEED_MEM_SELECT_WAIT 里检查 !!memorySelectState.pending —— 如果 pending 已 resolve
+      // 则会进入，但 Promise.race 会立即触发 doDelayedSend
       pageSend(FakeXHR, CHAT_URL, JSON.stringify({ prompt: '写个函数', chat_session_id: 's2' }));
       await nextTick();
+      // 等 sender async 返回（resolve pending）
+      await nextTick();
 
-      // kickMemorySelect 应该触发了 —— 但 XHR 被延迟了 120ms
-      // 先等 kick 完成（memory.select 被调用），XHR 可能还在延迟里
       const mselCalls = memorySelectCalls(sender);
       expect(mselCalls.length).toBeGreaterThanOrEqual(1);
     } finally {
@@ -150,188 +185,143 @@ describe('C1-F1 memory.select 自动预取闭环', () => {
     }
   });
 
-  it('【红转绿-2】XHR 首轮聊天发送前执行有界等待（延迟 origSend 最多 120ms）', async () => {
+  // ─── 红转绿-2：XHR 有界等待（延迟 origSend 最多 120ms） —— 原假绿 ──
+
+  it('【红转绿-2】有 pending 时 chat XHR 延迟发送（≤120ms），超时回落继续发', async () => {
+    vi.useFakeTimers();
     const { FakeXHR, handle, sender } = installHarness();
     try {
       (globalThis as { __studioMemorySelect: boolean }).__studioMemorySelect = true;
 
-      // 先制造一个 pending memory.select：手动触发 kickMemorySelect
-      // kickMemorySelect 是模块私有函数，我们通过发一次 prompt 来触发
-      pageSend(FakeXHR, CHAT_URL, JSON.stringify({ prompt: '任务A', chat_session_id: 's1' }));
-      await nextTick();
-      // sender mock 已 resolve（我们用的是 async stub），pending 已经被消费了
-      // 让 memory.select 返回一个永不 resolve 的 Promise，制造 pending 状态
-      sender.mockImplementationOnce(async (req: { invocationName: string }) => {
-        if (req.invocationName === 'memory.select') {
-          return new Promise(() => { /* 永不 resolve */ });
+      // 让 memory.select 永不 resolve —— 强制 pending 状态
+      sender.mockImplementationOnce(async (_req: TestToolCallRequest) => {
+        if (_req.invocationName === 'memory.select') {
+          return new Promise<ExecuteResult>(() => { /* 永不 resolve */ });
         }
-        if (req.invocationName === 'mcp.list') return { ok: true, data: { tools: [] } };
-        if (req.invocationName === 'skill.list') return { ok: true, data: { skills: [] } };
-        return { ok: true, data: { stdout: 'ok', exitCode: 0 } };
+        return defaultSenderResult(_req.invocationName);
       });
 
-      // 第二次发送 —— 会先 kick 一个 pending，然后被 XHR 延迟
+      // 第一次 pageSend：kickMemorySelect 创建 pending（永不 resolve）
+      // invoke 返回永不 resolve 的 Promise → memorySelectState.pending = Promise<rows> 永不 resolve
+      pageSend(FakeXHR, CHAT_URL, JSON.stringify({ prompt: '造 pending', chat_session_id: 's1' }));
+      // runAllTimers 让所有 microtask 走完，确认 pending 已创建
+      await vi.runAllTimersAsync();
+
+      // 第二次 pageSend：命中 NEED_MEM_SELECT_WAIT → 延迟 send
       const xhr2 = pageSend(FakeXHR, CHAT_URL, JSON.stringify({ prompt: '任务B', chat_session_id: 's2' }));
 
-      // proto.send 应该同步返回（void）
-      // 但 origSend 还没被 FakeXHR.send() 调用（我们的 FakeXHR.send 就是 open 时存 url）
-      // 等等 —— FakeXHR.send 是我们自己写的，它就是 proto.send（因为 installXhrHooks 包装了它）
-      // 我们需要一个方式检测 origSend 是否被延迟了...
-      //
-      // 实际上 installXhrHooks 包装了 XMLHttpRequest.prototype.send，
-      // 所以 FakeXHR 的 send 方法就是被包装后的那个。
-      // 包装后的 proto.send 在 NEED_MEM_SELECT_WAIT=true 时会 return void 而不调 origSend。
-      //
-      // 但我们的 FakeXHR.send() 本身就是 origSend（没有被第二次包装）...
-      // 不对！installXhrHooks 是在 XMLHttpRequest.prototype.send 上包装的，
-      // 所以 FakeXHR 的实例继承的 send 就是被包装后的那个。
-      // origSend 是安装时 capture 的 FakeXHR.prototype.send（install 前的版本）。
-      //
-      // 我们可以在 FakeXHR 上放一个 sent 标志：
-      // 等等，让我重新看 FakeXHR.send：它只做 this.body = body。
-      // 我们可以把 FakeXHR 的 send 改成会设一个 sent 标志。
+      // 关键断言 1：sent 应该还是 false（被延迟了）
+      expect(xhr2.sent).toBe(false);
 
-      // 好，让我改一下 FakeXHR —— 重新设计一下。
+      // 推进时间超过 120ms budget
+      await vi.advanceTimersByTimeAsync(130);
 
+      // 关键断言 2：超时回落 → origSend 被调用
+      expect(xhr2.sent).toBe(true);
     } finally {
       handle.stop();
+      vi.useRealTimers();
     }
   });
 
-  it('【红转绿-3】fetch 路径不回归（enabled=true 且有 pending → awaitMemorySelectBudget 正常工作）', async () => {
-    const fetchMock = vi.fn();
+  // ─── 红转绿-3：fetch 路径 enabled=true 有 pending → memory.select 被触发 ──
+
+  it('【红转绿-3】fetch 路径 enabled=true → memory.select 被触发且 fetch 正常完成', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, headers: new Headers(), body: { getReader: () => ({ read: async () => ({ done: true }) }) } }));
     vi.stubGlobal('fetch', fetchMock);
     vi.stubGlobal('location', { href: 'https://chat.deepseek.com/' });
-    const sender = vi.fn(async (req: { invocationName: string }) => {
-      if (req.invocationName === 'mcp.list') return { ok: true, data: { tools: [] } };
-      if (req.invocationName === 'skill.list') return { ok: true, data: { skills: [] } };
-      if (req.invocationName === 'memory.select') {
-        return { ok: true, data: { memories: [{ id: 'm1', type: 'memory', name: '用户偏好', content: '简洁', tags: [] }] } };
-      }
-      return { ok: true, data: {} };
-    });
+
+    const sender = makeTestSender();
     const chatUI = makeChatUI();
-    const handle = installMainWorldInterceptor({
-      sender,
-      chatUI: chatUI as never,
-      diag: () => {},
-    });
+    const handle = installMainWorldInterceptor({ sender, chatUI: chatUI as never, diag: () => {} });
 
-    // 先让 memory.select 返回慢一点（50ms resolve），检查 fetch 是否 await 了
-    let resolveMemorySelect: ((r: { ok: boolean; data: { memories: unknown[] } }) => void) | null = null;
-    sender.mockImplementationOnce(async (req: { invocationName: string }) => {
-      if (req.invocationName === 'mcp.list') return { ok: true, data: { tools: [] } };
-      if (req.invocationName === 'skill.list') return { ok: true, data: { skills: [] } };
-      if (req.invocationName === 'memory.select') {
-        return new Promise((resolve) => { resolveMemorySelect = resolve; });
-      }
-      return { ok: true, data: {} };
-    });
-
-    // 配置 feature flag 为 getter
     configureMemorySelect({
-      enabled: () => true, // 强制 true
-      invoke: (taskText: string) => sender({ invocationName: 'memory.select', params: { taskText } }) as Promise<{ ok: boolean; data?: { memories?: unknown } }>,
+      enabled: () => true,
+      invoke: (taskText: string) => sender({ invocationName: 'memory.select', params: { taskText } })
+        .then((r) => r as { ok: boolean; data?: { memories?: unknown } }),
     });
 
     try {
       (globalThis as { __studioMemorySelect: boolean }).__studioMemorySelect = true;
-      fetchMock.mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: { getReader: () => ({ read: async () => ({ done: true }) }) } });
 
-      // kick 一个 pending
       await (globalThis as { fetch: typeof fetch }).fetch(CHAT_URL, {
         method: 'POST',
         body: JSON.stringify({ prompt: '第一次', chat_session_id: 's1' }),
       });
       await nextTick();
 
-      // 此时 memory.select 的 sender 还没 resolve（在等 resolveMemorySelect）
-      // 再次发 fetch —— 应该 await 那个 pending
-      // 但我们没有更好的办法测 await 语义... 让我们测 "origFetch 被 await 了"
-      // 实际上，fetch hook 本身是 async 的，它会 await awaitMemorySelectBudget。
-      // 所以第二次 fetch 在 memory.select 没 resolve 时会被阻塞最多 120ms。
-
-      // 简化测试：enable=true + fetch chat endpoint → memory.select 被触发
-      expect(memorySelectCalls(sender).length).toBeGreaterThanOrEqual(1);
-
-      // resolve memory.select
-      resolveMemorySelect?.({ ok: true, data: { memories: [{ id: 'm1', type: 'memory', name: 'p', content: 'c', tags: [] }] } });
-      await nextTick();
-
-      // fetch 路径继续正常工作
-    } finally {
-      handle.stop();
-    }
-  });
-
-  it('【红转绿-4】超时回落上一帧（120ms 后不管 pending 完没完都发）', async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
-    vi.stubGlobal('location', { href: 'https://chat.deepseek.com/' });
-    const sender = vi.fn(async (req: { invocationName: string }) => {
-      if (req.invocationName === 'mcp.list') return { ok: true, data: { tools: [] } };
-      if (req.invocationName === 'skill.list') return { ok: true, data: { skills: [] } };
-      if (req.invocationName === 'memory.select') {
-        return new Promise(() => { /* 永不 resolve */ });
-      }
-      return { ok: true, data: {} };
-    });
-    const chatUI = makeChatUI();
-    const handle = installMainWorldInterceptor({
-      sender,
-      chatUI: chatUI as never,
-      diag: () => {},
-    });
-    configureMemorySelect({
-      enabled: () => true,
-      invoke: (taskText: string) => sender({ invocationName: 'memory.select', params: { taskText } }) as Promise<{ ok: boolean; data?: { memories?: unknown } }>,
-    });
-
-    try {
-      (globalThis as { __studioMemorySelect: boolean }).__studioMemorySelect = true;
-      // kick 一个永不 resolve 的 pending
-      fetchMock.mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: { getReader: () => ({ read: async () => ({ done: true }) }) } });
-
-      await (globalThis as { fetch: typeof fetch }).fetch(CHAT_URL, {
-        method: 'POST',
-        body: JSON.stringify({ prompt: '超时测试', chat_session_id: 's1' }),
-      });
-      await nextTick();
-
-      // fetch 路径已经 await 过了（预算内超时），origFetch 应该被调用
-      // timeout 已过 120ms（Promise.race 里的 budget）
+      const mselCalls = memorySelectCalls(sender);
+      expect(mselCalls.length).toBeGreaterThanOrEqual(1);
       expect(fetchMock).toHaveBeenCalled();
     } finally {
       handle.stop();
     }
   });
 
-  it('【红转绿-5】自动调用确实经过 host.sendToolCall({ invocationName:"memory.select" })', async () => {
-    const fetchMock = vi.fn();
+  // ─── 红转绿-4：超时回落（fetch + 永不 resolve pending） ──
+
+  it('【红转绿-4】fetch 路径有 pending 永不 resolve → 120ms 超时后 fetch 继续发', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, headers: new Headers(), body: { getReader: () => ({ read: async () => ({ done: true }) }) } }));
     vi.stubGlobal('fetch', fetchMock);
     vi.stubGlobal('location', { href: 'https://chat.deepseek.com/' });
-    const sender = vi.fn(async (req: { invocationName: string; params: Record<string, unknown> }) => {
-      if (req.invocationName === 'mcp.list') return { ok: true, data: { tools: [] } };
-      if (req.invocationName === 'skill.list') return { ok: true, data: { skills: [] } };
+
+    const sender = makeTestSender();
+    sender.mockImplementationOnce(async (req: TestToolCallRequest) => {
       if (req.invocationName === 'memory.select') {
-        return { ok: true, data: { memories: [] } };
+        return new Promise<ExecuteResult>(() => { /* 永不 resolve */ });
       }
-      return { ok: true, data: {} };
+      return defaultSenderResult(req.invocationName);
     });
+
     const chatUI = makeChatUI();
-    const handle = installMainWorldInterceptor({
-      sender,
-      chatUI: chatUI as never,
-      diag: () => {},
-    });
+    const handle = installMainWorldInterceptor({ sender, chatUI: chatUI as never, diag: () => {} });
     configureMemorySelect({
       enabled: () => true,
-      invoke: (taskText: string) => sender({ invocationName: 'memory.select', params: { taskText } }) as Promise<{ ok: boolean; data?: { memories?: unknown } }>,
+      invoke: (taskText: string) => sender({ invocationName: 'memory.select', params: { taskText } })
+        .then((r) => r as { ok: boolean; data?: { memories?: unknown } }),
     });
 
     try {
       (globalThis as { __studioMemorySelect: boolean }).__studioMemorySelect = true;
-      fetchMock.mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: { getReader: () => ({ read: async () => ({ done: true }) }) } });
+
+      const fetchPromise = (globalThis as { fetch: typeof fetch }).fetch(CHAT_URL, {
+        method: 'POST',
+        body: JSON.stringify({ prompt: '超时测试', chat_session_id: 's1' }),
+      });
+
+      // 先 runAllTimers 让 kickMemorySelect 的 async 链走完
+      await vi.runAllTimersAsync();
+
+      // 推进 130ms → budget 超时 → awaitMemorySelectBudget 返回 → fetch 继续
+      await vi.advanceTimersByTimeAsync(130);
+      await fetchPromise;
+
+      expect(fetchMock).toHaveBeenCalled();
+    } finally {
+      handle.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  // ─── 红转绿-5：memory.select 确实走 host.sendToolCall ──
+
+  it('【红转绿-5】自动预取确实调用 sender(invocationName:"memory.select") 且 params.taskText 包含用户 prompt', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, headers: new Headers(), body: { getReader: () => ({ read: async () => ({ done: true }) }) } }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('location', { href: 'https://chat.deepseek.com/' });
+
+    const sender = makeTestSender();
+    const chatUI = makeChatUI();
+    const handle = installMainWorldInterceptor({ sender, chatUI: chatUI as never, diag: () => {} });
+    configureMemorySelect({
+      enabled: () => true,
+      invoke: (taskText: string) => sender({ invocationName: 'memory.select', params: { taskText } })
+        .then((r) => r as { ok: boolean; data?: { memories?: unknown } }),
+    });
+
+    try {
+      (globalThis as { __studioMemorySelect: boolean }).__studioMemorySelect = true;
 
       await (globalThis as { fetch: typeof fetch }).fetch(CHAT_URL, {
         method: 'POST',
@@ -341,94 +331,90 @@ describe('C1-F1 memory.select 自动预取闭环', () => {
 
       const msel = memorySelectCalls(sender);
       expect(msel).toHaveLength(1);
-      // 检查 params.taskText 就是用户 prompt
-      const taskText = (msel[0][0] as { params: { taskText?: string } }).params?.taskText;
+      const taskText = (msel[0][0] as TestToolCallRequest).params?.taskText;
       expect(taskText).toBeTruthy();
       expect(typeof taskText).toBe('string');
+      expect(taskText).toContain('排序');
     } finally {
       handle.stop();
     }
   });
 
-  it('【红转绿-6】非聊天 XHR 不等待、不触发 memory.select', async () => {
+  // ─── 红转绿-6：非聊天 XHR 不等待、不触发 memory.select —— 原假绿 ──
+
+  it('【红转绿-6】非聊天 XHR 立即发送（sent=true）且不触发额外 memory.select', async () => {
     const { FakeXHR, handle, sender } = installHarness();
     try {
       (globalThis as { __studioMemorySelect: boolean }).__studioMemorySelect = true;
 
-      // 先发一次 chat 请求，制造 pending memory.select
+      // 先发 chat → kick 一个 pending（sender 立即 resolve）
       pageSend(FakeXHR, CHAT_URL, JSON.stringify({ prompt: '制造 pending', chat_session_id: 's1' }));
       await nextTick();
 
-      // 让 memory.select 下一次返回永不 resolve
-      sender.mockImplementationOnce(async (req: { invocationName: string }) => {
-        if (req.invocationName === 'memory.select') {
-          return new Promise(() => { /* 永不 resolve */ });
+      // 让下一个 memory.select 永不 resolve → 造真正 pending
+      sender.mockImplementationOnce(async (_req: TestToolCallRequest) => {
+        if (_req.invocationName === 'memory.select') {
+          return new Promise<ExecuteResult>(() => { /* 永不 resolve */ });
         }
-        if (req.invocationName === 'mcp.list') return { ok: true, data: { tools: [] } };
-        if (req.invocationName === 'skill.list') return { ok: true, data: { skills: [] } };
-        return { ok: true, data: {} };
+        return defaultSenderResult(_req.invocationName);
       });
-
-      // 再发一次 chat，制造真正 pending 的 memory.select
       pageSend(FakeXHR, CHAT_URL, JSON.stringify({ prompt: '第二个 chat', chat_session_id: 's2' }));
       await nextTick();
+
       // 此时 memory.select 还 pending 着
 
-      // 非聊天 XHR 应该不延迟、不触发
+      // 非聊天 XHR：NEED_MEM_SELECT_WAIT 里 isChat=false → 不走延迟
       const before = memorySelectCalls(sender).length;
       const nonChatXhr = pageSend(FakeXHR, NON_CHAT_URL);
-      await nextTick();
 
-      // nonChatXhr.send 应该被同步立即调用（没有延迟）
-      // 它不应该触发额外的 memory.select 调用
+      // 关键断言 1：sent 立即为 true（没有被延迟）
+      expect(nonChatXhr.sent).toBe(true);
+
+      // 关键断言 2：不触发额外 memory.select（非 chat 不 kick）
+      await nextTick();
       const after = memorySelectCalls(sender).length;
-      expect(after).toBe(before); // 没有额外的 memory.select 调用
+      expect(after).toBe(before);
     } finally {
       handle.stop();
     }
   });
 
-  it('【红转绿-7】首轮原样重发不重复预取（inFirstAttemptResend=true 时跳过等待）', async () => {
-    // inFirstAttemptResend 是 loopState 的字段，由续跑机制设置。
-    // XHR 路径用 !loopState?.inFirstAttemptResend 作为跳过条件。
-    // 这里直接测：构造一个 pending memory.select，然后模拟一个 inFirstAttemptResend=true 的 XHR 发送
-    // 它应该不触发延迟等待。
-    //
-    // 但我们没法直接设置 loopState.inFirstAttemptResend（是模块私有）。
-    // 替代测试：用 fetch 路径测 —— loopState.inFirstAttemptResend 会被首轮重试设置。
-    // 或者直接测 captureChatRequest 里的条件判断。
-    //
-    // 简化：测"有 pending 但 enabled=false → 不延迟"，这等价于"重发时不等待"。
+  // ─── 红转绿-7：有 pending 但 enabled=false → XHR 立即发送（等价于 inFirstAttemptResend 跳过等待） ──
+
+  it('【红转绿-7】有 pending 但 enabled=false → XHR 立即发送、不触发 memory.select', async () => {
     const { FakeXHR, handle, sender } = installHarness();
     try {
       (globalThis as { __studioMemorySelect: boolean }).__studioMemorySelect = true;
 
-      // 先发 chat，制造 pending memory.select
+      // 先发 chat → kick pending
       pageSend(FakeXHR, CHAT_URL, JSON.stringify({ prompt: '制造 pending', chat_session_id: 's1' }));
       await nextTick();
 
-      // 让下一个 memory.select 永不 resolve → 制造 pending 状态
-      sender.mockImplementationOnce(async (req: { invocationName: string }) => {
-        if (req.invocationName === 'memory.select') {
-          return new Promise(() => { /* 永不 resolve */ });
+      // 造永不 resolve pending
+      sender.mockImplementationOnce(async (_req: TestToolCallRequest) => {
+        if (_req.invocationName === 'memory.select') {
+          return new Promise<ExecuteResult>(() => { /* 永不 resolve */ });
         }
-        if (req.invocationName === 'mcp.list') return { ok: true, data: { tools: [] } };
-        if (req.invocationName === 'skill.list') return { ok: true, data: { skills: [] } };
-        return { ok: true, data: {} };
+        return defaultSenderResult(_req.invocationName);
       });
       pageSend(FakeXHR, CHAT_URL, JSON.stringify({ prompt: '造 pending', chat_session_id: 's2' }));
       await nextTick();
 
-      // 现在关闭 flag（模拟 inFirstAttemptResend 时跳过等待）
+      // 现在关闭 flag → enabled=false
       (globalThis as { __studioMemorySelect: boolean }).__studioMemorySelect = false;
 
-      // 再发 chat —— enabled=false → kick 不触发、延迟也不触发
+      // 再发 chat：enabled=false → NEED_MEM_SELECT_WAIT 里 isMemorySelectEnabled()=false → 不延迟
+      // kickMemorySelect 也因 enabled=false 不触发
       const beforeCount = memorySelectCalls(sender).length;
-      pageSend(FakeXHR, CHAT_URL, JSON.stringify({ prompt: 'flag关了不预取', chat_session_id: 's3' }));
-      await nextTick();
+      const xhr3 = pageSend(FakeXHR, CHAT_URL, JSON.stringify({ prompt: 'flag关了', chat_session_id: 's3' }));
 
+      // 关键断言 1：sent 立即为 true（没有延迟）
+      expect(xhr3.sent).toBe(true);
+
+      // 关键断言 2：没有新的 memory.select 调用
+      await nextTick();
       const afterCount = memorySelectCalls(sender).length;
-      expect(afterCount).toBe(beforeCount); // 没有新的 memory.select
+      expect(afterCount).toBe(beforeCount);
     } finally {
       handle.stop();
     }

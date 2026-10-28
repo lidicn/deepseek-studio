@@ -57,6 +57,17 @@ export interface SaveMemoryResult {
   readonly id?: string;
   readonly error?: string;
   readonly reason?: string;
+  /** 主记录成功但附属操作（FTS 同步 / 容量淘汰）失败时为 true。 */
+  readonly partial?: boolean;
+  /** 附属操作失败的结构化列表（partial=true 时必有内容）。 */
+  readonly warnings?: readonly MemorySaveWarning[];
+}
+
+/** memory.save 的附属操作失败 warning。主记录完整性靠 memories 主表，附属失败不阻断 ok:true。 */
+export interface MemorySaveWarning {
+  readonly code: 'fts-sync-failed' | 'eviction-failed';
+  readonly message: string;
+  readonly detail?: string;
 }
 
 /** 默认记忆存储路径：~/.config/deepseek-studio/memories.db */
@@ -443,10 +454,13 @@ export class MemoryStore implements MemoryStoreV2 {
           merged.source ?? null, merged.confidence ?? null, JSON.stringify(merged.personaTags), hash, dedupe, now,
           String(existing.id),
         );
-        // C1-F2：FTS 同步降级处理，rowid 复用冲突不再阻断主保存。
-        this.syncFts(rid, params.name, params.content, merged.tags);
-        this.applyEviction(budget.evict, now);
-        return { ok: true, id: String(existing.id) };
+        // C1-F2：FTS 同步 + 容量淘汰（附属失败收集为 warnings，不阻断主保存）。
+        const ftsWarn = this.syncFts(rid, params.name, params.content, merged.tags);
+        const evictWarn = this.applyEviction(budget.evict, now);
+        const warnings = [...ftsWarn, ...evictWarn];
+        return warnings.length > 0
+          ? { ok: true, id: String(existing.id), partial: true, warnings }
+          : { ok: true, id: String(existing.id) };
       }
 
       // M10-7.2：同名未命中 → 同 type + dedupe_hash 跨名去重。有效行优先、否则最近更新；
@@ -497,9 +511,12 @@ export class MemoryStore implements MemoryStoreV2 {
           crossHash, dedupe, now, crossId,
         );
         // C1-F2：name 保留原值，FTS 仍按原 name 索引；同步降级处理防 rowid 冲突。
-        this.syncFts(rid, crossName, params.content, merged.tags);
-        this.applyEviction(budget.evict, now);
-        return { ok: true, id: crossId };
+        const ftsWarn = this.syncFts(rid, crossName, params.content, merged.tags);
+        const evictWarn = this.applyEviction(budget.evict, now);
+        const warnings = [...ftsWarn, ...evictWarn];
+        return warnings.length > 0
+          ? { ok: true, id: crossId, partial: true, warnings }
+          : { ok: true, id: crossId };
       }
 
       // M10-7.3：写前容量预算。全 pinned 无法腾容量时拒绝本次写入，不落地、不部分改动。
@@ -515,10 +532,13 @@ export class MemoryStore implements MemoryStoreV2 {
         params.source ?? null, params.confidence ?? null, JSON.stringify(personaTags), hash, dedupe, null, now, now,
       );
       const rid = (this.db.prepare('SELECT last_insert_rowid() AS rid').get()?.rid as number) ?? 0;
-      // C1-F2：FTS 同步降级处理；即使 rowid 被孤儿残留占用，主记录仍算成功。
-      this.syncFts(rid, params.name, params.content, tags);
-      this.applyEviction(budget.evict, now);
-      return { ok: true, id };
+      // C1-F2：FTS 同步 + 容量淘汰（附属失败收集为 warnings，不阻断主保存）。
+      const ftsWarn = this.syncFts(rid, params.name, params.content, tags);
+      const evictWarn = this.applyEviction(budget.evict, now);
+      const warnings = [...ftsWarn, ...evictWarn];
+      return warnings.length > 0
+        ? { ok: true, id, partial: true, warnings }
+        : { ok: true, id };
     }
 
     // 降级路径：内存数组
@@ -553,8 +573,10 @@ export class MemoryStore implements MemoryStoreV2 {
         source: merged.source, confidence: merged.confidence, personaTags: merged.personaTags,
         invalidAt: null, updatedAt: now,
       } as MemoryRow;
-      this.applyEviction(budget.evict, now);
-      return { ok: true, id: target.id };
+      const evictWarn = this.applyEviction(budget.evict, now);
+      return evictWarn.length > 0
+        ? { ok: true, id: target.id, partial: true, warnings: evictWarn }
+        : { ok: true, id: target.id };
     }
 
     // M10-7.2：同名未命中 → 同 type + dedupeHash 跨名去重。有效行优先、否则最近更新。
@@ -586,8 +608,10 @@ export class MemoryStore implements MemoryStoreV2 {
         source: merged.source, confidence: merged.confidence, personaTags: merged.personaTags,
         invalidAt: null, updatedAt: now,
       } as MemoryRow;
-      this.applyEviction(budget.evict, now);
-      return { ok: true, id: crossTarget.id };
+      const evictWarn = this.applyEviction(budget.evict, now);
+      return evictWarn.length > 0
+        ? { ok: true, id: crossTarget.id, partial: true, warnings: evictWarn }
+        : { ok: true, id: crossTarget.id };
     }
 
     // M10-7.3：写前容量预算，与 SQL 路径同一淘汰排序语义。全 pinned 无法腾容量则拒绝。
@@ -599,8 +623,10 @@ export class MemoryStore implements MemoryStoreV2 {
       pinned: params.pinned ?? false, source: params.source, confidence: params.confidence,
       personaTags, invalidAt: null, createdAt: now, updatedAt: now,
     } as MemoryRow);
-    this.applyEviction(budget.evict, now);
-    return { ok: true, id };
+    const evictWarn = this.applyEviction(budget.evict, now);
+    return evictWarn.length > 0
+      ? { ok: true, id, partial: true, warnings: evictWarn }
+      : { ok: true, id };
   }
 
   /** 硬删除一条记忆（返回是否命中）。注意：治理场景请用 invalidate()。 */
@@ -808,9 +834,11 @@ export class MemoryStore implements MemoryStoreV2 {
       return { ok: true, evict };
   }
 
-  /** M10-7.3：落库后执行软归档（设 invalid_at，不硬删除），SQL 与 fallback 共用。 */
-  private applyEviction(evict: MemoryRow[], now: number): void {
-    if (evict.length === 0) return;
+  /** M10-7.3：落库后执行软归档（设 invalid_at，不硬删除），SQL 与 fallback 共用。
+   *  返回附属失败 warning 列表（空数组表示全部成功）。 */
+  private applyEviction(evict: MemoryRow[], now: number): MemorySaveWarning[] {
+    if (evict.length === 0) return [];
+    const warnings: MemorySaveWarning[] = [];
     if (this.db) {
       const upd = this.db.prepare(
         'UPDATE memories SET invalid_at = ?, updated_at = ? WHERE id = ? AND invalid_at IS NULL',
@@ -819,8 +847,9 @@ export class MemoryStore implements MemoryStoreV2 {
         try {
           upd.run(now, now, r.id);
         } catch (e) {
-          // C1-F2：容量淘汰是附属操作，失败不应阻断主保存。
-          console.warn('[memory] eviction failed (non-fatal, main record intact):', e instanceof Error ? e.message : String(e));
+          const msg = e instanceof Error ? e.message : String(e);
+          console.warn('[memory] eviction failed (non-fatal, main record intact):', msg);
+          warnings.push({ code: 'eviction-failed', message: '容量淘汰软归档失败', detail: `${r.id}: ${msg}` });
         }
       }
     } else if (this.fallback) {
@@ -832,21 +861,26 @@ export class MemoryStore implements MemoryStoreV2 {
         }
       }
     }
+    return warnings;
   }
 
   /**
    * C1-F2：FTS 搜索索引同步（DELETE-then-INSERT 幂等，防 rowid 复用冲突）。
    * FTS 是搜索优化层，主记录完整性靠 memories 主表保证——任何 FTS 同步失败
-   * 都降级为 console.warn，不影响 save 返回 ok:true。
+   * 不再只写 console.warn，而是收集为 warning 返回给调用方。
+   * 返回空数组表示成功；有元素表示有失败但主记录不受影响。
    */
-  private syncFts(rid: number, name: string, content: string, tags: string[]): void {
-    if (!this.db) return;
+  private syncFts(rid: number, name: string, content: string, tags: string[]): MemorySaveWarning[] {
+    if (!this.db) return [];
     try {
       this.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(rid);
       this.db.prepare('INSERT INTO memories_fts(rowid, name, content, tags) VALUES (?, ?, ?, ?)')
         .run(rid, name, content, tags.join(' '));
+      return [];
     } catch (e) {
-      console.warn('[memory] FTS sync failed (non-fatal, main record intact):', e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn('[memory] FTS sync failed (non-fatal, main record intact):', msg);
+      return [{ code: 'fts-sync-failed', message: 'FTS 全文索引同步失败', detail: msg }];
     }
   }
 
