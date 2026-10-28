@@ -531,6 +531,8 @@ const FLOW_STYLE = `
       --dsf-fail-tint: rgba(240, 128, 118, 0.1);
       --dsf-term: #d2a24c;
       --dsf-cancel: #828b95;
+      --dsf-partial: #d2a24c;
+      --dsf-partial-tint: rgba(210, 162, 76, 0.1);
     }
   }
 
@@ -726,6 +728,7 @@ function renderItem(
   if (typeof known === 'number' && Number.isFinite(known)) item.dataset.durationMs = String(known);
   else delete item.dataset.durationMs;
 
+  // security-ok: buildItemHtml 的全部动态值均经 escapeHtml；bodyId 为自增整数，preClass 为受控常量。
   item.innerHTML = buildItemHtml(data, status, known, startedAt, expanded);
   wireItem(item);
 
