@@ -419,4 +419,50 @@ describe('C1-F1 memory.select 自动预取闭环', () => {
       handle.stop();
     }
   });
+
+  // ─── 红转绿-8：延迟发送仍必须安装响应钩子（否则工具解析静默失效） ──
+
+  it('【红转绿-8】延迟发送仍安装响应钩子并解析 shell_exec', async () => {
+    vi.useFakeTimers();
+    const { FakeXHR, handle, sender } = installHarness();
+    try {
+      (globalThis as { __studioMemorySelect: boolean }).__studioMemorySelect = true;
+
+      // captureChatRequest 会同步 kick memory.select；让它永不返回，强制本次 XHR 走延迟分支。
+      sender.mockImplementationOnce(async (req: TestToolCallRequest) => {
+        if (req.invocationName === 'memory.select') {
+          return new Promise<ExecuteResult>(() => { /* 永不 resolve */ });
+        }
+        return defaultSenderResult(req.invocationName);
+      });
+
+      const xhr = pageSend(
+        FakeXHR,
+        CHAT_URL,
+        JSON.stringify({ prompt: '延迟钩子测试', chat_session_id: 's8' }),
+      );
+      expect(xhr.sent).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(130);
+      expect(xhr.sent).toBe(true);
+
+      const sseTool = `data: ${JSON.stringify({
+        v: [{ type: 'RESPONSE', content: '<shell_exec>{"command":"echo delayed"}</shell_exec>' }],
+      })}\n\n`;
+      const sseDone = 'data: {"p":"response/status","o":"SET","v":"FINISHED"}\n\n';
+      xhr.respond(200, sseTool + sseDone);
+      await nextTick();
+      await nextTick();
+
+      expect(sender).toHaveBeenCalledWith(
+        expect.objectContaining({
+          invocationName: 'shell_exec',
+          params: expect.objectContaining({ command: 'echo delayed' }),
+        }),
+      );
+    } finally {
+      handle.stop();
+      vi.useRealTimers();
+    }
+  });
 });

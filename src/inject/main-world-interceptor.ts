@@ -1205,6 +1205,8 @@ function installXhrHooks(
       interceptorTrace.record({ t: 'request.sent', turnId: traceTurnId, bytes: byteLengthOf(body) });
       reportContextBudget(body, loopState?.chatUI);
     }
+    const xhr = this;
+    const sendNow = () => (origSend as (...a: unknown[]) => unknown).call(xhr, body);
     // C1-F1 修复：XHR 路径也要获得与 fetch 等价的 memory.select 有界等待。
     // proto.send 必须同步返回 void，所以采用「延迟 origSend」模式：
     // kickMemorySelect 已在 captureChatRequest 里同步触发；若有 pending，
@@ -1231,7 +1233,8 @@ function installXhrHooks(
         }
         const wasAborted = Boolean((this as Record<string, unknown>)[DS_ABORTED_FLAG]);
         try {
-          (origSend as (...a: unknown[]) => unknown).call(this, body);
+          // 延迟发送也必须先挂响应钩子，否则工具解析、哨兵和断流结算全部失效。
+          installResponseHookAndSend();
         } catch (e) {
           // 延迟 send 的异常走 setTimeout 回调；这里让 onreadystatechange 链自然处理。
           // eslint-disable-next-line no-console
@@ -1252,10 +1255,10 @@ function installXhrHooks(
       // proto.send 同步返回 void；origSend 将在 budget 到期后或 pending 完成后执行。
       return void 0;
     }
-    const xhr = this;
-    (xhr as Record<string, unknown>).__dsIsChat = isChat;
-    const prev = xhr.onreadystatechange;
-    xhr.onreadystatechange = (...args: unknown[]) => {
+    function installResponseHookAndSend() {
+      (xhr as Record<string, unknown>).__dsIsChat = isChat;
+      const prev = xhr.onreadystatechange;
+      xhr.onreadystatechange = (...args: unknown[]) => {
       // QD-R6-01：断流结算只对对话端点成立。
       // 此前 isDone / streamActive 重置对**所有** XHR 生效，于是页面启动阶段
       // 那一批非对话请求（/api/v0/client/settings、/api/v0/chat/history_messages、
@@ -1434,8 +1437,10 @@ function installXhrHooks(
         }
       }
       if (typeof prev === 'function') (prev as (...a: unknown[]) => unknown).apply(xhr, args);
-    };
-    return (origSend as (...a: unknown[]) => unknown).call(this, body);
+      };
+      return sendNow();
+    }
+    return installResponseHookAndSend();
   } as typeof proto.send;
 
   return () => {
