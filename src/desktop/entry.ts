@@ -279,10 +279,10 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
         chatUI,
       });
       // M10-8B（B1）：feature flag 默认关。开启时页端在首轮 fetch 前有界等待 memory.select。
+      // C1-F1 修复：enabled 改为 getter 函数，运行期动态读取 globalThis.__studioMemorySelect；
+      // 真机注入时 flag 可能为 null，之后页端设置后要能生效。
       configureMemorySelect({
-        enabled: typeof (globalThis as { __studioMemorySelect?: boolean }).__studioMemorySelect === 'boolean'
-          ? Boolean((globalThis as { __studioMemorySelect?: boolean }).__studioMemorySelect)
-          : false,
+        enabled: () => Boolean((globalThis as { __studioMemorySelect?: boolean }).__studioMemorySelect),
         invoke: (taskText) => host.sendToolCall({ callId: `msel_${Date.now()}_${Math.random().toString(36).slice(2,8)}`, invocationName: 'memory.select', params: { taskText } }) as Promise<{ ok: boolean; data?: { memories?: unknown } }>,
       });
     } catch (err) {

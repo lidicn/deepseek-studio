@@ -125,16 +125,24 @@ export interface MainWorldInterceptorHandle {
 // v1.0：记忆列表缓存（由宿主推送，用于注入系统提示词的 "Existing Memories" 部分）
 let currentMemories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }> = [];
 
-/** M10-8B（B1）：按任务预取记忆的有界等待状态。feature flag 默认关。 */
+/** M10-8B（B1）：按任务预取记忆的有界等待状态。feature flag 默认关。
+ *  C1-F1 修复：enabled 不再是安装时一次性固化的 boolean，支持运行期动态读取——
+ *  真机注入时 flag 可能为 null，之后页端设置后要能生效。 */
 const memorySelectState: {
-  enabled: boolean;
+  enabled: boolean | (() => boolean);
   pending: Promise<Array<{ id: string; type: string; name: string; content: string; tags: string[] }>> | null;
   lastTask: string;
   invoke: ((taskText: string) => Promise<{ ok: boolean; data?: { memories?: unknown } }>) | null;
 } = { enabled: false, pending: null, lastTask: '', invoke: null };
 
+/** 运行期求值 enabled：支持静态 boolean 或 getter 函数。 */
+function isMemorySelectEnabled(): boolean {
+  const v = memorySelectState.enabled;
+  return typeof v === 'function' ? Boolean(v()) : Boolean(v);
+}
+
 export function configureMemorySelect(opts: {
-  enabled: boolean;
+  enabled: boolean | (() => boolean);
   invoke?: (taskText: string) => Promise<{ ok: boolean; data?: { memories?: unknown } }>;
 }): void {
   memorySelectState.enabled = opts.enabled;
@@ -143,7 +151,7 @@ export function configureMemorySelect(opts: {
 
 /** 启动一次新的预取（若 taskText 与上次相同则复用 in-flight）。 */
 function kickMemorySelect(taskText: string): void {
-  if (!memorySelectState.enabled || !memorySelectState.invoke) return;
+  if (!isMemorySelectEnabled() || !memorySelectState.invoke) return;
   const trimmed = taskText.trim();
   if (!trimmed) return;
   if (memorySelectState.pending && memorySelectState.lastTask === trimmed) return;
@@ -921,7 +929,8 @@ function installFetchHook(
     }
 
     // M10-8B（B1）：首轮发送前有界等待 memory.select 结果（≤120ms）；超时回落上一帧。
-    if (memorySelectState.enabled && isDeepSeekChatEndpoint(url, method) && !loopState?.inFirstAttemptResend) {
+    // C1-F1 修复：enabled 运行期动态求值，注入时 flag=null 之后变 true 也能生效。
+    if (isMemorySelectEnabled() && isDeepSeekChatEndpoint(url, method) && !loopState?.inFirstAttemptResend) {
       await awaitMemorySelectBudget(120);
     }
 
@@ -1127,6 +1136,15 @@ function installXhrHooks(
   proto.abort = function (this: XMLHttpRequest & Record<string, unknown>) {
     (this as Record<string, unknown>)[DS_ABORTED_FLAG] = true;
     if (loopState) loopState.abortedByUser = true;
+    // C1-F1: 如果 proto.send 因 memory.select 有界等待被延迟，
+    // 用户此时 abort → 立即触发延迟 send（doSend 里会检测已 abort 并立即 origAbort），
+    // 保证 readyState=4 回调链正常触发，不留下悬挂 XHR。
+    const delayedSend = (this as Record<string, unknown>).__dsDelayedSend as ((body?: Document | XMLHttpRequestBodyInit | null) => void) | undefined;
+    if (typeof delayedSend === 'function') {
+      (this as Record<string, unknown>).__dsDelayedSend = undefined;
+      delayedSend();
+      return undefined;
+    }
     return (origAbort as (...a: unknown[]) => unknown).apply(this, []);
   } as typeof proto.abort;
 
@@ -1186,6 +1204,53 @@ function installXhrHooks(
       if (loopState?.inFirstAttemptResend) firstAttemptBudget(traceTurnId).sent += 1;
       interceptorTrace.record({ t: 'request.sent', turnId: traceTurnId, bytes: byteLengthOf(body) });
       reportContextBudget(body, loopState?.chatUI);
+    }
+    // C1-F1 修复：XHR 路径也要获得与 fetch 等价的 memory.select 有界等待。
+    // proto.send 必须同步返回 void，所以采用「延迟 origSend」模式：
+    // kickMemorySelect 已在 captureChatRequest 里同步触发；若有 pending，
+    // 用 120ms 预算等结果，超时立即发。发送被延迟时 proto.send 先同步 return。
+    // 非聊天 XHR / 首轮重发 / feature flag 关 → 不延迟，直接走原路径。
+    const NEED_MEM_SELECT_WAIT = isChat
+      && isMemorySelectEnabled()
+      && !!memorySelectState.pending
+      && !loopState?.inFirstAttemptResend;
+    if (NEED_MEM_SELECT_WAIT) {
+      const pendingSel = memorySelectState.pending!;
+      let settled = false;
+      // 延迟执行真正的 origSend；检测到 abort 时先发再 origAbort，保证 readyState=4。
+      const doDelayedSend = () => {
+        if (settled) return;
+        settled = true;
+        (this as Record<string, unknown>).__dsDelayedSend = undefined;
+        // 消费 pending 结果（若此时 fetch 路径还没消费）
+        if (memorySelectState.pending === pendingSel) {
+          void pendingSel.then((rows) => {
+            if (rows && rows.length > 0) currentMemories = rows;
+          });
+          memorySelectState.pending = null;
+        }
+        const wasAborted = Boolean((this as Record<string, unknown>)[DS_ABORTED_FLAG]);
+        try {
+          (origSend as (...a: unknown[]) => unknown).call(this, body);
+        } catch (e) {
+          // 延迟 send 的异常走 setTimeout 回调；这里让 onreadystatechange 链自然处理。
+          // eslint-disable-next-line no-console
+          console.error('[interceptor] delayed xhr origSend threw:', e);
+          return;
+        }
+        if (wasAborted) {
+          (origAbort as (...a: unknown[]) => unknown).call(this);
+        }
+      };
+      // 暴露给 proto.abort 包装：延迟期间用户 abort → 立即触发 send 再 abort。
+      (this as Record<string, unknown>).__dsDelayedSend = doDelayedSend;
+      // 120ms 预算：pending 完成或超时谁先到就触发 send。
+      const budget = new Promise<null>((resolve) => {
+        setTimeout(() => resolve(null), 120);
+      });
+      Promise.race([pendingSel, budget]).then(() => doDelayedSend());
+      // proto.send 同步返回 void；origSend 将在 budget 到期后或 pending 完成后执行。
+      return void 0;
     }
     const xhr = this;
     (xhr as Record<string, unknown>).__dsIsChat = isChat;
