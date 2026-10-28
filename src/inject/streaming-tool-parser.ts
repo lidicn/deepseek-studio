@@ -29,7 +29,7 @@ export class StreamingToolCallParser {
    * （用于回填到页端可见流，避免用户看到原始 XML 标签）。未完成闭合的标签尾部被保留到
    * 下次 feed，保证跨网络分片正确。
    */
-  feed(text: string): { calls: ParsedToolCall[]; clean: string } {
+  feed(text: string): { calls: ParsedToolCall[]; clean: string; hasUnclosedToolTag: boolean } {
     const input = this.tail + text;
     this.tail = '';
     const calls: ParsedToolCall[] = [];
@@ -84,14 +84,25 @@ export class StreamingToolCallParser {
         }
       }
     }
-    return { calls, clean };
+    return { calls, clean, hasUnclosedToolTag: this.tailHasUnclosedKnownToolTag() };
   }
 
   /** 流结束时刷出剩余尾部（作为干净文本返回，不解析不完整标签）。 */
-  flush(): { calls: ParsedToolCall[]; clean: string } {
+  flush(): { calls: ParsedToolCall[]; clean: string; hasUnclosedToolTag: boolean } {
+    const hasUnclosedToolTag = this.tailHasUnclosedKnownToolTag();
     const clean = this.tail;
     this.tail = '';
-    return { calls: [], clean };
+    return { calls: [], clean, hasUnclosedToolTag };
+  }
+
+  /** tail 是否以某个受支持工具的开标签前缀开头。 */
+  private tailHasUnclosedKnownToolTag(): boolean {
+    const tail = this.tail;
+    if (!tail.startsWith('<') || tail.startsWith('</')) return false;
+    const match = /^<([a-zA-Z_][\w.:-]*)/.exec(tail);
+    if (!match) return false;
+    const prefix = match[1];
+    return this.names.some((name) => name === prefix || name.startsWith(prefix));
   }
 
   private make(name: string, body: string, raw: string): ParsedToolCall {

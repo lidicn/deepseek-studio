@@ -57,3 +57,55 @@ describe('StreamingToolCallParser - JSON 容错', () => {
     expect((r.calls[0].params.params as { p: string }).p).toBe('a"b');
   });
 });
+
+describe('StreamingToolCallParser - 未闭合已知工具标签', () => {
+  it('识别完整开标签后的未闭合 JSON', () => {
+    const p = new StreamingToolCallParser(['shell_exec']);
+    const r = p.feed('<shell_exec>{"command":"ls');
+    expect(r.hasUnclosedToolTag).toBe(true);
+  });
+
+  it('识别已知工具名的前缀', () => {
+    const p = new StreamingToolCallParser(['shell_exec']);
+    const r = p.feed('<shell_ex');
+    expect(r.hasUnclosedToolTag).toBe(true);
+  });
+
+  it('跨 chunk 拼接后仍能识别并完成解析', () => {
+    const p = new StreamingToolCallParser(['shell_exec']);
+    expect(p.feed('<shell_ex').hasUnclosedToolTag).toBe(true);
+    const r = p.feed('ec>{"command":"ls"}</shell_exec>');
+    expect(r.calls).toHaveLength(1);
+    expect(r.calls[0].params).toEqual({ command: 'ls' });
+    expect(r.hasUnclosedToolTag).toBe(false);
+  });
+
+  it('不把比较符 a < b 误判为未闭合工具标签', () => {
+    const p = new StreamingToolCallParser(['shell_exec']);
+    const r = p.feed('a < b');
+    expect(r.clean).toBe('a < b');
+    expect(r.hasUnclosedToolTag).toBe(false);
+  });
+
+  it('不把孤立 < 误判为未闭合工具标签', () => {
+    const p = new StreamingToolCallParser(['shell_exec']);
+    const r = p.feed('<');
+    expect(r.clean).toBe('');
+    expect(r.hasUnclosedToolTag).toBe(false);
+    expect(p.flush()).toEqual({ calls: [], clean: '<', hasUnclosedToolTag: false });
+  });
+
+  it('不把未知 <foo> 误判为未闭合工具标签', () => {
+    const p = new StreamingToolCallParser(['shell_exec']);
+    const r = p.feed('<foo>bar');
+    expect(r.clean).toBe('<foo>bar');
+    expect(r.hasUnclosedToolTag).toBe(false);
+  });
+
+  it('完整闭合标签不算未闭合', () => {
+    const p = new StreamingToolCallParser(['shell_exec']);
+    const r = p.feed('<shell_exec>{"command":"ls"}</shell_exec>');
+    expect(r.calls).toHaveLength(1);
+    expect(r.hasUnclosedToolTag).toBe(false);
+  });
+});

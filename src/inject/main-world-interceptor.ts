@@ -18,6 +18,8 @@ import { isSupportedUpstreamTool, SUPPORTED_INVOCATION_NAMES } from '../shared/t
 import { shouldSkipAutoContinue } from '../shared/tool-result-format';
 import {
   buildContinuationPrompt,
+  buildProtocolRepairPrompt,
+  shouldAttemptProtocolRepair,
   extractTaskCompleteSignal,
   MAX_LOOP,
   MAX_ERROR_RETRIES,
@@ -314,6 +316,7 @@ function beginStream(loopState: LoopState): number {
   loopState.streamTruncatedTag = false;
   loopState.streamBytes = 0;
   loopState.streamHadVisibleText = false;
+  loopState.onStreamBegin?.();
   return id;
 }
 
@@ -406,6 +409,12 @@ interface LoopState {
   onNewUserMessage?: () => void;
   /** 竞态修复：流结束时回调，检查 pending 并触发续跑（由 installMainWorldInterceptor 设置） */
   onStreamEnd?: () => void;
+  /** 每条新流开始时触发；用于清空单流工具签名去重集，保留 callId 去重集。 */
+  onStreamBegin?: () => void;
+  /** 本用户回合是否已经发起过协议修复轮。 */
+  protocolRepairUsed?: boolean;
+  /** 下一轮 auto-continue 是否应使用协议修复 prompt。 */
+  protocolRepairPending?: boolean;
   /** QD-R4-04：取消在飞的续跑定时器 / 重试计划（由 installMainWorldInterceptor 设置，
    *  XHR hook 在用户 abort 分支调用——定时器属于外层闭包，hook 内访问不到）。 */
   cancelAutoContinue?: () => void;
@@ -1049,7 +1058,7 @@ function installFetchHook(
           for (const c of fin.calls) forward(c);
           // QD-R4-02：fetch 路径此前只取 fin.calls，flush 的残留 tail 被丢弃。
           // 残留含 '<' 即代表有未闭合工具标签，必须标记为截断。
-          if (fin.clean && loopState && isActiveStream(loopState, streamId) && fin.clean.includes('<')) {
+          if (fin.hasUnclosedToolTag && loopState && isActiveStream(loopState, streamId)) {
             loopState.streamTruncatedTag = true;
           }
         } catch (err) {
@@ -1135,7 +1144,11 @@ function installXhrHooks(
   const origAbort = proto.abort;
   proto.abort = function (this: XMLHttpRequest & Record<string, unknown>) {
     (this as Record<string, unknown>)[DS_ABORTED_FLAG] = true;
-    if (loopState) loopState.abortedByUser = true;
+    if (loopState) {
+      loopState.abortedByUser = true;
+      loopState.protocolRepairUsed = false;
+      loopState.protocolRepairPending = false;
+    }
     // C1-F1: 如果 proto.send 因 memory.select 有界等待被延迟，
     // 用户此时 abort → 立即触发延迟 send（doSend 里会检测已 abort 并立即 origAbort），
     // 保证 readyState=4 回调链正常触发，不留下悬挂 XHR。
@@ -1376,17 +1389,16 @@ function installXhrHooks(
         // （part 为空、字节偏移已在上一次 3 时消费完），写在 part 分支里等于
         // 永远不执行。parser 挂在 xhr 上，跨回调保留，这里直接取。
         const tailParser = (xhr as Record<string, unknown>).__dsParser as
-          | { flush: () => { calls: unknown[]; clean: string } }
+          | { flush: () => { calls: unknown[]; clean: string; hasUnclosedToolTag: boolean } }
           | undefined;
         if (tailParser && loopState) {
           const tailFlush = tailParser.flush();
           if (tailFlush.clean) {
             diag(`xhr parser tail flushed len=${tailFlush.clean.length} head=${tailFlush.clean.slice(0, 120)}`);
-            if (isActiveStream(loopState, streamId) && tailFlush.clean.includes('<')) {
-              // 残留含 '<' → 有未闭合的工具标签。截断的工具调用必须可见，
-              // 不能像此前那样连标签带任务一起消失。
-              loopState.streamTruncatedTag = true;
-            }
+          }
+          if (isActiveStream(loopState, streamId) && tailFlush.hasUnclosedToolTag) {
+            // 只把已知工具名或其前缀判为未闭合，避免比较符与未知标签误报截断。
+            loopState.streamTruncatedTag = true;
           }
         }
         // QD-R4-02/03/04：统一结算判定（与 fetch 路径共用同一函数）。
@@ -1477,6 +1489,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   const collectedExecutions: PendingResult[] = [];
   // QD-R8：同一条流可能被重复消费；相同 callId 只允许投递一次。
   const toolCallDedupe = createToolCallDedupe();
+  loopState.onStreamBegin = () => toolCallDedupe.resetSignatures();
   // R0-R2：独立错误重试计数（429/网络错误/5xx/200 错误体），
   // 封顶 MAX_ERROR_RETRIES，防止服务器错误消耗整轮续跑预算。
   let errorRetryCount = 0;
@@ -1603,6 +1616,16 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     const callId = call.id || crypto.randomUUID();
     if (!toolCallDedupe.claim(callId)) {
       d(`forward: duplicate callId=${callId}, skip (same turn)`);
+      return;
+    }
+    if (!toolCallDedupe.claimSignature(call.invocationName, call.params)) {
+      d(`forward: duplicate signature name=${call.invocationName}, skip (same stream)`);
+      interceptorTrace.record({
+        t: 'continuation.decision',
+        turnId: traceTurnId,
+        reason: 'duplicate-tool-signature',
+        triggered: false,
+      });
       return;
     }
     const startedAt = Date.now();
@@ -1914,6 +1937,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   loopState.cancelAutoContinue = () => {
     if (autoContinueTimer) { clearTimeout(autoContinueTimer); autoContinueTimer = null; }
     continuationRetryPending = false;
+    loopState.protocolRepairUsed = false;
+    loopState.protocolRepairPending = false;
     loopState.autoContinueTimerRef = autoContinueTimer;
   };
   loopState.onNewUserMessage = () => {
@@ -1937,6 +1962,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     firstAttemptBudgets.delete(traceTurnId);
     firstAttemptResendActive = false;
     firstAttemptResendPending = false;
+    loopState.protocolRepairUsed = false;
+    loopState.protocolRepairPending = false;
     loopState.sseErrorSeen = null;
     loopState.autoReplyHadTools = false;
     loopState.streamHadTools = false;
@@ -1974,7 +2001,9 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     // 续跑发出前 pending 已被清空（F8 修复），若此处仍要求 pending>0，
     // 429/5xx/断网后的退避定时器回调会被第一行守卫挡死，一次重试都发不出去。
     if (!loopState.lastChatBody) return;
-    if (pending.length === 0 && !continuationRetryPending) return;
+    if (pending.length === 0 && !continuationRetryPending && !loopState.protocolRepairPending) return;
+    const isProtocolRepair = loopState.protocolRepairPending === true;
+    loopState.protocolRepairPending = false;
     // QD-R5-01：首轮重发必须原样重发。套上 <original_task>/<tool_results> 会把
     // 「重发同一个问题」变成「拿着空工具结果的续跑」，模型的回答会漂。
     const resendVerbatim = firstAttemptResendPending;
@@ -1988,9 +2017,9 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     }
     // 重试不应消耗 loopDepth：它是「工具续跑」的步数预算，
     // 一次 429 就吃掉一步会让真正的工具轮次被提前耗尽。
-    if (!continuationRetryPending) loopDepth += 1;
+    if (!continuationRetryPending && !isProtocolRepair) loopDepth += 1;
     continuationRetryPending = false;
-    if (!resendVerbatim) loopDepth += 1;
+    if (!resendVerbatim && !isProtocolRepair) loopDepth += 1;
     // v0.18：步骤编号随续跑递增，工具归到对应步骤
     stepFlowStep = loopDepth;
     stepReasoningAccum = '';
@@ -2026,7 +2055,9 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
           droppedNames: dropped.map((d) => d.invocationName),
         });
       }
-      const continuationPrompt = buildContinuationPrompt(loopState.originalTask, execForThisTurn, TOOL_CATALOG_TEXT);
+      const continuationPrompt = isProtocolRepair
+        ? buildProtocolRepairPrompt(loopState.originalTask, execForThisTurn, TOOL_CATALOG_TEXT)
+        : buildContinuationPrompt(loopState.originalTask, execForThisTurn, TOOL_CATALOG_TEXT);
 
       // F8 修复：清空 pending，避免 XHR hook 的 prepareOutgoingBody 再追加一份工具结果。
       // collectedExecutions 不清，续跑 prompt 要用完整历史。
@@ -2213,19 +2244,54 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                   scheduleAutoContinue();
                 }
               } else {
-                // 循环真正结束（无工具、task_complete 或达上限）。
-                d(`auto-continue loop end: hadTools=${hadTools} taskComplete=${hasTaskComplete}`);
-                interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'no-tools', triggered: false });
-                interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: true, stopReason: 'completed' });
-                const cleanReply = stripRawToolTags(reply).trim();
-                if (cleanReply) {
-                  try { chatUI?.finishAssistantMessage({ fallbackText: cleanReply, recordFinal: true }); } catch { /* ignore */ }
-                  try { onAssistantReply?.(cleanReply, loopDepth); } catch (e) { d(`auto-continue push failed: ${(e as Error).message}`); }
-                } else if (reply) {
-                  d('auto-continue reply all-tool-text (stripped to empty), skipping push');
+                const incompleteReply =
+                  !hasTaskComplete
+                  && shouldAttemptProtocolRepair(replyForNudge, execForThisTurn, false);
+                const canRepair = incompleteReply && !loopState.protocolRepairUsed;
+                if (canRepair) {
+                  // 半截 XML 不推给宿主，先收掉当前 UI，再用专用 prompt 修复一次协议。
+                  try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+                  loopState.protocolRepairUsed = true;
+                  loopState.protocolRepairPending = true;
+                  d(`auto-continue protocol repair scheduled: replyLen=${replyForNudge.length}`);
+                  interceptorTrace.record({
+                    t: 'continuation.decision',
+                    turnId: traceTurnId,
+                    reason: 'protocol-repair',
+                    triggered: true,
+                  });
+                  if (autoContinueTimer) clearTimeout(autoContinueTimer);
+                  autoContinueTimer = setTimeout(() => {
+                    autoContinueTimer = null;
+                    void autoContinueWithPow();
+                  }, 200);
+                } else if (incompleteReply) {
+                  // 修复轮后仍不完整：抑制半截回复，明确以协议修复失败收尾。
+                  try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+                  d('auto-continue protocol repair failed: suppress incomplete reply');
+                  finishStepFlow();
+                  interceptorTrace.record({
+                    t: 'turn.end',
+                    turnId: traceTurnId,
+                    finished: false,
+                    stopReason: 'protocol-repair-failed',
+                  });
+                  loopDepth = 0;
+                } else {
+                  // 循环真正结束（无工具、task_complete 或达上限）。
+                  d(`auto-continue loop end: hadTools=${hadTools} taskComplete=${hasTaskComplete}`);
+                  interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'no-tools', triggered: false });
+                  interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: true, stopReason: 'completed' });
+                  const cleanReply = stripRawToolTags(reply).trim();
+                  if (cleanReply) {
+                    try { chatUI?.finishAssistantMessage({ fallbackText: cleanReply, recordFinal: true }); } catch { /* ignore */ }
+                    try { onAssistantReply?.(cleanReply, loopDepth); } catch (e) { d(`auto-continue push failed: ${(e as Error).message}`); }
+                  } else if (reply) {
+                    d('auto-continue reply all-tool-text (stripped to empty), skipping push');
+                  }
+                  finishStepFlow();
+                  loopDepth = 0;
                 }
-                finishStepFlow();
-                loopDepth = 0;
               }
             }
             resolve();

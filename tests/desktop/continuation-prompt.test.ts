@@ -6,6 +6,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildContinuationPrompt,
+  buildProtocolRepairPrompt,
+  shouldAttemptProtocolRepair,
   shouldNudge,
   extractTaskCompleteSignal,
   renderWindowedToolResults,
@@ -78,6 +80,34 @@ describe('shouldNudge', () => {
   });
   it('半句截断（无标点无承诺无交付）→ true', () => {
     expect(shouldNudge('正在读取文件内容然后')).toBe(true);
+  });
+});
+
+describe('shouldAttemptProtocolRepair', () => {
+  const executions: PendingResult[] = [
+    { invocationName: 'shell_exec', ok: true, result: { stdout: 'out' } },
+  ];
+
+  it('有工具结果且回复不完整时允许修复', () => {
+    expect(shouldAttemptProtocolRepair('我接下来要调用 shell_exec 列出目录', executions, false)).toBe(true);
+  });
+
+  it('已经修复过时不再允许', () => {
+    expect(shouldAttemptProtocolRepair('我接下来要调用 shell_exec 列出目录', executions, true)).toBe(false);
+  });
+
+  it('含 task_complete 时不再允许', () => {
+    expect(
+      shouldAttemptProtocolRepair(
+        '<task_complete>{"summary":"done"}</task_complete>',
+        executions,
+        false,
+      ),
+    ).toBe(false);
+  });
+
+  it('没有工具执行结果时不允许', () => {
+    expect(shouldAttemptProtocolRepair('我接下来要调用 shell_exec 列出目录', [], false)).toBe(false);
   });
 });
 
@@ -158,5 +188,35 @@ describe('buildContinuationPrompt', () => {
     const block = p.slice(p.indexOf('<original_task>'), p.indexOf('</original_task>'));
     const xs = block.match(/x/g)?.length ?? 0;
     expect(xs).toBeLessThanOrEqual(8000);
+  });
+});
+
+describe('buildProtocolRepairPrompt', () => {
+  const executions: PendingResult[] = [
+    { invocationName: 'shell_exec', ok: true, result: { stdout: 'out-123' } },
+  ];
+
+  it('包含原始任务、工具结果、XML 语法与完成信号', () => {
+    const p = buildProtocolRepairPrompt('审计 main.ts', executions, '## 可用工具\n- shell_exec');
+    expect(p).toContain('<original_task>');
+    expect(p).toContain('审计 main.ts');
+    expect(p).toContain('<tool_results>');
+    expect(p).toContain('out-123');
+    expect(p).toContain('XML 工具标签');
+    expect(p).toContain('<task_complete>');
+    expect(p).toContain('shell_exec');
+  });
+
+  it('明确禁止伪 JSON 与 Markdown 包裹工具标签', () => {
+    const p = buildProtocolRepairPrompt('task', executions);
+    expect(p).toContain('禁止输出伪工具调用 JSON');
+    expect(p).toContain('Markdown 代码块包裹的工具标签');
+  });
+
+  it('提示文案直接写正确，不依赖运行时替换', () => {
+    const p = buildProtocolRepairPrompt('task', executions);
+    expect(p).toContain('或“点击继续”之类要求用户操作的文本。');
+    expect(p).not.toContain('或“继续操作”之类要求用户操作的文本。');
+    expect(p).toContain('请现在继续操作。');
   });
 });

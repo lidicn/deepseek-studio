@@ -146,6 +146,26 @@ export function shouldNudge(visibleText: string): boolean {
   return true;
 }
 
+/**
+ * 是否允许发起一次协议修复轮。
+ *
+ * 条件必须全部成立：已有工具执行结果、本用户回合尚未修复过、模型没有显式完成、
+ * 且当前可见文本仍是半截或承诺后未执行。修复轮只用于让模型按 XML 协议继续，
+ * 不消耗普通续跑步数或错误重试预算。
+ */
+export function shouldAttemptProtocolRepair(
+  visibleText: string,
+  executions: readonly PendingResult[],
+  protocolRepairUsed: boolean,
+): boolean {
+  return (
+    executions.length > 0
+    && !protocolRepairUsed
+    && !extractTaskCompleteSignal(visibleText)
+    && shouldNudge(visibleText)
+  );
+}
+
 function getNudgeDecisionText(text: string): string {
   const trimmed = text.trim();
   return trimmed.length > NUDGE_DECISION_TAIL_MAX_CHARS
@@ -296,6 +316,34 @@ export function buildContinuationPrompt(
     JSON.stringify(results, null, 2),
     '</tool_results>',
     ...(toolCatalog ? ['', '### Available Tools', toolCatalog] : []),
+  ].join('\n');
+}
+
+/**
+ * 协议修复 prompt：只发一次，明确要求模型使用 XML 工具标签继续或输出完成信号。
+ */
+export function buildProtocolRepairPrompt(
+  originalTask: string,
+  executions: readonly PendingResult[],
+  toolCatalog?: string,
+): string {
+  const results = renderWindowedToolResults(executions);
+  return [
+    '上一轮回答未完整遵循工具调用协议。请基于原始任务和工具结果继续，并且只使用 XML 工具标签调用工具。',
+    '如果任务已经完成，输出 <task_complete>{"summary":"简要结论"}</task_complete>。',
+    '如果需要继续，直接输出可执行的 XML 工具标签并等待结果。',
+    '禁止输出伪工具调用 JSON、Markdown 代码块包裹的工具标签，或“点击继续”之类要求用户操作的文本。',
+    '',
+    '<original_task>',
+    clampText(originalTask, ORIGINAL_TASK_MAX_CHARS) ?? '',
+    '</original_task>',
+    '',
+    '<tool_results>',
+    JSON.stringify(results, null, 2),
+    '</tool_results>',
+    ...(toolCatalog ? ['', '### Available Tools', toolCatalog] : []),
+    '',
+    '请现在继续操作。',
   ].join('\n');
 }
 
