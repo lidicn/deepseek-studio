@@ -163,19 +163,15 @@ function formatToolRecord(rec: ToolCallRecord): string {
   return `[${rec.tool}] failed: ${rec.error ?? 'unknown error'}`;
 }
 
-/** S9：给 send 套一层 abort 竞速；signal 为 undefined 时原样返回。 */
-function sendWithAbort(
-  engine: ModelEngine,
-  text: string,
-  signal?: AbortSignal,
-): Promise<EngineSendResult> {
-  if (!signal) return engine.send(text);
+/** S9：给任意引擎调用套一层 abort 竞速；signal 为 undefined 时原样返回。 */
+function withAbort<T>(call: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return call();
   // 已 abort 直接 reject，避免 listener 挂晚了收不到事件
   if (signal.aborted) return Promise.reject(new Error('AbortError'));
-  return new Promise<EngineSendResult>((resolve, reject) => {
+  return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(new Error('AbortError'));
     signal.addEventListener('abort', onAbort, { once: true });
-    engine.send(text).then(
+    call().then(
       (v) => {
         signal.removeEventListener('abort', onAbort);
         resolve(v);
@@ -211,6 +207,8 @@ export function createTaskLoop(opts: TaskLoopOptions): TaskLoop {
   const { engine, history, signal, store, onDelta } = opts;
   const maxRounds = opts.maxRounds ?? 1;
   const roundTimeoutMs = opts.roundTimeoutMs ?? 120000;
+  // 续跑轮优先等待页端 auto-continue 推送，而不是重复 send 用户文本。
+  const waitForNextReply = engine.waitForNextReply?.bind(engine);
 
   async function run(userText: string): Promise<TaskLoopRoundResult> {
     // M8-E3：Plan 模式——只跑一轮，禁止工具调用
@@ -227,6 +225,8 @@ export function createTaskLoop(opts: TaskLoopOptions): TaskLoop {
     history.append({ role: 'user', content: userText });
 
     let last: TaskLoopRoundResult | undefined;
+    // 上一轮是否发生过工具调用；只有工具轮才需要等页端续跑。
+    let previousToolCalls = 0;
 
     for (let round = 1; round <= effectiveMaxRounds; round += 1) {
       // S9：本轮开始前已 abort → 以 aborted 收尾（user 已落库不回滚）
@@ -240,12 +240,21 @@ export function createTaskLoop(opts: TaskLoopOptions): TaskLoop {
         await new Promise((r) => setTimeout(r, 2000));
       }
 
-      // 2. 拼上下文 → 3. send（套 abort + per-round timeout 竞速）
+      // 2. 拼上下文 → 3. send / waitForNextReply（套 abort + per-round timeout 竞速）
+      //
+      // v0.9：页端 POW auto-continue 是唯一续跑权威。工具轮之后宿主不再重复
+      // send 用户文本（那会与页端续跑争抢同一会话），而是等待页端推送下一条回复。
+      // 仅当引擎不支持 waitForNextReply 时才降级为 send(buildPrompt)。
+      const useWait = round > 1 && previousToolCalls > 0 && typeof waitForNextReply === 'function';
+      const call: () => Promise<EngineSendResult> = useWait
+        ? () => (waitForNextReply as () => Promise<EngineSendResult>)()
+        : () => engine.send(buildPrompt(history, round));
+
       let result;
       let roundTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         result = await Promise.race([
-          sendWithAbort(engine, buildPrompt(history, round), signal),
+          withAbort(call, signal),
           new Promise<never>((_, reject) => {
             roundTimer = setTimeout(() => reject(new RoundTimeoutError()), roundTimeoutMs);
           }),
@@ -259,7 +268,8 @@ export function createTaskLoop(opts: TaskLoopOptions): TaskLoop {
           last = { round, content: '', toolCalls: 0, stopReason: 'aborted' };
           break;
         }
-        throw new TaskLoopError(`engine.send failed at round ${round}`, round, cause);
+        const phase = useWait ? 'engine.waitForNextReply' : 'engine.send';
+        throw new TaskLoopError(`${phase} failed at round ${round}`, round, cause);
       } finally {
         // 成功轮次也必须清掉超时器，否则 CLI / 宿主会因悬空 timer 多存活 120s。
         if (roundTimer !== undefined) clearTimeout(roundTimer);
@@ -283,6 +293,7 @@ export function createTaskLoop(opts: TaskLoopOptions): TaskLoop {
 
       // 6. 判停
       const stopReason = computeStop(result.content, result.toolCalls, result.timedOut);
+      previousToolCalls = result.toolCalls;
       last = {
         round,
         content: result.content,

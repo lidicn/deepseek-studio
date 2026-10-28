@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createTaskLoop } from '../../src/host/kernel/task-loop';
+import { createTaskLoop, TaskLoopError } from '../../src/host/kernel/task-loop';
 import type { TaskLoopRoundResult } from '../../src/host/kernel/task-loop';
 import { createMessageHistory } from '../../src/host/kernel/message-history';
 import { createHistoryStore } from '../../src/host/kernel/history-store';
@@ -21,6 +21,38 @@ function fakeEngine(scripted: EngineSendResult[]): ModelEngine & { calls: number
       i += 1;
       engine.calls += 1;
       engine.texts.push(_text);
+      return r;
+    },
+  };
+  return engine;
+}
+
+/** 假引擎：send 与 waitForNextReply 分开脚本化，用于验证续跑轮不重复发送。 */
+function fakeEngineWithWait(
+  scripted: EngineSendResult[],
+  waitScripted: EngineSendResult[],
+): ModelEngine & { calls: number; waitCalls: number; texts: string[] } {
+  let i = 0;
+  let w = 0;
+  const engine = {
+    name: 'web' as const,
+    calls: 0,
+    waitCalls: 0,
+    texts: [] as string[],
+    async health() {
+      return { ok: true };
+    },
+    async send(_text: string): Promise<EngineSendResult> {
+      const r = scripted[Math.min(i, scripted.length - 1)];
+      i += 1;
+      engine.calls += 1;
+      engine.texts.push(_text);
+      return r;
+    },
+    async waitForNextReply(): Promise<EngineSendResult> {
+      const r = waitScripted[Math.min(w, waitScripted.length - 1)];
+      w += 1;
+      engine.waitCalls += 1;
       return r;
     },
   };
@@ -763,5 +795,131 @@ describe('TaskLoop 自驱（M2-3）', () => {
     const loop = createTaskLoop({ engine, history, maxRounds: 2, onDelta: (c) => chunks.push(c) });
     await loop.run('x');
     expect(chunks).toEqual(['中间', '完']);
+  });
+});
+
+describe('TaskLoop 续跑轮（v0.9 waitForNextReply）', () => {
+  it('58. 工具轮之后走 waitForNextReply，不重复发送用户文本', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngineWithWait(
+      [{ content: '已调用工具', toolCalls: 1, toolCallRecords: [rec('shell_exec', true)] }],
+      [{ content: '工具结果已处理', toolCalls: 0 }],
+    );
+    const loop = createTaskLoop({ engine, history, maxRounds: 2 });
+
+    const r = await loop.run('执行命令');
+
+    expect(r.round).toBe(2);
+    expect(r.stopReason).toBe('no-tool-calls');
+    expect(engine.calls).toBe(1);
+    expect(engine.waitCalls).toBe(1);
+    expect(engine.texts).toHaveLength(1);
+    expect(history.byRole('assistant')).toHaveLength(2);
+    expect(history.byRole('assistant')[1].content).toBe('工具结果已处理');
+  });
+
+  it('59. 续跑轮等待超时 → timeout，且不再 send', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngineWithWait(
+      [{ content: '已调用工具', toolCalls: 1, toolCallRecords: [rec('shell_exec', true)] }],
+      [{ content: '', toolCalls: 0, timedOut: true }],
+    );
+    const loop = createTaskLoop({ engine, history, maxRounds: 2, roundTimeoutMs: 5000 });
+
+    const r = await loop.run('执行命令');
+
+    expect(r.round).toBe(2);
+    expect(r.stopReason).toBe('timeout');
+    expect(engine.calls).toBe(1);
+    expect(engine.waitCalls).toBe(1);
+  });
+
+  it('60. 续跑轮空回复 → empty-response', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngineWithWait(
+      [{ content: '已调用工具', toolCalls: 1, toolCallRecords: [rec('shell_exec', true)] }],
+      [{ content: '   ', toolCalls: 0 }],
+    );
+    const loop = createTaskLoop({ engine, history, maxRounds: 2 });
+
+    const r = await loop.run('执行命令');
+
+    expect(r.round).toBe(2);
+    expect(r.stopReason).toBe('empty-response');
+  });
+
+  it('61. 等待续跑时 abort → aborted，且不落空 assistant', async () => {
+    const history = createMessageHistory();
+    const controller = new AbortController();
+    const engine = fakeEngineWithWait(
+      [{ content: '已调用工具', toolCalls: 1, toolCallRecords: [rec('shell_exec', true)] }],
+      [{ content: '不应到达', toolCalls: 0 }],
+    );
+    engine.waitForNextReply = () =>
+      new Promise((_, reject) => {
+        controller.signal.addEventListener('abort', () => reject(new Error('AbortError')), { once: true });
+      });
+    const loop = createTaskLoop({ engine, history, maxRounds: 2, signal: controller.signal });
+
+    const runPromise = loop.run('执行命令');
+    await new Promise((r) => setTimeout(r, 2100));
+    controller.abort();
+    const r = await runPromise;
+
+    expect(r.round).toBe(2);
+    expect(r.stopReason).toBe('aborted');
+    expect(history.byRole('assistant')).toHaveLength(1);
+  });
+
+  it('62. waitForNextReply 抛错 → TaskLoopError 带正确轮次与调用名', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngineWithWait(
+      [{ content: '已调用工具', toolCalls: 1, toolCallRecords: [rec('shell_exec', true)] }],
+      [{ content: '不会用到', toolCalls: 0 }],
+    );
+    engine.waitForNextReply = async () => {
+      throw new Error('page disconnected');
+    };
+    const loop = createTaskLoop({ engine, history, maxRounds: 2 });
+
+    await expect(loop.run('执行命令')).rejects.toMatchObject({
+      name: 'TaskLoopError',
+      round: 2,
+      message: 'engine.waitForNextReply failed at round 2',
+    } satisfies Partial<TaskLoopError>);
+  });
+
+  it('63. 连续工具轮每轮都等待，跑满 maxRounds → max-rounds', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngineWithWait(
+      [{ content: '第一轮工具', toolCalls: 1, toolCallRecords: [rec('a', true)] }],
+      [
+        { content: '第二轮工具', toolCalls: 1, toolCallRecords: [rec('b', true)] },
+        { content: '第三轮工具', toolCalls: 1, toolCallRecords: [rec('c', true)] },
+      ],
+    );
+    const loop = createTaskLoop({ engine, history, maxRounds: 3 });
+
+    const r = await loop.run('多步任务');
+
+    expect(r.round).toBe(3);
+    expect(r.stopReason).toBe('max-rounds');
+    expect(engine.calls).toBe(1);
+    expect(engine.waitCalls).toBe(2);
+  });
+
+  it('64. 引擎无 waitForNextReply → 保持 send 降级', async () => {
+    const history = createMessageHistory();
+    const engine = fakeEngine([
+      { content: '已调用工具', toolCalls: 1, toolCallRecords: [rec('shell_exec', true)] },
+      { content: '降级收尾', toolCalls: 0 },
+    ]);
+    const loop = createTaskLoop({ engine, history, maxRounds: 2 });
+
+    const r = await loop.run('执行命令');
+
+    expect(r.stopReason).toBe('no-tool-calls');
+    expect(engine.calls).toBe(2);
+    expect(engine.texts[1]).not.toContain('执行命令');
   });
 });
