@@ -42,3 +42,8 @@ yuanbao-audit/src-tauri/target/
 # QD 台账第 11/16 条：仓根一次性调试件统一罩面（只仓根，不递归）。
 # 历史上散落 .diag/.port/.proc/.status/.tail/.p*/*-out/*-log/vitest-*/tc-*/gate-* 等 60+ 枚。
 /*.txt
+
+# 本地取证产物（日志、真机截图、一次性 DB 审计脚本），不入代码仓
+logs/
+.screenshots/
+_memdb-audit.cjs
