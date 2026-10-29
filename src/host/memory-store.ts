@@ -262,7 +262,19 @@ export class MemoryStore implements MemoryStoreV2 {
       const dir = path.dirname(this.storePath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const db = new DatabaseSync(this.storePath);
+      // 「彻底删除」必须真的抹掉内容：secure_delete 让 SQLite 在释放页前清零，
+      // 否则 DELETE 只是把页挂到 freelist，原文仍能从 .db 文件里恢复出来。
+      db.exec('PRAGMA secure_delete = ON');
       db.exec(SCHEMA_SQL);
+      // 旧库是在 secure_delete=0 下删过记录的，历史内容仍留在 freelist 页里。
+      // 首次升级做一次 VACUUM 重写整库，user_version 记录迁移，避免每次启动都跑。
+      const version = Number(
+        (db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0,
+      );
+      if (version < 1) {
+        db.exec('VACUUM');
+        db.exec('PRAGMA user_version = 1');
+      }
       this.db = db;
       // M10-7.2：先加列/回填，再导入旧 JSON（导入 INSERT 已自带 dedupe_hash）。
       // 顺序反了会在「旧 DB 空表缺列 + memories.json」时导入失败漏数据。
@@ -644,6 +656,19 @@ export class MemoryStore implements MemoryStoreV2 {
     if (idx < 0) return false;
     this.fallback!.splice(idx, 1);
     return true;
+  }
+
+  /**
+   * 物理压缩数据库：VACUUM 重写整库，把已释放的页从文件中移除。
+   * 低频人工操作（memory.purge）后调用，确保 FTS 影子表等处的残留一并清除。
+   */
+  compact(): void {
+    if (!this.db) return;
+    try {
+      this.db.exec('VACUUM');
+    } catch (e) {
+      console.warn('[memory] vacuum failed:', e instanceof Error ? e.message : String(e));
+    }
   }
 
   // ===== MemoryStoreV2 契约 API（async）=====

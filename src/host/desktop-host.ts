@@ -729,6 +729,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             }
             const removed = getMemoryStore().remove(id);
             if (!removed) return { ok: false, error: 'memory-not-found' };
+            // 物理压缩：secure_delete 只保证新删除的页清零，VACUUM 把旧空闲页从文件里移除。
+            getMemoryStore().compact();
             hub?.broadcastMemories(await listMemoryBroadcastRows());
             return { ok: true };
           },

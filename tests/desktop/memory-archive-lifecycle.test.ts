@@ -121,6 +121,32 @@ describe('M10-5 归档生命周期', () => {
     ws.close();
   });
 
+  it('彻底删除会物理抹除内容（secure_delete + VACUUM）', async () => {
+    const seen: HostToPageMessage[] = [];
+    const ws = await connectPage(host!, seen);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const canary = 'PHYSICAL-PURGE-CANARY-20261029';
+    const saved = await host!.invokeTool('memory.save', {
+      type: 'user',
+      name: canary,
+      content: `内容 ${canary}`,
+    });
+    expect(saved.ok).toBe(true);
+    const id = (saved.data as { id: string }).id;
+    const dbPath = path.join(tmpDir, 'memories.db');
+
+    // 写入后，明文应当能在数据库文件里被找到（否则这条断言没有意义）。
+    expect((await fsp.readFile(dbPath)).includes(Buffer.from(canary))).toBe(true);
+
+    expect((await host!.invokeTool('memory.delete', { id })).ok).toBe(true);
+    expect((await host!.invokeTool('memory.purge', { id })).ok).toBe(true);
+
+    // 彻底删除后，明文不得再残留在 .db 文件的任何页里。
+    expect((await fsp.readFile(dbPath)).includes(Buffer.from(canary))).toBe(false);
+    ws.close();
+  });
+
   it('错误码：归档不存在的 id / 恢复未归档的 id / 彻底删除不存在的 id', async () => {
     const seen: HostToPageMessage[] = [];
     const ws = await connectPage(host!, seen);
