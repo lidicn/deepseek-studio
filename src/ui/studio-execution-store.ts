@@ -71,6 +71,12 @@ export function createStudioExecutionStore(options: StudioExecutionStoreOptions)
     options.reportError?.(message, error);
   }
 
+  // 索引里的标题如果是键本身（例如 chat:<id>），说明是没抓到内容的空壳条目。
+  function isPlaceholderTitle(title: string | undefined, key: string): boolean {
+    if (!title) return true;
+    return title === key || title === key.replace(/^chat:/, '');
+  }
+
   async function loadIndex(): Promise<StudioExecutionIndex> {
     const raw = await options.kv.kvGet(STUDIO_EXECUTION_INDEX_KEY);
     if (!isStudioExecutionIndex(raw)) {
@@ -84,9 +90,17 @@ export function createStudioExecutionStore(options: StudioExecutionStoreOptions)
       const key = canonicalChatSessionKey(entry.key);
       const normalized: StudioExecutionIndexEntry = { ...entry, key };
       const existing = byKey.get(key);
-      if (!existing || normalized.updatedAt > existing.updatedAt) {
+      if (!existing) {
         byKey.set(key, normalized);
+        continue;
       }
+      const newer = normalized.updatedAt > existing.updatedAt ? normalized : existing;
+      const older = newer === normalized ? existing : normalized;
+      // 保留最新的时间戳，但标题优先用有实际内容的那个，避免空壳条目覆盖真实标题。
+      const title = isPlaceholderTitle(newer.title, key) && !isPlaceholderTitle(older.title, key)
+        ? older.title
+        : newer.title;
+      byKey.set(key, { ...newer, title });
     }
     return {
       version: STUDIO_EXECUTION_VERSION,
@@ -100,17 +114,16 @@ export function createStudioExecutionStore(options: StudioExecutionStoreOptions)
     const canonical = canonicalChatSessionKey(key);
     const cached = cache.get(canonical);
     if (cached) return cached;
-    let raw = await options.kv.kvGet(studioExecutionStorageKey(canonical));
+    const canonicalRaw = await options.kv.kvGet(studioExecutionStorageKey(canonical));
+    let raw = isStudioExecutionSession(canonicalRaw) ? canonicalRaw : null;
     let fromLegacy = false;
-    if (!isStudioExecutionSession(raw)) {
-      // 回退到历史双前缀键，找到后迁移到规范键。
-      const legacy = legacyChatSessionKey(canonical);
-      if (legacy) {
-        const legacyRaw = await options.kv.kvGet(studioExecutionStorageKey(legacy));
-        if (isStudioExecutionSession(legacyRaw)) {
-          raw = legacyRaw;
-          fromLegacy = true;
-        }
+    // 历史双前缀键可能比规范键内容更完整（规范键只是空壳），按事件数取更完整的一份。
+    const legacy = legacyChatSessionKey(canonical);
+    if (legacy) {
+      const legacyRaw = await options.kv.kvGet(studioExecutionStorageKey(legacy));
+      if (isStudioExecutionSession(legacyRaw) && (!raw || legacyRaw.events.length > raw.events.length)) {
+        raw = legacyRaw;
+        fromLegacy = true;
       }
     }
     if (!isStudioExecutionSession(raw)) return null;

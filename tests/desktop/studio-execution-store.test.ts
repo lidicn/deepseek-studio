@@ -219,4 +219,49 @@ describe('Studio 执行记录持久化', () => {
     expect(loaded?.key).toBe('chat:write-1');
     expect(loaded?.events).toHaveLength(1);
   });
+
+  it('规范键只是空壳时优先回读更完整的历史双前缀会话', async () => {
+    const kv = memoryKv();
+    const persistence = store(kv);
+    const canonicalKey = 'chat:shell-1';
+    const legacyKey = 'chat:chat:shell-1';
+    await kv.kvSet(studioExecutionStorageKey(canonicalKey), {
+      version: 2,
+      key: canonicalKey,
+      createdAt: 1,
+      updatedAt: 2,
+      events: [userEvent('空壳里的一条')],
+    });
+    await kv.kvSet(studioExecutionStorageKey(legacyKey), {
+      version: 2,
+      key: legacyKey,
+      createdAt: 1,
+      updatedAt: 3,
+      events: [userEvent('历史一'), userEvent('历史二'), userEvent('历史三')],
+    });
+
+    const loaded = await persistence.loadSession(canonicalKey);
+    expect(loaded?.key).toBe(canonicalKey);
+    expect(loaded?.events).toHaveLength(3);
+    expect(kv.values.has(studioExecutionStorageKey(legacyKey))).toBe(false);
+  });
+
+  it('索引去重时保留有实际内容的标题，不被空壳标题覆盖', async () => {
+    const kv = memoryKv();
+    const persistence = store(kv);
+    await kv.kvSet(STUDIO_EXECUTION_INDEX_KEY, {
+      version: 2,
+      sessions: [
+        { key: 'chat:chat:title-1', updatedAt: 10, title: '真实标题' },
+        { key: 'chat:title-1', updatedAt: 20, title: 'chat:title-1' },
+      ],
+    });
+    await persistence.saveEvent('chat:title-1', { ...userEvent('触发写入'), at: 30 });
+    const index = kv.values.get(STUDIO_EXECUTION_INDEX_KEY) as {
+      sessions: Array<{ key: string; title: string; updatedAt: number }>;
+    };
+    const matched = index.sessions.filter((entry) => entry.key === 'chat:title-1');
+    expect(matched).toHaveLength(1);
+    expect(matched[0].title).toBe('触发写入');
+  });
 });
