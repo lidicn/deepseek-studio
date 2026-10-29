@@ -58,6 +58,8 @@ export function createInjector(options: InjectionBootstrapOptions): Injector {
   let status: InjectionStatus = 'pending';
   let generation = 0;
   let installed = false;
+  // lifecycle 尚未就绪时收到的重注入请求先挂起，就绪后补执行一次。
+  let pendingReinject = false;
 
   function verifyInstallOrder(): boolean {
     const rs = (globalThis as { document?: { readyState?: string } }).document?.readyState;
@@ -88,7 +90,10 @@ export function createInjector(options: InjectionBootstrapOptions): Injector {
   }
 
   async function reinject(): Promise<void> {
-    if (!lifecycle) return;
+    if (!lifecycle) {
+      pendingReinject = true;
+      return;
+    }
     await lifecycle.dispose('reinjection');
     generation += 1;
     await startLifecycle();
@@ -100,9 +105,11 @@ export function createInjector(options: InjectionBootstrapOptions): Injector {
         return { installed: false, status, generation, reason: 'already-installed' };
       }
       if (!isAllowedOrigin(locationOrigin(), whitelist)) {
-        installed = true;
+        // 不写 installed：origin 在文档早期可能取不到（如 srcdoc iframe / about:blank），
+        // 一次误判不该把「本轮不注入」固化成「永远不注入」。
+        console.warn('[injection-loader] origin not allowed:', locationOrigin());
         status = 'skipped';
-        return { installed: true, status: 'skipped', generation, reason: 'origin-not-allowed' };
+        return { installed: false, status: 'skipped', generation, reason: 'origin-not-allowed' };
       }
       if (!verifyInstallOrder()) {
         installed = true;
@@ -111,8 +118,14 @@ export function createInjector(options: InjectionBootstrapOptions): Injector {
       installed = true;
       generation += 1;
       status = 'running';
-      void startLifecycle();
-      navigation.start();
+      void startLifecycle().finally(() => {
+        // lifecycle 就绪后再开路由监听，消除 install 尾部的竞态窗口。
+        navigation.start();
+        if (pendingReinject) {
+          pendingReinject = false;
+          void reinject();
+        }
+      });
       return { installed: true, status: 'running', generation };
     },
     getLifecycle: () => lifecycle,
@@ -121,6 +134,12 @@ export function createInjector(options: InjectionBootstrapOptions): Injector {
     async dispose(reason: 'manual' | 'pagehide' = 'manual'): Promise<void> {
       navigation.stop();
       if (lifecycle) await lifecycle.dispose(reason);
+      lifecycle = undefined;
+      installed = false;
+      status = 'pending';
+      pendingReinject = false;
+      // 清掉全局缓存，避免 bootstrap 拿到已失效的实例。
+      registry.delete(Symbol.for(SYMBOL_KEY));
     },
   };
 }

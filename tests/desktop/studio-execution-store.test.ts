@@ -171,4 +171,52 @@ describe('Studio 执行记录持久化', () => {
     expect(answer.text).toHaveLength(50);
     expect(answer.truncationMarker).toContain('已截断');
   });
+
+  it('历史双前缀键 chat:chat:<id> 可按规范键读出并就地迁移', async () => {
+    const kv = memoryKv();
+    const persistence = store(kv);
+    const legacyKey = 'chat:chat:legacy-1';
+    const canonicalKey = 'chat:legacy-1';
+    await kv.kvSet(studioExecutionStorageKey(legacyKey), {
+      version: 2,
+      key: legacyKey,
+      createdAt: 1,
+      updatedAt: 2,
+      events: [userEvent('历史消息')],
+    });
+
+    const loaded = await persistence.loadSession(canonicalKey);
+    expect(loaded?.key).toBe(canonicalKey);
+    expect(loaded?.events).toHaveLength(1);
+    // 迁移后旧键被清除，规范键落盘。
+    expect(kv.values.has(studioExecutionStorageKey(legacyKey))).toBe(false);
+    expect(kv.values.has(studioExecutionStorageKey(canonicalKey))).toBe(true);
+  });
+
+  it('索引中双前缀条目按规范键去重，保留最新一条', async () => {
+    const kv = memoryKv();
+    const persistence = store(kv);
+    await kv.kvSet(STUDIO_EXECUTION_INDEX_KEY, {
+      version: 2,
+      sessions: [
+        { key: 'chat:chat:dup-1', updatedAt: 10, title: '旧记录' },
+        { key: 'chat:dup-1', updatedAt: 20, title: '新记录' },
+      ],
+    });
+    await persistence.saveEvent('chat:dup-1', { ...userEvent('触发写入'), at: 30 });
+    const index = kv.values.get(STUDIO_EXECUTION_INDEX_KEY) as { sessions: Array<{ key: string; title: string }> };
+    const matched = index.sessions.filter((entry) => entry.key === 'chat:dup-1');
+    expect(matched).toHaveLength(1);
+    expect(index.sessions.some((entry) => entry.key === 'chat:chat:dup-1')).toBe(false);
+  });
+
+  it('写入规范键后不再残留双前缀存储键', async () => {
+    const kv = memoryKv();
+    const persistence = store(kv);
+    await persistence.saveEvent('chat:chat:write-1', userEvent('双前缀写入'));
+    expect(kv.values.has(studioExecutionStorageKey('chat:chat:write-1'))).toBe(false);
+    const loaded = await persistence.loadSession('chat:write-1');
+    expect(loaded?.key).toBe('chat:write-1');
+    expect(loaded?.events).toHaveLength(1);
+  });
 });

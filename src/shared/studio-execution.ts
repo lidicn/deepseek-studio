@@ -130,7 +130,30 @@ export function normalizeRouteSessionKey(pathname: string): string {
 }
 
 export function normalizeChatSessionKey(chatSessionId: string | number): string {
-  return `chat:${String(chatSessionId).trim()}`;
+  const raw = String(chatSessionId).trim();
+  // 幂等：已经是 chat: 键就原样返回。
+  // 历史上这里无条件加前缀，捕获链路对同一个 chat_session_id 归一化了两次，
+  // 落盘键变成 chat:chat:<id>；而切换对话时按 URL 派生的是 chat:<id>，
+  // 两个键对不上 → 切会话后 overlay 查不到记录 → 空白。
+  if (raw.startsWith('chat:')) return raw;
+  return `chat:${raw}`;
+}
+
+/**
+ * 规范键：把历史遗留的双前缀键（chat:chat:<id>）折回单前缀（chat:<id>）。
+ */
+export function canonicalChatSessionKey(key: string): string {
+  if (key.startsWith('chat:chat:')) return `chat:${key.slice('chat:chat:'.length)}`;
+  return key;
+}
+
+/**
+ * 历史别名：规范键（chat:<id>）对应的旧双前缀键（chat:chat:<id>）。
+ * 没有旧别名时返回 undefined。
+ */
+export function legacyChatSessionKey(key: string): string | undefined {
+  if (key.startsWith('chat:') && !key.startsWith('chat:chat:')) return `chat:${key}`;
+  return undefined;
 }
 
 function hashSessionKey(key: string): string {

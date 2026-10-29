@@ -147,4 +147,62 @@ describe('inject loader', () => {
     expect(res.installed).toBe(true);
     expect(res.generation).toBe(1);
   });
+
+  it('origin 取不到时只跳过本次，origin 就绪后可再次装载', async () => {
+    const started: string[] = [];
+    const fac = makeFakeLifecycleFactory({ onStarted: (ids) => started.push(...ids) });
+    const injector = createInjector({ capabilities: [resourcefulCapability('a')], lifecycleFactory: fac });
+    delete (globalThis as { location?: { origin: string } }).location;
+    const skipped = injector.install();
+    expect(skipped.status).toBe('skipped');
+    expect(skipped.installed).toBe(false);
+    expect(skipped.reason).toBe('origin-not-allowed');
+    expect(started).toEqual([]);
+
+    (globalThis as { location?: { origin: string } }).location = { origin: 'https://chat.deepseek.com' };
+    const retried = injector.install();
+    expect(retried.installed).toBe(true);
+    for (let i = 0; i < 50 && !injector.getLifecycle(); i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(started).toEqual(['a']);
+    await injector.dispose('manual');
+  });
+
+  it('dispose 后允许重新装载，且代数继续递增', async () => {
+    const fac = makeFakeLifecycleFactory();
+    const injector = createInjector({ capabilities: [resourcefulCapability('a')], lifecycleFactory: fac });
+    injector.install();
+    for (let i = 0; i < 50 && !injector.getLifecycle(); i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(injector.getGeneration()).toBe(1);
+    await injector.dispose('manual');
+    expect(injector.getStatus()).toBe('pending');
+    expect(injector.getLifecycle()).toBeUndefined();
+    const again = injector.install();
+    expect(again.installed).toBe(true);
+    expect(injector.getGeneration()).toBe(2);
+    await injector.dispose('manual');
+  });
+
+  it('bootstrapInjection 在 origin 未就绪跳过后可再次装载', async () => {
+    const started: string[] = [];
+    const fac = makeFakeLifecycleFactory({ onStarted: (ids) => started.push(...ids) });
+    const caps = [resourcefulCapability('boot')];
+    // 用独立的模块实例拿到干净的全局 registry，避免受前序用例影响。
+    vi.resetModules();
+    const { bootstrapInjection: freshBootstrap } = await import('../../src/inject/loader');
+    delete (globalThis as { location?: { origin: string } }).location;
+    const first = freshBootstrap({ capabilities: caps, lifecycleFactory: fac });
+    expect(first.installed).toBe(false);
+    expect(first.status).toBe('skipped');
+    (globalThis as { location?: { origin: string } }).location = { origin: 'https://chat.deepseek.com' };
+    const second = freshBootstrap({ capabilities: caps, lifecycleFactory: fac });
+    expect(second.installed).toBe(true);
+    for (let i = 0; i < 50 && started.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(started).toEqual(['boot']);
+  });
 });

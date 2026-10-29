@@ -4,13 +4,16 @@ import {
   STUDIO_EXECUTION_MAX_SESSIONS,
   STUDIO_EXECUTION_VERSION,
   appendExecutionEvent,
+  canonicalChatSessionKey,
   createEmptyStudioExecutionSession,
   isStudioExecutionIndex,
   isStudioExecutionSession,
+  legacyChatSessionKey,
   sessionTitle,
   studioExecutionStorageKey,
   type StudioExecutionEvent,
   type StudioExecutionIndex,
+  type StudioExecutionIndexEntry,
   type StudioExecutionSession,
 } from '../shared/studio-execution';
 
@@ -73,29 +76,58 @@ export function createStudioExecutionStore(options: StudioExecutionStoreOptions)
     if (!isStudioExecutionIndex(raw)) {
       return { version: STUDIO_EXECUTION_VERSION, sessions: [] };
     }
+    // 历史索引里同一个会话可能同时存在 chat:<id> 与 chat:chat:<id> 两条。
+    // 统一折回规范键，并按 updatedAt 保留最新的一条。
+    const byKey = new Map<string, StudioExecutionIndexEntry>();
+    for (const entry of raw.sessions) {
+      if (!entry || typeof entry.key !== 'string') continue;
+      const key = canonicalChatSessionKey(entry.key);
+      const normalized: StudioExecutionIndexEntry = { ...entry, key };
+      const existing = byKey.get(key);
+      if (!existing || normalized.updatedAt > existing.updatedAt) {
+        byKey.set(key, normalized);
+      }
+    }
     return {
       version: STUDIO_EXECUTION_VERSION,
-      sessions: raw.sessions
-        .filter((entry) => entry && typeof entry.key === 'string')
+      sessions: [...byKey.values()]
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .slice(0, STUDIO_EXECUTION_MAX_SESSIONS),
     };
   }
 
   async function readSession(key: string): Promise<StudioExecutionSession | null> {
-    const cached = cache.get(key);
+    const canonical = canonicalChatSessionKey(key);
+    const cached = cache.get(canonical);
     if (cached) return cached;
-    const raw = await options.kv.kvGet(studioExecutionStorageKey(key));
+    let raw = await options.kv.kvGet(studioExecutionStorageKey(canonical));
+    let fromLegacy = false;
+    if (!isStudioExecutionSession(raw)) {
+      // 回退到历史双前缀键，找到后迁移到规范键。
+      const legacy = legacyChatSessionKey(canonical);
+      if (legacy) {
+        const legacyRaw = await options.kv.kvGet(studioExecutionStorageKey(legacy));
+        if (isStudioExecutionSession(legacyRaw)) {
+          raw = legacyRaw;
+          fromLegacy = true;
+        }
+      }
+    }
     if (!isStudioExecutionSession(raw)) return null;
     const sanitizedEvents = dropLegacyOrphanBodyErrors(raw.events);
     const session: StudioExecutionSession = {
       ...raw,
+      key: canonical,
       events: sanitizedEvents.slice(-STUDIO_EXECUTION_MAX_EVENTS),
     };
-    if (sanitizedEvents.length !== raw.events.length) {
-      await options.kv.kvSet(studioExecutionStorageKey(key), session);
+    if (sanitizedEvents.length !== raw.events.length || fromLegacy) {
+      await options.kv.kvSet(studioExecutionStorageKey(canonical), session);
     }
-    cache.set(key, session);
+    if (fromLegacy) {
+      const legacy = legacyChatSessionKey(canonical);
+      if (legacy) await options.kv.kvRemove(studioExecutionStorageKey(legacy));
+    }
+    cache.set(canonical, session);
     return session;
   }
 
@@ -105,15 +137,23 @@ export function createStudioExecutionStore(options: StudioExecutionStoreOptions)
   }
 
   async function writeSession(session: StudioExecutionSession): Promise<void> {
-    await options.kv.kvSet(studioExecutionStorageKey(session.key), session);
+    const key = canonicalChatSessionKey(session.key);
+    const legacy = legacyChatSessionKey(key);
+    const normalized: StudioExecutionSession = { ...session, key };
+    await options.kv.kvSet(studioExecutionStorageKey(key), normalized);
+    if (legacy) {
+      // 写规范键后清掉旧双前缀键，避免双份残留。
+      await options.kv.kvRemove(studioExecutionStorageKey(legacy));
+      cache.delete(legacy);
+    }
     const index = await loadIndex();
     const nextEntry = {
-      key: session.key,
-      routeKey: session.routeKey,
-      updatedAt: session.updatedAt,
-      title: sessionTitle(session),
+      key,
+      routeKey: normalized.routeKey,
+      updatedAt: normalized.updatedAt,
+      title: sessionTitle(normalized),
     };
-    const sessions = index.sessions.filter((entry) => entry.key !== session.key);
+    const sessions = index.sessions.filter((entry) => entry.key !== key && entry.key !== legacy);
     sessions.unshift(nextEntry);
     sessions.sort((a, b) => b.updatedAt - a.updatedAt);
     const evicted = sessions.splice(STUDIO_EXECUTION_MAX_SESSIONS);
@@ -148,9 +188,10 @@ export function createStudioExecutionStore(options: StudioExecutionStoreOptions)
     },
     async saveEvent(key, event) {
       return enqueue(async () => {
-        const session = (await readSession(key)) ?? createEmptyStudioExecutionSession(key);
+        const canonical = canonicalChatSessionKey(key);
+        const session = (await readSession(canonical)) ?? createEmptyStudioExecutionSession(canonical);
         appendExecutionEvent(session, event);
-        cache.set(key, session);
+        cache.set(canonical, session);
         await writeSession(session);
         return session;
       });
