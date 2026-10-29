@@ -25,6 +25,11 @@ import { createBearerAuthenticator, type Authenticator } from './auth';
 export type ToolExecutor = (
   tool: string,
   params: unknown,
+  /**
+   * 可选调用上下文。conversationId 决定同意闸门能否提供「本次对话始终允许」；
+   * 缺失时闸门照旧逐次询问（不得因为缺字段而跳过审批）。
+   */
+  ctx?: { botId?: string; conversationId?: string },
 ) => Promise<{ ok: boolean; data?: unknown; error?: string }>;
 import type { OfficialBackend } from './official-backend';
 import { chunksToResponse, emptyDelta, formatSSE, isUnimplementedPath, SSE_DONE } from './compat';
@@ -412,9 +417,14 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
           return;
         }
         const raw = await readBody(req);
-        let body: { tool?: unknown; params?: unknown };
+        let body: { tool?: unknown; params?: unknown; botId?: unknown; conversationId?: unknown };
         try {
-          body = JSON.parse(raw) as { tool?: unknown; params?: unknown };
+          body = JSON.parse(raw) as {
+            tool?: unknown;
+            params?: unknown;
+            botId?: unknown;
+            conversationId?: unknown;
+          };
         } catch {
           sendJson(400, { error: { code: 'bad_request', message: 'invalid json body' } });
           return;
@@ -423,7 +433,22 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
           sendJson(400, { error: { code: 'bad_request', message: 'missing tool' } });
           return;
         }
-        const result = await options.toolExecutor(body.tool, body.params ?? {});
+        // botId / conversationId 是可选的「身份线索」：给了，同意闸门才能提供
+        // 「本次对话始终允许」；没给，仍然逐次询问（不能靠缺字段绕过审批）。
+        if (body.botId !== undefined && typeof body.botId !== 'string') {
+          sendJson(400, { error: { code: 'bad_request', message: 'invalid botId' } });
+          return;
+        }
+        if (body.conversationId !== undefined && typeof body.conversationId !== 'string') {
+          sendJson(400, { error: { code: 'bad_request', message: 'invalid conversationId' } });
+          return;
+        }
+        const ctx: { botId?: string; conversationId?: string } = {};
+        if (typeof body.botId === 'string' && body.botId !== '') ctx.botId = body.botId;
+        if (typeof body.conversationId === 'string' && body.conversationId !== '') {
+          ctx.conversationId = body.conversationId;
+        }
+        const result = await options.toolExecutor(body.tool, body.params ?? {}, ctx);
         sendJson(200, result);
         return;
       }

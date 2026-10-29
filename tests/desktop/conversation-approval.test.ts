@@ -74,6 +74,16 @@ describe('对话级放行表 · key 与失效', () => {
     expect(g1).toBe(g0 + 1);
     expect(store.check(key)).toBe(false);
   });
+
+  it('invalidateInFlight（瞬时断线/重连）只递增世代号，保留已批准对话', () => {
+    const store = createConversationApprovalStore();
+    const key = keyOf('c1');
+    store.grant(key);
+    const g0 = store.currentGeneration();
+    const g1 = store.invalidateInFlight();
+    expect(g1).toBe(g0 + 1);
+    expect(store.check(key)).toBe(true);
+  });
 });
 
 describe('resolveAuthorization · conversationApproved 的位置', () => {

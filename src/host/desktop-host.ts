@@ -1319,7 +1319,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     config: options.config,
     backend,
     authenticator,
-    toolExecutor: (tool, params) => invokeTool(tool, params),
+    // v0.32：HTTP /v1/tools/execute 透传 botId / conversationId，
+    // 否则外部 agent 这条路径永远拿不到「本次对话始终允许」。
+    toolExecutor: (tool, params, ctx) => invokeTool(tool, params, ctx?.botId, ctx?.conversationId),
     // 审计经 HTTP 可读（v0.3 遗留 3.2.4 的验收条件：审计可读）
     auditReader: (limit) => audit.list(limit),
     // v0.9：工具目录 API。
@@ -1533,24 +1535,30 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     let outsideApproved = auth.outsideApproved;
     let consentMeta: ConsentMeta | undefined;
     if (auth.decision === 'ask') {
+      // 修复：always 类工具（chat-insert/chat-send/memory.*/mcp.*/policy.set/workspace.set）
+      // 不在 governed 集合里，但同样走 ask。以前只在 governed 分支构造 consentMeta，
+      // 导致页端拿不到 allowConversation，「本次对话始终允许」按钮不渲染，只能反复点允许一次。
+      const allowed: readonly string[] = Array.isArray(auth.allowedGrantScopes) ? auth.allowedGrantScopes : [];
+      consentMeta = {
+        modeLabel: POLICY_MODE_LABELS[policyMode],
+        // A5：审计字段透传给页端，便于排查 UI 行为；不改展示逻辑。
+        ...(ctx.approvalClass ? { approvalClass: ctx.approvalClass } : {}),
+        ...(ctx.grantScope ? { grantScope: ctx.grantScope } : {}),
+        ...(ctx.hardRule ? { hardRule: ctx.hardRule } : {}),
+        ...(ctx.canonicalTarget ? { canonicalTarget: ctx.canonicalTarget } : {}),
+        // R-4：生产端赋值——mode 类默认允许 session；always/hard-deny 类不允许。
+        ...(allowed.length > 0 ? { allowedGrantScopes: [...allowed] } : {}),
+        hideAllowSession: !allowed.includes('session'),
+        // 对话级放行按钮：仅当本次调用带对话身份时出现。
+        // 点了它 → 本对话内后续调用不再逐次询问（换对话/换工作区/换档位自动失效）。
+        allowConversation: conversationId !== undefined && conversationId !== '',
+      };
       if (governed) {
-        const allowed: readonly string[] = Array.isArray(auth.allowedGrantScopes) ? auth.allowedGrantScopes : [];
         consentMeta = {
+          ...consentMeta,
           riskLabel: '特权级',
-          modeLabel: POLICY_MODE_LABELS[policyMode],
           outside: verdict?.reason === 'outside-workspace',
           riskFlagLabels: (verdict?.riskFlags ?? []).map(riskLabel),
-          // A5：审计字段透传给页端，便于排查 UI 行为；不改展示逻辑。
-          ...(ctx.approvalClass ? { approvalClass: ctx.approvalClass } : {}),
-          ...(ctx.grantScope ? { grantScope: ctx.grantScope } : {}),
-          ...(ctx.hardRule ? { hardRule: ctx.hardRule } : {}),
-          ...(ctx.canonicalTarget ? { canonicalTarget: ctx.canonicalTarget } : {}),
-          // R-4：生产端赋值——mode 类默认允许 session；always/hard-deny 类不允许。
-          ...(allowed.length > 0 ? { allowedGrantScopes: [...allowed] } : {}),
-          hideAllowSession: !allowed.includes('session'),
-          // 对话级放行按钮：仅当本次调用带对话身份时出现。
-          // 点了它 → 本对话内后续调用不再逐次询问（换对话/换工作区/换档位自动失效）。
-          allowConversation: conversationId !== undefined && conversationId !== '',
         };
       }
       const decision = await ensureConsent(name, params, randomCallId(), consentMeta, botId, conversationId);
@@ -1990,8 +1998,11 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           // 只清用户来源，保留 bot 内部预授权（chat-insert/chat-send），否则断线重连后
           // AgentLoop 会突然卡在同意闸门上。
           allowlistFor(info?.botId).clearUserGrants();
-          // 页端断开 = 对话结束 → 对话级放行一律作废（并让在途审批回调失效）。
-          conversationStore.bumpGeneration();
+          // 修复：页端 ws 断开既可能是页面关闭，也可能是刷新/短暂断连后重连。
+          // 以前一律 bumpGeneration 清空全部对话级放行，导致重连后同一对话反复弹审批。
+          // 这里只让在途审批回调失效（invalidateInFlight），已批准对话保留；
+          // 换档位/换工作区/宿主停止仍走 bumpGeneration 真正清空。
+          conversationStore.invalidateInFlight();
           agentChannel?.broadcastState();
         },
         // v0.9：页端 auto-continue 推送的模型回复（不渲染到 DOM）。

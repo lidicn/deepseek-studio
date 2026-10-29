@@ -39,7 +39,7 @@ import { createPowHeaders } from './pow';
 import { createStepFlowContainer, type StepFlowHandle } from './step-flow-ui';
 import { hydrateCodeBlocks, type CodeRunner } from './render-code-runner';
 import type { StudioChatUIHandle } from '../ui/studio-chat-ui';
-import { normalizeChatSessionKey } from '../shared/studio-execution';
+import { normalizeChatSessionKey, normalizeSessionKeyFromPathname } from '../shared/studio-execution';
 import {
   createStudioTraceCollector,
   renderStudioTraceReport,
@@ -872,7 +872,14 @@ function captureChatRequest(body: string, loopState: LoopState, diag: Intercepto
     const parsed = JSON.parse(body) as Record<string, unknown>;
     loopState.newChatSessionId = undefined;
     const rawSessionId = extractChatSessionIdFromBody(body);
-    if (rawSessionId) loopState.newChatSessionId = normalizeChatSessionKey(rawSessionId);
+    if (rawSessionId) {
+      loopState.newChatSessionId = normalizeChatSessionKey(rawSessionId);
+    } else {
+      // 兜底：有些请求体不带 session id，但 URL 已是 /chat/s/<id>。
+      // 缺会话身份会导致「本次对话始终允许」按钮不出现、只能逐次审批。
+      const fromPath = normalizeSessionKeyFromPathname(location.pathname);
+      if (fromPath) loopState.newChatSessionId = fromPath;
+    }
     let userText = typeof parsed.prompt === 'string' ? parsed.prompt : '';
     if (!userText && Array.isArray(parsed.messages)) {
       for (let i = parsed.messages.length - 1; i >= 0; i--) {

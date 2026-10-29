@@ -41,6 +41,11 @@ export interface ConversationApprovalStore {
    * 用户点按钮的那一刻策略档位或工作区可能已被改掉，此时不得再放行。
    */
   bumpGeneration(): number;
+  /**
+   * 只递增世代号、保留已有放行。用于页端瞬时断开/重连：
+   * 在途的同意回调必须作废，但「本对话已放行」不应因为一次重连被清掉。
+   */
+  invalidateInFlight(): number;
   /** 当前世代号。 */
   currentGeneration(): number;
 }
@@ -61,6 +66,10 @@ export function createConversationApprovalStore(): ConversationApprovalStore {
     bumpGeneration() {
       generation += 1;
       approved.clear();
+      return generation;
+    },
+    invalidateInFlight() {
+      generation += 1;
       return generation;
     },
     currentGeneration() {
