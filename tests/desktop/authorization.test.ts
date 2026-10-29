@@ -3,8 +3,8 @@
  * A2 统一授权解析器测试（交接单_20261026 §5.4）。
  *
  * 这里是纯函数穷举：把 §1.5 的授权顺序逐条钉死，特别是
- * 「policyMode=full 不能覆盖 always / hard-deny」「grant 不能跨目标复用」
- * 「越界目标不吃 grant」这三条容易被写反的地方。
+ * 「full 放行所有已登记工具，但不能覆盖 hard-deny / policy deny」
+ * 「grant 不能跨目标复用」「越界目标不吃 grant」这些容易被写反的地方。
  */
 
 import { describe, it, expect } from 'vitest';
@@ -97,7 +97,7 @@ describe('A2 · 规范目标与 grant key', () => {
   });
 });
 
-describe('A2 · full 档只免 mode 类', () => {
+describe('A2 · full 档不再无条件放行 always 类', () => {
   it('full + file.write → allow（且工作区内）', () => {
     const r = resolveAuthorization(mk({ tool: 'file.write', mode: 'full', policyVerdict: verdict('allow'), params: { path: 'C:/proj/a.txt' } }));
     expect(r.decision).toBe('allow');
@@ -111,12 +111,33 @@ describe('A2 · full 档只免 mode 类', () => {
     expect(r.outsideApproved).toBe(true);
   });
 
-  it('full + python.exec / mcp.call / policy.set / workspace.set / memory.delete / chat-send → 仍 ask', () => {
+  it('full + python.exec / mcp.call / policy.set / workspace.set / memory.delete / chat-send → ask（对话级放行后不再逐次打扰）', () => {
     for (const tool of ['python.exec', 'mcp.call', 'policy.set', 'workspace.set', 'memory.delete', 'chat-send']) {
       const r = resolveAuthorization(mk({ tool, mode: 'full', params: { id: 'mem-1', mode: 'full', root: 'C:\\\\other', text: 'x' } }));
-      expect(r.decision, `${tool} 在 full 下不能免审`).toBe('ask');
+      expect(r.decision, `${tool} 在 full 下仍需一次人工确认`).toBe('ask');
       expect(r.approvalClass, tool).toBe('always');
     }
+  });
+
+  it('conversationApproved=true → always 类在 full 下直接 allow，reason=conversation-approved', () => {
+    for (const tool of ['python.exec', 'mcp.call', 'policy.set', 'workspace.set', 'memory.delete', 'chat-send']) {
+      const r = resolveAuthorization(
+        mk({ tool, mode: 'full', conversationApproved: true, params: { id: 'mem-1', mode: 'full', root: 'C:\\\\other', text: 'x' } }),
+      );
+      expect(r.decision, `${tool} 对话级放行后应直接放行`).toBe('allow');
+      expect(r.reason).toBe('conversation-approved');
+    }
+  });
+
+  it('对话级放行不覆盖 hard-deny / unknown（红线不受影响）', () => {
+    const hard = resolveAuthorization(
+      mk({ tool: 'shell.exec', mode: 'full', conversationApproved: true, policyVerdict: verdict('allow', 'risk-detected'), hardRule: 'dangerous-disk', params: { command: 'format c:' } }),
+    );
+    expect(hard.decision).toBe('deny');
+    expect(hard.reason).toBe('hard-deny');
+    const unknown = resolveAuthorization(mk({ tool: 'not.registered', mode: 'full', conversationApproved: true }));
+    expect(unknown.decision).toBe('deny');
+    expect(unknown.reason).toBe('unknown-capability');
   });
 
   it('full + shell.exec 命中硬规则 → deny，且带 hardRule', () => {
@@ -221,14 +242,14 @@ describe('A2 · grant 只能精确命中同一目标', () => {
   it('always 类：session grant 无效，只有精确 temporary / internal preauth 能替代询问', () => {
     const t = canonicalTargetOf(byId['memory.delete'], { id: 'mem-1' }).target;
     const k = key('memory.delete', t);
-    const asSession = resolveAuthorization(mk({ tool: 'memory.delete', mode: 'full', grant: { scope: 'session', key: k }, params: { id: 'mem-1' } }));
+    const asSession = resolveAuthorization(mk({ tool: 'memory.delete', mode: 'auto', grant: { scope: 'session', key: k }, params: { id: 'mem-1' } }));
     expect(asSession.decision).toBe('ask');
-    const asTemporary = resolveAuthorization(mk({ tool: 'memory.delete', mode: 'full', grant: { scope: 'temporary', key: k, expiresAt: NOW + 60_000 }, params: { id: 'mem-1' } }));
+    const asTemporary = resolveAuthorization(mk({ tool: 'memory.delete', mode: 'auto', grant: { scope: 'temporary', key: k, expiresAt: NOW + 60_000 }, params: { id: 'mem-1' } }));
     expect(asTemporary.decision).toBe('allow');
     expect(asTemporary.reason).toBe('temporary-grant');
-    const asExpired = resolveAuthorization(mk({ tool: 'memory.delete', mode: 'full', grant: { scope: 'temporary', key: k, expiresAt: NOW - 1 }, params: { id: 'mem-1' } }));
+    const asExpired = resolveAuthorization(mk({ tool: 'memory.delete', mode: 'auto', grant: { scope: 'temporary', key: k, expiresAt: NOW - 1 }, params: { id: 'mem-1' } }));
     expect(asExpired.decision).toBe('ask');
-    const internal = resolveAuthorization(mk({ tool: 'memory.delete', mode: 'full', grant: { scope: 'session', key: k, source: 'internal-bot' }, params: { id: 'mem-1' } }));
+    const internal = resolveAuthorization(mk({ tool: 'memory.delete', mode: 'auto', grant: { scope: 'session', key: k, source: 'internal-bot' }, params: { id: 'mem-1' } }));
     expect(internal.decision).toBe('ask');
   });
 
@@ -244,7 +265,7 @@ describe('A2 · grant 只能精确命中同一目标', () => {
   it('always 类的 temporary 不吃越界标记外的 grant：principal 变了就不命中', () => {
     const t = canonicalTargetOf(byId['memory.purge'], { id: 'mem-9' }).target;
     const other = grantKeyOf({ principal: 'bot-b', workspaceHash: WS_HASH, toolId: 'memory.purge', approvalClass: 'always', canonicalTarget: t });
-    const r = resolveAuthorization(mk({ tool: 'memory.purge', mode: 'full', grant: { scope: 'temporary', key: other, expiresAt: NOW + 60_000 }, params: { id: 'mem-9' } }));
+    const r = resolveAuthorization(mk({ tool: 'memory.purge', mode: 'auto', grant: { scope: 'temporary', key: other, expiresAt: NOW + 60_000 }, params: { id: 'mem-9' } }));
     expect(r.decision).toBe('ask');
   });
 
@@ -264,11 +285,17 @@ describe('A2 · fail-closed 兜底', () => {
     expect(r.reason).toBe('unknown-capability');
   });
 
-  it('漏标 approvalClass 的定义 → 落 always（ask），绝不落 mode（full 下自动执行）', () => {
+  it('漏标 approvalClass 的定义 → 仍落 always；各档位都询问（对话级放行后才免打扰）', () => {
     const legacy = { id: 'legacy', title: 't', description: 'd', risk: 'privileged', allowedOrigins: ['*'] } as unknown as ToolDefinition;
-    const r = resolveAuthorization(mk({ tool: 'legacy', def: legacy, mode: 'full' }));
-    expect(r.approvalClass).toBe('always');
-    expect(r.decision).toBe('ask');
+    const auto = resolveAuthorization(mk({ tool: 'legacy', def: legacy, mode: 'auto' }));
+    expect(auto.approvalClass).toBe('always');
+    expect(auto.decision).toBe('ask');
+    const full = resolveAuthorization(mk({ tool: 'legacy', def: legacy, mode: 'full' }));
+    expect(full.approvalClass).toBe('always');
+    expect(full.decision).toBe('ask');
+    const granted = resolveAuthorization(mk({ tool: 'legacy', def: legacy, mode: 'full', conversationApproved: true }));
+    expect(granted.decision).toBe('allow');
+    expect(granted.reason).toBe('conversation-approved');
   });
 
   it('mode 类但策略层没给结论 → ask(policy-unresolved)', () => {

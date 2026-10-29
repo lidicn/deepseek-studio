@@ -7,10 +7,16 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { describeConsentRequest, showConsent, toolDisplayName } from '../../src/ui/consent';
+import {
+  __resetConsentQueueForTests,
+  describeConsentRequest,
+  showConsent,
+  toolDisplayName,
+} from '../../src/ui/consent';
 
 /** T8-2：全局统一清理 overlay + 重置 body，任何失败都不污染后续用例。 */
 afterEach(() => {
+  __resetConsentQueueForTests();
   // 清理所有残留 overlay / consent card
   document.querySelectorAll('.ds-consent-overlay, .ds-consent-card').forEach((el) => el.remove());
   // 清 body 防止旧 card 残留
@@ -144,49 +150,111 @@ describe('T8-2：overlay 清理反控', () => {
     // afterEach 会清掉。此用例自身不 dispose，依赖全局清理。
   });
 
-  it('新 consent 到来时旧请求 fail-closed 拒绝，DOM 只保留一个 overlay', () => {
+  it('新 consent 到来时排队而非拒绝，当前模态结束后再展示', () => {
     let firstDecision = '';
-    mkHandle({ tool: 'shell.exec' }, (decision) => { firstDecision = decision; });
+    const first = mkHandle({ tool: 'shell.exec' }, (decision) => { firstDecision = decision; });
     expect(document.querySelectorAll('.ds-consent-overlay').length).toBe(1);
+    expect(document.querySelector('.ds-consent-card')?.textContent).toContain('执行终端命令');
 
     let secondDecision = '';
     const second = mkHandle({ tool: 'memory.save' }, (decision) => { secondDecision = decision; });
 
-    // 旧请求必须已被拒绝，而不是在 DOM 里继续等待超时。
-    expect(firstDecision).toBe('deny');
+    // 新请求排队，不取消正在等待的旧请求。
+    expect(firstDecision).toBe('');
     expect(document.querySelectorAll('.ds-consent-overlay').length).toBe(1);
+    expect(document.querySelector('.ds-consent-card')?.textContent).toContain('执行终端命令');
 
-    const card = document.querySelector('.ds-consent-card') as HTMLElement;
-    expect(card.textContent).toContain('保存记忆');
-    expect(card.textContent).not.toContain('执行终端命令');
-
-    // 当前模态必须仍可正常决策，且只回调第二条请求。
+    // 第一条结算后，第二条自动展示。
     (document.querySelector('.ds-consent-allow-once') as HTMLButtonElement).click();
-    expect(firstDecision).toBe('deny');
+    expect(firstDecision).toBe('allow-once');
+    expect(document.querySelector('.ds-consent-card')?.textContent).toContain('保存记忆');
+
+    (document.querySelector('.ds-consent-allow-once') as HTMLButtonElement).click();
     expect(secondDecision).toBe('allow-once');
     second.dispose();
+    first.dispose();
   });
 });
 
 describe('T9-2：单一活动模态并发边界（PM T8-2 rework 覆盖）', () => {
-  it('三条连续 showConsent → 前两条 fail-closed deny，第三条独占 DOM', () => {
+  it('三条连续 showConsent → 逐条展示、逐条决策，不互相取消', () => {
     const decisions: string[] = [];
     const h1 = mkHandle({ tool: 'shell.exec' }, (d) => decisions.push('h1:' + d));
     const h2 = mkHandle({ tool: 'memory.save' }, (d) => decisions.push('h2:' + d));
     const h3 = mkHandle({ tool: 'chat-send' }, (d) => decisions.push('h3:' + d));
-    void h1; void h2; // 变量声明即触发并发 side-effect，自身不直接引用
 
-    // 前两条必须已被新请求 fail-closed 结算
-    expect(decisions).toEqual(['h1:deny', 'h2:deny']);
+    // 只有第一条展示，后两条排队。
+    expect(decisions).toEqual([]);
     // DOM 严格只有 1 个 overlay
     expect(document.querySelectorAll('.ds-consent-overlay').length).toBe(1);
-    // 显示的卡片属于第三条（chat-send → 发送对话）
-    const card = document.querySelector('.ds-consent-card') as HTMLElement;
-    expect(card.textContent).toContain('发送对话');
-    expect(card.textContent).not.toContain('执行终端命令');
-    expect(card.textContent).not.toContain('保存记忆');
+    expect(document.querySelector('.ds-consent-card')?.textContent).toContain('执行终端命令');
 
-    h3.dispose();
+    h1.decide('allow-once');
+    expect(decisions).toEqual(['h1:allow-once']);
+    expect(document.querySelector('.ds-consent-card')?.textContent).toContain('保存记忆');
+
+    h2.decide('deny');
+    expect(decisions).toEqual(['h1:allow-once', 'h2:deny']);
+    expect(document.querySelector('.ds-consent-card')?.textContent).toContain('发送对话');
+
+    h3.decide('allow-once');
+    expect(decisions).toEqual(['h1:allow-once', 'h2:deny', 'h3:allow-once']);
+    expect(document.querySelectorAll('.ds-consent-overlay').length).toBe(0);
+  });
+
+  it('排队请求 dispose() 不回调，也不影响当前模态', () => {
+    const decisions: string[] = [];
+    const h1 = mkHandle({ tool: 'shell.exec' }, (d) => decisions.push('h1:' + d));
+    const h2 = mkHandle({ tool: 'memory.save' }, (d) => decisions.push('h2:' + d));
+
+    h2.dispose();
+    expect(decisions).toEqual([]);
+    expect(document.querySelector('.ds-consent-card')?.textContent).toContain('执行终端命令');
+
+    h1.decide('allow-once');
+    expect(decisions).toEqual(['h1:allow-once']);
+    expect(document.querySelectorAll('.ds-consent-overlay').length).toBe(0);
+  });
+
+  it('排队期间不计时，超时从真正展示时开始', () => {
+    vi.useFakeTimers();
+    try {
+      const decisions: string[] = [];
+      const h1 = mkHandle({ tool: 'shell.exec', timeoutMs: 1000 }, (d) => decisions.push('h1:' + d));
+      mkHandle({ tool: 'memory.save', timeoutMs: 1000 }, (d) => decisions.push('h2:' + d));
+
+      vi.advanceTimersByTime(800);
+      expect(decisions).toEqual([]);
+
+      h1.decide('allow-once');
+      expect(decisions).toEqual(['h1:allow-once']);
+
+      vi.advanceTimersByTime(800);
+      expect(decisions).toEqual(['h1:allow-once']);
+
+      vi.advanceTimersByTime(300);
+      expect(decisions).toEqual(['h1:allow-once', 'h2:deny']);
+      expect(document.querySelectorAll('.ds-consent-overlay').length).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('决策回调抛错不卡死队列', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const decisions: string[] = [];
+      const h1 = mkHandle({ tool: 'shell.exec' }, () => { throw new Error('boom'); });
+      const h2 = mkHandle({ tool: 'memory.save' }, (d) => decisions.push('h2:' + d));
+
+      expect(() => h1.decide('allow-once')).not.toThrow();
+      expect(document.querySelector('.ds-consent-card')?.textContent).toContain('保存记忆');
+
+      h2.decide('allow-once');
+      expect(decisions).toEqual(['h2:allow-once']);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('dispose() 幂等：连续两次 dispose 不抛错、不重复回调、overlay 归零', () => {

@@ -66,7 +66,7 @@ export type PageToHostMessage =
   | { type: 'integrity-alert'; reason: string; detail?: string }
   /** v0.6：页端 MAIN-world 拦截器解析出模型发起的工具调用，反向投递给宿主真实执行。
    *  v0.24：带 botId，让宿主路由到发起调用的那个 bot（executor/counter/白名单）。 */
-  | { type: 'tool-call'; callId: string; invocationName: string; params: unknown; botId?: string }
+  | { type: 'tool-call'; callId: string; invocationName: string; params: unknown; botId?: string; conversationId?: string }
   /** 调试：页端把拦截/诊断日志发到宿主 stdout。 */
   | { type: 'log'; text: string }
   /** v0.7：页端 storage shim 的 KV 读写请求（落盘 backend 在宿主侧）。 */

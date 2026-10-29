@@ -4,12 +4,13 @@
  * 面板三档口径（用户选定，2026-10-10 需求访谈）：
  *   1. workspace 仅工作区——文件读写限于工作区内，shell 与越界一律硬拒绝
  *   2. auto    风险审批——工作区内读/写自动放行，仅 shell / 删除 / 越界等风险弹审批（默认档）
- *   3. full    执行范围完全放开——只免掉 approvalClass=mode 这类工具（file.*、
- *              shell.exec、mcp.test）的逐次确认；approvalClass=always 的工具
- *              （policy.set / workspace.set / memory.delete|purge|unarchive /
- *              chat-send / python.exec / mcp.call|save|remove）在 full 下仍必须人工
- *              确认，hard-deny 类动作（磁盘格式化、关机、盘根递归删除、敏感凭据路径、
- *              未知工具/来源）在 full 下仍直接拒绝。见交接单_20261026 §1.2。
+ *   3. full    执行范围完全放开——mode 类工具不再逐次确认；
+ *              always 类（policy.set / workspace.set / memory.delete|purge|unarchive /
+ *              chat-send / python.exec / mcp.call|save|remove 等）仍会询问一次，
+ *              用户点「本次对话始终允许」后本对话内不再打扰
+ *              （见 host/conversation-approval.ts）；
+ *              hard-deny 类动作（磁盘格式化、关机、盘根递归删除、敏感凭据路径、
+ *              未知工具/来源）以及策略层 deny（未配置工作区、缺参数等）仍直接拒绝。
  * 旧档 ask（询问审批：shell 无风险也审批）保留为合法值以兼容既有配置与测试，
  * 但面板 UI 只暴露上面三档。
  *
@@ -21,12 +22,11 @@
  * | auto      | 放行         | 审批         | 放行        | 审批          |
  * | full      | 放行         | 放行         | 放行        | 放行          |
  *
- * full 档对 approvalClass=always 与 hard-deny 工具的补充说明（不在上表范围内，
- * 因为它们根本不走 evaluatePolicy，由 consent-router 前置闸门处理）：
+ * full 档对 approvalClass=always 与 hard-deny 工具的补充说明：
  *   - approvalClass=always（policy.set / workspace.set / memory.delete|purge|unarchive /
  *     chat-send / python.exec / mcp.call|save|remove / consent.whitelist.revoke
- *     / memory.select / memory.list / memory.listArchived 等）——full 下仍必须
- *     人工确认，**不会被"完全放开"覆盖**。
+ *     等）——full 下仍询问一次；用户可选择「本次对话始终允许」，
+ *     该对话内后续调用直接放行（换对话/换工作区/换档位即失效）。
  *   - hard-deny（磁盘格式化 / 关机 / 盘根递归删除 / 敏感凭据路径 / 未知工具或
  *     来源）——full 下仍直接拒绝，不改判定。
  *

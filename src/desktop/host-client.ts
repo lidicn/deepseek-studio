@@ -58,6 +58,8 @@ export interface ToolCallRequest {
   callId: string;
   invocationName: string;
   params: Record<string, unknown>;
+  /** 对话标识：宿主据此实现「一个对话审批一次」（换对话即失效）。 */
+  conversationId?: string;
 }
 
 export interface HostClient {
@@ -356,7 +358,14 @@ export function createHostClient(options: HostClientOptions): HostClient {
           resolve({ ok: false, error: 'host-timeout' });
         }, toolCallTimeoutMs);
         pendingToolCalls.set(req.callId, { resolve, timer });
-        send({ type: 'tool-call', callId: req.callId, invocationName: req.invocationName, params: req.params, botId: options.botId });
+        send({
+          type: 'tool-call',
+          callId: req.callId,
+          invocationName: req.invocationName,
+          params: req.params,
+          botId: options.botId,
+          ...(req.conversationId ? { conversationId: req.conversationId } : {}),
+        });
       });
     },
     connect() {

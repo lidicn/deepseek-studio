@@ -81,7 +81,12 @@ export interface PageRuntimeHubOptions {
    * v0.24：botId 可选，标识发起该工具调用的 bot——宿主据此路由到对应 bot 的
    * executor / 工具白名单（v0.25）与授权身份；缺省='main'。
    */
-  executor?: (tool: string, params: unknown, botId?: string) => Promise<ToolExecutionResult>;
+  executor?: (
+    tool: string,
+    params: unknown,
+    botId?: string,
+    conversationId?: string,
+  ) => Promise<ToolExecutionResult>;
   /** 调试：页端 debug-eval-result 回调。 */
   onDebugEvalResult?: (requestId: string, ok: boolean, result: string) => void;
   /**
@@ -439,7 +444,7 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         // 报文 msg.botId 仅作兜底。用于路由到对应 bot 的 executor / counter / 白名单。
         const callBotId = rec.botId ?? msg.botId;
         options.onToolCall?.({ callId: msg.callId, invocationName: msg.invocationName, tool: mapped.id, params: mapped.params, botId: callBotId });
-        void exec(mapped.id, mapped.params, callBotId)
+        void exec(mapped.id, mapped.params, callBotId, msg.conversationId)
           .then((r) => {
             options.onToolResult?.({ callId: msg.callId, tool: mapped.id, ok: r.ok, error: r.reason, botId: callBotId, ...(r.details !== undefined ? { details: r.details as Record<string, unknown> } : {}) });
             safeSend(ws, {

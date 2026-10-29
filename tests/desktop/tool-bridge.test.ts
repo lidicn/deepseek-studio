@@ -111,8 +111,9 @@ describe('page-runtime tool-call → executor', () => {
     expect(result.type).toBe('tool-call-result');
     expect(result.callId).toBe('c1');
     expect(result.ok).toBe(true);
-    // v0.24：executor 第三参为 botId（此假页未自报 → undefined，等价 'main'）
-    expect(executor).toHaveBeenCalledWith('shell.exec', { command: 'ls' }, undefined);
+    // v0.24：executor 第三参为 botId（此假页未自报 → undefined，等价 'main'）；
+    // 第四参为 conversationId（用于"一个对话审批一次"，此假页未带 → undefined）
+    expect(executor).toHaveBeenCalledWith('shell.exec', { command: 'ls' }, undefined, undefined);
     client.close();
     hub.dispose();
   });

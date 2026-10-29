@@ -10,11 +10,17 @@
  *   2. hard-deny（磁盘、关机、盘根递归删除、敏感凭据路径）
  *   3. workspace / resource deny（未配置工作区、档位禁止、缺参数）
  *   4. 显式 deny 规则（A4 落地前留空位）
- *   5. always 类的新鲜人工确认（grant 只能消费精确 temporary）
- *   6. mode 类的有效 grant
- *   7. policyMode 对 mode 类的判定
- *   8. none 类放行
- *   9. 其余一律 fail-closed
+ *   5. 对话级放行（本对话已由用户点过「本次对话始终允许」）
+ *   6. always 类的新鲜人工确认（grant 只能消费精确 temporary）
+ *   7. mode 类的有效 grant
+ *   8. policyMode 对 mode 类的判定
+ *   9. none 类放行
+ *   10. 其余一律 fail-closed
+ *
+ * 关于 full 档：不设"无条件放行"分支。full 档下 mode 类由 evaluatePolicy
+ * 直接放行；always 类仍走人工确认，只是用户点一次「本次对话始终允许」后，
+ * 本对话内不再逐次打扰（见 conversation-approval.ts）。
+ * 这样"完全放开"= 少打扰，而不是"无人值守也能改档位/删记忆"。
  *
  * 纯函数纪律：不做 fs/env/realpath。工作区边界与风险模式由调用方（宿主）算好后
  * 以 `policyVerdict` 传入；hard 规则由 consent-router 的 `checkHardDeny` 结果传入。
@@ -52,8 +58,7 @@ export interface AuthorizationResult {
   /** 命中硬规则时记录规则 id。 */
   readonly hardRule?: string;
   /**
-   * 是否已获准越出工作区。只有 mode 类且「策略直接放行」或「用户已批准」才为真；
-   * always 类不因 full 档位被置真（§5.3 第 6 条）。
+   * 是否已获准越出工作区。策略直接放行、用户已批准，或 full 档位放行时为真。
    */
   readonly outsideApproved: boolean;
 }
@@ -82,6 +87,11 @@ export interface AuthorizationInput {
   readonly grant?: GrantMatch | null;
   /** 用户持久规则（A4）命中结果；本版由调用方固定传 null。 */
   readonly projectRuleHit?: boolean;
+  /**
+   * 对话级放行：用户已在本对话点过「本次对话始终允许」。
+   * 只覆盖"逐次询问"这一层；hard-deny / policy-deny / unknown 在前面已拦截。
+   */
+  readonly conversationApproved?: boolean;
   /** grant key 计算所需的身份。 */
   readonly workspaceHash: string;
   readonly principal: string;
@@ -202,7 +212,7 @@ export function grantKeyOf(input: {
 
 /** 主解析函数。顺序见文件头注释。 */
 export function resolveAuthorization(input: AuthorizationInput): AuthorizationResult {
-  const { def, mode, params, policyVerdict } = input;
+  const { def, params, policyVerdict } = input;
   const cls: ApprovalClass = approvalClassOf(def);
   const target = canonicalTargetOf(def, params);
   const allowed = allowedGrantScopesFor(def ?? ({ approvalClass: cls } as ToolDefinition));
@@ -232,7 +242,19 @@ export function resolveAuthorization(input: AuthorizationInput): AuthorizationRe
 
   // 4) 显式 deny 规则（A4 接入位）：本版恒不命中。
 
-  // 5) always：必须新鲜人工确认；只有"精确 temporary grant"能替代本次询问。
+  // 5) 对话级放行：「一个对话审批一次」。必须在 hard-deny / policy deny / unknown
+  //    之后（红线永不被对话放行覆盖），且在 always / mode 判定之前
+  //    （否则永远走不到 ask 分支，用户根本没有点按钮的机会）。
+  if (input.conversationApproved) {
+    return {
+      ...base,
+      decision: 'allow',
+      reason: 'conversation-approved',
+      outsideApproved: outsideRequested,
+    };
+  }
+
+  // 6) always：必须新鲜人工确认；只有"精确 temporary grant"能替代本次询问。
   if (cls === 'always') {
     const g = input.grant;
     if (g && g.scope === 'temporary' && g.key === grantKey && (!g.expiresAt || g.expiresAt > input.now) && g.source !== 'internal-bot') {
@@ -248,7 +270,7 @@ export function resolveAuthorization(input: AuthorizationInput): AuthorizationRe
     return { ...base, decision: 'ask', reason: 'requires-approval', outsideApproved: false };
   }
 
-  // 6) mode：有效 grant 先于档位（grant 是"用户对这一具体目标的明确同意"）。
+  // 7) mode：有效 grant 先于档位（grant 是"用户对这一具体目标的明确同意"）。
   if (cls === 'mode') {
     const g = input.grant;
     if (
@@ -268,16 +290,7 @@ export function resolveAuthorization(input: AuthorizationInput): AuthorizationRe
       };
     }
 
-    // 7) 档位判定：full / auto / workspace / ask 全在这里收敛。
-    if (mode === 'full') {
-      // full 只免掉 mode 类的逐次确认；越界同样视为已批准（与既有 outsideApproved 语义一致）。
-      return {
-        ...base,
-        decision: 'allow',
-        reason: policyVerdict?.reason ?? 'mode-full',
-        outsideApproved: outsideRequested,
-      };
-    }
+    // 8) 档位判定：auto / workspace / ask 在这里收敛。
     if (policyVerdict) {
       if (policyVerdict.decision === 'allow') {
         return { ...base, decision: 'allow', reason: policyVerdict.reason, outsideApproved: outsideRequested };
@@ -294,11 +307,11 @@ export function resolveAuthorization(input: AuthorizationInput): AuthorizationRe
     return { ...base, decision: 'ask', reason: 'policy-unresolved', outsideApproved: false };
   }
 
-  // 8) none：无审批类别风险，直接放行（工作区边界仍由资源层 deny 兜住）。
+  // 9) none：无审批类别风险，直接放行（工作区边界仍由资源层 deny 兜住）。
   if (cls === 'none') {
     return { ...base, decision: 'allow', reason: 'no-approval-required', outsideApproved: false };
   }
 
-  // 9) 其余（含理论上到不了的 hard-deny 静态归类）→ fail-closed。
+  // 10) 其余（含理论上到不了的 hard-deny 静态归类）→ fail-closed。
   return { ...base, decision: 'deny', reason: 'fail-closed', outsideApproved: false };
 }

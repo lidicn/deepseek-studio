@@ -91,6 +91,7 @@ import {
   resolveAuthorization,
   type GrantMatch,
 } from './authorization';
+import { conversationApprovalKeyOf, createConversationApprovalStore } from './conversation-approval';
 import { createWhitelistStore } from './consent-whitelist-store';
 import { createShadowStore } from './shadow-store';
 import {
@@ -239,10 +240,10 @@ export interface DesktopHost {
   /** 签发一张一次性 tool grant（常驻宿主侧调用）。 */
   issueGrant(input: IssueGrantInput): Promise<string>;
   /** 持 grant 执行能力：先 consume（失败即拒绝），再 start/stop。 */
-  executeTool(name: string, params: unknown, grantToken: string, botId?: string): Promise<ToolExecutionResult>;
+  executeTool(name: string, params: unknown, grantToken: string, botId?: string, conversationId?: string): Promise<ToolExecutionResult>;
   /** 便捷入口：已鉴权的 agent 经此发起工具调用（内部签发+消费一次性 grant，再走同意闸门与页端路由）。
    *  v0.24：botId 可选——多 bot 下路由到对应窗口的页与同意闸门；缺省='main'。 */
-  invokeTool(tool: string, params: unknown, botId?: string): Promise<ToolExecutionResult>;
+  invokeTool(tool: string, params: unknown, botId?: string, conversationId?: string): Promise<ToolExecutionResult>;
   /** 工具执行审计环（HTTP 端点 /v1/tools/audit 的数据源）。 */
   readonly audit: AuditLog;
   /** 当前生效的执行侧Resolver（测试与外部观察者用）。 */
@@ -665,6 +666,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
               cwd: typeof config.cwd === 'string' ? config.cwd : undefined,
               headers: config.headers && typeof config.headers === 'object' ? (config.headers as Record<string, string>) : undefined,
             });
+            if (result.ok) controller.reload();
             return { ok: result.ok, error: result.error };
           },
         },
@@ -716,6 +718,15 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
             const id = String(params.id ?? '');
             if (!id) return { ok: false, error: 'id is required' };
+            // 只删"已归档"的记忆：归档与彻底删除是两态，后者是归档态的终局出口。
+            // 未归档的记忆必须先归档（失效），否则这里会变成"绕过归档直接真删"的暗门。
+            const store = getMemoryStore();
+            const archived = (await store.listInvalidated()).some((m) => m.id === id);
+            if (!archived) {
+              // 区分"从来没有这条"与"这条还在生效面"：前者 not-found，后者必须先归档。
+              const exists = (await store.list()).some((m) => m.id === id);
+              return { ok: false, error: exists ? 'memory-not-archived' : 'memory-not-found' };
+            }
             const removed = getMemoryStore().remove(id);
             if (!removed) return { ok: false, error: 'memory-not-found' };
             hub?.broadcastMemories(await listMemoryBroadcastRows());
@@ -1253,6 +1264,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     // QD-R2-08：策略档位切换 → 旧 allow-session 授权一律作废（档位语义变了）。
     sessionAllowlist.clear();
     for (const bot of botRegistry.list()) botRegistry.getState(bot.id)?.sessionAllowlist.clear();
+    // 对话级放行同样作废（档位语义变了），并递增世代号使在途的审批回调失效。
+    conversationStore.bumpGeneration();
     const persist = persistConfigPatch({ policyMode: mode });
     if (!persist.ok) console.warn(`[desktop-host] policyMode 持久化失败: ${persist.error}`);
   }
@@ -1264,6 +1277,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       // QD-R2-08：工作区边界变化 → 旧 allow-session 授权一律作废。
       sessionAllowlist.clear();
       for (const bot of botRegistry.list()) botRegistry.getState(bot.id)?.sessionAllowlist.clear();
+      conversationStore.bumpGeneration();
       const persist = persistConfigPatch({ workspaceRoot: '' });
       if (!persist.ok) console.warn(`[desktop-host] workspaceRoot 持久化失败: ${persist.error}`);
       return { ok: true };
@@ -1274,6 +1288,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     mutableWorkspace.setRoot(target);
     sessionAllowlist.clear();
     for (const bot of botRegistry.list()) botRegistry.getState(bot.id)?.sessionAllowlist.clear();
+    conversationStore.bumpGeneration();
     const persist = persistConfigPatch({ workspaceRoot: mutableWorkspace.root });
     if (!persist.ok) console.warn(`[desktop-host] workspaceRoot 持久化失败: ${persist.error}`);
     return { ok: true };
@@ -1386,12 +1401,24 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   const debugEvalPending = new Map<string, { resolve: (r: { ok: boolean; result?: string; error?: string }) => void; timer: ReturnType<typeof setTimeout> }>();
   let agentChannel: AgentChannel | null = null;
   const sessionAllowlist = new SessionAllowlist();
+  /**
+   * 对话级放行表（"一个对话审批一次"）。
+   * 与 sessionAllowlist 刻意分开：session 绑「工具+目标」，本表绑「对话」。
+   * 换对话 / 换工作区 / 换档位 / 页端断开 / 宿主停止 → 全部作废。
+   */
+  const conversationStore = createConversationApprovalStore();
 
   function randomCallId(): string {
     return crypto.randomUUID();
   }
 
-  async function executeTool(name: string, params: unknown, grantToken: string, botId?: string): Promise<ToolExecutionResult> {
+  async function executeTool(
+    name: string,
+    params: unknown,
+    grantToken: string,
+    botId?: string,
+    conversationId?: string,
+  ): Promise<ToolExecutionResult> {
     const startedAt = Date.now();
     // 审计上下文随链路推进逐步补全（grantId/origin/risk/side）。
     // 所有拒绝分支一律经由 finish() 出口，确保「没有一条调用走出未被留痕的路径」——
@@ -1462,6 +1489,17 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       approvalClassOf(def) === 'mode' &&
       verdict?.decision === 'require-consent' &&
       whitelistHit(name, paramsBag, verdict, workspaceHash);
+    // 对话级放行：仅当本次调用带有对话身份、且该对话已被用户点过「本次对话始终允许」时成立。
+    // key 里含工作区指纹与档位，因此换工作区 / 换档位会自然换 key（旧放行不再命中）。
+    const conversationKey = conversationId
+      ? conversationApprovalKeyOf({
+          principal: botId ?? 'main',
+          workspaceHash,
+          policyMode,
+          conversationId,
+        })
+      : '';
+    const conversationApproved = conversationKey !== '' && conversationStore.check(conversationKey);
     const auth = resolveAuthorization({
       tool: name,
       def,
@@ -1471,6 +1509,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       hardRule,
       grant: lookupGrant(name, paramsBag, def, botId, workspaceHash),
       projectRuleHit,
+      conversationApproved,
       workspaceHash,
       principal: botId ?? 'main',
       now: Date.now(),
@@ -1507,9 +1546,12 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           // R-4：生产端赋值——mode 类默认允许 session；always/hard-deny 类不允许。
           ...(allowed.length > 0 ? { allowedGrantScopes: [...allowed] } : {}),
           hideAllowSession: !allowed.includes('session'),
+          // 对话级放行按钮：仅当本次调用带对话身份时出现。
+          // 点了它 → 本对话内后续调用不再逐次询问（换对话/换工作区/换档位自动失效）。
+          allowConversation: conversationId !== undefined && conversationId !== '',
         };
       }
-      const decision = await ensureConsent(name, params, randomCallId(), consentMeta, botId);
+      const decision = await ensureConsent(name, params, randomCallId(), consentMeta, botId, conversationId);
       if (decision === 'consent-unavailable') return finish('consent-unavailable', 'consent-unavailable');
       if (decision === 'consent-denied') return finish('consent-denied', 'consent-denied');
       // 用户明确同意了这次越界请求 → 授予能力层越界授权
@@ -1520,7 +1562,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     audit.record({
       ...ctx,
       outcome: result.ok ? 'executed' : 'execution-failed',
-      reason: result.reason,
+      reason: result.ok ? (auth.reason === 'conversation-approved' ? 'conversation-approved' : result.reason) : result.reason,
       durationMs: Date.now() - startedAt,
     });
     return result;
@@ -1628,7 +1670,14 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     return result.verdict === 'safe' && (result.reason === 'whitelist-hit' || result.reason === 'policy-allow');
   }
 
-  async function ensureConsent(tool: string, params: unknown, callId: string, meta?: ConsentMeta, botId?: string): Promise<ConsentGate> {
+  async function ensureConsent(
+    tool: string,
+    params: unknown,
+    callId: string,
+    meta?: ConsentMeta,
+    botId?: string,
+    conversationId?: string,
+  ): Promise<ConsentGate> {
     const allowlist = allowlistFor(botId);
     if (!hub) return 'consent-unavailable'; // 宿主尚未就绪，无法征求用户同意 → fail-closed
     // 「没有人类在场」与「人类点了拒绝」成因不同，审计必须能区分：
@@ -1641,7 +1690,28 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     } else if (hub.connectedPages.length === 0) {
       return 'consent-unavailable';
     }
+    // 世代号：等待用户决策期间若发生了换档位 / 换工作区 / 页端断开 / 宿主停止，
+    // 迟到的"允许"回调必须作废（否则等于用旧语境下的同意去放行新语境下的操作）。
+    const generation = conversationStore.currentGeneration();
     const decision = await hub.requestConsent(callId, tool, params, meta, botId);
+    if (conversationStore.currentGeneration() !== generation) {
+      return 'consent-unavailable';
+    }
+    if (decision === 'allow-conversation' && conversationId) {
+      // 「本次对话始终允许」：登记对话级放行。
+      // key 含 principal / 工作区指纹 / 档位 / 对话 id → 换对话或换工作区自然失效。
+      const wsRoot = mutableWorkspace.current?.root ?? null;
+      const workspaceHash = wsRoot ? createHash('sha1').update(wsRoot).digest('hex').slice(0, 12) : '';
+      conversationStore.grant(
+        conversationApprovalKeyOf({
+          principal: botId ?? 'main',
+          workspaceHash,
+          policyMode,
+          conversationId,
+        }),
+      );
+      return 'approved';
+    }
     if (decision === 'allow-session') {
       // A3：allow-session 只给 mode 类发 session grant，且绑「工作区 + 工具 + 审批类别 + 规范目标」。
       //  - always 类不发 session（§1.4 硬规则 4）：本次批准只作用于这一次调用；
@@ -1748,7 +1818,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     return { ok: false, reason: 'no-capability' };
   }
 
-  async function invokeTool(tool: string, params: unknown, botId?: string): Promise<ToolExecutionResult> {
+  async function invokeTool(tool: string, params: unknown, botId?: string, conversationId?: string): Promise<ToolExecutionResult> {
     const grant = await authority.requestToolExecution({
       documentId: 'host-agent',
       sessionId: 'host-agent',
@@ -1757,7 +1827,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       // R2-05：使用专用内部 origin，不再硬编码 DEEPSEEK_ORIGIN 让 origin 闸门恒真。
       origin: HOST_INTERNAL_ORIGIN,
     });
-    return executeTool(tool, params, grant, botId);
+    return executeTool(tool, params, grant, botId, conversationId);
   }
 
   return {
@@ -1864,9 +1934,10 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         // v0.25：该 bot 已加载人设时先经其白名单过滤器（SlotRuntime.executorFor）；
         //        未加载人设 / 未注入 SlotRuntime → 直调 invokeTool（v0.24 行为不变）。
         // 注意：白名单只是「拒绝」的一层，命中后仍回到 invokeTool——不绕过同意闸门。
-        executor: (tool, params, botId) => {
+        executor: (tool, params, botId, conversationId) => {
           const exec = options.slotRuntime?.executorFor(botId);
-          return exec ? exec(tool, params) : invokeTool(tool, params, botId);
+          // SlotRuntime（已加载人设的 bot）路径保持原签名——对话级放行只作用于页端直连路径。
+          return exec ? exec(tool, params) : invokeTool(tool, params, botId, conversationId);
         },
         // M1：AgentLoop 依据该计数决定「工具执行完毕 → 请求模型续跑」。
         // v0.24：按发起 botId 累加对应 bot 的独立 counter（main 缺省保持 v0.23 行为）。
@@ -1917,6 +1988,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           // 只清用户来源，保留 bot 内部预授权（chat-insert/chat-send），否则断线重连后
           // AgentLoop 会突然卡在同意闸门上。
           allowlistFor(info?.botId).clearUserGrants();
+          // 页端断开 = 对话结束 → 对话级放行一律作废（并让在途审批回调失效）。
+          conversationStore.bumpGeneration();
           agentChannel?.broadcastState();
         },
         // v0.9：页端 auto-continue 推送的模型回复（不渲染到 DOM）。
@@ -1970,6 +2043,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     async stop() {
       agentChannel?.dispose();
       agentChannel = null;
+      conversationStore.bumpGeneration();
       hub?.dispose();
       hub = null;
       await server.stop();

@@ -77,6 +77,8 @@ export interface ToolCallRequest {
   readonly callId: string;
   readonly invocationName: string;
   readonly params: Record<string, unknown>;
+  /** 对话标识（会话 key）：宿主据此实现「一个对话审批一次」。 */
+  readonly conversationId?: string;
 }
 
 /** 投递回调：把一次工具调用发给宿主并等回结果（由 entry.ts 接到 host-client）。 */
@@ -1697,7 +1699,13 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     // R-W2：sender 异步 resolve 时 newChatSessionId 可能已切到别的会话，
     // 必须在调用 sender 那一刻捕获归属会话，否则迟到结果会错挂到当前会话。
     const sessionAtCall = loopState.newChatSessionId;
-    void sender({ callId, invocationName: call.invocationName, params: call.params })
+    void sender({
+      callId,
+      invocationName: call.invocationName,
+      params: call.params,
+      // 捕获调用那一刻的会话标识；换对话后宿主不再沿用旧的对话级放行。
+      ...(sessionAtCall ? { conversationId: sessionAtCall } : {}),
+    })
       .then((r: ExecuteResult) => {
         d(`forward: done ok=${r.ok} err=${r.error ?? ''}`);
         const pr: PendingResult = { invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error, sessionId: sessionAtCall };

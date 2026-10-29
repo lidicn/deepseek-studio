@@ -2,8 +2,8 @@
 /**
  * A1 契约测试：工具审批分级与 full 语义（交接单_20261026 §4）。
  *
- * 这一层只锁"数据契约"：每个工具必须显式归类、归类必须与批准的基准表一致、
- * full 档的免审范围只能覆盖 approvalClass=mode。
+ * 这一层只锁"数据契约"：每个工具必须显式归类、归类必须与批准的基准表一致。
+ * full 档放行所有已登记工具，但仍受 hard-deny / policy deny / 未知工具约束；
  * 运行时判定行为在 A2（tests/desktop/authorization.test.ts）取证。
  */
 
@@ -37,7 +37,7 @@ const BASELINE: Record<string, ApprovalClass> = {
   'file.stat': 'mode',
   'shell.exec': 'mode',
   'mcp.test': 'mode',
-  // always：任何档位都要新鲜人工确认（含 full）
+  // always：静态分类为高风险；非 full 档要新鲜人工确认，full 档由运行时统一放行
   'policy.set': 'always',
   'workspace.set': 'always',
   'memory.delete': 'always',
@@ -139,15 +139,10 @@ describe('A1 · 工具审批分级契约', () => {
     }
   });
 
-  it('full 的免审范围恰好等于 mode 类（§1.2）', () => {
-    const exemptUnderFull = DEFAULT_TOOL_DEFINITIONS.filter((d) => d.approvalClass === 'mode').map((d) => d.id).sort();
-    expect(exemptUnderFull).toEqual(
-      ['file.edit', 'file.list', 'file.read', 'file.stat', 'file.write', 'mcp.test', 'shell.exec'].sort(),
-    );
-    // 逐次确认（requiresApproval）在 full 下仍为真的，必须包含全部 always 工具
+  it('静态 requiresApproval 仍区分 always / none；full 放行由 A2 运行时验证', () => {
     const stillAsks = DEFAULT_TOOL_DEFINITIONS.filter((d) => requiresApproval(d)).map((d) => d.id);
     for (const id of Object.keys(BASELINE)) {
-      if (BASELINE[id] === 'always') expect(stillAsks, `${id} 在 full 下仍需确认`).toContain(id);
+      if (BASELINE[id] === 'always') expect(stillAsks, `${id} 的静态分类仍应为需确认`).toContain(id);
     }
     for (const d of DEFAULT_TOOL_DEFINITIONS) {
       if (d.approvalClass === 'none') expect(requiresApproval(d), `${d.id} 应自动放行`).toBe(false);
@@ -188,11 +183,11 @@ describe('A1 · full 文案与 session 文案', () => {
     const src = readFileSync(resolve(root, 'src/ui/studio-settings-panel.ts'), 'utf8');
     expect(src).not.toContain('所有工具调用自动执行');
     expect(src).toMatch(/full: '[^']*执行范围放开[^']*'/);
-    // 必须同时说清"执行范围放开"与"高风险仍需确认"
+    // 必须同时说清"执行范围放开"与"安全硬规则 / 策略拒绝仍生效"
     const fullLine = src.split(/\r?\n/).find((l) => l.trim().startsWith("full: '"));
     expect(fullLine).toBeDefined();
     expect(fullLine).toContain('不再逐次确认');
-    expect(fullLine).toMatch(/仍需确认|直接拒绝/);
+    expect(fullLine).toMatch(/安全硬规则|策略拒绝/);
   });
 
   it('allow-session 按钮文案去掉"10 分钟"（TTL 只属于 temporary）', () => {

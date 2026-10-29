@@ -13,14 +13,15 @@
  *   temporary（always 类的高级二次放行）。
  */
 
-export type ConsentDecision = 'allow-once' | 'deny' | 'allow-session';
+export type ConsentDecision = 'allow-once' | 'deny' | 'allow-session' | 'allow-conversation';
 
-export const CONSENT_DECISIONS = ['allow-once', 'deny', 'allow-session'] as const;
+export const CONSENT_DECISIONS = ['allow-once', 'deny', 'allow-session', 'allow-conversation'] as const;
 
 export const CONSENT_BUTTON_LABELS: Readonly<Record<ConsentDecision, string>> = {
   'allow-once': '允许一次',
   deny: '拒绝',
   'allow-session': '本次会话允许此操作',
+  'allow-conversation': '本次对话始终允许',
 };
 
 /**
@@ -51,6 +52,12 @@ export interface ConsentMeta {
   hideAllowSession?: boolean;
   /** R-4：本次审批允许的 grantScope 列表（host 生产端透传）。 */
   allowedGrantScopes?: readonly string[];
+  /**
+   * 动态按钮开关——true 时渲染「本次对话始终允许」按钮。
+   * 仅在宿主确认存在对话身份（conversationId）且档位允许时下发；
+   * 无对话身份时按钮不出现，仍然逐次询问。
+   */
+  allowConversation?: boolean;
 }
 
 /** 审批类别：这类工具调用是否需要人工确认。 */

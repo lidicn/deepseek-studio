@@ -186,7 +186,15 @@ export class McpController {
 
   /** 重新加载配置 */
   reload(configPath?: string): void {
-    this.servers = loadMcpServers(configPath);
+    const next = loadMcpServers(configPath);
+    // 配置变化或服务器被删除时，旧连接必须断开；
+    // 否则 connect() 会命中 initialized 的旧连接，继续用旧 URL/旧 token。
+    for (const serverId of [...this.connections.keys()]) {
+      if (!next[serverId] || JSON.stringify(next[serverId]) !== JSON.stringify(this.servers[serverId])) {
+        this.disconnectServer(serverId);
+      }
+    }
+    this.servers = next;
   }
 
   /** 获取所有已配置的 MCP 服务器 ID */
@@ -559,14 +567,27 @@ export class McpController {
 
   /** 断开所有 MCP 服务器连接 */
   disconnectAll(): void {
-    for (const conn of this.connections.values()) {
-      try {
-        conn.process?.kill();
-      } catch {
-        // 忽略
-      }
+    for (const serverId of [...this.connections.keys()]) {
+      this.disconnectServer(serverId);
     }
-    this.connections.clear();
+  }
+
+  /** 断开单台服务器连接，并让在途请求快速失败 */
+  disconnectServer(serverId: string): void {
+    const conn = this.connections.get(serverId);
+    if (!conn) return;
+    try {
+      conn.process?.kill();
+    } catch {
+      // 忽略
+    }
+    conn.closed = true;
+    for (const [, pending] of conn.pendingRequests) {
+      if (pending.timer) clearTimeout(pending.timer);
+      pending.reject(new Error(`MCP server ${serverId}: disconnected`));
+    }
+    conn.pendingRequests.clear();
+    this.connections.delete(serverId);
   }
 
   /**
@@ -752,6 +773,8 @@ export class McpController {
       file.servers[serverId] = config;
       fs.writeFileSync(configPath, JSON.stringify(file, null, 2), 'utf8');
       this.servers = file.servers;
+      // 覆盖已有服务器时，旧连接（尤其 HTTP 的旧 headers）不能复用。
+      this.disconnectServer(serverId);
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };

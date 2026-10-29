@@ -111,3 +111,58 @@ describe('v1.9：MCP 配置读回（HTTP 存了再开不能变 stdio）', () => 
     }
   });
 });
+
+describe('MCP 热重载：配置变化必须断开旧连接', () => {
+  type ConnBag = { connections: Map<string, unknown> };
+
+  it('URL 变化 → reload 清除旧连接（否则继续用旧 token/URL）', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-reload-'));
+    const cfgPath = path.join(dir, 'mcp-servers.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      servers: { AutoForge: { command: '', transport: 'http', url: 'http://old/mcp' } },
+    }), 'utf8');
+    const ctl = new McpController(cfgPath);
+    (ctl as unknown as ConnBag).connections.set('AutoForge', fakeConn({ id: 'AutoForge' }));
+
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      servers: { AutoForge: { command: '', transport: 'http', url: 'http://new/mcp' } },
+    }), 'utf8');
+    ctl.reload(cfgPath);
+
+    expect((ctl as unknown as ConnBag).connections.has('AutoForge')).toBe(false);
+  });
+
+  it('配置未变 → reload 保留已初始化连接（避免无谓重连）', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-reload-same-'));
+    const cfgPath = path.join(dir, 'mcp-servers.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      servers: { Keep: { command: '', transport: 'http', url: 'http://same/mcp' } },
+    }), 'utf8');
+    const ctl = new McpController(cfgPath);
+    const conn = fakeConn({ id: 'Keep' });
+    (ctl as unknown as ConnBag).connections.set('Keep', conn);
+
+    ctl.reload(cfgPath);
+
+    expect((ctl as unknown as ConnBag).connections.get('Keep')).toBe(conn);
+  });
+
+  it('saveServer 覆盖同一 id → 旧连接被清除', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-save-'));
+    const cfgPath = path.join(dir, 'mcp-servers.json');
+    const prev = process.env.STUDIO_CONFIG_DIR;
+    process.env.STUDIO_CONFIG_DIR = dir;
+    try {
+      const ctl = new McpController(cfgPath);
+      (ctl as unknown as ConnBag).connections.set('AutoForge', fakeConn({ id: 'AutoForge' }));
+
+      const r = ctl.saveServer('AutoForge', { command: '', transport: 'http', url: 'http://new/mcp' });
+
+      expect(r.ok).toBe(true);
+      expect((ctl as unknown as ConnBag).connections.has('AutoForge')).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.STUDIO_CONFIG_DIR;
+      else process.env.STUDIO_CONFIG_DIR = prev;
+    }
+  });
+});

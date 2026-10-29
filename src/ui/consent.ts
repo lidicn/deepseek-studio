@@ -41,8 +41,19 @@ interface ConsentPresentation {
 
 const STYLE_ID = 'ds-consent-style';
 
-// 同一时刻只保留一个审批模态；新请求到达时，旧请求必须 fail-closed 结算。
-let activeConsentDismiss: (() => void) | undefined;
+// 审批请求串行展示：同一时刻只保留一个模态，后来者排队，不能把正在等待的请求判拒绝。
+interface QueuedConsent {
+  readonly request: ConsentRequest;
+  readonly onDecision: ConsentCallback;
+  settled: boolean;
+  shown: boolean;
+  overlay?: HTMLElement;
+  timer?: ReturnType<typeof setTimeout>;
+  removeListeners?: () => void;
+}
+
+let activeConsent: QueuedConsent | undefined;
+const pendingConsents: QueuedConsent[] = [];
 
 const CSS = `
 .ds-consent-overlay {
@@ -97,6 +108,7 @@ const CSS = `
 .ds-consent-deny { background: rgba(212,56,13,0.12); color: #D4380D; }
 .ds-consent-allow-once { background: #4D6BFE; color: #fff; }
 .ds-consent-allow-session { background: rgba(43,164,113,0.14); color: #2BA471; }
+.ds-consent-allow-conversation { background: rgba(77,107,254,0.12); color: #4D6BFE; }
 @keyframes ds-consent-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes ds-consent-pop { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 `;
@@ -109,16 +121,79 @@ function ensureStyles(): void {
   globalThis.document.head.appendChild(style);
 }
 
-/** 渲染模态并注册决策回调；返回 handle（decide/dispose）。fail-closed 由超时与遮罩/Esc 兜底。 */
+/** 把审批请求排入队列；只有队首会渲染。fail-closed 由超时与遮罩/Esc 兜底。 */
 export function showConsent(request: ConsentRequest, onDecision: ConsentCallback): ConsentHandle {
+  const entry: QueuedConsent = { request, onDecision, settled: false, shown: false };
+  pendingConsents.push(entry);
+  presentNextConsent();
+
+  return {
+    decide(decision) {
+      settleConsent(entry, decision);
+    },
+    dispose() {
+      if (entry.settled) return;
+      entry.settled = true;
+      if (!entry.shown) {
+        const index = pendingConsents.indexOf(entry);
+        if (index >= 0) pendingConsents.splice(index, 1);
+        return;
+      }
+      cleanupConsent(entry);
+      if (activeConsent === entry) {
+        activeConsent = undefined;
+        presentNextConsent();
+      }
+    },
+  };
+}
+
+function presentNextConsent(): void {
+  if (activeConsent) return;
+  const next = pendingConsents.shift();
+  if (!next || next.settled) {
+    if (next) presentNextConsent();
+    return;
+  }
+  activeConsent = next;
+  next.shown = true;
+  renderConsent(next);
+}
+
+function settleConsent(entry: QueuedConsent, decision: ConsentDecision): void {
+  if (entry.settled) return;
+  entry.settled = true;
+  if (entry.shown) cleanupConsent(entry);
+  else {
+    const index = pendingConsents.indexOf(entry);
+    if (index >= 0) pendingConsents.splice(index, 1);
+  }
+  if (activeConsent === entry) {
+    activeConsent = undefined;
+  }
+  try {
+    entry.onDecision(decision);
+  } catch (error) {
+    // 单个回调异常不能卡死队列；错误仍留给控制台便于定位。
+    console.error('[consent] decision callback failed', error);
+  } finally {
+    presentNextConsent();
+  }
+}
+
+function cleanupConsent(entry: QueuedConsent): void {
+  if (entry.timer) clearTimeout(entry.timer);
+  entry.timer = undefined;
+  entry.overlay?.remove();
+  entry.overlay = undefined;
+  entry.removeListeners?.();
+  entry.removeListeners = undefined;
+}
+
+function renderConsent(entry: QueuedConsent): void {
+  const { request } = entry;
   const doc = globalThis.document;
   const timeoutMs = request.timeoutMs ?? 60_000;
-  let settled = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-
-  // 并发 consent 不能叠加成多个模态。旧请求按 fail-closed 立即拒绝并完成回调，
-  // 否则底层调用会一直等到超时，且用户可能只看到最后一个请求。
-  activeConsentDismiss?.();
 
   ensureStyles();
   const overlay = doc.createElement('div');
@@ -174,6 +249,13 @@ export function showConsent(request: ConsentRequest, onDecision: ConsentCallback
   } else {
     actions.append(btnAllowOnce, btnDeny, btnAllowSession);
   }
+  // 「本次对话始终允许」：宿主确认本次调用带对话身份时下发。
+  // 点了它 → 本对话内后续调用不再逐次询问；换对话 / 换工作区 / 换档位自动失效。
+  let btnAllowConversation: HTMLButtonElement | undefined;
+  if (meta?.allowConversation === true) {
+    btnAllowConversation = mkButton('本次对话始终允许', 'ds-consent-allow-conversation');
+    actions.append(btnAllowConversation);
+  }
   // T4：hideAllowSession=true 时追加说明——该工具属 always 类，会话级 grant 会绕过逐次确认。
   const sessionHint = doc.createElement('div');
   sessionHint.className = 'ds-consent-session-hint';
@@ -190,19 +272,10 @@ export function showConsent(request: ConsentRequest, onDecision: ConsentCallback
     ...(meta?.hideAllowSession ? [sessionHint] : []));
   overlay.append(card);
   doc.body.append(overlay);
+  entry.overlay = overlay;
 
   function settle(decision: ConsentDecision): void {
-    if (settled) return;
-    settled = true;
-    if (timer) clearTimeout(timer);
-    overlay.remove();
-    doc.removeEventListener('keydown', onKey);
-    if (activeConsentDismiss === dismissCurrent) activeConsentDismiss = undefined;
-    onDecision(decision);
-  }
-
-  function dismissCurrent(): void {
-    settle('deny');
+    settleConsent(entry, decision);
   }
 
   function onKey(e: KeyboardEvent): void {
@@ -213,25 +286,26 @@ export function showConsent(request: ConsentRequest, onDecision: ConsentCallback
   btnAllowOnce.addEventListener('click', () => settle('allow-once'));
   btnDeny.addEventListener('click', () => settle('deny'));
   btnAllowSession.addEventListener('click', () => settle('allow-session'));
+  btnAllowConversation?.addEventListener('click', () => settle('allow-conversation'));
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) settle('deny');
   });
   doc.addEventListener('keydown', onKey);
+  entry.removeListeners = () => doc.removeEventListener('keydown', onKey);
 
-  activeConsentDismiss = dismissCurrent;
-  timer = setTimeout(() => settle('deny'), timeoutMs);
+  // 超时从真正展示时开始计时；排队时间不消耗用户决策时间。
+  entry.timer = setTimeout(() => settle('deny'), timeoutMs);
+}
 
-  return {
-    decide: settle,
-    dispose() {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      overlay.remove();
-      doc.removeEventListener('keydown', onKey);
-      if (activeConsentDismiss === dismissCurrent) activeConsentDismiss = undefined;
-    },
-  };
+/** 仅供测试：清空队列与活动模态，不触发回调。 */
+export function __resetConsentQueueForTests(): void {
+  if (activeConsent) {
+    activeConsent.settled = true;
+    cleanupConsent(activeConsent);
+  }
+  for (const entry of pendingConsents) entry.settled = true;
+  pendingConsents.length = 0;
+  activeConsent = undefined;
 }
 
 /**
