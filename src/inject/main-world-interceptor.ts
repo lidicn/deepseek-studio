@@ -168,13 +168,18 @@ function kickMemorySelect(taskText: string): void {
 
 /** 有界等待预取结果；超时/失败保持上一帧 currentMemories，不阻塞请求。 */
 async function awaitMemorySelectBudget(limitMs = 120): Promise<void> {
-  if (!memorySelectState.pending) return;
+  const pendingRef = memorySelectState.pending;
+  if (!pendingRef) return;
   const budget = new Promise<null>((resolve) => setTimeout(() => resolve(null), limitMs));
-  const rows = await Promise.race([memorySelectState.pending, budget]);
+  const rows = await Promise.race([pendingRef, budget]);
   if (rows) {
     currentMemories = rows;
   }
-  memorySelectState.pending = null;
+  // 只清理本次消费的那一个 pending；超时返回时若已有更新的预取，
+  // 不能把后续 XHR 还需要消费的 pending 一并抹掉。
+  if (memorySelectState.pending === pendingRef) {
+    memorySelectState.pending = null;
+  }
 }
 
 // v1.0：MCP 工具列表缓存（启动时从宿主拉取，用于动态注入提示词，让 agent 知道有哪些 MCP 工具可用）
@@ -877,7 +882,8 @@ function captureChatRequest(body: string, loopState: LoopState, diag: Intercepto
     } else {
       // 兜底：有些请求体不带 session id，但 URL 已是 /chat/s/<id>。
       // 缺会话身份会导致「本次对话始终允许」按钮不出现、只能逐次审批。
-      const fromPath = normalizeSessionKeyFromPathname(location.pathname);
+      const pathname = typeof location?.pathname === 'string' ? location.pathname : '';
+      const fromPath = normalizeSessionKeyFromPathname(pathname);
       if (fromPath) loopState.newChatSessionId = fromPath;
     }
     let userText = typeof parsed.prompt === 'string' ? parsed.prompt : '';
@@ -915,9 +921,15 @@ function captureChatRequest(body: string, loopState: LoopState, diag: Intercepto
       traceTurnId = `t${Date.now().toString(36)}`;
       idleContinueCount = 0;
       interceptorTrace.record({ t: 'turn.start', turnId: traceTurnId });
-      loopState.onNewUserMessage?.();
       // M10-8B（B1）：feature flag 开时，按任务文本预取记忆候选。
       kickMemorySelect(userText);
+      // UI 回合初始化失败不能阻断记忆预取和后续工具链。尤其是测试替身或
+      // 页面早期 UI 未就绪时，异常若冒泡到外层 catch 会静默吞掉整段逻辑。
+      try {
+        loopState.onNewUserMessage?.();
+      } catch (err) {
+        diag(`onNewUserMessage failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   } catch {
     // 非 JSON 请求体不参与会话识别。

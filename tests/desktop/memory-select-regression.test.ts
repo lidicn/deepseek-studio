@@ -74,6 +74,7 @@ function makeChatUI() {
   return {
     sessionKey: 'test:session',
     activateSession: vi.fn(async () => undefined),
+    beginTurnSession: vi.fn(),
     addUserMessage: vi.fn(),
     startAssistantMessage: vi.fn(),
     appendToAssistantMessage: vi.fn(),

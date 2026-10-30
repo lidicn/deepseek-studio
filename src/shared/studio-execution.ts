@@ -188,7 +188,12 @@ export function studioExecutionStorageKey(key: string): string {
  * DeepSeek 会话页 URL 已包含稳定会话 id。优先用它恢复已捕获的执行记录，
  * 其余路径继续使用规范化 route 键兜底。
  */
-export function normalizeSessionKeyFromPathname(pathname: string): string {
+export function normalizeSessionKeyFromPathname(pathname: string | undefined | null): string {
+  // 文档早期（srcdoc/about:blank/注入过早）取不到 pathname 是常态，
+  // 不能抛错：调用方外层通常有 catch，会把整段会话识别静默吞掉。
+  if (typeof pathname !== 'string' || !pathname) {
+    return normalizeRouteSessionKey('/');
+  }
   const match = pathname.match(/^\/(?:a\/)?chat\/s\/([^/?#]+)/);
   if (match?.[1]) {
     return normalizeChatSessionKey(match[1]);
