@@ -26,6 +26,7 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import type { Memory, MemoryStoreV2 } from './bot/types';
 import { MEMORY_INJECT_LIMIT, formatMemoryLine, selectMemoryInjectRows } from '../inject/untrusted-memory';
+import { loadAuditCrypto, AUDIT_SEAL_PREFIX, type AuditCrypto } from './audit-crypto';
 
 export type MemoryType = 'user' | 'project';
 
@@ -396,30 +397,46 @@ function rowToCandidate(r: Record<string, unknown>): MemoryCandidate {
 
 /** 解析审计日志里的行快照 JSON。 */
 function parseSnapshot(v: unknown): MemoryRow | null {
+  if (v && typeof v === 'object') return parseSnapshotObject(v as Record<string, unknown>);
   if (typeof v !== 'string' || !v) return null;
   try {
     const parsed = JSON.parse(v);
     if (!parsed || typeof parsed !== 'object') return null;
-    const o = parsed as Record<string, unknown>;
-    return {
-      id: String(o.id),
-      type: (o.type === 'project' ? 'project' : 'user') as MemoryType,
-      name: String(o.name ?? ''),
-      content: String(o.content ?? ''),
-      tags: Array.isArray(o.tags) ? o.tags.filter((t): t is string => typeof t === 'string') : [],
-      personaTags: Array.isArray(o.personaTags)
-        ? o.personaTags.filter((t): t is string => typeof t === 'string')
-        : [],
-      pinned: Boolean(o.pinned),
-      source: typeof o.source === 'string' ? o.source : undefined,
-      confidence: typeof o.confidence === 'number' ? o.confidence : undefined,
-      invalidAt: typeof o.invalidAt === 'number' ? o.invalidAt : null,
-      createdAt: Number(o.createdAt ?? 0),
-      updatedAt: Number(o.updatedAt ?? 0),
-    } as MemoryRow;
+    return parseSnapshotObject(parsed as Record<string, unknown>);
   } catch {
     return null;
   }
+}
+
+/** 把已解析的快照对象规整成 MemoryRow。 */
+function parseSnapshotObject(o: Record<string, unknown>): MemoryRow {
+  return {
+    id: String(o.id),
+    type: (o.type === 'project' ? 'project' : 'user') as MemoryType,
+    name: String(o.name ?? ''),
+    content: String(o.content ?? ''),
+    tags: Array.isArray(o.tags) ? o.tags.filter((t): t is string => typeof t === 'string') : [],
+    personaTags: Array.isArray(o.personaTags)
+      ? o.personaTags.filter((t): t is string => typeof t === 'string')
+      : [],
+    pinned: Boolean(o.pinned),
+    source: typeof o.source === 'string' ? o.source : undefined,
+    confidence: typeof o.confidence === 'number' ? o.confidence : undefined,
+    invalidAt: typeof o.invalidAt === 'number' ? o.invalidAt : null,
+    createdAt: Number(o.createdAt ?? 0),
+    updatedAt: Number(o.updatedAt ?? 0),
+  } as MemoryRow;
+}
+
+/** sha256 指纹（forget 模式下唯一留下的痕迹）。 */
+function sha256Hex(s: string): string {
+  return crypto.createHash('sha256').update(s, 'utf8').digest('hex');
+}
+
+/** 由快照算出指纹（不泄漏正文）。 */
+function snapshotFingerprint(v: unknown): string {
+  const row = parseSnapshot(v);
+  return row ? `sha256:${sha256Hex(`${row.id}\u0000${row.content}`)}` : 'sha256:unknown';
 }
 
 /** 解析候选 JSON（审计日志 note 里带）。 */
@@ -463,6 +480,8 @@ export class MemoryStore implements MemoryStoreV2 {
   private readonly storePath: string;
   /** M10-11：所属 workspace id（default = 不隔离，沿用历史单库）。 */
   private readonly workspaceId: string;
+  /** M10-10 收口：审计快照加密器（密钥在 db 同目录）。 */
+  private audit!: AuditCrypto;
 
   constructor(storePath?: string, opts?: { workspaceId?: string }) {
     this.workspaceId = opts?.workspaceId ?? DEFAULT_WORKSPACE_ID;
@@ -485,6 +504,7 @@ export class MemoryStore implements MemoryStoreV2 {
       const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
       const dir = path.dirname(this.storePath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      this.audit = loadAuditCrypto(this.storePath);
       const db = new DatabaseSync(this.storePath);
       // 「彻底删除」必须真的抹掉内容：secure_delete 让 SQLite 在释放页前清零，
       // 否则 DELETE 只是把页挂到 freelist，原文仍能从 .db 文件里恢复出来。
@@ -503,12 +523,14 @@ export class MemoryStore implements MemoryStoreV2 {
       // M10-7.2：先加列/回填，再导入旧 JSON（导入 INSERT 已自带 dedupe_hash）。
       // 顺序反了会在「旧 DB 空表缺列 + memories.json」时导入失败漏数据。
       this.migrateDedupeHash(db);
+      this.migrateAuditEncryption(db);
       this.migrateLegacyJson(db);
     } catch (e) {
       console.warn(
         '[memory] sqlite unavailable, degraded to in-memory store:',
         e instanceof Error ? e.message : String(e),
       );
+      this.audit = loadAuditCrypto(this.storePath);
       this.db = null;
       this.fallback = [];
       this.loadLegacyJsonIntoFallback();
@@ -546,6 +568,58 @@ export class MemoryStore implements MemoryStoreV2 {
       db.exec('CREATE INDEX IF NOT EXISTS idx_memories_dedupe ON memories(type, dedupe_hash)');
     } catch (e) {
       console.warn('[memory] dedupe_hash migration failed:', e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /**
+   * M10-10 收口：把历史**未加密**的审计快照就地改写成密文。
+   *
+   * 用户此前的库里存着明文快照（这正是"彻底删除后还能翻出来"的根因）。
+   * 逐行加密后必须 VACUUM，否则旧页仍留在 freelist 里被搜出来。
+   */
+  private migrateAuditEncryption(db: import('node:sqlite').DatabaseSync): void {
+    try {
+      const rows = db
+        .prepare('SELECT id, before_json, after_json, note FROM memory_log')
+        .all() as Array<{
+        id: number;
+        before_json: string | null;
+        after_json: string | null;
+        note: string | null;
+      }>;
+      if (!rows.length) return;
+      const upd = db.prepare('UPDATE memory_log SET before_json = ?, after_json = ?, note = ? WHERE id = ?');
+      let changed = 0;
+      for (const row of rows) {
+        const seal = (v: string | null, asJson: boolean): string | null => {
+          if (typeof v !== 'string' || !v) return v;
+          if (v.startsWith(AUDIT_SEAL_PREFIX)) return v;
+          let value: unknown = v;
+          if (asJson) {
+            try {
+              value = JSON.parse(v);
+            } catch {
+              return v;
+            }
+          }
+          return this.audit.seal(value);
+        };
+        const before = seal(row.before_json, true);
+        const after = seal(row.after_json, true);
+        const note = seal(row.note, false);
+        if (before === row.before_json && after === row.after_json && note === row.note) continue;
+        upd.run(before, after, note, row.id);
+        changed += 1;
+      }
+      if (changed > 0) {
+        db.exec('VACUUM');
+        console.warn(`[memory] audit snapshots re-sealed: ${changed} row(s)`);
+      }
+    } catch (e) {
+      console.warn(
+        '[memory] audit encryption migration failed (non-fatal):',
+        e instanceof Error ? e.message : String(e),
+      );
     }
   }
 
@@ -881,8 +955,13 @@ export class MemoryStore implements MemoryStoreV2 {
       : { ok: true, id };
   }
 
-  /** 硬删除一条记忆（返回是否命中）。注意：治理场景请用 invalidate()。 */
-  remove(id: string): boolean {
+  /**
+   * 硬删除一条记忆（返回是否命中）。注意：治理场景请用 invalidate()。
+   *
+   * opts.forget = true 时，审计日志里的正文快照也一并抹除（只留 hash 指纹），
+   * 用于「彻底删除 = 真的再也翻不出来」的场景；默认 false，保留可回滚的加密快照。
+   */
+  remove(id: string, opts?: { forget?: boolean }): boolean {
     if (this.db) {
       // 必须取整行：审计快照（M10-10）要靠这一行的 name/content 等字段，
       // 只 SELECT rowid 会让 purge 的 before 快照变成空行，rollback 写回后内容全丢。
@@ -893,17 +972,60 @@ export class MemoryStore implements MemoryStoreV2 {
       const before = rowToMemory(row);
       this.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(row.rid as number);
       this.db.prepare('DELETE FROM memories WHERE id = ?').run(id);
-      // M10-10：彻底删除留痕，rollback 可据快照还原该行。
-      this.recordLog('purge', id, before, null);
+      if (opts?.forget) {
+        // 连审计快照一起抹掉：只留指纹，不可回滚。
+        this.forgetAudit(id);
+        this.recordLog('purge', id, null, null, null, `forgotten ${snapshotFingerprint(before)}`);
+      } else {
+        // M10-10：彻底删除留痕，rollback 可据快照还原该行。
+        this.recordLog('purge', id, before, null);
+      }
       return true;
     }
     const idx = this.fallback!.findIndex((m) => m.id === id);
     if (idx < 0) return false;
     const before = snapshotOf(this.fallback![idx]);
     this.fallback!.splice(idx, 1);
-    // M10-10：彻底删除留痕（降级路径）。
-    this.recordLog('purge', id, before, null);
+    if (opts?.forget) {
+      this.fallbackLog = this.fallbackLog.map((e) =>
+        e.memoryId === id
+          ? { ...e, before: null, after: null, note: `forgotten sha256:${sha256Hex(before.content)}` }
+          : e,
+      );
+      this.recordLog('purge', id, null, null, null, `forgotten sha256:${sha256Hex(before.content)}`);
+    } else {
+      // M10-10：彻底删除留痕（降级路径）。
+      this.recordLog('purge', id, before, null);
+    }
     return true;
+  }
+
+  /**
+   * 抹除某条记忆在审计日志里的全部正文快照，只留 hash 指纹。
+   * 用于 forget 模式：删除后既不可回滚，也搜不到原文。
+   */
+  private forgetAudit(memoryId: string): void {
+    if (!this.db) return;
+    try {
+      const rows = this.db
+        .prepare('SELECT id, before_json, after_json FROM memory_log WHERE memory_id = ?')
+        .all(memoryId) as Array<{
+        id: number;
+        before_json: string | null;
+        after_json: string | null;
+      }>;
+      const upd = this.db.prepare('UPDATE memory_log SET before_json = NULL, after_json = NULL, note = ? WHERE id = ?');
+      for (const row of rows) {
+        // snapshotFingerprint 自带 "sha256:" 前缀，这里不要再补一个。
+        const fingerprint = `forgotten ${snapshotFingerprint(this.audit.open(row.before_json))}`;
+        upd.run(fingerprint, row.id);
+      }
+    } catch (e) {
+      console.warn(
+        '[memory] forget audit failed (non-fatal):',
+        e instanceof Error ? e.message : String(e),
+      );
+    }
   }
 
   /**
@@ -1184,16 +1306,24 @@ export class MemoryStore implements MemoryStoreV2 {
         string,
         unknown
       >[];
-      entries = rows.map((r) => ({
-        id: Number(r.id),
-        ts: Number(r.ts ?? 0),
-        op: String(r.op ?? ''),
-        memoryId: typeof r.memory_id === 'string' ? r.memory_id : null,
-        actor: typeof r.actor === 'string' ? r.actor : null,
-        before: parseSnapshot(r.before_json),
-        after: parseSnapshot(r.after_json),
-        note: typeof r.note === 'string' ? r.note : null,
-      }));
+      entries = rows.map((r) => {
+        const noteValue = this.audit.open(r.note);
+        return {
+          id: Number(r.id),
+          ts: Number(r.ts ?? 0),
+          op: String(r.op ?? ''),
+          memoryId: typeof r.memory_id === 'string' ? r.memory_id : null,
+          actor: typeof r.actor === 'string' ? r.actor : null,
+          before: parseSnapshot(this.audit.open(r.before_json)),
+          after: parseSnapshot(this.audit.open(r.after_json)),
+          note:
+            noteValue === null || noteValue === undefined
+              ? null
+              : typeof noteValue === 'string'
+                ? noteValue
+                : JSON.stringify(noteValue),
+        };
+      });
     } else {
       entries = [...this.fallbackLog]
         .filter((e) => (opts?.memoryId ? e.memoryId === opts.memoryId : true))
@@ -1293,8 +1423,10 @@ export class MemoryStore implements MemoryStoreV2 {
     note?: string | null,
   ): void {
     const ts = Date.now();
-    const beforeJson = before ? JSON.stringify(before) : null;
-    const afterJson = after ? JSON.stringify(after) : null;
+    // 快照含正文明文 —— 一律加密落盘（.db 文件里只剩密文）。
+    const beforeJson = before ? this.audit.seal(before) : null;
+    const afterJson = after ? this.audit.seal(after) : null;
+    const sealedNote = note ? this.audit.seal(note) : null;
     if (this.db) {
       try {
         this.db
@@ -1302,7 +1434,7 @@ export class MemoryStore implements MemoryStoreV2 {
             `INSERT INTO memory_log (ts, op, memory_id, actor, before_json, after_json, note)
              VALUES (?, ?, ?, ?, ?, ?, ?)`,
           )
-          .run(ts, op, memoryId, actor ?? null, beforeJson, afterJson, note ?? null);
+          .run(ts, op, memoryId, actor ?? null, beforeJson, afterJson, sealedNote);
       } catch (e) {
         console.warn(
           '[memory] audit log write failed (non-fatal):',

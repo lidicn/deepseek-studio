@@ -15,6 +15,7 @@
 import { renderToHtml } from './vis/render';
 import { buildVisCss } from './vis/theme';
 import { blockElementsFor, findVisDocuments } from './vis/text-detect';
+import DOMPurify from 'dompurify';
 
 export interface VisCardOptions {
   /** 单次扫描最多渲染几张卡（防抖/防刷屏）。 */
@@ -63,7 +64,8 @@ function createHost(doc: Document, html: string, theme: 'light' | 'dark'): HTMLE
   const body = doc.createElement('div');
   body.className = 'ds-studio-vis-root';
   // html 来自 renderToHtml()，其中所有可变文本/属性均已 escapeHtml（见 vis/escape.ts）。
-  body.innerHTML = html;
+  // 仍再过一道 DOMPurify：模型输出的属性串一旦漏转义，这里是最后一道闸门（QA-1 阻断项）。
+  body.innerHTML = DOMPurify.sanitize(html);
   root.appendChild(body);
   bindImageFallback(root);
   return host;

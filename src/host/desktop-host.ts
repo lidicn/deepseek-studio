@@ -718,6 +718,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
             const id = String(params.id ?? '');
             if (!id) return { ok: false, error: 'id is required' };
+            // forget = true：连审计日志里的正文快照一起抹掉（真正不可翻出、不可回滚）。
+            const forget = params.forget === true || params.forget === 'true';
             // 只删"已归档"的记忆：归档与彻底删除是两态，后者是归档态的终局出口。
             // 未归档的记忆必须先归档（失效），否则这里会变成"绕过归档直接真删"的暗门。
             const store = getMemoryStore();
@@ -727,7 +729,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
               const exists = (await store.list()).some((m) => m.id === id);
               return { ok: false, error: exists ? 'memory-not-archived' : 'memory-not-found' };
             }
-            const removed = getMemoryStore().remove(id);
+            const removed = getMemoryStore().remove(id, { forget });
             if (!removed) return { ok: false, error: 'memory-not-found' };
             // 物理压缩：secure_delete 只保证新删除的页清零，VACUUM 把旧空闲页从文件里移除。
             getMemoryStore().compact();

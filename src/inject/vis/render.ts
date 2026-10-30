@@ -7,6 +7,7 @@ import { registerCoreVisComponents } from './components';
 import { escapeHtml, isRecord } from './escape';
 import { passthroughImageResolver, type ImageResolver } from './image-resolver';
 import { readableTitle, renderVisNode, type VisRenderContext } from './registry';
+import DOMPurify from 'dompurify';
 import {
   A2UI_VERSION,
   createOutcome,
@@ -88,7 +89,7 @@ export function renderToFragment(
   if (html === '') {
     return { fragment, outcome };
   }
-  host.innerHTML = html;
+  host.innerHTML = DOMPurify.sanitize(html);
   while (host.firstChild) fragment.appendChild(host.firstChild);
   return { fragment, outcome };
 }

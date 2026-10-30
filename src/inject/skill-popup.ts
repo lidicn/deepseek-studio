@@ -51,12 +51,36 @@ export function initSkillPopup(initialSkills: readonly SkillPopupItem[], nextCop
   if (isVisible()) buildItems();
   if (initialized) return;
   initialized = true;
-  injectStyles();
-  watchTextarea();
+  // 注入脚本在 document_start 执行，此时 document.head / document.body 可能还不存在。
+  // 之前直接 appendChild 会抛 TypeError，被上层 catch 吃掉，导致整个浮层静默不安装。
+  mountWhenDomReady();
   document.addEventListener('keydown', onKeydown, true);
   document.addEventListener('input', onInputCapture, true);
   document.addEventListener('mousedown', onClickOutside);
   installDiag();
+}
+
+/** 尽早挂样式与输入框观察；DOM 未就绪时等到 DOMContentLoaded 再补一次。 */
+function mountWhenDomReady(): void {
+  const mount = (): void => {
+    injectStyles();
+    watchTextarea();
+  };
+  if (document.body) {
+    mount();
+    return;
+  }
+  document.addEventListener(
+    'DOMContentLoaded',
+    () => {
+      try {
+        mount();
+      } catch {
+        // 诊断不能影响主流程；挂载失败下次输入仍会尝试定位输入框
+      }
+    },
+    { once: true },
+  );
 }
 
 /** 技能清单更新（面板里新增技能后）时热更新，不必重装。 */

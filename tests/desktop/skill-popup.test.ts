@@ -53,6 +53,26 @@ describe('skill-popup（移植自 dpp 的对话框输入 / 技能提示）', () 
     expect(items[0].classList.contains('ds-studio-active')).toBe(true);
   });
 
+  it('document_start 时 body 尚未创建，DOMContentLoaded 后完成挂载', () => {
+    document.body.remove();
+    expect(document.body).toBeNull();
+
+    initSkillPopup(SKILLS);
+    expect(document.getElementById('ds-studio-skill-popup-css')).toBeNull();
+    expect((window as unknown as Record<string, unknown>).__studioSkillPopup).toBeTypeOf('function');
+
+    const body = document.createElement('body');
+    body.innerHTML = '<textarea id="chat-input"></textarea>';
+    document.documentElement.appendChild(body);
+    document.dispatchEvent(new Event('DOMContentLoaded'));
+
+    expect(document.getElementById('ds-studio-skill-popup-css')).not.toBeNull();
+    const ta = document.querySelector('textarea#chat-input') as HTMLTextAreaElement;
+    type(ta, '/');
+    expect(popup()!.style.display).toBe('block');
+    expect(popup()!.querySelectorAll('.ds-studio-skill-item')).toHaveLength(3);
+  });
+
   it('按前缀过滤', () => {
     const ta = mountComposer();
     initSkillPopup(SKILLS);

@@ -283,7 +283,8 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   {
     id: 'memory.purge',
     title: '彻底删除记忆',
-    description: '从记忆库彻底删除一条记录（不可恢复，需用户同意）。',
+    description:
+      '从记忆库彻底删除一条记录（不可恢复，需用户同意）。可选 forget=true 连审计日志快照一并抹除。',
     risk: 'privileged',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
