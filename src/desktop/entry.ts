@@ -21,6 +21,7 @@ import { createChatSendCapability } from '../capabilities/chat-send';
 import { createHostClient, type HostClient } from './host-client';
 import { installMainWorldInterceptor, setInterceptorTraceSink, configureMemorySelect } from '../inject/main-world-interceptor';
 import { installTraceReportHandle } from '../inject/main-world-interceptor';
+import { initSkillPopup, setSkillPopupSkills, type SkillPopupItem } from '../inject/skill-popup';
 import { globalEvents, globalState } from '../ui/studio-ui-core';
 import { createChatRoom, type ChatRoomRuntimeConfig } from '../ui/studio-chat-room';
 import { installStudioSettingsEntry } from '../ui/studio-settings-entry';
@@ -259,6 +260,49 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
         });
       } catch (e) {
         options.reportError?.('failed to mount studio settings entry', e);
+      }
+
+      // 移植 A（dpp skill-popup）：在 DeepSeek 对话框输入 `/` 弹出技能提示浮层。
+      // 先装监听（空清单 → 打 `/` 也会给"无可用技能"反馈，不至于静默无反应），
+      // 再异步向宿主要 skill.list；宿主 WS 可能尚未连上，按秒级重试，连上后热更新。
+      try {
+        initSkillPopup([]);
+        const loadSkillList = async (): Promise<boolean> => {
+          const r = await host.sendToolCall({
+            callId: `skill_list_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            invocationName: 'skill.list',
+            params: {},
+          });
+          const data = r.data as { skills?: unknown[] } | undefined;
+          if (!r.ok || !data || !Array.isArray(data.skills)) return false;
+          const items: SkillPopupItem[] = data.skills
+            .filter((s): s is { name: string; description?: string } =>
+              !!s && typeof (s as { name?: unknown }).name === 'string')
+            .map((s) => ({
+              name: s.name,
+              description: typeof s.description === 'string' ? s.description : '',
+            }));
+          setSkillPopupSkills(items);
+          return true;
+        };
+        void (async () => {
+          for (let attempt = 0; attempt < 10; attempt++) {
+            try {
+              if (await loadSkillList()) return;
+            } catch (e) {
+              options.reportError?.('skill.list failed', e);
+            }
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+          }
+          options.reportError?.('skill.list failed after retries; skill popup stays empty');
+        })();
+        // 宿主连上时再拉一次（首次重试可能都撞在未连接窗口上）。
+        const off = host.onConnected(() => {
+          void loadSkillList();
+        });
+        globalThis.addEventListener?.('pagehide', off, { once: true });
+      } catch (e) {
+        options.reportError?.('failed to install skill popup', e);
       }
     }
     try {

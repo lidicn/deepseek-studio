@@ -29,6 +29,117 @@ import { MEMORY_INJECT_LIMIT, formatMemoryLine, selectMemoryInjectRows } from '.
 
 export type MemoryType = 'user' | 'project';
 
+/**
+ * M10-9：记忆候选池条目。
+ *
+ * 候选池是「想记住但还没确认要不要记住」的中间态：候选**不进正式注入**
+ * （不进 list() / search() / formatForPrompt），只有被 promote 成正式记忆后才可见。
+ */
+export interface MemoryCandidate {
+  id: string;
+  type: MemoryType;
+  name: string;
+  content: string;
+  tags: string[];
+  /** 提名理由/触发场景（可选）。 */
+  reason: string | null;
+  source: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/**
+ * M10-10：审计日志条目（回答「何时由谁改过」）。
+ *
+ * before / after 存的是变更前后的完整行快照（JSON），rollback 直接按快照回写。
+ */
+export interface MemoryLogEntry {
+  id: number;
+  ts: number;
+  /** 操作码：save / archive / restore / purge / candidate-promote / candidate-reject / rollback。 */
+  op: string;
+  memoryId: string | null;
+  actor: string | null;
+  before: MemoryRow | null;
+  after: MemoryRow | null;
+  note: string | null;
+}
+
+/** M10-11：默认 workspace id（不隔离，沿用历史单库）。 */
+export const DEFAULT_WORKSPACE_ID = 'default';
+
+/**
+ * M10-11：把 workspace 标识映射成一个安全的文件名后缀。
+ * 非法字符全部替换为 '_'，再拼 8 位 hash 尾巴，避免不同 id 清洗后撞名。
+ */
+export function workspaceSlug(workspaceId: string): string {
+  const clean = workspaceId.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 32) || 'ws';
+  const hash = crypto.createHash('sha256').update(workspaceId).digest('hex').slice(0, 8);
+  return `${clean}-${hash}`;
+}
+
+/**
+ * M10-11：按 workspace 派生独立库文件路径。
+ * 默认 workspace 返回原路径（历史库零迁移）；其余 workspace 落 `memories.ws-<slug>.db`。
+ */
+export function workspaceStorePath(basePath: string, workspaceId: string): string {
+  if (!workspaceId || workspaceId === DEFAULT_WORKSPACE_ID) return basePath;
+  const dir = path.dirname(basePath);
+  const ext = path.extname(basePath);
+  const stem = path.basename(basePath, ext);
+  return path.join(dir, `${stem}.ws-${workspaceSlug(workspaceId)}${ext}`);
+}
+
+/** workspace 索引文件名（slug → 原始 id 映射，slug 带 hash 无法反推）。 */
+function workspaceIndexPath(basePath: string): string {
+  const dir = path.dirname(basePath);
+  const ext = path.extname(basePath);
+  const stem = path.basename(basePath, ext);
+  return path.join(dir, `${stem}.workspaces.json`);
+}
+
+/** 把 workspace id 登记进索引文件（幂等）。失败不阻塞建库。 */
+function registerWorkspace(basePath: string, workspaceId: string): void {
+  try {
+    const idxPath = workspaceIndexPath(basePath);
+    let map: Record<string, string> = {};
+    if (fs.existsSync(idxPath)) {
+      const parsed = JSON.parse(fs.readFileSync(idxPath, 'utf8'));
+      if (parsed && typeof parsed === 'object') map = parsed as Record<string, string>;
+    }
+    map[workspaceSlug(workspaceId)] = workspaceId;
+    fs.writeFileSync(idxPath, JSON.stringify(map, null, 2), 'utf8');
+  } catch (e) {
+    console.warn(
+      '[memory] workspace index update failed:',
+      e instanceof Error ? e.message : String(e),
+    );
+  }
+}
+
+/**
+ * M10-11：列出已登记的 workspace id（含 default）。
+ * 隔离靠「每 workspace 一个独立 .db 文件」实现，默认 workspace 仍用历史单库。
+ */
+export function listWorkspaceIds(basePath?: string): string[] {
+  const base = basePath ?? defaultStorePath();
+  const ids = new Set<string>([DEFAULT_WORKSPACE_ID]);
+  try {
+    const idxPath = workspaceIndexPath(base);
+    if (fs.existsSync(idxPath)) {
+      const parsed = JSON.parse(fs.readFileSync(idxPath, 'utf8'));
+      if (parsed && typeof parsed === 'object') {
+        for (const v of Object.values(parsed as Record<string, string>)) {
+          if (typeof v === 'string' && v) ids.add(v);
+        }
+      }
+    }
+  } catch {
+    /* 索引损坏时只返回 default */
+  }
+  return [...ids];
+}
+
 /** v2 记忆行 = 契约 Memory + v1 遗留字段（pinned/时间戳，内部使用）。 */
 export interface MemoryRow extends Memory {
   readonly pinned: boolean;
@@ -199,6 +310,32 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
   name, content, tags,
   tokenize = 'trigram'
 );
+-- M10-9：候选池。独立表 —— 候选不参与正式注入，也不进 memories 主表。
+CREATE TABLE IF NOT EXISTS memory_candidates (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  name TEXT NOT NULL,
+  content TEXT NOT NULL,
+  tags_json TEXT NOT NULL DEFAULT '[]',
+  reason TEXT,
+  source TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_candidates_created ON memory_candidates(created_at);
+-- M10-10：审计日志。before_json / after_json 为完整行快照，rollback 据此回写。
+CREATE TABLE IF NOT EXISTS memory_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  op TEXT NOT NULL,
+  memory_id TEXT,
+  actor TEXT,
+  before_json TEXT,
+  after_json TEXT,
+  note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_memory_log_ts ON memory_log(ts);
+CREATE INDEX IF NOT EXISTS idx_memory_log_memory ON memory_log(memory_id);
 `;
 
 /** DB 行 → MemoryRow。 */
@@ -233,6 +370,82 @@ function parseJsonArray(v: unknown): string[] {
   }
 }
 
+/** M10-10：行快照（用于审计日志的 before/after）。深拷贝，避免后续修改污染快照。 */
+function snapshotOf(row: MemoryRow): MemoryRow {
+  return {
+    ...row,
+    tags: [...row.tags],
+    personaTags: [...row.personaTags],
+  } as MemoryRow;
+}
+
+/** DB 行 → MemoryCandidate。 */
+function rowToCandidate(r: Record<string, unknown>): MemoryCandidate {
+  return {
+    id: String(r.id),
+    type: (r.type === 'project' ? 'project' : 'user') as MemoryType,
+    name: String(r.name ?? ''),
+    content: String(r.content ?? ''),
+    tags: parseJsonArray(r.tags_json),
+    reason: typeof r.reason === 'string' ? r.reason : null,
+    source: typeof r.source === 'string' ? r.source : null,
+    createdAt: Number(r.created_at ?? 0),
+    updatedAt: Number(r.updated_at ?? 0),
+  };
+}
+
+/** 解析审计日志里的行快照 JSON。 */
+function parseSnapshot(v: unknown): MemoryRow | null {
+  if (typeof v !== 'string' || !v) return null;
+  try {
+    const parsed = JSON.parse(v);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const o = parsed as Record<string, unknown>;
+    return {
+      id: String(o.id),
+      type: (o.type === 'project' ? 'project' : 'user') as MemoryType,
+      name: String(o.name ?? ''),
+      content: String(o.content ?? ''),
+      tags: Array.isArray(o.tags) ? o.tags.filter((t): t is string => typeof t === 'string') : [],
+      personaTags: Array.isArray(o.personaTags)
+        ? o.personaTags.filter((t): t is string => typeof t === 'string')
+        : [],
+      pinned: Boolean(o.pinned),
+      source: typeof o.source === 'string' ? o.source : undefined,
+      confidence: typeof o.confidence === 'number' ? o.confidence : undefined,
+      invalidAt: typeof o.invalidAt === 'number' ? o.invalidAt : null,
+      createdAt: Number(o.createdAt ?? 0),
+      updatedAt: Number(o.updatedAt ?? 0),
+    } as MemoryRow;
+  } catch {
+    return null;
+  }
+}
+
+/** 解析候选 JSON（审计日志 note 里带）。 */
+function parseCandidate(v: unknown): MemoryCandidate | null {
+  if (typeof v !== 'string' || !v) return null;
+  try {
+    const parsed = JSON.parse(v);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const o = parsed as Record<string, unknown>;
+    if (typeof o.id !== 'string') return null;
+    return {
+      id: o.id,
+      type: (o.type === 'project' ? 'project' : 'user') as MemoryType,
+      name: String(o.name ?? ''),
+      content: String(o.content ?? ''),
+      tags: Array.isArray(o.tags) ? o.tags.filter((t): t is string => typeof t === 'string') : [],
+      reason: typeof o.reason === 'string' ? o.reason : null,
+      source: typeof o.source === 'string' ? o.source : null,
+      createdAt: Number(o.createdAt ?? 0),
+      updatedAt: Number(o.updatedAt ?? 0),
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 记忆存储管理器 v2（SQLite + FTS5，实现 MemoryStoreV2 契约）。
  *
@@ -243,10 +456,21 @@ export class MemoryStore implements MemoryStoreV2 {
   private db: import('node:sqlite').DatabaseSync | null = null;
   /** node:sqlite 不可用 / 打开失败时的内存降级存储。 */
   private fallback: MemoryRow[] | null = null;
+  /** M10-9：降级路径下的候选池。 */
+  private fallbackCandidates: MemoryCandidate[] = [];
+  /** M10-10：降级路径下的审计日志。 */
+  private fallbackLog: MemoryLogEntry[] = [];
   private readonly storePath: string;
+  /** M10-11：所属 workspace id（default = 不隔离，沿用历史单库）。 */
+  private readonly workspaceId: string;
 
-  constructor(storePath?: string) {
-    this.storePath = storePath ?? defaultStorePath();
+  constructor(storePath?: string, opts?: { workspaceId?: string }) {
+    this.workspaceId = opts?.workspaceId ?? DEFAULT_WORKSPACE_ID;
+    const basePath = storePath ?? defaultStorePath();
+    this.storePath = workspaceStorePath(basePath, this.workspaceId);
+    if (this.workspaceId !== DEFAULT_WORKSPACE_ID) {
+      registerWorkspace(basePath, this.workspaceId);
+    }
     this.open();
   }
 
@@ -458,6 +682,7 @@ export class MemoryStore implements MemoryStoreV2 {
         const budget = this.prepareEviction(deltaValid);
         if (!budget.ok) return { ok: false, error: 'memory-capacity', reason: 'resurrect-archive-at-capacity-all-pinned' };
         const rid = existing.rid as number;
+        const beforeRow = rowToMemory(existing);
         this.db.prepare(
           `UPDATE memories SET content = ?, tags_json = ?, pinned = ?, source = ?, confidence = ?,
            persona_tags_json = ?, content_hash = ?, dedupe_hash = ?, invalid_at = NULL, updated_at = ? WHERE id = ?`,
@@ -466,6 +691,8 @@ export class MemoryStore implements MemoryStoreV2 {
           merged.source ?? null, merged.confidence ?? null, JSON.stringify(merged.personaTags), hash, dedupe, now,
           String(existing.id),
         );
+        // M10-10：审计埋点（记录变更前后完整行快照，可按日志回滚）。
+        this.recordLog('save', String(existing.id), beforeRow, this.snapshotById(String(existing.id)));
         // C1-F2：FTS 同步 + 容量淘汰（附属失败收集为 warnings，不阻断主保存）。
         const ftsWarn = this.syncFts(rid, params.name, params.content, merged.tags);
         const evictWarn = this.applyEviction(budget.evict, now);
@@ -514,6 +741,7 @@ export class MemoryStore implements MemoryStoreV2 {
         const budget = this.prepareEviction(deltaValid);
         if (!budget.ok) return { ok: false, error: 'memory-capacity', reason: 'resurrect-cross-at-capacity-all-pinned' };
         const rid = cross.rid as number;
+        const crossBefore = rowToMemory(cross);
         this.db.prepare(
           `UPDATE memories SET content = ?, tags_json = ?, pinned = ?, source = ?, confidence = ?,
            persona_tags_json = ?, content_hash = ?, dedupe_hash = ?, invalid_at = NULL, updated_at = ? WHERE id = ?`,
@@ -522,6 +750,8 @@ export class MemoryStore implements MemoryStoreV2 {
           merged.source ?? null, merged.confidence ?? null, JSON.stringify(merged.personaTags),
           crossHash, dedupe, now, crossId,
         );
+        // M10-10：审计埋点（跨名去重命中同样留痕）。
+        this.recordLog('save', crossId, crossBefore, this.snapshotById(crossId));
         // C1-F2：name 保留原值，FTS 仍按原 name 索引；同步降级处理防 rowid 冲突。
         const ftsWarn = this.syncFts(rid, crossName, params.content, merged.tags);
         const evictWarn = this.applyEviction(budget.evict, now);
@@ -544,6 +774,8 @@ export class MemoryStore implements MemoryStoreV2 {
         params.source ?? null, params.confidence ?? null, JSON.stringify(personaTags), hash, dedupe, null, now, now,
       );
       const rid = (this.db.prepare('SELECT last_insert_rowid() AS rid').get()?.rid as number) ?? 0;
+      // M10-10：新建（before = null）与更新区分开，rollback 据此决定「删行」还是「回写」。
+      this.recordLog('save', id, null, this.snapshotById(id));
       // C1-F2：FTS 同步 + 容量淘汰（附属失败收集为 warnings，不阻断主保存）。
       const ftsWarn = this.syncFts(rid, params.name, params.content, tags);
       const evictWarn = this.applyEviction(budget.evict, now);
@@ -580,11 +812,14 @@ export class MemoryStore implements MemoryStoreV2 {
       const budget = this.prepareEviction(deltaValid);
       if (!budget.ok) return { ok: false, error: 'memory-capacity', reason: 'resurrect-archive-at-capacity-all-pinned' };
       const idx = this.fallback!.indexOf(target);
+      const fbBefore = snapshotOf(target);
       this.fallback![idx] = {
         ...target, content: params.content, tags: merged.tags, pinned: merged.pinned,
         source: merged.source, confidence: merged.confidence, personaTags: merged.personaTags,
         invalidAt: null, updatedAt: now,
       } as MemoryRow;
+      // M10-10：降级路径同样留痕。
+      this.recordLog('save', target.id, fbBefore, this.snapshotById(target.id));
       const evictWarn = this.applyEviction(budget.evict, now);
       return evictWarn.length > 0
         ? { ok: true, id: target.id, partial: true, warnings: evictWarn }
@@ -615,11 +850,14 @@ export class MemoryStore implements MemoryStoreV2 {
       const budget = this.prepareEviction(deltaValid);
       if (!budget.ok) return { ok: false, error: 'memory-capacity', reason: 'resurrect-cross-at-capacity-all-pinned' };
       const idx = this.fallback!.indexOf(crossTarget);
+      const fbCrossBefore = snapshotOf(crossTarget);
       this.fallback![idx] = {
         ...crossTarget, content: params.content, tags: merged.tags, pinned: merged.pinned,
         source: merged.source, confidence: merged.confidence, personaTags: merged.personaTags,
         invalidAt: null, updatedAt: now,
       } as MemoryRow;
+      // M10-10：降级路径同样留痕。
+      this.recordLog('save', crossTarget.id, fbCrossBefore, this.snapshotById(crossTarget.id));
       const evictWarn = this.applyEviction(budget.evict, now);
       return evictWarn.length > 0
         ? { ok: true, id: crossTarget.id, partial: true, warnings: evictWarn }
@@ -635,6 +873,8 @@ export class MemoryStore implements MemoryStoreV2 {
       pinned: params.pinned ?? false, source: params.source, confidence: params.confidence,
       personaTags, invalidAt: null, createdAt: now, updatedAt: now,
     } as MemoryRow);
+    // M10-10：降级路径新建留痕。
+    this.recordLog('save', id, null, this.snapshotById(id));
     const evictWarn = this.applyEviction(budget.evict, now);
     return evictWarn.length > 0
       ? { ok: true, id, partial: true, warnings: evictWarn }
@@ -644,17 +884,25 @@ export class MemoryStore implements MemoryStoreV2 {
   /** 硬删除一条记忆（返回是否命中）。注意：治理场景请用 invalidate()。 */
   remove(id: string): boolean {
     if (this.db) {
-      const row = this.db.prepare('SELECT rowid AS rid FROM memories WHERE id = ?').get(id) as
+      // 必须取整行：审计快照（M10-10）要靠这一行的 name/content 等字段，
+      // 只 SELECT rowid 会让 purge 的 before 快照变成空行，rollback 写回后内容全丢。
+      const row = this.db.prepare('SELECT *, rowid AS rid FROM memories WHERE id = ?').get(id) as
         | Record<string, unknown>
         | undefined;
       if (!row) return false;
+      const before = rowToMemory(row);
       this.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(row.rid as number);
       this.db.prepare('DELETE FROM memories WHERE id = ?').run(id);
+      // M10-10：彻底删除留痕，rollback 可据快照还原该行。
+      this.recordLog('purge', id, before, null);
       return true;
     }
     const idx = this.fallback!.findIndex((m) => m.id === id);
     if (idx < 0) return false;
+    const before = snapshotOf(this.fallback![idx]);
     this.fallback!.splice(idx, 1);
+    // M10-10：彻底删除留痕（降级路径）。
+    this.recordLog('purge', id, before, null);
     return true;
   }
 
@@ -744,14 +992,20 @@ export class MemoryStore implements MemoryStoreV2 {
   async invalidate(id: string): Promise<void> {
     const now = Date.now();
     if (this.db) {
+      const before = this.snapshotById(id);
       this.db.prepare('UPDATE memories SET invalid_at = ?, updated_at = ? WHERE id = ? AND invalid_at IS NULL')
         .run(now, now, id);
+      // M10-10：归档留痕（软归档，rollback 可复活）。
+      if (before) this.recordLog('archive', id, before, this.snapshotById(id));
       return;
     }
     const m = this.fallback!.find((x) => x.id === id);
     if (m && m.invalidAt === null) {
+      const before = snapshotOf(m);
       (m as { invalidAt: number | null }).invalidAt = now;
       (m as { updatedAt: number }).updatedAt = now;
+      // M10-10：归档留痕（降级路径）。
+      this.recordLog('archive', id, before, this.snapshotById(id));
     }
   }
 
@@ -759,14 +1013,20 @@ export class MemoryStore implements MemoryStoreV2 {
   async restore(id: string): Promise<void> {
     const now = Date.now();
     if (this.db) {
+      const before = this.snapshotById(id);
       this.db.prepare('UPDATE memories SET invalid_at = NULL, updated_at = ? WHERE id = ? AND invalid_at IS NOT NULL')
         .run(now, id);
+      // M10-10：复活留痕。
+      if (before) this.recordLog('restore', id, before, this.snapshotById(id));
       return;
     }
     const m = this.fallback!.find((x) => x.id === id);
     if (m && m.invalidAt !== null) {
+      const before = snapshotOf(m);
       (m as { invalidAt: number | null }).invalidAt = null;
       (m as { updatedAt: number }).updatedAt = now;
+      // M10-10：复活留痕（降级路径）。
+      this.recordLog('restore', id, before, this.snapshotById(id));
     }
   }
 
@@ -804,6 +1064,181 @@ export class MemoryStore implements MemoryStoreV2 {
     return rows.sort((a, b) => (b.invalidAt ?? 0) - (a.invalidAt ?? 0));
   }
 
+  // ===== M10-9 候选池 =====
+
+  /**
+   * 提名一条候选记忆。候选**不进正式注入**（不进 list/search/formatForPrompt），
+   * 只有 promote 之后才成为正式记忆。
+   */
+  addCandidate(input: {
+    type: string;
+    name: string;
+    content: string;
+    tags?: string[];
+    reason?: string;
+    source?: string;
+  }): { ok: boolean; id?: string; error?: string } {
+    if (!isValidMemoryType(input.type)) {
+      return { ok: false, error: `invalid memory type: ${input.type} (expected 'user' or 'project')` };
+    }
+    if (!input.name || !input.content) {
+      return { ok: false, error: 'name and content are required' };
+    }
+    const now = Date.now();
+    const candidate: MemoryCandidate = {
+      id: genId().replace(/^mem-/, 'cand-'),
+      type: input.type,
+      name: input.name,
+      content: input.content,
+      tags: input.tags ?? [],
+      reason: input.reason ?? null,
+      source: input.source ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    if (this.db) {
+      this.db.prepare(
+        `INSERT INTO memory_candidates
+         (id, type, name, content, tags_json, reason, source, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        candidate.id, candidate.type, candidate.name, candidate.content,
+        JSON.stringify(candidate.tags), candidate.reason, candidate.source, now, now,
+      );
+    } else {
+      this.fallbackCandidates.push(candidate);
+    }
+    return { ok: true, id: candidate.id };
+  }
+
+  /** 列出全部候选（按创建时间倒序）。 */
+  async listCandidates(): Promise<MemoryCandidate[]> {
+    if (this.db) {
+      const rows = this.db
+        .prepare('SELECT * FROM memory_candidates ORDER BY created_at DESC')
+        .all() as Record<string, unknown>[];
+      return rows.map(rowToCandidate);
+    }
+    return [...this.fallbackCandidates]
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map((c) => ({ ...c, tags: [...c.tags] }));
+  }
+
+  /** 按 id 取候选。 */
+  async getCandidate(id: string): Promise<MemoryCandidate | undefined> {
+    if (this.db) {
+      const r = this.db.prepare('SELECT * FROM memory_candidates WHERE id = ?').get(id) as
+        | Record<string, unknown>
+        | undefined;
+      return r ? rowToCandidate(r) : undefined;
+    }
+    const c = this.fallbackCandidates.find((x) => x.id === id);
+    return c ? { ...c, tags: [...c.tags] } : undefined;
+  }
+
+  /** 候选转正：写入正式记忆 + 删除候选 + 留痕。 */
+  async promoteCandidate(id: string): Promise<{ ok: boolean; id?: string; error?: string }> {
+    const candidate = await this.getCandidate(id);
+    if (!candidate) return { ok: false, error: 'candidate not found' };
+    const res = this.save({
+      type: candidate.type,
+      name: candidate.name,
+      content: candidate.content,
+      tags: candidate.tags,
+      source: candidate.source ?? 'candidate',
+    });
+    if (!res.ok || !res.id) return { ok: false, error: res.error ?? 'save failed' };
+    this.deleteCandidateRow(id);
+    this.recordLog('candidate-promote', res.id, null, this.snapshotById(res.id), null, JSON.stringify(candidate));
+    return { ok: true, id: res.id };
+  }
+
+  /** 候选否决：删除候选 + 留痕（候选内容留在日志里，可回滚）。 */
+  async rejectCandidate(id: string, note?: string): Promise<boolean> {
+    const candidate = await this.getCandidate(id);
+    if (!candidate) return false;
+    this.deleteCandidateRow(id);
+    this.recordLog(
+      'candidate-reject',
+      id,
+      null,
+      null,
+      null,
+      JSON.stringify({ ...candidate, __note: note ?? null }),
+    );
+    return true;
+  }
+
+  // ===== M10-10 审计日志 =====
+
+  /** 列出审计日志（倒序）。 */
+  async listLog(opts?: { limit?: number; memoryId?: string }): Promise<MemoryLogEntry[]> {
+    const limit = Math.max(1, opts?.limit ?? 50);
+    let entries: MemoryLogEntry[];
+    if (this.db) {
+      const rows = (opts?.memoryId
+        ? this.db
+            .prepare('SELECT * FROM memory_log WHERE memory_id = ? ORDER BY id DESC LIMIT ?')
+            .all(opts.memoryId, limit)
+        : this.db.prepare('SELECT * FROM memory_log ORDER BY id DESC LIMIT ?').all(limit)) as Record<
+        string,
+        unknown
+      >[];
+      entries = rows.map((r) => ({
+        id: Number(r.id),
+        ts: Number(r.ts ?? 0),
+        op: String(r.op ?? ''),
+        memoryId: typeof r.memory_id === 'string' ? r.memory_id : null,
+        actor: typeof r.actor === 'string' ? r.actor : null,
+        before: parseSnapshot(r.before_json),
+        after: parseSnapshot(r.after_json),
+        note: typeof r.note === 'string' ? r.note : null,
+      }));
+    } else {
+      entries = [...this.fallbackLog]
+        .filter((e) => (opts?.memoryId ? e.memoryId === opts.memoryId : true))
+        .sort((a, b) => b.id - a.id)
+        .slice(0, limit);
+    }
+    return entries;
+  }
+
+  /**
+   * 回滚某条日志。
+   * 语义按「操作前快照」回写：
+   * - before 存在 → 用 before 覆盖当前行（purge / archive / restore / update 都归此类）；
+   * - before 为 null（新建） → 删除该行；
+   * - candidate-promote / candidate-reject → 撤销候选流转（删记忆 / 还原候选）。
+   */
+  async rollback(logId: number): Promise<{ ok: boolean; error?: string }> {
+    const all = await this.listLog({ limit: 100000 });
+    const entry = all.find((e) => e.id === logId);
+    if (!entry) return { ok: false, error: 'log entry not found' };
+
+    if (entry.op === 'candidate-promote') {
+      if (entry.memoryId) this.deleteMemoryRow(entry.memoryId);
+      const c = parseCandidate(entry.note);
+      if (c) this.insertCandidateRow(c);
+      this.recordLog('rollback', entry.memoryId, entry.after, entry.before, null, `rollback ${entry.id}`);
+      return { ok: true };
+    }
+    if (entry.op === 'candidate-reject') {
+      const c = parseCandidate(entry.note);
+      if (c) this.insertCandidateRow(c);
+      this.recordLog('rollback', entry.memoryId, null, null, null, `rollback ${entry.id}`);
+      return { ok: true };
+    }
+
+    if (entry.before) {
+      this.writeSnapshotRow(entry.before);
+    } else if (entry.memoryId) {
+      this.deleteMemoryRow(entry.memoryId);
+    }
+    this.recordLog('rollback', entry.memoryId, entry.after, entry.before, null, `rollback ${entry.id}`);
+    return { ok: true };
+  }
+
+
   /** 存储统计（诊断）。 */
   stats(): { backend: 'sqlite' | 'memory'; total: number; valid: number; invalidated: number; storePath: string } {
     const all = this.allRows();
@@ -814,6 +1249,11 @@ export class MemoryStore implements MemoryStoreV2 {
       invalidated: all.filter((m) => m.invalidAt !== null).length,
       storePath: this.storePath,
     };
+  }
+
+  /** M10-11：当前 store 所属 workspace id。 */
+  getWorkspaceId(): string {
+    return this.workspaceId;
   }
 
   /** 关闭库连接（测试 / 宿主退出）。 */
@@ -830,6 +1270,134 @@ export class MemoryStore implements MemoryStoreV2 {
   }
 
   // ===== 内部 helpers =====
+
+  /** 取任意行（含已失效）快照 —— 审计与回滚都用它。 */
+  private snapshotById(id: string): MemoryRow | null {
+    if (this.db) {
+      const r = this.db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as
+        | Record<string, unknown>
+        | undefined;
+      return r ? rowToMemory(r) : null;
+    }
+    const m = this.fallback?.find((x) => x.id === id);
+    return m ? snapshotOf(m) : null;
+  }
+
+  /** M10-10：写一条审计日志。before/after 存完整行快照 JSON。 */
+  private recordLog(
+    op: string,
+    memoryId: string | null,
+    before: MemoryRow | null,
+    after: MemoryRow | null,
+    actor?: string | null,
+    note?: string | null,
+  ): void {
+    const ts = Date.now();
+    const beforeJson = before ? JSON.stringify(before) : null;
+    const afterJson = after ? JSON.stringify(after) : null;
+    if (this.db) {
+      try {
+        this.db
+          .prepare(
+            `INSERT INTO memory_log (ts, op, memory_id, actor, before_json, after_json, note)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(ts, op, memoryId, actor ?? null, beforeJson, afterJson, note ?? null);
+      } catch (e) {
+        console.warn(
+          '[memory] audit log write failed (non-fatal):',
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+      return;
+    }
+    this.fallbackLog.push({
+      id: this.fallbackLog.length + 1,
+      ts,
+      op,
+      memoryId,
+      actor: actor ?? null,
+      before: before ? snapshotOf(before) : null,
+      after: after ? snapshotOf(after) : null,
+      note: note ?? null,
+    });
+  }
+
+  /** 删除候选行（DB / 降级两路）。 */
+  private deleteCandidateRow(id: string): void {
+    if (this.db) {
+      this.db.prepare('DELETE FROM memory_candidates WHERE id = ?').run(id);
+      return;
+    }
+    const idx = this.fallbackCandidates.findIndex((c) => c.id === id);
+    if (idx >= 0) this.fallbackCandidates.splice(idx, 1);
+  }
+
+  /** 写回候选行（回滚用；已存在则覆盖）。 */
+  private insertCandidateRow(c: MemoryCandidate): void {
+    if (this.db) {
+      this.db.prepare(
+        `INSERT OR REPLACE INTO memory_candidates
+         (id, type, name, content, tags_json, reason, source, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        c.id, c.type, c.name, c.content, JSON.stringify(c.tags),
+        c.reason, c.source, c.createdAt, c.updatedAt,
+      );
+      return;
+    }
+    const idx = this.fallbackCandidates.findIndex((x) => x.id === c.id);
+    if (idx >= 0) this.fallbackCandidates[idx] = { ...c, tags: [...c.tags] };
+    else this.fallbackCandidates.push({ ...c, tags: [...c.tags] });
+  }
+
+  /** 删除正式记忆行（含 FTS 影子表），DB / 降级两路。 */
+  private deleteMemoryRow(id: string): void {
+    if (this.db) {
+      const row = this.db.prepare('SELECT rowid AS rid FROM memories WHERE id = ?').get(id) as
+        | Record<string, unknown>
+        | undefined;
+      if (row) this.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(row.rid as number);
+      this.db.prepare('DELETE FROM memories WHERE id = ?').run(id);
+      return;
+    }
+    if (!this.fallback) return;
+    const idx = this.fallback.findIndex((m) => m.id === id);
+    if (idx >= 0) this.fallback.splice(idx, 1);
+  }
+
+  /** 用快照覆盖写入一行（回滚用），DB / 降级两路。 */
+  private writeSnapshotRow(row: MemoryRow): void {
+    if (this.db) {
+      const hash = contentHash(row.type, row.name, row.content);
+      const dedupe = dedupeHash(row.type, row.content);
+      this.db.prepare(
+        `INSERT OR REPLACE INTO memories
+         (id, type, name, content, tags_json, pinned, source, confidence, persona_tags_json,
+          content_hash, dedupe_hash, invalid_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        row.id, row.type, row.name, row.content, JSON.stringify(row.tags), row.pinned ? 1 : 0,
+        row.source ?? null, row.confidence ?? null, JSON.stringify(row.personaTags),
+        hash, dedupe, row.invalidAt ?? null, row.createdAt, row.updatedAt,
+      );
+      const rid = (this.db.prepare('SELECT rowid FROM memories WHERE id = ?').get(row.id)?.rowid as number) ?? 0;
+      try {
+        this.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(rid);
+        this.db
+          .prepare('INSERT INTO memories_fts(rowid, name, content, tags) VALUES (?, ?, ?, ?)')
+          .run(rid, row.name, row.content, row.tags.join(' '));
+      } catch {
+        /* FTS 失败不影响主记录 */
+      }
+      return;
+    }
+    if (!this.fallback) return;
+    const idx = this.fallback.findIndex((m) => m.id === row.id);
+    const snap = snapshotOf(row);
+    if (idx >= 0) this.fallback[idx] = snap;
+    else this.fallback.push(snap);
+  }
 
   private allRows(): MemoryRow[] {
     if (this.db) {
@@ -928,9 +1496,32 @@ export class MemoryStore implements MemoryStoreV2 {
 /** 全局单例（v1 兼容）。 */
 let globalStore: MemoryStore | null = null;
 
-export function getMemoryStore(): MemoryStore {
-  if (!globalStore) {
-    globalStore = new MemoryStore();
+/**
+ * M10-11：按 workspace 隔离的存储缓存。
+ * default workspace 仍走历史单库（globalStore），其余 workspace 各自一个 .db 文件。
+ */
+const workspaceStores = new Map<string, MemoryStore>();
+
+export function getMemoryStore(workspaceId?: string): MemoryStore {
+  const ws = workspaceId ?? DEFAULT_WORKSPACE_ID;
+  if (ws === DEFAULT_WORKSPACE_ID) {
+    if (!globalStore) {
+      globalStore = new MemoryStore();
+    }
+    return globalStore;
   }
-  return globalStore;
+  let store = workspaceStores.get(ws);
+  if (!store) {
+    store = new MemoryStore(undefined, { workspaceId: ws });
+    workspaceStores.set(ws, store);
+  }
+  return store;
+}
+
+/** 关闭并清空 workspace 存储缓存（测试用）。 */
+export function closeMemoryStores(): void {
+  globalStore?.close();
+  globalStore = null;
+  for (const s of workspaceStores.values()) s.close();
+  workspaceStores.clear();
 }

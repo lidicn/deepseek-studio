@@ -11,6 +11,7 @@
  */
 
 import { renderMarkdown } from '../inject/markdown';
+import { applyVisCards } from '../inject/vis-card';
 import {
   createRedesignedToolCard,
   updateRedesignedToolCardByCallId,
@@ -758,6 +759,7 @@ export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioCha
     if (currentRawText) {
       streaming.innerHTML = renderMarkdown(currentRawText) + '<span class="ds-sc-cursor"></span>';
       enhanceCodeBlocks(streaming);
+      applyVisCards(streaming);
     }
     scrollToBottom();
   }
@@ -803,6 +805,7 @@ export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioCha
       // security-ok: html 来自上方 renderMarkdown() 的 DOMPurify 输出
       markdownDiv.innerHTML = html;
       enhanceCodeBlocks(markdownDiv);
+      applyVisCards(markdownDiv);
       streaming.replaceWith(markdownDiv);
     } else if (streaming) {
       // QD-R8-01：没有任何可见正文时（模型只输出思考 / 回复被上游吞掉），
@@ -1027,6 +1030,7 @@ export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioCha
         // security-ok: renderMarkdown 已通过 DOMPurify 清洗。
         markdown.innerHTML = renderMarkdown(event.text + (event.truncationMarker ?? ''));
         enhanceCodeBlocks(markdown);
+        applyVisCards(markdown);
         msg.appendChild(markdown);
         messageList.appendChild(msg);
         lastToolAssistant = null;

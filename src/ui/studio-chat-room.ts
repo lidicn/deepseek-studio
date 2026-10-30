@@ -17,6 +17,7 @@
 
 import { el, icon, Icons, injectStyles, createShadowContainer } from './studio-ui-core';
 import { renderMarkdown } from '../inject/markdown';
+import { applyVisCards } from '../inject/vis-card';
 
 /** Rust 注入的聊天室配置（main 窗口 initialization_script 前置）。 */
 export interface ChatRoomRuntimeConfig {
@@ -408,6 +409,7 @@ export function createChatRoom(config: ChatRoomRuntimeConfig): ChatRoomHandle {
     const body = el('div', { className: 'studio-chat-msg-body' });
     body.innerHTML = renderMarkdown(text);
     enhanceCodeBlocks(body);
+    applyVisCards(body);
     msg.appendChild(body);
     messages.appendChild(msg);
     scrollToBottom();
@@ -421,6 +423,7 @@ export function createChatRoom(config: ChatRoomRuntimeConfig): ChatRoomHandle {
     const body = el('div', { className: 'studio-chat-msg-body' });
     body.innerHTML = renderMarkdown(text);
     enhanceCodeBlocks(body);
+    applyVisCards(body);
     msg.appendChild(body);
     messages.appendChild(msg);
     scrollToBottom();
