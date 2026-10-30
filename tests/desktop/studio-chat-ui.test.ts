@@ -624,4 +624,54 @@ describe('Studio 主视图', () => {
     expect(ui.container.textContent).toContain('B 会话内容');
     expect(ui.container.textContent).not.toContain('A 会话迟到内容');
   });
+
+  it('beginTurnSession 后立即 addUserMessage，迟到的水合不得覆盖首条消息', async () => {
+    addMeasuredComposer();
+    let resolveSlow: ((session: StudioExecutionSession | null) => void) | null = null;
+    const hydrateHistory = vi.fn((_key: string) => new Promise<StudioExecutionSession | null>((resolve) => {
+      resolveSlow = resolve;
+    }));
+    ui = mount({ initialSessionKey: 'chat:new', hydrateHistory });
+    // 会话激活已经走到异步水合并挂在 await hydrateHistory 上。
+    const inflight = ui.activateSession('chat:new');
+    // 新回合到达：同步切会话、立即追加首条用户消息（beginTurnSession 内无 await）。
+    ui.beginTurnSession('chat:new');
+    ui.addUserMessage('新会话的首条用户消息');
+    expect(ui.container.textContent).toContain('新会话的首条用户消息');
+
+    // 那次迟到的水合带着别的历史内容返回。
+    (resolveSlow as ((session: StudioExecutionSession | null) => void) | null)?.(historySession('chat:new', [
+      { type: 'user-message', text: '迟到的历史提问' },
+      { type: 'final-answer', text: '迟到的历史回答' },
+    ]));
+    await inflight;
+
+    // generation 已被 beginTurnSession 递增作废，首条消息必须还在，且不被历史覆盖。
+    expect(ui.container.textContent).toContain('新会话的首条用户消息');
+    expect(ui.container.textContent).not.toContain('迟到的历史提问');
+    expect(ui.container.querySelectorAll('.ds-sc-msg-user')).toHaveLength(1);
+  });
+
+  it('beginTurnSession 携带 migrateFrom 时原位改名并保留已显示内容', async () => {
+    addMeasuredComposer();
+    const kv = memoryKv();
+    const persistence = createStudioExecutionStore({
+      kv,
+      onConnected: () => () => {},
+      isConnected: () => true,
+    });
+    const renameSpy = vi.spyOn(persistence, 'renameSession');
+    ui = mount({ persistence, initialSessionKey: 'route:/new' });
+    ui.addUserMessage('迁移前的首条用户消息');
+    expect(ui.container.textContent).toContain('迁移前的首条用户消息');
+
+    ui.beginTurnSession('chat:stable', { migrateFrom: 'route:/new' });
+
+    expect(ui.sessionKey).toBe('chat:stable');
+    // 迁移不清屏，已经渲染的消息必须保留。
+    expect(ui.container.textContent).toContain('迁移前的首条用户消息');
+    await vi.waitFor(() => {
+      expect(renameSpy).toHaveBeenCalledWith('route:/new', 'chat:stable');
+    });
+  });
 });

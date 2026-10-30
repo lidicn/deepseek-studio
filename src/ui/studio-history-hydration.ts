@@ -15,6 +15,7 @@ import {
 
 const CHAT_KEY_PREFIX = 'chat:';
 const CHAT_ID_PATTERN = /^[A-Za-z0-9_-]{8,}$/;
+const DEFAULT_HISTORY_TIMEOUT_MS = 8_000;
 
 export interface HistoryFragment {
   type?: string;
@@ -43,6 +44,11 @@ export interface HistoryHydrationOptions {
   /** 便于测试替换；默认读 localStorage.userToken。 */
   getAuthToken?: () => string | null;
   now?: () => number;
+  /**
+   * 单次水合请求的超时时间。宿主网络挂起时 fetch 可能永不返回，
+   * 没有超时会让 overlay 永久停在“正在加载该会话的历史内容…”。
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -134,6 +140,7 @@ export function createHistoryHydrator(
     ?? (typeof fetch !== 'undefined' ? fetch.bind(globalThis) : undefined);
   const getAuthToken = options.getAuthToken ?? (() => readDeepSeekAuthToken());
   const now = options.now ?? (() => Date.now());
+  const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_HISTORY_TIMEOUT_MS);
 
   return async (key: string): Promise<StudioExecutionSession | null> => {
     const normalized = key.trim();
@@ -150,7 +157,14 @@ export function createHistoryHydrator(
     }
     if (!token) return null;
 
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (controller) {
+      timer = setTimeout(() => controller.abort(), timeoutMs);
+    }
+
     let response: Response;
+    let payload: HistoryPayload | null = null;
     try {
       response = await fetchImpl(
         `/api/v0/chat/history_messages?chat_session_id=${encodeURIComponent(chatId)}`,
@@ -161,18 +175,15 @@ export function createHistoryHydrator(
             accept: '*/*',
             authorization: `Bearer ${token}`,
           },
+          ...(controller ? { signal: controller.signal } : {}),
         },
       );
-    } catch {
-      return null;
-    }
-    if (!response.ok) return null;
-
-    let payload: HistoryPayload | null = null;
-    try {
+      if (!response.ok) return null;
       payload = (await response.json()) as HistoryPayload;
     } catch {
       return null;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
     if (!payload || payload.code !== 0) return null;
     const messages = payload.data?.biz_data?.chat_messages;

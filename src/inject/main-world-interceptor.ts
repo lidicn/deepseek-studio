@@ -1991,18 +1991,21 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     loopState.streamTruncatedTag = false;
     loopState.streamHadVisibleText = false;
     loopState.abortedByUser = false;
-    // 上一回合的临时桶可能还带着历史事件。新回合开始前显式把 UI 切到干净的
-    // route: 会话，否则新对话时上一段结果会残留在消息列表里。
-    if (chatUI && chatUI.sessionKey.startsWith('route:')) {
-      void chatUI.activateSession(chatUI.sessionKey);
-    }
     d('new user message: reset collectedExecutions/loopDepth/errorRetryCount');
     if (chatUI) {
-      if (loopState.newChatSessionId) {
-        const nextKey = normalizeChatSessionKey(loopState.newChatSessionId);
-        const migrateFrom = chatUI.sessionKey.startsWith('route:') ? chatUI.sessionKey : undefined;
-        void chatUI.activateSession(nextKey, { migrateFrom });
-      }
+      // 必须同步完成「切会话 + 清屏」，再 addUserMessage。
+      // 旧实现用 void activateSession(...)，它的异步水合分支会在之后
+      // clearMessagesForSession()，把本轮刚加进去的首条用户消息覆盖掉
+      // （新会话首条消息丢失的根因）。beginTurnSession 内部不含 await，
+      // 且会作废此前在飞的水合，保证本回合的消息不会被迟到回写抹掉。
+      const currentKey = chatUI.sessionKey;
+      const nextKey = loopState.newChatSessionId
+        ? normalizeChatSessionKey(loopState.newChatSessionId)
+        : currentKey;
+      const migrateFrom = loopState.newChatSessionId && currentKey.startsWith('route:')
+        ? currentKey
+        : undefined;
+      chatUI.beginTurnSession(nextKey, { migrateFrom });
       if (loopState.newUserPrompt) {
         chatUI.addUserMessage(loopState.newUserPrompt);
       }

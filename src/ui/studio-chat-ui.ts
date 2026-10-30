@@ -72,6 +72,12 @@ export interface StudioChatUIHandle {
   setContextNotice(text: string): void;
   /** 切换/恢复会话；migrateFrom 用于新会话稳定后的临时 route 键迁移。 */
   activateSession(key: string, options?: { migrateFrom?: string }): Promise<void>;
+  /**
+   * 同步开启新回合的会话上下文（内部不含任何 await）。
+   * 新用户消息到达时必须先同步调用它，再 addUserMessage，否则异步水合会在
+   * 之后清屏，把本轮首条用户消息覆盖掉。
+   */
+  beginTurnSession(key: string, options?: { migrateFrom?: string }): void;
   /** 当前会话键。 */
   readonly sessionKey: string;
   /** 清空本机全部 Studio 执行记录。 */
@@ -1180,6 +1186,53 @@ export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioCha
     syncPersistenceLabel();
   }
 
+  /**
+   * 同步开启一个新回合的会话上下文。
+   *
+   * 为什么必须同步：新用户消息到达时，onNewUserMessage 会先切会话、再
+   * addUserMessage。旧实现用异步 activateSession，await 之后的水合分支
+   * 会执行 clearMessagesForSession()，把刚刚 addUserMessage 塞进去的首条
+   * 用户消息整条覆盖掉（新会话首条消息丢失的根因）。这里把「切键 + 清屏」
+   * 收敛成同步操作，异步水合交给 activateSession，且用 sessionGeneration
+   * 作废任何在本回合开始前就已经在飞的水合，避免它们迟到回写。
+   */
+  function beginTurnSession(key: string, beginOptions?: { migrateFrom?: string }): void {
+    const normalized = key.trim() || normalizeSessionKeyFromPathname(location.pathname);
+    const previousKey = sessionKey;
+    // 上下文预算是「当前这条请求」的属性，开新回合一律清掉。
+    setContextNotice('');
+    // 作废在飞水合：它们即使稍后返回，generation 校验也会让它们直接退出。
+    sessionGeneration += 1;
+
+    if (beginOptions?.migrateFrom) {
+      // 新对话从 route: 临时桶迁到稳定 chat 键：原位改名，保留当前已显示内容，
+      // 不触发清屏，也不发一次异步重载。
+      sessionKey = normalized;
+      executionSession = { ...executionSession, key: normalized, updatedAt: Date.now() };
+      if (options.persistence) {
+        void options.persistence.renameSession(beginOptions.migrateFrom, normalized);
+      }
+      syncPersistenceLabel();
+      return;
+    }
+
+    const isRoute = normalized.startsWith('route:');
+    if (!isRoute && normalized === previousKey && executionSession.events.length > 0) {
+      // 同一稳定会话键重复开回合：已有事件，不清屏，避免把刚渲染的内容抹掉。
+      syncPersistenceLabel();
+      return;
+    }
+
+    // route: 键是「还没拿到 chat_session_id」的临时桶，可能残留上一段临时对话；
+    // 其它情况则是切到新会话。两者都按空白会话处理。
+    sessionKey = normalized;
+    clearMessagesForSession();
+    executionSession = createEmptyStudioExecutionSession(normalized);
+    currentTurnId = crypto.randomUUID();
+    persistenceState = options.persistence?.connected ? 'persistent' : 'memory';
+    syncPersistenceLabel();
+  }
+
   async function clearHistory(): Promise<void> {
     setContextNotice('');
     try {
@@ -1282,6 +1335,7 @@ export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioCha
     appendError,
     setContextNotice,
     activateSession,
+    beginTurnSession,
     get sessionKey() {
       return sessionKey;
     },

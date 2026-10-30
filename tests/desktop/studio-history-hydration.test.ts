@@ -92,4 +92,18 @@ describe('跨设备历史水合', () => {
     });
     expect(await badCode('chat:abc12345')).toBeNull();
   });
+
+  it('请求挂起时超时返回 null，不会让调用方永久等待', async () => {
+    const fetchImpl = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+    }));
+    const hydrator = createHistoryHydrator({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      getAuthToken: () => 'token',
+      timeoutMs: 20,
+    });
+
+    await expect(hydrator('chat:abc12345')).resolves.toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
 });
