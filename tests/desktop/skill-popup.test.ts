@@ -53,6 +53,29 @@ describe('skill-popup（移植自 dpp 的对话框输入 / 技能提示）', () 
     expect(items[0].classList.contains('ds-studio-active')).toBe(true);
   });
 
+  it('浮层层级高于 Studio chat overlay，否则会被不透明消息层遮住', () => {
+    const ta = mountComposer();
+    initSkillPopup(SKILLS);
+    type(ta, '/');
+
+    const css = document.getElementById('ds-studio-skill-popup-css')?.textContent ?? '';
+    const zIndex = /\.ds-studio-skill-popup\s*\{[^}]*z-index:\s*(\d+)/.exec(css)?.[1];
+    expect(Number(zIndex)).toBeGreaterThan(2147483000);
+  });
+
+  it('窗口过矮时按输入框上沿压缩浮层高度，避免顶出视口', () => {
+    const ta = mountComposer();
+    initSkillPopup(SKILLS);
+    vi.spyOn(ta, 'getBoundingClientRect').mockReturnValue({
+      top: 100, bottom: 160, left: 10, right: 610, width: 600, height: 60, x: 10, y: 100, toJSON: () => ({}),
+    } as DOMRect);
+    type(ta, '/');
+
+    const el = popup()!;
+    expect(parseInt(el.style.maxHeight, 10)).toBe(84);
+    expect(parseInt(el.style.maxHeight, 10)).toBeLessThan(220);
+  });
+
   it('document_start 时 body 尚未创建，DOMContentLoaded 后完成挂载', () => {
     document.body.remove();
     expect(document.body).toBeNull();

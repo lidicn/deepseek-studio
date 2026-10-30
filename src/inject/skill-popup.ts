@@ -253,11 +253,14 @@ function showPopup(): void {
   }
 
   const rect = textarea.getBoundingClientRect();
+  // 视口很矮时，220px 的固定上限会把浮层顶出屏幕；按输入框上沿剩余空间收一次。
+  const maxHeight = Math.max(60, Math.min(220, rect.top - 16));
   Object.assign(popupEl.style, {
     display: 'block',
     left: `${Math.max(8, Math.min(rect.left, window.innerWidth - 288))}px`,
     bottom: `${Math.max(8, window.innerHeight - rect.top + 6)}px`,
     width: `${Math.min(Math.max(rect.width * 0.5, 200), 280)}px`,
+    maxHeight: `${maxHeight}px`,
   });
 
   buildItems();
@@ -355,7 +358,9 @@ function injectStyles(): void {
   style.textContent = `
 .ds-studio-skill-popup {
   position: fixed;
-  z-index: 99999;
+  /* 必须高于 Studio chat overlay（2147483000），否则会被不透明消息层整块盖住，
+   * 只在输入框上沿露出几像素；仍低于 sidebar/面板层（2147483644+）。 */
+  z-index: 2147483001;
   background: #ffffff;
   border: 1px solid #e5e7eb;
   border-radius: 12px;

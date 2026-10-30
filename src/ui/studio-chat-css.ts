@@ -11,6 +11,7 @@ export const STUDIO_CHAT_CSS = `
 /* z-index 分层（v0.20 起沿用）：
  *   2147483647  consent 弹窗（同意闸门，最高）
  *   2147483644-3646  StudioUI sidebar/面板（工具入口，可点击）
+ *   2147483001  输入框技能提示浮层（要盖过 chat overlay，仍在面板层之下）
  *   2147483000  本 chat overlay（消息渲染，只盖 DeepSeek #root）
  * chat overlay 低于 sidebar，确保浮动按钮/面板不被遮挡。 */
 .ds-studio-chat-container {
