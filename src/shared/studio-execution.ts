@@ -79,6 +79,12 @@ export interface StudioExecutionSession {
   createdAt: number;
   updatedAt: number;
   events: StudioExecutionEvent[];
+  /**
+   * 最近一次从原生历史水合的时间。
+   * 本地记录可能只捕获到部分轮次，不能仅凭「已有回答」就认定完整；
+   * 记录同步时间后可在 TTL 内跳过重复请求，又能在远端新增轮次后再次补齐。
+   */
+  historySyncedAt?: number;
 }
 
 export interface StudioExecutionIndexEntry {
@@ -116,7 +122,8 @@ export function isStudioExecutionSession(value: unknown): value is StudioExecuti
     typeof v.createdAt === 'number' &&
     typeof v.updatedAt === 'number' &&
     Array.isArray(v.events) &&
-    (v.routeKey === undefined || typeof v.routeKey === 'string')
+    (v.routeKey === undefined || typeof v.routeKey === 'string') &&
+    (v.historySyncedAt === undefined || typeof v.historySyncedAt === 'number')
   );
 }
 

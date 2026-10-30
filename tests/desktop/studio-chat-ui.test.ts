@@ -2,7 +2,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStudioChatUI, type StudioChatUIHandle } from '../../src/ui/studio-chat-ui';
 import { createStudioExecutionStore, type StudioExecutionKv } from '../../src/ui/studio-execution-store';
-import { STUDIO_EXECUTION_INDEX_KEY } from '../../src/shared/studio-execution';
+import {
+  STUDIO_EXECUTION_INDEX_KEY,
+  appendExecutionEvent,
+  createEmptyStudioExecutionSession,
+  type StudioExecutionSession,
+} from '../../src/shared/studio-execution';
+
+function historySession(
+  key: string,
+  events: Array<{ type: 'user-message'; text: string } | { type: 'final-answer'; text: string }>,
+): StudioExecutionSession {
+  const session = createEmptyStudioExecutionSession(key, 1000);
+  events.forEach((event, index) => {
+    appendExecutionEvent(session, {
+      ...event,
+      at: 1000 + index,
+      turnId: `history-${index}`,
+    });
+  });
+  return session;
+}
 
 function memoryKv(): StudioExecutionKv & { values: Map<string, unknown> } {
   const values = new Map<string, unknown>();
@@ -442,5 +462,166 @@ describe('Studio 主视图', () => {
     await ui.clearHistory();
     const notice = ui.container.querySelector('.ds-sc-context-notice') as HTMLElement;
     expect(notice.classList.contains('visible')).toBe(false);
+  });
+
+  it('本地无记录时水合跨设备历史并写入本地缓存', async () => {
+    addMeasuredComposer();
+    const kv = memoryKv();
+    const persistence = createStudioExecutionStore({
+      kv,
+      onConnected: () => () => {},
+      isConnected: () => true,
+    });
+    const hydrateHistory = vi.fn(async (key: string) => historySession(key, [
+      { type: 'user-message', text: key === 'chat:remote' ? '其他设备提出的问题' : '另一会话' },
+      ...(key === 'chat:remote'
+        ? [{ type: 'final-answer' as const, text: '其他设备得到的**回答**' }]
+        : []),
+    ]));
+    ui = mount({ persistence, initialSessionKey: 'chat:remote', hydrateHistory });
+    await ui.activateSession('chat:remote');
+
+    expect(hydrateHistory).toHaveBeenCalledWith('chat:remote');
+    expect(ui.container.textContent).toContain('其他设备提出的问题');
+    expect(ui.container.querySelector('.ds-sc-markdown')?.innerHTML).toContain('<strong>回答</strong>');
+    await vi.waitFor(() => {
+      expect(kv.values.get(STUDIO_EXECUTION_INDEX_KEY)).toBeDefined();
+    });
+
+    // 已落盘后再次切回不再重复请求。
+    await ui.activateSession('chat:other');
+    await ui.activateSession('chat:remote');
+    expect(hydrateHistory.mock.calls.filter(([key]) => key === 'chat:remote')).toHaveLength(1);
+    await vi.waitFor(() => {
+      expect(ui?.container.textContent).toContain('其他设备提出的问题');
+    });
+  });
+
+  it('水合失败时显示明确空态，不伪造内容', async () => {
+    addMeasuredComposer();
+    ui = mount({
+      initialSessionKey: 'chat:missing',
+      hydrateHistory: async () => null,
+    });
+    await ui.activateSession('chat:missing');
+
+    expect(ui.container.textContent).toContain('未找到该会话可显示的历史内容');
+    expect(ui.container.querySelector('.ds-sc-msg-user')).toBeNull();
+    expect(ui.container.querySelector('.ds-sc-msg-assistant')).toBeNull();
+  });
+
+  it('本地存在空壳会话（有记录但无事件）时也走水合', async () => {
+    addMeasuredComposer();
+    const kv = memoryKv();
+    const persistence = createStudioExecutionStore({
+      kv,
+      onConnected: () => () => {},
+      isConnected: () => true,
+    });
+    // 索引里已有标题、但正文从未落盘：只存一个空壳会话。
+    await persistence.saveSession(createEmptyStudioExecutionSession('chat:shell'));
+    const hydrateHistory = vi.fn(async (key: string) => historySession(key, [
+      { type: 'user-message', text: '空壳会话的历史问题' },
+      { type: 'final-answer', text: '空壳会话的历史回答' },
+    ]));
+    ui = mount({ persistence, initialSessionKey: 'chat:shell', hydrateHistory });
+    await ui.activateSession('chat:shell');
+
+    expect(hydrateHistory).toHaveBeenCalledWith('chat:shell');
+    expect(ui.container.textContent).toContain('空壳会话的历史问题');
+    expect(ui.container.textContent).toContain('空壳会话的历史回答');
+  });
+
+  it('本地只有用户提问的半截记录时，也水合补全回答', async () => {
+    addMeasuredComposer();
+    const kv = memoryKv();
+    const persistence = createStudioExecutionStore({
+      kv,
+      onConnected: () => () => {},
+      isConnected: () => true,
+    });
+    // 流式中断等场景：本地只落下了用户提问，没有回答。
+    await persistence.saveSession(historySession('chat:half', [
+      { type: 'user-message', text: '半截会话的提问' },
+    ]));
+    const hydrateHistory = vi.fn(async (key: string) => historySession(key, [
+      { type: 'user-message', text: '半截会话的提问' },
+      { type: 'final-answer', text: '半截会话的补全回答' },
+    ]));
+    ui = mount({ persistence, initialSessionKey: 'chat:half', hydrateHistory });
+    await ui.activateSession('chat:half');
+
+    expect(hydrateHistory).toHaveBeenCalledWith('chat:half');
+    expect(ui.container.textContent).toContain('半截会话的提问');
+    expect(ui.container.textContent).toContain('半截会话的补全回答');
+  });
+
+  it('本地只捕获到部分轮次时，按原生轮数补全并替换本地记录', async () => {
+    addMeasuredComposer();
+    const kv = memoryKv();
+    const persistence = createStudioExecutionStore({
+      kv,
+      onConnected: () => () => {},
+      isConnected: () => true,
+    });
+    // 旧逻辑的坑：本地已有 final-answer 就被当成"完整"，永远不水合。
+    const partial = createEmptyStudioExecutionSession('chat:partial', 1000);
+    appendExecutionEvent(partial, {
+      type: 'tool-start', at: 1001, turnId: 't1', callId: 'c1',
+      toolName: 'shell_exec', params: { command: 'echo 1' },
+    });
+    appendExecutionEvent(partial, {
+      type: 'tool-result', at: 1002, turnId: 't1', callId: 'c1',
+      toolName: 'shell_exec', ok: true, result: { stdout: 'done' },
+    });
+    appendExecutionEvent(partial, {
+      type: 'user-message', at: 1003, turnId: 't1', text: '第一轮提问',
+    });
+    appendExecutionEvent(partial, {
+      type: 'final-answer', at: 1004, turnId: 't1', text: '第一轮回答',
+    });
+    await persistence.saveSession(partial);
+    const hydrateHistory = vi.fn(async (key: string) => historySession(key, [
+      { type: 'user-message', text: '第一轮提问' },
+      { type: 'final-answer', text: '第一轮回答' },
+      { type: 'user-message', text: '第二轮提问' },
+      { type: 'final-answer', text: '第二轮回答' },
+      { type: 'user-message', text: '第三轮提问' },
+    ]));
+    ui = mount({ persistence, initialSessionKey: 'chat:partial', hydrateHistory });
+    await ui.activateSession('chat:partial');
+
+    expect(hydrateHistory).toHaveBeenCalledWith('chat:partial');
+    const text = ui.container.textContent ?? '';
+    expect(text).toContain('第三轮提问');
+    expect(text).toContain('第二轮回答');
+    expect(ui.container.querySelectorAll('.ds-sc-msg-user')).toHaveLength(3);
+    // 原生历史轮数更多时以原生为准，工具过程卡让位。
+    expect(ui.container.querySelectorAll('.ds-sc-msg-assistant')).toHaveLength(2);
+  });
+
+  it('快速切换会话时，慢水合响应不得覆盖当前会话', async () => {
+    addMeasuredComposer();
+    let resolveSlow: ((session: StudioExecutionSession | null) => void) | null = null;
+    const hydrateHistory = vi.fn((key: string) => {
+      if (key === 'chat:slow') {
+        return new Promise<StudioExecutionSession | null>((resolve) => {
+          resolveSlow = resolve;
+        });
+      }
+      return Promise.resolve(historySession(key, [
+        { type: 'user-message', text: 'B 会话内容' },
+      ]));
+    });
+    ui = mount({ initialSessionKey: 'chat:slow', hydrateHistory });
+    const slow = ui.activateSession('chat:slow');
+    await ui.activateSession('chat:fast');
+    (resolveSlow as ((session: StudioExecutionSession | null) => void) | null)?.(historySession('chat:slow', [
+      { type: 'user-message', text: 'A 会话迟到内容' },
+    ]));
+    await slow;
+
+    expect(ui.container.textContent).toContain('B 会话内容');
+    expect(ui.container.textContent).not.toContain('A 会话迟到内容');
   });
 });

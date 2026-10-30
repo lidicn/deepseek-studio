@@ -29,6 +29,22 @@ import {
 import { describeErrorCode } from '../shared/ui-error-codes';
 import { STUDIO_CHAT_CSS } from './studio-chat-css';
 import type { StudioExecutionStore } from './studio-execution-store';
+import { createHistoryHydrator } from './studio-history-hydration';
+
+/**
+ * 同一会话的历史水合结果缓存窗口。
+ * 本地执行记录可能只覆盖部分轮次，因此即使已有回答也要校验一次原生历史；
+ * TTL 内复用结果，避免每次切回都发请求。
+ */
+const STUDIO_HISTORY_SYNC_TTL_MS = 60_000;
+
+function countUserMessages(events: readonly StudioExecutionEvent[]): number {
+  let count = 0;
+  for (const event of events) {
+    if (event.type === 'user-message') count += 1;
+  }
+  return count;
+}
 
 export interface StudioChatUIHandle {
   container: HTMLElement;
@@ -71,6 +87,8 @@ export interface StudioChatUIHandle {
 export interface StudioChatUIOptions {
   persistence?: StudioExecutionStore;
   initialSessionKey?: string;
+  /** 本地无执行记录时，按会话键拉取原生历史；默认使用 DeepSeek history_messages。 */
+  hydrateHistory?: (key: string) => Promise<StudioExecutionSession | null>;
 }
 
 let styleInjected = false;
@@ -320,6 +338,8 @@ function adjustOverlayLayout(container: HTMLElement): void {
 export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioChatUIHandle {
   // 样式注入安全地延迟（见上方 injectChatStyles 的兜底逻辑）。
   injectChatStyles();
+
+  const hydrateHistory = options.hydrateHistory ?? createHistoryHydrator();
 
   const container = document.createElement('div');
   container.className = 'ds-studio-chat-container ds-studio-chat-pending';
@@ -1078,15 +1098,84 @@ export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioCha
       ? await options.persistence.loadSession(normalized)
       : null;
     if (generation !== sessionGeneration) return;
-    if (loaded) {
+    const loadedEvents = loaded?.events ?? [];
+    const localUserCount = countUserMessages(loadedEvents);
+    const hasRichLocalContent = loadedEvents.some(
+      (event) => event.type === 'final-answer' || event.type === 'tool-start' || event.type === 'tool-result',
+    );
+    if (loaded && loadedEvents.length > 0) {
+      // 先把已有记录渲染出来，避免水合期间白屏。
       replayExecutionSession(loaded);
       persistenceState = options.persistence?.connected ? 'persistent' : 'memory';
     } else {
       clearMessagesForSession();
       executionSession = createEmptyStudioExecutionSession(normalized);
       currentTurnId = crypto.randomUUID();
-      addWelcomeOrEmpty();
-      persistenceState = options.persistence?.connected ? 'persistent' : 'memory';
+    }
+
+    // 跨设备/其他端创建的会话本地可能没有记录，也可能只捕获到部分轮次。
+    // 因此只要同步时间过期就校验一次原生历史；迟到响应由 generation 校验丢弃。
+    const isChatSession = normalized.startsWith('chat:');
+    const lastSyncedAt = loaded?.historySyncedAt ?? 0;
+    const shouldHydrate = isChatSession
+      && (lastSyncedAt === 0 || Date.now() - lastSyncedAt >= STUDIO_HISTORY_SYNC_TTL_MS);
+
+    if (shouldHydrate) {
+      if (loadedEvents.length === 0) addWelcomeOrEmpty('正在加载该会话的历史内容…');
+      let hydrated: StudioExecutionSession | null = null;
+      try {
+        hydrated = await hydrateHistory(normalized);
+      } catch {
+        hydrated = null;
+      }
+      if (generation !== sessionGeneration) return;
+
+      if (hydrated) {
+        const hydratedUserCount = countUserMessages(hydrated.events);
+        // 本地已有工具卡片等更丰富的信息时，只有原生历史轮数更多才替换；
+        // 否则保留本地记录，避免水合丢掉工具执行过程。
+        const shouldReplace = hydratedUserCount > localUserCount
+          || (!hasRichLocalContent && hydrated.events.length > loadedEvents.length);
+        const syncedAt = Date.now();
+        if (shouldReplace) {
+          hydrated.historySyncedAt = syncedAt;
+          replayExecutionSession(hydrated);
+          if (options.persistence?.connected) {
+            try {
+              await options.persistence.saveSession(hydrated);
+              persistenceState = 'persistent';
+            } catch {
+              persistenceState = 'memory';
+            }
+          }
+          syncPersistenceLabel();
+          return;
+        }
+        // 未替换也要记住已校验，避免 TTL 内重复请求。
+        if (loaded) {
+          loaded.historySyncedAt = syncedAt;
+          if (options.persistence?.connected) {
+            try {
+              await options.persistence.saveSession(loaded);
+              persistenceState = 'persistent';
+            } catch {
+              persistenceState = 'memory';
+            }
+          }
+        } else if (loadedEvents.length === 0) {
+          clearMessagesForSession();
+          executionSession = createEmptyStudioExecutionSession(normalized);
+          currentTurnId = crypto.randomUUID();
+          addWelcomeOrEmpty('未找到该会话可显示的历史内容');
+        }
+      } else if (loadedEvents.length === 0) {
+        clearMessagesForSession();
+        executionSession = createEmptyStudioExecutionSession(normalized);
+        currentTurnId = crypto.randomUUID();
+        addWelcomeOrEmpty('未找到该会话可显示的历史内容');
+      }
+    } else if (loadedEvents.length === 0) {
+      addWelcomeOrEmpty(isChatSession ? '未找到该会话可显示的历史内容' : undefined);
     }
     syncPersistenceLabel();
   }
