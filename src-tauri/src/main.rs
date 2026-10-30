@@ -578,10 +578,18 @@ fn open_bot_window(
 fn main() {
     // 远程调试口：默认常开 CDP，便于本地工具/自动化直连 WebView2。
     // 关闭方式：设置 STUDIO_DISABLE_CDP=1；换端口：STUDIO_CDP_PORT=<port>。
-    // 默认 9223：9222 是 Chrome/Edge 常用的远程调试口，留给浏览器，避免互相抢占。
+    // 端口选择：9222 是历史默认口，旧脚本都连它；空闲时优先用它，
+    // 被 Chrome/Edge 等占用时退回 9223，避免互相抢占。
     // 若外部已自行设置 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS，则只做合并，不覆盖。
     if std::env::var_os("STUDIO_DISABLE_CDP").is_none() {
-        let port = std::env::var("STUDIO_CDP_PORT").unwrap_or_else(|_| "9223".to_string());
+        let port = std::env::var("STUDIO_CDP_PORT").unwrap_or_else(|_| {
+            let is_free = |p: u16| std::net::TcpListener::bind(("127.0.0.1", p)).is_ok();
+            if is_free(9222) {
+                "9222".to_string()
+            } else {
+                "9223".to_string()
+            }
+        });
         let arg = format!("--remote-debugging-port={}", port);
         let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
         let merged = if existing.trim().is_empty() {
