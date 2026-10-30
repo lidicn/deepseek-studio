@@ -166,3 +166,89 @@ describe('MCP 热重载：配置变化必须断开旧连接', () => {
     }
   });
 });
+
+describe('MCP 惰性热重载：无需重启即可感知新增服务器', () => {
+  type ConnBag = { connections: Map<string, unknown> };
+
+  function future(mtimeMs: number) {
+    return new Date(mtimeMs);
+  }
+
+  it('配置文件新增服务器 → listServerIds 立即可见', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-lazy-add-'));
+    const cfgPath = path.join(dir, 'mcp-servers.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      servers: { TVPilot: { command: '', transport: 'http', url: 'http://tv/mcp' } },
+    }), 'utf8');
+    const ctl = new McpController(cfgPath);
+    expect(ctl.listServerIds()).toEqual(['TVPilot']);
+
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      servers: {
+        TVPilot: { command: '', transport: 'http', url: 'http://tv/mcp' },
+        Autoforge: { command: '', transport: 'http', url: 'http://af/mcp' },
+      },
+    }), 'utf8');
+    // NTFS 时间戳分辨率足够，但显式推进避免同毫秒写入被误判为未变化。
+    fs.utimesSync(cfgPath, future(Date.now() + 2000), future(Date.now() + 2000));
+
+    expect(ctl.listServerIds()).toContain('Autoforge');
+  });
+
+  it('新增服务器后 getAllTools 会自动连接它（用注入的连接桩验证）', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-lazy-tools-'));
+    const cfgPath = path.join(dir, 'mcp-servers.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({ servers: {} }), 'utf8');
+    const ctl = new McpController(cfgPath);
+
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      servers: { Autoforge: { command: '', transport: 'http', url: 'http://af/mcp' } },
+    }), 'utf8');
+    fs.utimesSync(cfgPath, future(Date.now() + 2000), future(Date.now() + 2000));
+
+    const seen: string[] = [];
+    (ctl as unknown as { connect(id: string): Promise<unknown> }).connect = async (id: string) => {
+      seen.push(id);
+      return { ...fakeConn({ id }), tools: [{ name: 'ping', description: 'p' }] };
+    };
+
+    const tools = await ctl.getAllTools();
+    expect(seen).toContain('Autoforge');
+    expect(tools.map((t) => `${t.serverId}:${t.name}`)).toContain('Autoforge:ping');
+  });
+
+  it('配置被改坏（半写入 JSON）→ 保留旧服务器与旧连接', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-lazy-bad-'));
+    const cfgPath = path.join(dir, 'mcp-servers.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      servers: { Keep: { command: '', transport: 'http', url: 'http://keep/mcp' } },
+    }), 'utf8');
+    const ctl = new McpController(cfgPath);
+    const conn = fakeConn({ id: 'Keep' });
+    (ctl as unknown as ConnBag).connections.set('Keep', conn);
+
+    fs.writeFileSync(cfgPath, '{"servers": { "Keep": ', 'utf8');
+    fs.utimesSync(cfgPath, future(Date.now() + 2000), future(Date.now() + 2000));
+
+    expect(ctl.listServerIds()).toEqual(['Keep']);
+    expect((ctl as unknown as ConnBag).connections.get('Keep')).toBe(conn);
+  });
+
+  it('配置修改 URL → 惰性重载断开旧连接', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-lazy-url-'));
+    const cfgPath = path.join(dir, 'mcp-servers.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      servers: { AutoForge: { command: '', transport: 'http', url: 'http://old/mcp' } },
+    }), 'utf8');
+    const ctl = new McpController(cfgPath);
+    (ctl as unknown as ConnBag).connections.set('AutoForge', fakeConn({ id: 'AutoForge' }));
+
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      servers: { AutoForge: { command: '', transport: 'http', url: 'http://new/mcp' } },
+    }), 'utf8');
+    fs.utimesSync(cfgPath, future(Date.now() + 2000), future(Date.now() + 2000));
+
+    ctl.listServerIds();
+    expect((ctl as unknown as ConnBag).connections.has('AutoForge')).toBe(false);
+  });
+});

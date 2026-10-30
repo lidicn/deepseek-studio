@@ -82,30 +82,38 @@ function defaultConfigPath(): string {
   return path.join(os.homedir(), '.config', 'deepseek-studio', 'mcp-servers.json');
 }
 
+/**
+ * 解析 MCP 配置文件文本。抛错时由调用方决定是保留旧配置还是回落空表：
+ * - loadMcpServers（首次加载）失败回落 {}；
+ * - 运行期热重载失败必须保留旧连接，不能因为半写入的 JSON 把工具全清空。
+ */
+export function parseMcpServers(raw: string): Record<string, McpServerConfig> {
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object') return {};
+  // 标准嵌套式：{ servers: { id: cfg } }
+  if (parsed.servers && typeof parsed.servers === 'object') {
+    return parsed.servers as Record<string, McpServerConfig>;
+  }
+  // 兼容历史平铺式：顶层键（除 servers 外）当作服务器配置
+  // 只接受含 command 或 url 的对象，避免把 meta/说明性键误当服务器
+  const out: Record<string, McpServerConfig> = {};
+  for (const [k, v] of Object.entries(parsed)) {
+    if (k !== 'servers' && v && typeof v === 'object') {
+      const cfg = v as Record<string, unknown>;
+      if (typeof cfg.command === 'string' || typeof cfg.url === 'string') {
+        out[k] = v as McpServerConfig;
+      }
+    }
+  }
+  return out;
+}
+
 /** 读取 MCP 服务器配置 */
 export function loadMcpServers(configPath?: string): Record<string, McpServerConfig> {
   const p = configPath ?? defaultConfigPath();
   try {
     if (!fs.existsSync(p)) return {};
-    const raw = fs.readFileSync(p, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return {};
-    // 标准嵌套式：{ servers: { id: cfg } }
-    if (parsed.servers && typeof parsed.servers === 'object') {
-      return parsed.servers as Record<string, McpServerConfig>;
-    }
-    // 兼容历史平铺式：顶层键（除 servers 外）当作服务器配置
-    // 只接受含 command 或 url 的对象，避免把 meta/说明性键误当服务器
-    const out: Record<string, McpServerConfig> = {};
-    for (const [k, v] of Object.entries(parsed)) {
-      if (k !== 'servers' && v && typeof v === 'object') {
-        const cfg = v as Record<string, unknown>;
-        if (typeof cfg.command === 'string' || typeof cfg.url === 'string') {
-          out[k] = v as McpServerConfig;
-        }
-      }
-    }
-    return out;
+    return parseMcpServers(fs.readFileSync(p, 'utf8'));
   } catch (err) {
     console.warn(`[mcp-controller] failed to load MCP servers config: ${err}`);
     return {};
@@ -179,14 +187,67 @@ export function ensureMcpConfig(configPath?: string): string {
 export class McpController {
   private connections = new Map<string, McpServerConnection>();
   private servers: Record<string, McpServerConfig> = {};
+  /** 本实例读写同一条配置路径，避免 load/save 各认一套环境变量。 */
+  private readonly configPath: string;
+  /** 上次成功加载时的 mtime；null 表示文件不存在或尚未成功读取。 */
+  private configMtimeMs: number | null = null;
 
   constructor(configPath?: string) {
-    this.servers = loadMcpServers(configPath);
+    this.configPath = configPath ?? defaultConfigPath();
+    this.servers = loadMcpServers(this.configPath);
+    this.configMtimeMs = this.statConfigMtime();
+  }
+
+  private statConfigMtime(): number | null {
+    try {
+      return fs.statSync(this.configPath).mtimeMs;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 惰性热重载：配置文件的 mtime 变化后，在下一次读取工具/调用工具前重新加载。
+   * 无需重启 sidecar，新增 MCP 服务器（例如 Autoforge 配对后写入）即可生效。
+   *
+   * 解析失败时保留旧配置与旧连接：配置文件可能是编辑器半写入状态，
+   * 一次坏读不应把用户正在使用的工具全部摘掉。
+   */
+  private refreshConfigIfChanged(): void {
+    const mtime = this.statConfigMtime();
+    if (mtime === this.configMtimeMs) return;
+
+    if (mtime === null) {
+      // 文件被删除：按空配置处理，断开全部旧连接。
+      for (const serverId of [...this.connections.keys()]) this.disconnectServer(serverId);
+      this.servers = {};
+      this.configMtimeMs = null;
+      return;
+    }
+
+    let next: Record<string, McpServerConfig>;
+    try {
+      next = parseMcpServers(fs.readFileSync(this.configPath, 'utf8'));
+    } catch (err) {
+      console.warn(`[mcp-controller] hot reload skipped (invalid config): ${err instanceof Error ? err.message : String(err)}`);
+      // 记录 mtime，避免每次工具调用都重复刷同一条告警；文件再次变化时会重试。
+      this.configMtimeMs = mtime;
+      return;
+    }
+
+    for (const serverId of [...this.connections.keys()]) {
+      if (!next[serverId] || JSON.stringify(next[serverId]) !== JSON.stringify(this.servers[serverId])) {
+        this.disconnectServer(serverId);
+      }
+    }
+    this.servers = next;
+    this.configMtimeMs = mtime;
   }
 
   /** 重新加载配置 */
   reload(configPath?: string): void {
-    const next = loadMcpServers(configPath);
+    const p = configPath ?? this.configPath;
+    const next = loadMcpServers(p);
     // 配置变化或服务器被删除时，旧连接必须断开；
     // 否则 connect() 会命中 initialized 的旧连接，继续用旧 URL/旧 token。
     for (const serverId of [...this.connections.keys()]) {
@@ -195,10 +256,14 @@ export class McpController {
       }
     }
     this.servers = next;
+    this.configMtimeMs = (() => {
+      try { return fs.statSync(p).mtimeMs; } catch { return null; }
+    })();
   }
 
   /** 获取所有已配置的 MCP 服务器 ID */
   listServerIds(): string[] {
+    this.refreshConfigIfChanged();
     return Object.keys(this.servers);
   }
 
@@ -208,6 +273,7 @@ export class McpController {
    * 支持 stdio 和 HTTP 传输。
    */
   async connect(serverId: string): Promise<McpServerConnection | null> {
+    this.refreshConfigIfChanged();
     const existing = this.connections.get(serverId);
     if (existing && existing.initialized) return existing;
 
@@ -469,6 +535,7 @@ export class McpController {
    * 自动连接尚未连接的服务器。每个服务器有独立超时，失败不阻塞其他服务器。
    */
   async getAllTools(): Promise<Array<McpTool & { serverId: string }>> {
+    this.refreshConfigIfChanged();
     const allTools: Array<McpTool & { serverId: string }> = [];
     for (const serverId of Object.keys(this.servers)) {
       try {
@@ -497,6 +564,7 @@ export class McpController {
    * @param args 工具参数
    */
   async callTool(serverId: string, toolName: string, args: Record<string, unknown>): Promise<McpCallResult> {
+    this.refreshConfigIfChanged();
     const conn = await this.connect(serverId);
     if (!conn) return { ok: false, error: `MCP server "${serverId}" not available` };
 
@@ -749,9 +817,7 @@ export class McpController {
   /** 保存 MCP 服务器配置到磁盘 */
   saveServer(serverId: string, config: McpServerConfig): { ok: boolean; error?: string } {
     try {
-      const configPath = process.env.STUDIO_CONFIG_DIR
-        ? path.join(process.env.STUDIO_CONFIG_DIR, 'mcp-servers.json')
-        : path.join(os.homedir(), '.config', 'deepseek-studio', 'mcp-servers.json');
+      const configPath = this.configPath;
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
       // 统一为嵌套式 { servers: { id: cfg } }
       let file: { servers: Record<string, McpServerConfig> } = { servers: {} };
@@ -773,6 +839,9 @@ export class McpController {
       file.servers[serverId] = config;
       fs.writeFileSync(configPath, JSON.stringify(file, null, 2), 'utf8');
       this.servers = file.servers;
+      this.configMtimeMs = (() => {
+        try { return fs.statSync(configPath).mtimeMs; } catch { return null; }
+      })();
       // 覆盖已有服务器时，旧连接（尤其 HTTP 的旧 headers）不能复用。
       this.disconnectServer(serverId);
       return { ok: true };
