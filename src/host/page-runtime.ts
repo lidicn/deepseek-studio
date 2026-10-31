@@ -22,6 +22,7 @@ import type { ConsentDecision, ConsentMeta, HostToPageMessage, PageToHostMessage
 import { mapUpstreamToolInvocation } from '../shared/tool-contract';
 import { DEEPSEEK_ORIGIN } from './tool-definitions';
 import { verifyWsQueryToken, type WSQueryTokenSource } from './host-token';
+import { fetchImageAsDataUrl } from './image-proxy';
 
 /** QD-R7-01（F12）：单行 JSONL 的上限。超长只丢取证细节，不影响落盘本身。 */
 const TRACE_LINE_MAX_CHARS = 16_000;
@@ -402,6 +403,12 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           } catch (e) {
             safeSend(ws, { type: 'runtime-envelope-result', requestId, response: { ok: false, error: (e as Error).message } });
           }
+        } else if (command === 'image_fetch') {
+          // 可视化卡片专用：页端 <img> 直接加载防盗链图源会 418/反爬 HTML，
+          // 由宿主带 Referer 取回并转 data: URL。SSRF/大小/类型校验都在 image-proxy 内。
+          const url = (payload ?? {}) as { url?: unknown };
+          const fetched = await fetchImageAsDataUrl(url.url);
+          safeSend(ws, { type: 'runtime-envelope-result', requestId, response: fetched });
         } else {
           safeSend(ws, { type: 'runtime-envelope-result', requestId, response: { ok: false, error: `unknown-command: ${command}` } });
         }

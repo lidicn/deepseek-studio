@@ -6,6 +6,9 @@
  * 所以这里改为在**回合正文**里找 `{"v":1` 的起点，做括号配平，再 JSON.parse 校验。
  */
 
+import { isRecord } from './escape';
+import { upgradeLegacyDocument } from './legacy';
+
 export interface TextRange {
   startNode: Text;
   startOffset: number;
@@ -19,7 +22,23 @@ export interface DetectedDocument {
   range: TextRange;
 }
 
-const SNIFF = /\{\s*"v"\s*:\s*1\b/;
+/**
+ * 候选起点：任何以键开头的对象。
+ *
+ * 以前只认 `{"v":1`，导致旧会话里没有 v/root 的榜单 JSON 在**裸文本**路径上
+ * 连候选都进不了。现在放宽到 `{"…"`，再用 JSON.parse + 结构校验收口：
+ *  - v===1 → 正常文档；
+ *  - 旧式榜单（有 items + rank/score/name…）→ 交给 legacy 迁移层认领；
+ *  - 其余对象一律跳过，不误伤正文里随便贴的 JSON。
+ */
+const CANDIDATE = /\{\s*"/g;
+
+/** 最多尝试多少个候选起点（防止超长正文里对每个 `{` 都做括号配平）。 */
+const MAX_CANDIDATES = 400;
+
+function isV1Document(doc: unknown): boolean {
+  return isRecord(doc) && doc.v === 1;
+}
 
 /** 从 openIndex（指向 '}' 前的 '{'）开始做括号配平，返回闭合位置（含）或 -1。 */
 export function matchJsonEnd(text: string, openIndex: number): number {
@@ -106,25 +125,34 @@ export function findVisDocuments(
 
   const found: DetectedDocument[] = [];
   let searchFrom = 0;
-  while (found.length < limit) {
-    const slice = joined.slice(searchFrom);
-    const hit = SNIFF.exec(slice);
+  let attempts = 0;
+  while (found.length < limit && attempts < MAX_CANDIDATES) {
+    CANDIDATE.lastIndex = searchFrom;
+    const hit = CANDIDATE.exec(joined);
     if (!hit) break;
-    const start = searchFrom + (hit.index ?? 0);
-    const openIndex = start + (hit[0].indexOf('{'));
+    attempts += 1;
+    const openIndex = hit.index;
     const end = matchJsonEnd(joined, openIndex);
-    if (end < 0) break;
+    if (end < 0) {
+      searchFrom = openIndex + 1;
+      continue;
+    }
     const raw = joined.slice(openIndex, end + 1);
     let doc: unknown;
     try {
       doc = JSON.parse(raw);
     } catch {
-      searchFrom = end + 1;
+      searchFrom = openIndex + 1;
+      continue;
+    }
+    if (!isV1Document(doc) && !upgradeLegacyDocument(doc).upgraded) {
+      // 不是可视化文档：从下一个字符继续找（可能还有内层/后续对象）。
+      searchFrom = openIndex + 1;
       continue;
     }
     const startSpan = spans.find((span) => openIndex >= span.start && openIndex < span.end);
     const endSpan = spans.find((span) => end >= span.start && end < span.end);
-    if (!startSpan || !endSpan) { searchFrom = end + 1; continue; }
+    if (!startSpan || !endSpan) { searchFrom = openIndex + 1; continue; }
     found.push({
       doc,
       raw,

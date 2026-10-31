@@ -21,20 +21,24 @@ export const imageRenderer: VisComponentRenderer = {
     const alt = toText(props.alt);
     const ratio = ratioClass(props.ratio);
     const cls = ratio === '' ? 'ds-studio-vis-img' : `ds-studio-vis-img ${ratio}`;
+    const fallback = isRecord(props.fallback) ? props.fallback : null;
+    const hue = normalizeHue(fallback === null ? undefined : fallback.hue);
     const resolved = ctx.imageResolver.resolve(props.src);
     if (resolved.src !== null) {
-      // lazy/async 省流量与主线程；no-referrer 是刻意选择：不少图床按 Referer 判防盗链，
-      // 不带 Referer 反而更容易过（豆瓣 418 就是"带了外来 Referer"导致的）。
+      // 必须 eager：宿主 WebView + DeepSeek 虚拟滚动容器里，lazy 的可见性判定会失效，
+      // 图片既不发起请求、也不触发 error，海报框会永久空白。async 只解码，不影响拉取。
+      // hue 同时挂在 img 上，加载失败替换占位时才能延续配色。
+      // no-referrer 是有意为之：不少图床按 Referer 判防盗链，不带反而更宽松。
+      // 但要清楚它救不了豆瓣：img*.doubanio.com 无 Referer 仍可能 418 或返回反爬 HTML。
       return (
         `<img class="${cls}" src="${ctx.escape(resolved.src)}" alt="${ctx.escape(alt)}"` +
-        ` loading="lazy" decoding="async" referrerpolicy="no-referrer">`
+        ` loading="eager" decoding="async" referrerpolicy="no-referrer"` +
+        ` style="--ds-studio-vis-hue:${hue}">`
       );
     }
     // 语义区分：模型**没给图**（src=null）是 PoC 的设计内状态 → 渐变占位，**不算降级**；
     // 只有**协议被拒**（javascript:/data:/ftp: 等）才是安全降级，需要进 outcome。
     if (resolved.reason === 'image_unsafe_src') noteOutcome(ctx.outcome, 'degraded', resolved.reason);
-    const fallback = isRecord(props.fallback) ? props.fallback : null;
-    const hue = normalizeHue(fallback === null ? undefined : fallback.hue);
     return (
       `<div class="${cls} ds-studio-vis-img--placeholder" style="--ds-studio-vis-hue:${hue}"` +
       ` role="img" aria-label="${ctx.escape(alt)}"><span class="ds-studio-vis-img__alt">${ctx.escape(alt)}</span></div>`

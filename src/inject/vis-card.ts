@@ -15,6 +15,7 @@
 import { renderToHtml } from './vis/render';
 import { buildVisCss } from './vis/theme';
 import { blockElementsFor, findVisDocuments } from './vis/text-detect';
+import { upgradeLegacyDocument } from './vis/legacy';
 import DOMPurify from 'dompurify';
 
 export interface VisCardOptions {
@@ -27,6 +28,8 @@ export interface VisCardOptions {
 export interface VisCardDiagnostics {
   scannedFences: number;
   scannedBare: number;
+  /** 命中的旧式榜单被迁移成 v1 文档的次数（仍算渲染成功）。 */
+  upgraded: number;
   rendered: number;
   failures: Array<{ kind: 'fence' | 'bare'; reason: string }>;
 }
@@ -37,6 +40,7 @@ const RENDERED_ATTR = 'data-ds-studio-vis-rendered';
 let diagnostics: VisCardDiagnostics = {
   scannedFences: 0,
   scannedBare: 0,
+  upgraded: 0,
   rendered: 0,
   failures: [],
 };
@@ -46,7 +50,7 @@ export function getVisCardDiagnostics(): VisCardDiagnostics {
 }
 
 function resetDiagnostics(): void {
-  diagnostics = { scannedFences: 0, scannedBare: 0, rendered: 0, failures: [] };
+  diagnostics = { scannedFences: 0, scannedBare: 0, upgraded: 0, rendered: 0, failures: [] };
 }
 
 /** 卡片宿主：Shadow DOM 隔离样式，避免污染 DeepSeek 页面既有 CSS。 */
@@ -71,21 +75,126 @@ function createHost(doc: Document, html: string, theme: 'light' | 'dark'): HTMLE
   return host;
 }
 
-/** 图片加载失败时降级为渐变占位（studio 无远程代理，无法代取防盗链图）。 */
+/**
+ * 页端图片代理缓存：同一张海报在多个卡片/多次扫描里只取一次。
+ * 键是原始 URL，值是宿主返回的 data: URL；空字符串表示已确认失败。
+ */
+const IMAGE_CACHE_LIMIT = 64;
+const imageCache = new Map<string, string>();
+const imageInflight = new Map<string, Promise<string | null>>();
+
+interface StudioHostBridge {
+  sendEnvelope?: (envelope: {
+    command: string;
+    requestId: string;
+    payload: unknown;
+  }) => Promise<unknown>;
+}
+
+function studioHost(): StudioHostBridge | null {
+  const g = globalThis as unknown as {
+    __deepseekStudio?: { host?: StudioHostBridge };
+    window?: { __deepseekStudio?: { host?: StudioHostBridge } };
+  };
+  const host = g.__deepseekStudio?.host ?? g.window?.__deepseekStudio?.host;
+  return host && typeof host.sendEnvelope === 'function' ? host : null;
+}
+
+function rememberImage(url: string, dataUrl: string): void {
+  if (imageCache.size >= IMAGE_CACHE_LIMIT) {
+    const oldest = imageCache.keys().next().value;
+    if (oldest !== undefined) imageCache.delete(oldest);
+  }
+  imageCache.set(url, dataUrl);
+}
+
+/** 通过宿主抓图；失败返回 null（调用方降级为渐变占位）。 */
+async function proxyImage(url: string): Promise<string | null> {
+  const cached = imageCache.get(url);
+  if (cached !== undefined) return cached === '' ? null : cached;
+  const running = imageInflight.get(url);
+  if (running !== undefined) return running;
+
+  const host = studioHost();
+  if (host === null || host.sendEnvelope === undefined) return null;
+
+  const task = (async (): Promise<string | null> => {
+    try {
+      const raw = await host.sendEnvelope!({
+        command: 'image_fetch',
+        requestId:
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `img-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        payload: { url },
+      });
+      const response = raw as { ok?: unknown; dataUrl?: unknown } | null;
+      if (response !== null && response.ok === true && typeof response.dataUrl === 'string'
+        && response.dataUrl.startsWith('data:image/')) {
+        rememberImage(url, response.dataUrl);
+        return response.dataUrl;
+      }
+      rememberImage(url, '');
+      return null;
+    } catch {
+      return null; // 瞬时失败不写负缓存，下次扫描可重试
+    } finally {
+      imageInflight.delete(url);
+    }
+  })();
+  imageInflight.set(url, task);
+  return task;
+}
+
+function replaceWithPlaceholder(imgEl: HTMLImageElement): void {
+  const alt = imgEl.getAttribute('alt') ?? '';
+  const placeholder = imgEl.ownerDocument.createElement('div');
+  // 继承原 img 的类名（含 ratio-2x3），否则失败后海报框会退回自适应高度。
+  placeholder.className = `${imgEl.className} ds-studio-vis-img--placeholder`.replace(/\s+/g, ' ').trim();
+  placeholder.setAttribute('role', 'img');
+  placeholder.setAttribute('aria-label', alt);
+  const hue = imgEl.style.getPropertyValue('--ds-studio-vis-hue').trim();
+  if (hue !== '') placeholder.style.setProperty('--ds-studio-vis-hue', hue);
+  const span = imgEl.ownerDocument.createElement('span');
+  span.className = 'ds-studio-vis-img__alt';
+  span.textContent = alt;
+  placeholder.appendChild(span);
+  imgEl.replaceWith(placeholder);
+}
+
+/**
+ * 图片加载失败：先让宿主带 Referer 代取（豆瓣等防盗链图源），成功则换成 data: URL；
+ * 仍然失败才降级为渐变占位。每个 <img> 只尝试一次，避免 error 循环。
+ */
 function bindImageFallback(root: ShadowRoot): void {
   const images = root.querySelectorAll('img.ds-studio-vis-img');
   for (const img of images) {
-    img.addEventListener('error', () => {
-      const alt = img.getAttribute('alt') ?? '';
-      const placeholder = img.ownerDocument.createElement('div');
-      placeholder.className = 'ds-studio-vis-img ds-studio-vis-img--placeholder';
-      placeholder.setAttribute('role', 'img');
-      placeholder.setAttribute('aria-label', alt);
-      const span = img.ownerDocument.createElement('span');
-      span.className = 'ds-studio-vis-img__alt';
-      span.textContent = alt;
-      placeholder.appendChild(span);
-      img.replaceWith(placeholder);
+    const imgEl = img as HTMLImageElement;
+    imgEl.addEventListener('error', () => {
+      if (imgEl.dataset.dsProxyTried === '1') {
+        replaceWithPlaceholder(imgEl);
+        return;
+      }
+      imgEl.dataset.dsProxyTried = '1';
+      const url = imgEl.currentSrc !== '' ? imgEl.currentSrc : imgEl.src;
+      if (url === '' || url.startsWith('data:')) {
+        replaceWithPlaceholder(imgEl);
+        return;
+      }
+      // 没有宿主桥（测试环境 / 纯页面预览）时不要留下异步窗口：
+      // 直接同步降级，调用方 dispatchEvent 后立刻就能看到占位。
+      if (studioHost() === null) {
+        replaceWithPlaceholder(imgEl);
+        return;
+      }
+      void proxyImage(url).then((dataUrl) => {
+        if (!imgEl.isConnected) return;
+        if (dataUrl === null) {
+          replaceWithPlaceholder(imgEl);
+          return;
+        }
+        imgEl.src = dataUrl;
+      });
     });
   }
 }
@@ -109,7 +218,10 @@ function applyFenced(scope: HTMLElement, theme: 'light' | 'dark'): number {
       diagnostics.failures.push({ kind: 'fence', reason: 'invalid_json' });
       continue;
     }
-    const result = renderToHtml(doc);
+    // 旧会话/旧客户端常产出无 v/root 的榜单 JSON：先尝试迁移，仍然失败才保留原文。
+    const upgraded = upgradeLegacyDocument(doc);
+    if (upgraded.upgraded) diagnostics.upgraded += 1;
+    const result = renderToHtml(upgraded.doc);
     if (result.html === '' || result.outcome.status === 'failed') {
       diagnostics.failures.push({
         kind: 'fence',
@@ -136,7 +248,9 @@ function applyBare(scope: HTMLElement, limit: number, theme: 'light' | 'dark'): 
     if (!target) continue;
     if (target.closest(`.${HOST_CLASS}`)) continue;
     diagnostics.scannedBare += 1;
-    const result = renderToHtml(detected.doc);
+    const upgraded = upgradeLegacyDocument(detected.doc);
+    if (upgraded.upgraded) diagnostics.upgraded += 1;
+    const result = renderToHtml(upgraded.doc);
     if (result.html === '' || result.outcome.status === 'failed') {
       diagnostics.failures.push({
         kind: 'bare',

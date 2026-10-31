@@ -131,4 +131,112 @@ describe('applyVisCards 端到端', () => {
     expect(n).toBe(0);
     expect(root.querySelector('p')?.textContent).toBe('hello world');
   });
+
+  it('旧式 ranking-list（无 v/root）⇒ 自动迁移为卡片', () => {
+    const legacy = JSON.stringify({
+      type: 'ranking-list',
+      title: '2026 高分悬疑电影',
+      items: [{ rank: 1, title: '痴迷', imdb: 8.2 }],
+    });
+    const root = scope(`<pre><code>${legacy}</code></pre>`);
+    const n = applyVisCards(root);
+    expect(n).toBe(1);
+    expect(getVisCardDiagnostics().upgraded).toBe(1);
+    expect(root.querySelector('pre')).toBeNull();
+    const shadow = root.querySelector('.ds-studio-vis-host')?.shadowRoot;
+    expect(shadow?.textContent).toContain('2026 高分悬疑电影');
+    expect(shadow?.textContent).toContain('痴迷');
+    expect(shadow?.textContent).toContain('IMDb 8.2');
+    // 旧数据没有海报字段，但每条仍要生成 2:3 海报位，不能只剩文字。
+    const placeholder = shadow?.querySelector('.ds-studio-vis-img--placeholder') as HTMLElement | null;
+    expect(placeholder).toBeTruthy();
+    expect(placeholder?.classList.contains('ds-studio-vis-ratio-2x3')).toBe(true);
+  });
+
+  it('旧式榜单带 http 海报 ⇒ 输出真实 img', () => {
+    const legacy = JSON.stringify({
+      type: 'ranking-list',
+      title: '2026 悬疑剧',
+      items: [{ rank: 1, name: '余炽之上', score: '9.2', poster: 'https://example.com/yuchizhishang.jpg' }],
+    });
+    const root = scope(`<pre><code>${legacy}</code></pre>`);
+    expect(applyVisCards(root)).toBe(1);
+    const shadow = root.querySelector('.ds-studio-vis-host')?.shadowRoot;
+    const img = shadow?.querySelector('img.ds-studio-vis-img') as HTMLImageElement | null;
+    expect(img?.getAttribute('src')).toBe('https://example.com/yuchizhishang.jpg');
+    // WebView 虚拟滚动下 lazy 会永不加载，海报必须 eager 拉取。
+    expect(img?.getAttribute('loading')).toBe('eager');
+  });
+
+  it('旧式榜单的 javascript: 海报地址 ⇒ 降级占位', () => {
+    const legacy = JSON.stringify({
+      title: '危险榜单',
+      items: [{ rank: 1, name: 'x', poster: 'javascript:alert(1)' }],
+    });
+    const root = scope(`<pre><code>${legacy}</code></pre>`);
+    expect(applyVisCards(root)).toBe(1);
+    const shadow = root.querySelector('.ds-studio-vis-host')?.shadowRoot;
+    expect(shadow?.querySelector('img')).toBeNull();
+    expect(shadow?.querySelector('.ds-studio-vis-img--placeholder')).toBeTruthy();
+  });
+
+  it('旧式结构但没有可迁移条目 ⇒ 保留原始代码块', () => {
+    const legacy = JSON.stringify({ type: 'ranking-list', title: '空榜单', items: [] });
+    const root = scope(`<pre><code>${legacy}</code></pre>`);
+    expect(applyVisCards(root)).toBe(0);
+    expect(root.querySelector('pre')?.textContent).toContain('空榜单');
+  });
+
+  it('合法榜单含海报位 ⇒ 出卡并保留 2:3 海报框', () => {
+    const ranking = {
+      v: 1,
+      root: {
+        type: 'Column',
+        children: [
+          { type: 'Text', text: '2026 悬疑片 Top 1', variant: 'title' },
+          {
+            type: 'Row',
+            children: [
+              { type: 'Image', src: null, alt: '痴迷 海报', ratio: '2/3', fallback: { hue: 18 } },
+              { type: 'Column', children: [{ type: 'Text', text: '痴迷', variant: 'subtitle' }] },
+            ],
+          },
+        ],
+      },
+    };
+    const root = scope(`<pre><code>${JSON.stringify(ranking)}</code></pre>`);
+    expect(applyVisCards(root)).toBe(1);
+    const shadow = root.querySelector('.ds-studio-vis-host')?.shadowRoot;
+    const placeholder = shadow?.querySelector('.ds-studio-vis-img--placeholder') as HTMLElement | null;
+    expect(placeholder).toBeTruthy();
+    expect(placeholder?.classList.contains('ds-studio-vis-ratio-2x3')).toBe(true);
+    expect(placeholder?.style.getPropertyValue('--ds-studio-vis-hue')).toBe('18');
+  });
+
+  it('远程图加载失败 ⇒ 占位继承 hue 与比例', () => {
+    const doc = {
+      v: 1,
+      root: {
+        type: 'Row',
+        children: [
+          {
+            type: 'Image',
+            src: 'https://example.com/poster.jpg',
+            alt: '示例海报',
+            ratio: '2/3',
+            fallback: { hue: 275 },
+          },
+        ],
+      },
+    };
+    const root = scope(`<pre><code>${JSON.stringify(doc)}</code></pre>`);
+    expect(applyVisCards(root)).toBe(1);
+    const shadow = root.querySelector('.ds-studio-vis-host')?.shadowRoot;
+    const img = shadow?.querySelector('img.ds-studio-vis-img') as HTMLImageElement | null;
+    expect(img?.style.getPropertyValue('--ds-studio-vis-hue')).toBe('275');
+    img?.dispatchEvent(new Event('error'));
+    const placeholder = shadow?.querySelector('.ds-studio-vis-img--placeholder') as HTMLElement | null;
+    expect(placeholder?.classList.contains('ds-studio-vis-ratio-2x3')).toBe(true);
+    expect(placeholder?.style.getPropertyValue('--ds-studio-vis-hue')).toBe('275');
+  });
 });

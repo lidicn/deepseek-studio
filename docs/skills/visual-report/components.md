@@ -57,15 +57,23 @@
 | `ratio` | `"2/3" \| "16/9"` | 否 | 缺省为自适应 |
 | `fallback` | `{ hue?: number }` | 否 | 占位渐变色相，`0–360` 整数，非有限数回落 `210` |
 
+> 榜单场景建议始终显式写 `ratio: "2/3"` 与 `fallback.hue`：远程图加载失败时，占位会继承
+> 这两个值，海报框尺寸与配色不会塌掉。没有可靠图源就写 `"src": null`，**不要省略 `Image` 节点**。
+
 `src` 的三种结果：
 
 | 情况 | 渲染 | 状态 |
 |---|---|---|
-| `http(s)://` 合法地址 | `<img loading="lazy" decoding="async" referrerpolicy="no-referrer">` | 正常 |
+| `http(s)://` 合法地址 | `<img loading="eager" decoding="async" referrerpolicy="no-referrer">`；加载失败时经宿主代理取图 | 正常 / 代理回退 |
 | `null` | 渐变占位块（按 `fallback.hue`） | **设计内状态，不算降级** |
 | 其它协议（`javascript:` / `data:` / `ftp:` 等） | 渐变占位块 | 降级（`image_unsafe_src`） |
 
 > `referrerpolicy="no-referrer"` 是刻意选择：不少图床按 Referer 判防盗链，不带 Referer 反而更容易加载。
+> 豆瓣 `img*.doubanio.com` 需要 `Referer: https://movie.douban.com/` 才放行，所以**首次直连失败后**，
+> 页端会调用宿主 `image_fetch` 命令重新取图（宿主按豆瓣域名补 Referer 与桌面 UA，校验图片魔数后
+> 转 `data:` URL）。取图成功即回填 `<img>`；重定向、超时、非图片、超限等失败一律降级为
+> `fallback.hue` 渐变占位，不会破图。豆瓣之外仍优先 `m.media-amazon.com` / `image.tmdb.org` /
+> `upload.wikimedia.org`；没有验证过的地址就写 `"src": null`，不要编 URL。
 
 **不允许 children**。
 

@@ -52,6 +52,70 @@
 
 ---
 
+## 1.1 电影榜单（海报位不可省）
+
+正文：
+
+> 2026 年 IMDb 7.0 以上的悬疑/惊悚片，评分截至 2026-10；海报地址未经核验时统一留空，由色相占位。
+
+```vis-json
+{
+  "v": 1,
+  "root": {
+    "type": "Column",
+    "children": [
+      { "type": "Text", "text": "2026 高分悬疑电影", "variant": "title" },
+      {
+        "type": "Row",
+        "children": [
+          {
+            "type": "Image",
+            "src": null,
+            "alt": "痴迷 海报",
+            "ratio": "2/3",
+            "fallback": { "hue": 12 }
+          },
+          {
+            "type": "Column",
+            "children": [
+              { "type": "Text", "text": "痴迷 · Obsession", "variant": "subtitle" },
+              { "type": "Text", "text": "许愿 Willow 引发的恐怖连锁，封闭空间里一路收紧。" },
+              { "type": "Text", "text": "2026 · IMDb 8.2 · 惊悚 / 悬疑", "variant": "meta" }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "Row",
+        "children": [
+          {
+            "type": "Image",
+            "src": null,
+            "alt": "黑牢城 海报",
+            "ratio": "2/3",
+            "fallback": { "hue": 205 }
+          },
+          {
+            "type": "Column",
+            "children": [
+              { "type": "Text", "text": "黑牢城", "variant": "subtitle" },
+              { "type": "Text", "text": "织田信长围城之下，城内谜案与武士推理并行。" },
+              { "type": "Text", "text": "2026 · IMDb 7.1 · 悬疑 / 历史", "variant": "meta" }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+> 反例：只写 `{"type":"ranking-list","items":[...]}` 或把条目写成纯 `Text`。前者是旧格式——
+> 渲染器会尽力迁移成卡片（补海报位、最多 10 条），但**新回答不要再用**，字段可能还原不全；
+> 后者能出卡但没有海报框。两种都不是这个 Skill 的输出格式。
+
+---
+
 ## 2. 参数横评（纯文本，无图）
 
 正文：
