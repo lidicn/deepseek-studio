@@ -195,6 +195,130 @@ export interface StudioSkillDescriptor {
 // v1.9：技能列表缓存（启动时从宿主 skill.list 拉取，注入提示词，让 agent 知道有哪些技能、SKILL.md 在哪）。
 let currentSkills: StudioSkillDescriptor[] = [];
 
+/**
+ * P0：技能清单运行期新鲜度。
+ *
+ * 根因：启动时只拉一次 `skill.list`，之后 `currentSkills` 永不刷新。运行期新增技能在
+ * `/` 浮层里看得到（desktop/entry.ts 自己刷新清单），但注入提示词仍读旧缓存，
+ * 于是「面板看得到、模型调不到」。这里给注入侧加 TTL + 发送前有界等待：
+ *   - TTL 内复用缓存，不额外发请求；
+ *   - 过期后在 chat 发送前拉一次，最多等 150ms，超时用旧清单继续发；
+ *   - 并发发送复用同一 in-flight，同一时刻最多一个 skill.list 在飞。
+ */
+const SKILLS_TTL_MS = 5_000;
+const SKILLS_WAIT_BUDGET_MS = 150;
+
+// 用单调时钟而不是 Date.now：系统时间被校准/NTP 跳变时 wall clock 会跳，
+// 把「刚刷新过」误判成过期（或反之）会让清单长期陈旧。performance.now 单调递增。
+const defaultSkillsClock = (): number => (
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()
+);
+let skillsClock: () => number = defaultSkillsClock;
+/** 最近一次成功拉取的时间戳；-Infinity 表示从未成功。 */
+let skillsFreshAt = Number.NEGATIVE_INFINITY;
+/** 在飞刷新；并发发送复用同一个，避免同一时刻发多条 skill.list。 */
+let skillsRefreshInFlight: Promise<boolean> | null = null;
+/** 在飞刷新是否值得让 chat 发送等待：启动期首拉不阻塞页面首个请求。 */
+let skillsRefreshWaitable = false;
+/** 当前安装实例的 sender（启动加载与运行期刷新共用，不留两套拉取逻辑）。 */
+let skillsRefreshSender: ToolCallSender | null = null;
+/** 最近一次拉取失败的原因（只用于诊断日志，真机排查靠它）。 */
+let skillsLastError: string | null = null;
+
+/** 测试用：覆盖新鲜度时钟（默认 performance.now 单调时钟）。传 null 恢复。 */
+export function __setSkillsFreshnessClockForTests(clock: (() => number) | null): void {
+  skillsClock = clock ?? defaultSkillsClock;
+}
+
+/** 测试用：重置技能新鲜度状态，避免同文件多个用例互相污染。 */
+export function __resetSkillsFreshnessForTests(): void {
+  skillsClock = defaultSkillsClock;
+  skillsFreshAt = Number.NEGATIVE_INFINITY;
+  skillsRefreshInFlight = null;
+  skillsRefreshWaitable = false;
+  skillsRefreshSender = null;
+  skillsLastError = null;
+  currentSkills = [];
+}
+
+function isSkillsFresh(): boolean {
+  return skillsClock() - skillsFreshAt < SKILLS_TTL_MS;
+}
+
+/**
+ * 单次拉取技能清单：成功更新缓存与时间戳；失败保留旧清单、不抛。
+ * 已有 in-flight 时直接复用（并发发送只发一次）。
+ */
+function refreshSkillsOnce(waitable: boolean): Promise<boolean> {
+  if (skillsRefreshInFlight) return skillsRefreshInFlight;
+  const sender = skillsRefreshSender;
+  if (!sender) return Promise.resolve(false);
+  const task = (async (): Promise<boolean> => {
+    try {
+      const r = await sender({ callId: 'skills-refresh', invocationName: 'skill.list', params: {} });
+      if (r.ok && r.data && Array.isArray((r.data as { skills?: unknown[] }).skills)) {
+        currentSkills = (r.data as { skills: StudioSkillDescriptor[] }).skills;
+        skillsFreshAt = skillsClock();
+        skillsLastError = null;
+        return true;
+      }
+      skillsLastError = `ok=${r.ok} error=${r.error ?? 'none'}`;
+      return false;
+    } catch (e) {
+      // 拉取失败不抛：保留旧清单，下一次发送再试。
+      skillsLastError = e instanceof Error ? e.message : String(e);
+      return false;
+    }
+  })();
+  skillsRefreshWaitable = waitable;
+  skillsRefreshInFlight = task;
+  void task.then(() => {
+    if (skillsRefreshInFlight === task) {
+      skillsRefreshInFlight = null;
+      skillsRefreshWaitable = false;
+    }
+  });
+  return task;
+}
+
+/**
+ * 新鲜度不足时启动刷新；TTL 内直接跳过，已有 in-flight 直接复用。
+ * 返回「值得等待」的 promise；启动期首拉返回 null（不阻塞页面首个 chat 请求）。
+ */
+function kickSkillsRefresh(): Promise<boolean> | null {
+  if (isSkillsFresh()) return null;
+  if (skillsRefreshInFlight) return skillsRefreshWaitable ? skillsRefreshInFlight : null;
+  return refreshSkillsOnce(true);
+}
+
+/** 有界等待：task 先完成用其结果，超时返回 null（调用方继续用旧清单）。 */
+function raceBudget<T>(task: Promise<T>, limitMs: number): Promise<T | null> {
+  return new Promise<T | null>((resolve) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      resolve(null);
+    }, limitMs);
+    const settle = (value: T | null): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    task.then((value) => settle(value), () => settle(null));
+  });
+}
+
+/** chat 发送前有界等待技能刷新（≤150ms）；超时/失败用旧清单继续，不阻塞发送。 */
+async function awaitSkillsRefreshBudget(limitMs = SKILLS_WAIT_BUDGET_MS): Promise<void> {
+  const pending = kickSkillsRefresh();
+  if (!pending) return;
+  await raceBudget(pending, limitMs);
+}
+
 // v1.3：步骤流 UI 句柄（分布思考状态栏 + 工具分组）
 let stepFlow: StepFlowHandle | null = null;
 let stepFlowStep = 0;
@@ -964,6 +1088,12 @@ function installFetchHook(
       await awaitMemorySelectBudget(120);
     }
 
+    // P0：技能清单运行期新鲜度——chat 请求在注入前有界等待刷新（≤150ms）。
+    // 非 chat 请求不阻塞；首轮原样重发不刷新（重发必须逐字节幂等）。
+    if (isDeepSeekChatEndpoint(url, method) && !loopState?.inFirstAttemptResend) {
+      await awaitSkillsRefreshBudget();
+    }
+
     // 请求侧回填：把累积的工具结果写进下一次对话请求的 prompt
     if (pending.length > 0 && isDeepSeekChatEndpoint(url, method) && !loopState?.inFirstAttemptResend) {
       init = augmentInit(init, pending, loopState?.originalTask ?? '');
@@ -1209,26 +1339,41 @@ function installXhrHooks(
       diag(`xhr pow_challenge body=${body.slice(0, 500)}`);
     }
     // 请求侧：无论 pending 是否为空，命中对话端点就尝试注入工具提示/回填结果。
-    if (isChat && typeof body === 'string') {
-      diag(`xhr chat body len=${body.length} head=${body.slice(0, 200)}`);
-      // v1.6：捕获原始任务、重置循环累积状态。
-      // 判定「新用户消息」的信号：prompt 不含续跑标签（<original_task> / <tool_results>）。
-      // 只靠 parent_message_id===null 不够 —— 同一会话连续发任务时它永远非 null，导致 originalTask
-      // 跨任务泄漏（上个任务的上下文污染当前任务）。续跑/nudge prompt 都带这些标签，用户消息不带。
-      // 必须在 prepareOutgoingBody 之前抓原始 prompt（augmentation 会改写它）。
-      if (loopState) captureChatRequest(body, loopState, diag);
+    // v1.6：捕获原始任务、重置循环累积状态。
+    // 判定「新用户消息」的信号：prompt 不含续跑标签（<original_task> / <tool_results>）。
+    // 只靠 parent_message_id===null 不够 —— 同一会话连续发任务时它永远非 null，导致 originalTask
+    // 跨任务泄漏（上个任务的上下文污染当前任务）。续跑/nudge prompt 都带这些标签，用户消息不带。
+    // 必须在 prepareOutgoingBody 之前抓原始 prompt（augmentation 会改写它）。
+    //
+    // 这里保持同步执行：captureChatRequest 里的 kickMemorySelect 会同步建出 pending，
+    // 下面的「是否延迟发送」判定依赖它先就绪；延迟到回调里再做就永远看不到本次的 pending。
+    if (isChat && typeof body === 'string' && loopState) {
+      captureChatRequest(body, loopState, diag);
+    }
+    const xhr = this;
+    const sendNow = () => (origSend as (...a: unknown[]) => unknown).call(xhr, body);
+    // P0：chat 请求准备抽成一个函数，延迟发送路径在真正 origSend 之前执行且只执行一次。
+    // 这保证 prepareOutgoingBody 每条请求只调用一次 —— 否则延迟路径会二次注入能力提示。
+    let prepared = false;
+    const prepareChatSend = (): void => {
+      if (prepared) return;
+      prepared = true;
+      if (!isChat || typeof body !== 'string') return;
+      const raw = body;
+      diag(`xhr chat body len=${raw.length} head=${raw.slice(0, 200)}`);
       // F8：首轮原样重发时，body 已经是上一份已注入的原文；再跑一次注入会把
       // JSON 重新序列化并改变字节，重试就不再幂等。
       const next = loopState?.inFirstAttemptResend
-        ? body
-        : prepareOutgoingBody(body, pending, loopState?.originalTask ?? '');
+        ? raw
+        : prepareOutgoingBody(raw, pending, loopState?.originalTask ?? '');
+      const outBody = next === null ? raw : next;
       if (next !== null) {
-        body = next;
         diag(`xhr chat body injected len=${next.length}`);
       }
+      body = outBody;
       // v0.8：记住最近一次 chat 请求 body 作为自动续跑模板。
       if (loopState) {
-        loopState.lastChatBody = body;
+        loopState.lastChatBody = outBody;
         loopState.streamActive = true;
         loopState.sseErrorSeen = null;
       }
@@ -1236,22 +1381,24 @@ function installXhrHooks(
       // 若它是首轮重发，记一次「真实发出」——预算只认真发出去的请求。
       streamId = loopState ? beginStream(loopState) : STREAM_UNCLAIMED;
       if (loopState?.inFirstAttemptResend) firstAttemptBudget(traceTurnId).sent += 1;
-      interceptorTrace.record({ t: 'request.sent', turnId: traceTurnId, bytes: byteLengthOf(body) });
-      reportContextBudget(body, loopState?.chatUI);
-    }
-    const xhr = this;
-    const sendNow = () => (origSend as (...a: unknown[]) => unknown).call(xhr, body);
-    // C1-F1 修复：XHR 路径也要获得与 fetch 等价的 memory.select 有界等待。
+      interceptorTrace.record({ t: 'request.sent', turnId: traceTurnId, bytes: byteLengthOf(outBody) });
+      reportContextBudget(outBody, loopState?.chatUI);
+    };
+    // C1-F1 / P0：XHR 路径要有与 fetch 等价的两类有界等待：
+    //   1) memory.select 预取（≤120ms，C1-F1）；
+    //   2) 技能清单运行期刷新（≤150ms，P0）。
     // proto.send 必须同步返回 void，所以采用「延迟 origSend」模式：
-    // kickMemorySelect 已在 captureChatRequest 里同步触发；若有 pending，
-    // 用 120ms 预算等结果，超时立即发。发送被延迟时 proto.send 先同步 return。
-    // 非聊天 XHR / 首轮重发 / feature flag 关 → 不延迟，直接走原路径。
-    const NEED_MEM_SELECT_WAIT = isChat
+    // 等待条件成立时先同步 return，等预算到期或依赖就绪后在回调里执行准备 + origSend。
+    // 非聊天 XHR / 首轮重发 / feature flag 关 / 清单新鲜 → 不延迟，直接走原路径。
+    const pendingSel = isChat
       && isMemorySelectEnabled()
       && !!memorySelectState.pending
-      && !loopState?.inFirstAttemptResend;
-    if (NEED_MEM_SELECT_WAIT) {
-      const pendingSel = memorySelectState.pending!;
+      && !loopState?.inFirstAttemptResend
+      ? memorySelectState.pending
+      : null;
+    // 首轮原样重发不刷新：重发必须逐字节幂等，刷新只会引入新的注入窗口。
+    const skillsWait = isChat && !loopState?.inFirstAttemptResend ? kickSkillsRefresh() : null;
+    if (pendingSel || skillsWait) {
       let settled = false;
       // 延迟执行真正的 origSend；检测到 abort 时先发再 origAbort，保证 readyState=4。
       const doDelayedSend = () => {
@@ -1259,7 +1406,7 @@ function installXhrHooks(
         settled = true;
         (this as Record<string, unknown>).__dsDelayedSend = undefined;
         // 消费 pending 结果（若此时 fetch 路径还没消费）
-        if (memorySelectState.pending === pendingSel) {
+        if (pendingSel && memorySelectState.pending === pendingSel) {
           void pendingSel.then((rows) => {
             if (rows && rows.length > 0) currentMemories = rows;
           });
@@ -1268,6 +1415,7 @@ function installXhrHooks(
         const wasAborted = Boolean((this as Record<string, unknown>)[DS_ABORTED_FLAG]);
         try {
           // 延迟发送也必须先挂响应钩子，否则工具解析、哨兵和断流结算全部失效。
+          prepareChatSend();
           installResponseHookAndSend();
         } catch (e) {
           // 延迟 send 的异常走 setTimeout 回调；这里让 onreadystatechange 链自然处理。
@@ -1281,14 +1429,15 @@ function installXhrHooks(
       };
       // 暴露给 proto.abort 包装：延迟期间用户 abort → 立即触发 send 再 abort。
       (this as Record<string, unknown>).__dsDelayedSend = doDelayedSend;
-      // 120ms 预算：pending 完成或超时谁先到就触发 send。
-      const budget = new Promise<null>((resolve) => {
-        setTimeout(() => resolve(null), 120);
-      });
-      Promise.race([pendingSel, budget]).then(() => doDelayedSend());
-      // proto.send 同步返回 void；origSend 将在 budget 到期后或 pending 完成后执行。
+      // 两类等待各自有界，全部就绪（或各自超时）后再发；总延迟 ≤ max(120, 150)ms。
+      const waits: Array<Promise<unknown>> = [];
+      if (pendingSel) waits.push(raceBudget(pendingSel, 120));
+      if (skillsWait) waits.push(raceBudget(skillsWait, SKILLS_WAIT_BUDGET_MS));
+      void Promise.all(waits).then(() => doDelayedSend());
+      // proto.send 同步返回 void；origSend 将在预算到期后或依赖就绪后执行。
       return void 0;
     }
+    prepareChatSend();
     function installResponseHookAndSend() {
       (xhr as Record<string, unknown>).__dsIsChat = isChat;
       const prev = xhr.onreadystatechange;
@@ -1492,6 +1641,8 @@ function installXhrHooks(
 export function installMainWorldInterceptor(options: MainWorldInterceptorOptions): MainWorldInterceptorHandle {
   console.log('[interceptor] installed, fetch hook + XHR hook ready');
   const { sender, diag, onAssistantReply, onMemoriesUpdate, chatUI, onStreamDelta } = options;
+  // P0：启动加载与运行期刷新共用同一个 sender，避免两套 skill.list 拉取逻辑。
+  skillsRefreshSender = sender;
   const pending: PendingResult[] = [];
   const d: InterceptorDiag = diag ?? (() => {});
   // v1.0：从全局变量读取初始记忆（entry.ts 在连接建立时设置）
@@ -2432,23 +2583,20 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     d(`mcp tools load failed after ${maxRetries} attempts, agent will not see MCP tools in prompt`);
   })();
 
-  // v1.9：启动时异步加载技能列表，注入提示词让 agent 知道有哪些技能、SKILL.md 在哪。
+  // v1.9 / P0：启动时异步加载技能列表，注入提示词让 agent 知道有哪些技能、SKILL.md 在哪。
   // 与 MCP 一样：installMainWorldInterceptor 可能早于 WS 连接建立，sender 会先返回
   // no-host，需要重试直到成功或达到最大次数。
+  // 拉取本身复用运行期刷新同一个 refreshSkillsOnce（不留两套 skill.list 逻辑）；
+  // 启动期首拉标记为「不值得阻塞发送」，避免页面首个 chat 请求白等 WS 建连。
   (async () => {
     const maxRetries = 10;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        const r = await sender({ callId: 'skills-init', invocationName: 'skill.list', params: {} });
-        if (r.ok && r.data && Array.isArray((r.data as { skills?: unknown[] }).skills)) {
-          currentSkills = (r.data as { skills: Array<{ id: string; name: string; description: string; skillMdPath: string }> }).skills;
-          d(`loaded ${currentSkills.length} skills for prompt injection (attempt ${attempt + 1})`);
-          return;
-        }
-        d(`skills load attempt ${attempt + 1} failed: ok=${r.ok} error=${r.error ?? 'none'}`);
-      } catch (e) {
-        d(`skills load attempt ${attempt + 1} error: ${e instanceof Error ? e.message : String(e)}`);
+      const ok = await refreshSkillsOnce(false);
+      if (ok) {
+        d(`loaded ${currentSkills.length} skills for prompt injection (attempt ${attempt + 1})`);
+        return;
       }
+      d(`skills load attempt ${attempt + 1} failed: ${skillsLastError ?? 'unknown'}`);
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     d(`skills load failed after ${maxRetries} attempts, agent will not see skills in prompt`);
@@ -2472,6 +2620,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       } catch {
         /* ignore */
       }
+      // P0：卸载后不再用本实例的 sender 发运行期刷新（避免 stop 之后还在拉清单）。
+      if (skillsRefreshSender === sender) skillsRefreshSender = null;
     },
   };
 }
