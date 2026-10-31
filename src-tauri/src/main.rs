@@ -9,7 +9,9 @@
 mod sidecar;
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use url::Url;
 
@@ -31,6 +33,30 @@ fn p0_log(msg: impl AsRef<str>) {
         std::thread::current().id(),
         msg.as_ref()
     );
+}
+
+/// 建窗「在建集合」：A 方案把建窗移到工作线程后，**并发调用会各建一个窗口**。
+/// 20261031 实测（roundT1-hide1-bot2）：一次关闭前触发 3 个 `bot window build begin`
+/// （线程 13/14/15）→ 建出 3 个窗、`maxVisible=3`、退出后残留 webview。
+/// 这里做幂等闸：同一个 label 同时只允许一个在建，重复调用直接跳过。
+static WINDOW_BUILD_INFLIGHT: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+/// 登记「开始建窗」；已经在建则返回 false（调用方直接跳过）。
+fn inflight_begin(label: &str) -> bool {
+    let mut guard = WINDOW_BUILD_INFLIGHT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let set = guard.get_or_insert_with(HashSet::new);
+    set.insert(label.to_string())
+}
+
+fn inflight_end(label: &str) {
+    let mut guard = WINDOW_BUILD_INFLIGHT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(set) = guard.as_mut() {
+        set.remove(label);
+    }
 }
 
 /// debug 构建会附带一个控制台窗口；从资源管理器双击启动时它会一直挂在桌面上，
@@ -712,6 +738,10 @@ fn open_workbench(app: tauri::AppHandle) -> Result<(), String> {
     //
     // 改法：建窗放到工作线程执行——主线程立即返回，事件循环空闲，能正常处理投递过来的建窗消息。
     // 前端 `__studioOpenWorkbench` 本来就是 fire-and-forget，不依赖同步返回。
+    if !inflight_begin("workbench") {
+        p0_log("workbench build skipped (already inflight)");
+        return Ok(());
+    }
     std::thread::spawn(move || {
         p0_log("workbench build begin (worker)");
         let built = WebviewWindowBuilder::new(&app, "workbench", WebviewUrl::External(url))
@@ -728,6 +758,7 @@ fn open_workbench(app: tauri::AppHandle) -> Result<(), String> {
         if let Err(e) = built {
             eprintln!("[studio] failed to create workbench window: {}", e);
         }
+        inflight_end("workbench");
     });
     Ok(())
 }
@@ -848,6 +879,11 @@ fn open_bot_window(
                 if app.get_webview_window(&label).is_some() {
                     return Err(format!("duplicate window label {:?}", label));
                 }
+                // 并发幂等闸：同 label 已经在建就直接跳过（否则会建出多个窗）。
+                if !inflight_begin(&label) {
+                    p0_log(format!("bot window build skipped (already inflight): {}", label));
+                    return Ok(());
+                }
                 // A（T-1 治本）：同 open_workbench —— 建窗移出 IPC 回调（主线程）。
                 // wry 的建 webview 会「投递 + rx.recv() 阻塞等事件循环」，在 IPC 回调里
                 // 等于主线程自锁（窗口半成品、Tauri 不登记、退出拖住收尾）。
@@ -866,6 +902,7 @@ fn open_bot_window(
                             p0_log(format!("bot window build failed: {}", label));
                         }
                     }
+                    inflight_end(&label);
                 });
             }
         }
@@ -1096,6 +1133,14 @@ fn main() {
         .on_window_event(|window, event| {
             let label = window.label().to_string();
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // 用户视角最先：**先 hide，再打任何日志**。
+                // 20261031 实测（roundT1-exit-*）：日志重定向到 E:\NAS（网络盘），
+                // 单次写 ≈36ms；关闭路径一次要写十几行，光日志就把「300ms 内主窗不可见」
+                // 吃掉（实测 handler 内 358ms 才走到 hide）。hide 是纯 Win32 调用，先做它。
+                if label == "main" {
+                    let _ = window.hide();
+                    p0_log("hide main (first, before any log write)");
+                }
                 eprintln!("[studio] CloseRequested for window: {}", label);
                 // P0 定位：CloseRequested 入口（任何窗口都打），与后续 p0 时间戳同源，便于对齐整条退出时序。
                 p0_log(format!("close-requested: {}", label));
@@ -1115,28 +1160,24 @@ fn main() {
                 SHUTTING_DOWN.store(true, Ordering::SeqCst);
                 // P0 定位：确认走的是「主窗关闭 → 接管退出流程」这条分支（而不是被 SHUTTING_DOWN 提前 return）。
                 p0_log("close-flow begin (main)");
-                api.prevent_close();
 
-                // 用户视角优先：先把窗口藏掉，再记账保存窗口状态。
-                // 20261031 实测（roundT1-fin-*）：`save_window_state` 在负载机器上要 568ms，
-                // 排在 hide 前面会让「关闭后 300ms 内主窗不可见」这条验收线永远过不了。
-                //
-                // 顺序：**主窗最先藏**（用户点的就是它）→ 其余窗 → 保存状态。
-                // v0.32：主窗口立刻隐藏——sidecar 收尾需要几秒，但用户视角应当
-                // “即刻关闭”。窗口留在屏幕上的那几秒正是“关闭时卡住/乱闪”的来源。
-                let _ = window.hide();
-                // P0 定位：主窗 hide 是否被调用（对照上轮实测：主窗直到销毁才消失）。
-                p0_log("hide main");
-
-                // v0.31：退出前先把其余窗口隐藏掉。否则主窗口销毁后焦点会在剩余的
-                // bot/workbench 窗口之间来回跳，表现为关闭时多个窗口连续闪烁。
+                // 用户视角优先：**先藏/销毁窗口，再做跨线程调用与磁盘记账**。
+                // 20261031 实测（roundT1-fin3-*）：`api.prevent_close()` 是跨线程调用、
+                // `save_window_state` 要写盘，两者排在 hide 之前会把「关闭后 300ms 内主窗不可见」
+                // 拖到 780–1737ms。
+                // 顺序：主窗 hide（已在 handler 入口做过）→ 其余窗 hide+destroy → prevent_close
+                // → 保存状态 → 收尾线程。
                 for (other_label, other) in window.app_handle().webview_windows() {
                     if other_label != label {
                         let _ = other.hide();
-                        // P0 定位：确认「其余窗 hide」确实被调用（上一轮实测其余窗 30s 全程可见，需区分没调用 vs 调了没生效）。
                         p0_log(format!("hide other: {}", other_label));
+                        let _ = other.destroy();
+                        p0_log(format!("destroy other: {}", other_label));
                     }
                 }
+
+                api.prevent_close();
+                p0_log("prevent_close done");
 
                 // v0.12 Phase 3：保存窗口状态（size 必存，position 尽力）
                 let mut state = WindowState::default();

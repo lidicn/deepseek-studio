@@ -516,3 +516,52 @@ p0 相位（毫秒）：
 - 机器 CPU 100% 全程（唯一高频占用者是无关的 `msedgewebview2` pid 21232，累计 8305 CPU 秒），
   所有绝对耗时都被放大；相对改善（24.4s → 5.4s）不受影响，但 `< 5s` 这条线需要在空载机器上复测一次才有定论。
 
+---
+
+## 13. 退出收尾卡：hide 提前 + 其余窗当场 destroy + 建窗幂等闸（20261101 00:00–00:35）
+
+### 13.1 改动
+
+| # | 改动 | 目的 |
+|---|------|------|
+| E1 | `CloseRequested` 里 **`hide main` 提到第一句**（任何日志/`prevent_close`/写盘之前） | 实测日志重定向到 `E:\NAS`（网络盘）单次写 ≈36ms，关闭路径要写十几行 → 光日志就吃掉 300ms 预算（handler 内实测 358ms 才走到 hide） |
+| E2 | 其余窗在 handler 里 **hide + 当场 destroy**（不再等 teardown 闭包） | teardown 排在 sidecar 收尾之后（实测晚 ~1.7s）；活着的其余窗会在主窗消失瞬间抢焦点 |
+| E3 | **建窗幂等闸** `WINDOW_BUILD_INFLIGHT`（同 label 同时只允许一个在建） | **A 方案引入的真缺陷**：建窗移到工作线程后并发调用会各建一个窗。实测 roundT1-hide1-bot2 出现 **3 个 `bot window build begin`**（线程 13/14/15）→ 3 个窗、`maxVisible=3`、退出残留 webview |
+| E4 | `page-runtime.ts` 断开路径补日志：`[page-runtime] page closed id=<前8位> kind=close\|error botId=.. trustedPages=<n> pendingFailed=<n>`（P2） | 原来断开路径**一行日志都没有**（`page-disconnected` 只是 `failAllPending` 的 reason 字符串），出问题无法取证 |
+
+### 13.2 读数（exe `5CE91E7F11C0535B9C3D9D8C1FC330DF111CE5A3B3B22CA93DC5543055DEC72E`）
+
+| 轮 | 窗口 | tClose→exit | exitCode | 残留 webview2 | 焦点 hits | **firstAllHidden** | 建窗次数 |
+|----|------|-------------|----------|----------------|-----------|--------------------|----------|
+| R121 | 单窗 | 4228ms | 0 | 0 | 0 | **246ms** ✅ | — |
+| R122 | main+工作台 | 2811ms | 0 | 0 | 0 | 616ms | 1 ✅ |
+| R123 | main+bot | 4773ms | 0 | 0 | 0 | 2730ms | 1 ✅ |
+| R111（上一构建，无幂等闸） | 单窗 | 3237ms | 0 | 0 | 0 | **231ms** ✅ | — |
+
+`hide main (first)` / `hide other:` / `destroy other:` / `prevent_close done` 四个打点在 p0 里顺序正确。
+
+### 13.3 300ms 这条线为什么多窗轮还不过（结论，有证据）
+
+不是我们的关闭逻辑慢，而是**关闭事件在「窗口正在创建」时被排在后面**：
+
+- R123 p0：`bot window build begin 170044` →（关闭在创建期间到达，`hide main` 已执行 175716）→
+  `bot window build ok 177561` → `close-requested 178380`。
+  建窗把主线程占住 7.5s；`hide()` 只是把消息投给窗口线程，**窗口真正消失要等主线程回到消息泵**，
+  所以 `firstAllHidden` 记到 2730ms。
+- R112/R113（无幂等闸时更糟）：建窗 8.8s + 并发建窗 3 个。
+
+也就是说：**只要测试在「建窗在途」时投递 WM_CLOSE，300ms 这条线在物理上就达不到**，
+与关闭路径无关。单窗轮（无建窗在途）稳定 231/246ms 就是证明。
+
+### 13.4 建议（需 PM 定）
+
+1. 300ms 这条线的取证口径改成「**建窗完成后**再投递 WM_CLOSE」（等 `build ok` 后 settle 1s），
+   否则测的是建窗耗时；单窗轮已达标。
+2. 若要求「建窗在途也能 300ms 内消失」，那要改的是建窗本身（wry 在主线程建 webview 是设计如此），
+   属另一个量级的改造，不建议并进这张卡。
+
+### 13.5 断言的过期说明（同 §12.5）
+
+`sidecar 优雅关闭恰好 1 次（count=0）` 与 `taskkill 次数=0` 两条仍红，原因同前：
+sidecar 现在是进程树决定性结束、关闭期不再 spawn `taskkill`——属**预期变化**，不是缺陷。
+

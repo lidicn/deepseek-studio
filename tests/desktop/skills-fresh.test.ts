@@ -449,4 +449,107 @@ describe('P0 技能清单运行期刷新', () => {
       h.handle.stop();
     }
   });
+
+  // ─── P1 打字预热 ─────────────────────────────────────────────
+  // 现场依据：真机 skill.list 往返实测 ~878ms，远大于发送点 150ms 预算，
+  // 只在发送点刷新永远来不及 → 改成「用户一打字就异步预热」，
+  // 按下发送时 TTL 已新鲜，当轮即可用新清单。
+
+  /** 在输入框里敲一下（触发 document 上的 input 捕获监听）。 */
+  function typeInComposer(): void {
+    const ta = document.createElement('textarea');
+    document.body.appendChild(ta);
+    ta.value = '/';
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  it('打字预热：过期后一输入就异步刷新，发送不再等待且当轮用新清单', async () => {
+    vi.useFakeTimers();
+    const h = installHarness({ skills: [SKILL_A] });
+    try {
+      await flush();
+      expect(h.skillListCalls()).toBe(1); // 启动拉过一次
+
+      // 运行期新增技能 + TTL 过期。
+      h.setSkills([SKILL_A, SKILL_B]);
+      advanceClock(5_001);
+
+      typeInComposer();
+      // 负控：输入本身不拉（预热是排队，不是同步打请求）。
+      expect(h.skillListCalls()).toBe(1);
+      await vi.advanceTimersByTimeAsync(600); // 输入停顿 → 预热触发
+      expect(h.skillListCalls()).toBe(2);
+
+      // 正控：此刻 TTL 已新鲜，发送**不再被有界等待挂起**，且当轮就用新清单。
+      const xhr = pageSend(h.FakeXHR, { prompt: '用 skill-b 跑一遍', chat_session_id: 's-prewarm' });
+      expect(xhr.sent).toBe(true); // 没有延迟发送（旧行为下这里会是 false）
+      await flush();
+      const body = sentBody(xhr);
+      expect(body).toContain(SKILL_B.skillMdPath); // 当轮生效，不是下一轮
+      expect(h.skillListCalls()).toBe(2); // 发送点没有再拉
+    } finally {
+      h.handle.stop();
+    }
+  });
+
+  it('打字预热：连续输入只拉一次，冷却期内不重复拉', async () => {
+    vi.useFakeTimers();
+    const h = installHarness({ skills: [SKILL_A] });
+    try {
+      await flush();
+      advanceClock(5_001);
+
+      // 连打三下：只排一次预热。
+      typeInComposer();
+      typeInComposer();
+      typeInComposer();
+      await vi.advanceTimersByTimeAsync(600);
+      expect(h.skillListCalls()).toBe(2);
+
+      // 冷却期（2s）内再打字：不重复拉。
+      advanceClock(1_000);
+      typeInComposer();
+      await vi.advanceTimersByTimeAsync(600);
+      expect(h.skillListCalls()).toBe(2);
+
+      // 冷却过后且清单再次过期（距上次成功刷新 >5s TTL）：恢复预热。
+      advanceClock(5_001);
+      typeInComposer();
+      await vi.advanceTimersByTimeAsync(600);
+      expect(h.skillListCalls()).toBe(3);
+    } finally {
+      h.handle.stop();
+    }
+  });
+
+  it('打字预热：TTL 内输入不额外拉取（负控）', async () => {
+    vi.useFakeTimers();
+    const h = installHarness({ skills: [SKILL_A] });
+    try {
+      await flush();
+      expect(h.skillListCalls()).toBe(1);
+
+      // 刚启动，TTL 新鲜。
+      advanceClock(1_000);
+      typeInComposer();
+      await vi.advanceTimersByTimeAsync(600);
+      expect(h.skillListCalls()).toBe(1);
+    } finally {
+      h.handle.stop();
+    }
+  });
+
+  it('打字预热：stop() 后不再预热（卸载卫生）', async () => {
+    vi.useFakeTimers();
+    const h = installHarness({ skills: [SKILL_A] });
+    await flush();
+    expect(h.skillListCalls()).toBe(1);
+
+    h.handle.stop();
+    advanceClock(5_001);
+    typeInComposer();
+    await vi.advanceTimersByTimeAsync(600);
+    // 监听已移除 + 定时器已清：不会再拉清单。
+    expect(h.skillListCalls()).toBe(1);
+  });
 });

@@ -208,6 +208,18 @@ let currentSkills: StudioSkillDescriptor[] = [];
 const SKILLS_TTL_MS = 5_000;
 const SKILLS_WAIT_BUDGET_MS = 150;
 
+/**
+ * P1 预热：用户一打字就异步刷新技能清单。
+ *
+ * 为什么需要：真机上 `skill.list` 往返实测 ~878ms，远大于发送点的 150ms 预算，
+ * 所以在发送点才刷新永远来不及 —— 当轮 prompt 只能用上一轮清单。
+ * 改在「用户开始输入」时就异步拉，等按下发送时 TTL 已新鲜，发送点的 kick 直接跳过，
+ * 当轮即可用新清单。150ms 预算保留作兜底（预热失败/未及完成时仍不阻塞发送）。
+ */
+const SKILLS_PREWARM_IDLE_MS = 600;
+/** 预热最小间隔：连续打字只在停顿后拉一次，失败也不会每 600ms 重试一次。 */
+const SKILLS_PREWARM_COOLDOWN_MS = 2_000;
+
 // 用单调时钟而不是 Date.now：系统时间被校准/NTP 跳变时 wall clock 会跳，
 // 把「刚刷新过」误判成过期（或反之）会让清单长期陈旧。performance.now 单调递增。
 const defaultSkillsClock = (): number => (
@@ -226,6 +238,10 @@ let skillsRefreshWaitable = false;
 let skillsRefreshSender: ToolCallSender | null = null;
 /** 最近一次拉取失败的原因（只用于诊断日志，真机排查靠它）。 */
 let skillsLastError: string | null = null;
+/** 打字预热的排队定时器（同一静默窗口只排一次）。 */
+let skillsPrewarmTimer: ReturnType<typeof setTimeout> | null = null;
+/** 最近一次预热真正发起的时间（冷却用，避免连续打字反复拉）。 */
+let skillsPrewarmLastAt = Number.NEGATIVE_INFINITY;
 
 /** 测试用：覆盖新鲜度时钟（默认 performance.now 单调时钟）。传 null 恢复。 */
 export function __setSkillsFreshnessClockForTests(clock: (() => number) | null): void {
@@ -241,6 +257,11 @@ export function __resetSkillsFreshnessForTests(): void {
   skillsRefreshSender = null;
   skillsLastError = null;
   currentSkills = [];
+  if (skillsPrewarmTimer !== null) {
+    clearTimeout(skillsPrewarmTimer);
+    skillsPrewarmTimer = null;
+  }
+  skillsPrewarmLastAt = Number.NEGATIVE_INFINITY;
 }
 
 function isSkillsFresh(): boolean {
@@ -291,6 +312,28 @@ function kickSkillsRefresh(): Promise<boolean> | null {
   if (isSkillsFresh()) return null;
   if (skillsRefreshInFlight) return skillsRefreshWaitable ? skillsRefreshInFlight : null;
   return refreshSkillsOnce(true);
+}
+
+/**
+ * 打字预热排队：输入停顿 SKILLS_PREWARM_IDLE_MS 后异步拉一次清单。
+ *
+ * 约束：
+ *   - 不阻塞输入（纯 setTimeout，不 await）；
+ *   - 同一静默窗口只排一次（timer 已在排队就忽略）；
+ *   - 冷却 SKILLS_PREWARM_COOLDOWN_MS 内不重复拉（失败时也不会把宿主打爆）；
+ *   - 到期时若 TTL 已新鲜（别人刚拉过）就不拉；
+ *   - 失败静默：不弹错、不重试，发送点的 150ms 兜底照旧。
+ */
+function scheduleSkillsPrewarm(): void {
+  if (skillsPrewarmTimer !== null) return;
+  if (skillsClock() - skillsPrewarmLastAt < SKILLS_PREWARM_COOLDOWN_MS) return;
+  skillsPrewarmTimer = setTimeout(() => {
+    skillsPrewarmTimer = null;
+    if (!skillsRefreshSender) return;
+    if (isSkillsFresh()) return;
+    skillsPrewarmLastAt = skillsClock();
+    void kickSkillsRefresh();
+  }, SKILLS_PREWARM_IDLE_MS);
 }
 
 /** 有界等待：task 先完成用其结果，超时返回 null（调用方继续用旧清单）。 */
@@ -2602,6 +2645,34 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     d(`skills load failed after ${maxRetries} attempts, agent will not see skills in prompt`);
   })();
 
+  // P1 打字预热：用户一输入就异步刷新技能清单（不阻塞输入），使按下发送时 TTL 已新鲜，
+  // 发送点的 kick 直接跳过 → 当轮即用新清单（真机 skill.list 往返 ~878ms ≫ 150ms 预算）。
+  const stopSkillsPrewarm = ((): (() => void) => {
+    if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') {
+      return () => { /* 无 DOM（单测/非浏览器环境）时不需要预热 */ };
+    }
+    const onInput = (event: Event): void => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      const tag = target.tagName;
+      // 只管输入类元素：textarea / input / contenteditable。
+      if (tag !== 'TEXTAREA' && tag !== 'INPUT' && !target.isContentEditable) return;
+      scheduleSkillsPrewarm();
+    };
+    document.addEventListener('input', onInput, true);
+    return () => {
+      try {
+        document.removeEventListener('input', onInput, true);
+      } catch {
+        /* ignore */
+      }
+      if (skillsPrewarmTimer !== null) {
+        clearTimeout(skillsPrewarmTimer);
+        skillsPrewarmTimer = null;
+      }
+    };
+  })();
+
   return {
     stop() {
       try {
@@ -2617,6 +2688,12 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       try {
         if (hydrateTimer) clearTimeout(hydrateTimer);
         codeObserver?.disconnect();
+      } catch {
+        /* ignore */
+      }
+      // P1：卸载后不再预热（移除 input 监听 + 清掉排队中的预热）。
+      try {
+        stopSkillsPrewarm();
       } catch {
         /* ignore */
       }

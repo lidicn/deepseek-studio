@@ -479,8 +479,30 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           });
       }
     });
-    ws.on('close', () => { clients.delete(id); failAllPending('page-disconnected', id); options.onDisconnect?.({ id, botId: rec.botId, kind: 'close' }); });
-    ws.on('error', () => { clients.delete(id); failAllPending('page-disconnected', id); options.onDisconnect?.({ id, botId: rec.botId, kind: 'error' }); });
+    // P2：断开路径必须留一行日志——`page-disconnected` 只是 failAllPending 的 reason 字符串，
+    // 有在途 pending 才会被写出来；页端正常断开时运行时**什么都不会打**，
+    // 出问题时无法取证（20261031 Verify 复验时 `logs/` 里 0 命中，只能判「证据缺失」）。
+    // 记 `kind`（close/error）、`botId`、剩余可信页数、以及本次清理的在途请求数。
+    const logPageGone = (kind: 'close' | 'error'): void => {
+      // 注意：必须**在 failAllPending 之前**取计数，之后 pending 已被清空恒为 0。
+      const pendingFailed = pendingDispatch.size + pendingConsent.size;
+      failAllPending('page-disconnected', id);
+      const trustedLeft = [...clients.values()].filter((c) => !c.untrusted).length;
+      console.log(
+        `[page-runtime] page closed id=${id.slice(0, 8)} kind=${kind} botId=${rec.botId ?? 'main'} ` +
+          `trustedPages=${trustedLeft} pendingFailed=${pendingFailed}`,
+      );
+    };
+    ws.on('close', () => {
+      clients.delete(id);
+      logPageGone('close');
+      options.onDisconnect?.({ id, botId: rec.botId, kind: 'close' });
+    });
+    ws.on('error', () => {
+      clients.delete(id);
+      logPageGone('error');
+      options.onDisconnect?.({ id, botId: rec.botId, kind: 'error' });
+    });
   });
 
   return {
