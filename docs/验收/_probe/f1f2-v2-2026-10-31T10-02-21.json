@@ -7,12 +7,14 @@
   "apiRes": {
     "status": 200,
     "elapsedMs": 6734,
-    "body": "{\"ok\":true,\"answer\":\"1) 根目录前 5 项：`'`(0B 文件)、`.codebuddy/`、`.codegraph/`、`.diag.txt`(0B)、`.diag2.txt`(167B)\\n2) name = `deepseek-studio`，version = `0.4.0`\\n3) `src` 下共 **224** 个 `.ts` 文件\\n4) 最大：`E:/NAS/deepseek-studio/src/inject/main-world-interceptor.ts`（145,297 字节；其后 desktop-host.ts 102,770、memory-store.ts 71,633）\\n5) 前 20 行已读取（文件头注释 + import 区，见上一步工具输出）\\n6) 作用：它是注入到页面 main world 的拦截控制器，在 document_start 挂 fetch/XHR 拦截——从流式响应里解析 `<shell_exec>` 等工具调用标签、剥离可见标签并经宿主 ws 投递真实执行，再把结果回注进下一次请求，形成「模型发起→宿主执行→结果回注」闭环。\\n\\nCHAIN-DONE\"}"
+    "bodyLen": 527,
+    "bodyRedacted": true,
+    "note": "原文按「用户会话原文不入库」规则删除，仅留状态与长度"
   },
   "verdict": {
     "apiStatus": 200,
     "apiElapsedMs": 6734,
-    "apiBody": "{\"ok\":true,\"answer\":\"1) 根目录前 5 项：`'`(0B 文件)、`.codebuddy/`、`.codegraph/`、`.diag.txt`(0B)、`.diag2.txt`(167B)\\n2) name = `deepseek-studio`，version = `0.4.0`\\n3) `src` 下共 **224** 个 `.ts` 文件\\n4) 最大：`E:/NAS/deepseek-studio/src/inject/main-world-interceptor.ts`（145,297 字节；其后 desktop-host.ts 102,770、memory-store.ts 71,633）\\n5) 前 20 行已读取（文件头注释 + import 区，见上一步工具输出）\\n6) 作用：它是注入到页面 main world 的拦截控制器，在 document_start 挂 fetch/XHR 拦截——从流式响应里解析 `<shell_exec>` 等工具调用标签、剥离可见标签并经宿主 ws 投递真实执行，再把结果回注进下一次请求，形成「模型发起→宿主执行→结果回注」闭环。\\n\\nCHAIN-DONE\"}",
+    "apiBody": "[已按隐私规则删除原文 len=12]",
     "hostSamples": 3,
     "hostDistinctStates": [
       "false|no-messages-found|null|null"
@@ -47,7 +49,7 @@
       "rootTextTail": null,
       "nDsMarkdown": 0,
       "nAssistantMain": 0,
-      "dsMarkdownLast": "",
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
       "wideCount": 3,
       "wideClasses": [
         [
@@ -59,7 +61,7 @@
           1
         ]
       ],
-      "wideLastText": "根目录前 5 项：'(0B 文件)、.codebuddy/、.codegraph/、.diag.txt(0B)、.diag2.txt(167B) name = deepseek-studio，version = 0.4.0 src 下共 224 个 .ts 文件 最大：E:/NAS/deepseek-studio/src/inject/main-world-interceptor.ts（145,2",
+      "wideLastText": "[已按隐私规则删除原文 len=200]",
       "wideLastClass": "ds-sc-markdown",
       "bodyTextLen": 35304
     },
@@ -71,7 +73,7 @@
       "rootTextTail": null,
       "nDsMarkdown": 0,
       "nAssistantMain": 0,
-      "dsMarkdownLast": "",
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
       "wideCount": 4,
       "wideClasses": [
         [
@@ -83,7 +85,7 @@
           1
         ]
       ],
-      "wideLastText": "F1-V2-OK",
+      "wideLastText": "[已按隐私规则删除原文 len=8]",
       "wideLastClass": "ds-sc-markdown",
       "bodyTextLen": 35311
     },
@@ -107,7 +109,8 @@
     },
     "flagRestoredTo": {
       "__exception": "{\"exceptionId\":2,\"text\":\"Uncaught\",\"lineNumber\":0,\"columnNumber\":36,\"scriptId\":\"50\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Illegal return statement\",\"objectId\":\"1343083531177068676.2.4\"}}"
-    }
+    },
+    "apiBodyLen": 527
   },
   "hostSamples": [
     {
@@ -147,7 +150,7 @@
       "rootTextTail": null,
       "nDsMarkdown": 0,
       "nAssistantMain": 0,
-      "dsMarkdownLast": "",
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
       "wideCount": 3,
       "wideClasses": [
         [
@@ -159,9 +162,10 @@
           1
         ]
       ],
-      "wideLastText": "根目录前 5 项：'(0B 文件)、.codebuddy/、.codegraph/、.diag.txt(0B)、.diag2.txt(167B) name = deepseek-studio，version = 0.4.0 src 下共 224 个 .ts 文件 最大：E:/NAS/deepseek-studio/src/inject/main-world-interceptor.ts（145,2",
+      "wideLastText": "[已按隐私规则删除原文 len=12]",
       "wideLastClass": "ds-sc-markdown",
-      "bodyTextLen": 35304
+      "bodyTextLen": 35304,
+      "wideLastTextLen": 200
     },
     {
       "t": 471725,
@@ -171,7 +175,7 @@
       "rootTextTail": null,
       "nDsMarkdown": 0,
       "nAssistantMain": 0,
-      "dsMarkdownLast": "",
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
       "wideCount": 4,
       "wideClasses": [
         [
@@ -183,9 +187,10 @@
           1
         ]
       ],
-      "wideLastText": "F1-V2-OK",
+      "wideLastText": "[已按隐私规则删除原文 len=12]",
       "wideLastClass": "ds-sc-markdown",
-      "bodyTextLen": 35311
+      "bodyTextLen": 35311,
+      "wideLastTextLen": 8
     },
     {
       "t": 472733,
@@ -195,7 +200,7 @@
       "rootTextTail": null,
       "nDsMarkdown": 0,
       "nAssistantMain": 0,
-      "dsMarkdownLast": "",
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
       "wideCount": 4,
       "wideClasses": [
         [
@@ -207,9 +212,10 @@
           1
         ]
       ],
-      "wideLastText": "F1-V2-OK",
+      "wideLastText": "[已按隐私规则删除原文 len=12]",
       "wideLastClass": "ds-sc-markdown",
-      "bodyTextLen": 35311
+      "bodyTextLen": 35311,
+      "wideLastTextLen": 8
     },
     {
       "t": 473735,
@@ -219,7 +225,7 @@
       "rootTextTail": null,
       "nDsMarkdown": 0,
       "nAssistantMain": 0,
-      "dsMarkdownLast": "",
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
       "wideCount": 4,
       "wideClasses": [
         [
@@ -231,9 +237,10 @@
           1
         ]
       ],
-      "wideLastText": "F1-V2-OK",
+      "wideLastText": "[已按隐私规则删除原文 len=12]",
       "wideLastClass": "ds-sc-markdown",
-      "bodyTextLen": 35311
+      "bodyTextLen": 35311,
+      "wideLastTextLen": 8
     },
     {
       "t": 474734,
@@ -243,7 +250,7 @@
       "rootTextTail": null,
       "nDsMarkdown": 0,
       "nAssistantMain": 0,
-      "dsMarkdownLast": "",
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
       "wideCount": 4,
       "wideClasses": [
         [
@@ -255,9 +262,10 @@
           1
         ]
       ],
-      "wideLastText": "F1-V2-OK",
+      "wideLastText": "[已按隐私规则删除原文 len=12]",
       "wideLastClass": "ds-sc-markdown",
-      "bodyTextLen": 35311
+      "bodyTextLen": 35311,
+      "wideLastTextLen": 8
     },
     {
       "t": 475739,
@@ -267,7 +275,7 @@
       "rootTextTail": null,
       "nDsMarkdown": 0,
       "nAssistantMain": 0,
-      "dsMarkdownLast": "",
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
       "wideCount": 4,
       "wideClasses": [
         [
@@ -279,9 +287,10 @@
           1
         ]
       ],
-      "wideLastText": "F1-V2-OK",
+      "wideLastText": "[已按隐私规则删除原文 len=12]",
       "wideLastClass": "ds-sc-markdown",
-      "bodyTextLen": 35311
+      "bodyTextLen": 35311,
+      "wideLastTextLen": 8
     }
   ],
   "msel": [

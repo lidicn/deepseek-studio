@@ -1,0 +1,1350 @@
+{
+  "at": "2026-10-31T15:27:46.316Z",
+  "pageTarget": {
+    "id": "27C8C611561D7974562FF386B027BC08",
+    "url": "https://chat.deepseek.com/"
+  },
+  "apiRes": {
+    "status": 200,
+    "elapsedMs": 13976,
+    "body": "[已按隐私规则删除原文 len=36]"
+  },
+  "verdict": {
+    "apiStatus": 200,
+    "apiElapsedMs": 13976,
+    "apiBody": "[已按隐私规则删除原文 len=36]",
+    "markerLower": "f1v3-mvwk1j8o",
+    "markerUpper": "F1V3-MVWK1J8O",
+    "answerText": "[已按隐私规则删除原文 len=13]",
+    "answerContainsMarker": true,
+    "answerIsUserBubbleOnly": false,
+    "answerEqualsPreTurnText": false,
+    "hostSamples": 6,
+    "hostDistinctStates": [
+      "true|null|3|10123"
+    ],
+    "hostStateStable": true,
+    "hostFirst": {
+      "t": 1793460454371,
+      "wallMs": 30,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=20]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages",
+        "mirror"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id",
+        "injected"
+      ],
+      "mirrorCount": 17,
+      "mirrorAssistantTextCount": 17,
+      "mirrorLastLen": 13,
+      "mirrorHasUpper": true,
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": true,
+      "anyMsgHasLowerOnly": false,
+      "anyMsgText": true
+    },
+    "hostLast": {
+      "t": 1793460464367,
+      "wallMs": 7,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=20]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages",
+        "mirror"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id",
+        "injected"
+      ],
+      "mirrorCount": 17,
+      "mirrorAssistantTextCount": 17,
+      "mirrorLastLen": 13,
+      "mirrorHasUpper": true,
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": true,
+      "anyMsgHasLowerOnly": false,
+      "anyMsgText": true
+    },
+    "domSamples": 13,
+    "domDistinctStates": 6,
+    "domStateStable": false,
+    "domFirst": {
+      "t": 9221,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "convId": "33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=18]",
+      "wideCount": 17,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          16
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "[已按隐私规则删除原文 len=19]",
+      "wideLastClass": "ds-sc-markdown",
+      "wideLastHasUpper": false,
+      "wideLastHasLower": false,
+      "domUpperHits": [],
+      "domLowerHitCount": 0,
+      "bodyTextLen": 285200,
+      "vlist": {
+        "exists": true,
+        "mounted": 3,
+        "itemLens": [
+          9782,
+          10055,
+          10128
+        ],
+        "itemHasUpper": [
+          false,
+          false,
+          false
+        ],
+        "itemHasLower": [
+          false,
+          false,
+          false
+        ],
+        "scrollTop": 0,
+        "scrollHeight": 270,
+        "clientHeight": 270,
+        "atBottom": true,
+        "totalItems": 1
+      }
+    },
+    "domLast": {
+      "t": 21236,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "convId": "33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=18]",
+      "wideCount": 18,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          17
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "[已按隐私规则删除原文 len=19]",
+      "wideLastClass": "ds-sc-markdown",
+      "wideLastHasUpper": true,
+      "wideLastHasLower": false,
+      "domUpperHits": [
+        [
+          "P.",
+          "DIV.ds-sc-markdown",
+          "DIV.ds-sc-msg-assistant.ds-sc-msg-main-bot",
+          "DIV.ds-sc-message-list",
+          "DIV.ds-studio-chat-container.ds-studio-chat-pending"
+        ]
+      ],
+      "domLowerHitCount": 0,
+      "bodyTextLen": 290692,
+      "vlist": {
+        "exists": true,
+        "mounted": 3,
+        "itemLens": [
+          9782,
+          10055,
+          10128
+        ],
+        "itemHasUpper": [
+          false,
+          false,
+          false
+        ],
+        "itemHasLower": [
+          false,
+          false,
+          false
+        ],
+        "scrollTop": 0,
+        "scrollHeight": 270,
+        "clientHeight": 270,
+        "atBottom": true,
+        "totalItems": 1
+      }
+    },
+    "mselSamples": [
+      {
+        "origin": "studio://host-internal",
+        "durationMs": 5,
+        "at": 1793460452377,
+        "outcome": "executed"
+      }
+    ],
+    "chatReadAuditCount": 14,
+    "chatReadOutcomes": {
+      "executed|studio://host-internal": 14
+    },
+    "flagRestoredTo": "undefined",
+    "ev1_chatReadPayloadShape": {
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages",
+        "mirror"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id",
+        "injected"
+      ],
+      "hasSessionField": true,
+      "mirrorInPayload": true,
+      "mirrorCount": 17,
+      "mirrorAssistantTextCount": 17,
+      "mirrorLastLen": 13,
+      "mirrorHasUpper": true
+    },
+    "positiveControl": {
+      "pass": true,
+      "ok": true,
+      "count": 3,
+      "reason": null,
+      "messageCount": 3,
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id",
+        "injected"
+      ],
+      "mirrorCount": 16,
+      "mirrorLastLen": 13,
+      "mirrorHasUpper": false
+    },
+    "pageReady": {
+      "ok": true,
+      "skeleton": 0,
+      "rootLen": 31038,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a"
+    },
+    "ev2_hostPageSessions": {
+      "logPath": "logs\\verify-f1f2\\app.stdout.log",
+      "distinctPageSessions": [
+        "77132d33-bf2e-4b7e-be0c-76f5470350e6",
+        "d59519b8-157f-4505-a2b0-c3f1346c2010"
+      ],
+      "pageSessionCount": 2,
+      "chatSessionIds": [
+        "33507439-d490-4054-bbbc-dcd3d4d6f37a"
+      ],
+      "parentMessageChain": [
+        "32"
+      ],
+      "chatBodyCount": 1
+    },
+    "ev3_pageConvId": "33507439-d490-4054-bbbc-dcd3d4d6f37a",
+    "ev3_pageConvIdMatchesHost": true,
+    "j7_post": {
+      "mountedItems": 3,
+      "markerMounted": 0,
+      "lastItemLen": 10125,
+      "vlistScrollTop": 0,
+      "vlistScrollHeight": 270,
+      "vlistClientHeight": 270,
+      "atBottom": true,
+      "vlistExists": true
+    },
+    "pageAnswerHasUpper": true,
+    "pageAnswerHasUpperSource": "domUpperHits",
+    "domUpperHitChains": [
+      [
+        "P.",
+        "DIV.ds-sc-markdown",
+        "DIV.ds-sc-msg-assistant.ds-sc-msg-main-bot",
+        "DIV.ds-sc-message-list",
+        "DIV.ds-studio-chat-container.ds-studio-chat-pending"
+      ]
+    ],
+    "pageAnswerHasLower": 0
+  },
+  "hostSamples": [
+    {
+      "t": 1793460454371,
+      "wallMs": 30,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=20]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages",
+        "mirror"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id",
+        "injected"
+      ],
+      "mirrorCount": 17,
+      "mirrorAssistantTextCount": 17,
+      "mirrorLastLen": 13,
+      "mirrorHasUpper": true,
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": true,
+      "anyMsgHasLowerOnly": false,
+      "anyMsgText": true
+    },
+    {
+      "t": 1793460456349,
+      "wallMs": 6,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages",
+        "mirror"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id",
+        "injected"
+      ],
+      "mirrorCount": 17,
+      "mirrorAssistantTextCount": 17,
+      "mirrorLastLen": 13,
+      "mirrorHasUpper": true,
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": true,
+      "anyMsgHasLowerOnly": false,
+      "anyMsgText": true
+    },
+    {
+      "t": 1793460458350,
+      "wallMs": 6,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages",
+        "mirror"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id",
+        "injected"
+      ],
+      "mirrorCount": 17,
+      "mirrorAssistantTextCount": 17,
+      "mirrorLastLen": 13,
+      "mirrorHasUpper": true,
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": true,
+      "anyMsgHasLowerOnly": false,
+      "anyMsgText": true
+    },
+    {
+      "t": 1793460460351,
+      "wallMs": 6,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages",
+        "mirror"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id",
+        "injected"
+      ],
+      "mirrorCount": 17,
+      "mirrorAssistantTextCount": 17,
+      "mirrorLastLen": 13,
+      "mirrorHasUpper": true,
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": true,
+      "anyMsgHasLowerOnly": false,
+      "anyMsgText": true
+    },
+    {
+      "t": 1793460462362,
+      "wallMs": 6,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages",
+        "mirror"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id",
+        "injected"
+      ],
+      "mirrorCount": 17,
+      "mirrorAssistantTextCount": 17,
+      "mirrorLastLen": 13,
+      "mirrorHasUpper": true,
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": true,
+      "anyMsgHasLowerOnly": false,
+      "anyMsgText": true
+    },
+    {
+      "t": 1793460464367,
+      "wallMs": 7,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=20]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages",
+        "mirror"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id",
+        "injected"
+      ],
+      "mirrorCount": 17,
+      "mirrorAssistantTextCount": 17,
+      "mirrorLastLen": 13,
+      "mirrorHasUpper": true,
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": true,
+      "anyMsgHasLowerOnly": false,
+      "anyMsgText": true
+    }
+  ],
+  "domSamples": [
+    {
+      "t": 9221,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "convId": "33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=18]",
+      "wideCount": 17,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          16
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "[已按隐私规则删除原文 len=19]",
+      "wideLastClass": "ds-sc-markdown",
+      "wideLastHasUpper": false,
+      "wideLastHasLower": false,
+      "domUpperHits": [],
+      "domLowerHitCount": 0,
+      "bodyTextLen": 285200,
+      "vlist": {
+        "exists": true,
+        "mounted": 3,
+        "itemLens": [
+          9782,
+          10055,
+          10128
+        ],
+        "itemHasUpper": [
+          false,
+          false,
+          false
+        ],
+        "itemHasLower": [
+          false,
+          false,
+          false
+        ],
+        "scrollTop": 0,
+        "scrollHeight": 270,
+        "clientHeight": 270,
+        "atBottom": true,
+        "totalItems": 1
+      }
+    },
+    {
+      "t": 10207,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "convId": "33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
+      "wideCount": 18,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          17
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "[已按隐私规则删除原文 len=13]",
+      "wideLastClass": "ds-sc-markdown",
+      "wideLastHasUpper": true,
+      "wideLastHasLower": false,
+      "domUpperHits": [
+        [
+          "P.",
+          "DIV.ds-sc-markdown",
+          "DIV.ds-sc-msg-assistant.ds-sc-msg-main-bot",
+          "DIV.ds-sc-message-list",
+          "DIV.ds-studio-chat-container.ds-studio-chat-pending"
+        ]
+      ],
+      "domLowerHitCount": 0,
+      "bodyTextLen": 286119,
+      "vlist": {
+        "exists": true,
+        "mounted": 3,
+        "itemLens": [
+          9782,
+          10055,
+          10128
+        ],
+        "itemHasUpper": [
+          false,
+          false,
+          false
+        ],
+        "itemHasLower": [
+          false,
+          false,
+          false
+        ],
+        "scrollTop": 0,
+        "scrollHeight": 270,
+        "clientHeight": 270,
+        "atBottom": true,
+        "totalItems": 1
+      }
+    },
+    {
+      "t": 11203,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "convId": "33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
+      "wideCount": 18,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          17
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "[已按隐私规则删除原文 len=13]",
+      "wideLastClass": "ds-sc-markdown",
+      "wideLastHasUpper": true,
+      "wideLastHasLower": false,
+      "domUpperHits": [
+        [
+          "P.",
+          "DIV.ds-sc-markdown",
+          "DIV.ds-sc-msg-assistant.ds-sc-msg-main-bot",
+          "DIV.ds-sc-message-list",
+          "DIV.ds-studio-chat-container.ds-studio-chat-pending"
+        ]
+      ],
+      "domLowerHitCount": 0,
+      "bodyTextLen": 286119,
+      "vlist": {
+        "exists": true,
+        "mounted": 3,
+        "itemLens": [
+          9782,
+          10055,
+          10128
+        ],
+        "itemHasUpper": [
+          false,
+          false,
+          false
+        ],
+        "itemHasLower": [
+          false,
+          false,
+          false
+        ],
+        "scrollTop": 0,
+        "scrollHeight": 270,
+        "clientHeight": 270,
+        "atBottom": true,
+        "totalItems": 1
+      }
+    },
+    {
+      "t": 12206,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "convId": "33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
+      "wideCount": 18,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          17
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "[已按隐私规则删除原文 len=13]",
+      "wideLastClass": "ds-sc-markdown",
+      "wideLastHasUpper": true,
+      "wideLastHasLower": false,
+      "domUpperHits": [
+        [
+          "P.",
+          "DIV.ds-sc-markdown",
+          "DIV.ds-sc-msg-assistant.ds-sc-msg-main-bot",
+          "DIV.ds-sc-message-list",
+          "DIV.ds-studio-chat-container.ds-studio-chat-pending"
+        ]
+      ],
+      "domLowerHitCount": 0,
+      "bodyTextLen": 287073,
+      "vlist": {
+        "exists": true,
+        "mounted": 3,
+        "itemLens": [
+          9782,
+          10055,
+          10128
+        ],
+        "itemHasUpper": [
+          false,
+          false,
+          false
+        ],
+        "itemHasLower": [
+          false,
+          false,
+          false
+        ],
+        "scrollTop": 0,
+        "scrollHeight": 270,
+        "clientHeight": 270,
+        "atBottom": true,
+        "totalItems": 1
+      }
+    },
+    {
+      "t": 13217,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "convId": "33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
+      "wideCount": 18,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          17
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "[已按隐私规则删除原文 len=13]",
+      "wideLastClass": "ds-sc-markdown",
+      "wideLastHasUpper": true,
+      "wideLastHasLower": false,
+      "domUpperHits": [
+        [
+          "P.",
+          "DIV.ds-sc-markdown",
+          "DIV.ds-sc-msg-assistant.ds-sc-msg-main-bot",
+          "DIV.ds-sc-message-list",
+          "DIV.ds-studio-chat-container.ds-studio-chat-pending"
+        ]
+      ],
+      "domLowerHitCount": 0,
+      "bodyTextLen": 287073,
+      "vlist": {
+        "exists": true,
+        "mounted": 3,
+        "itemLens": [
+          9782,
+          10055,
+          10128
+        ],
+        "itemHasUpper": [
+          false,
+          false,
+          false
+        ],
+        "itemHasLower": [
+          false,
+          false,
+          false
+        ],
+        "scrollTop": 0,
+        "scrollHeight": 270,
+        "clientHeight": 270,
+        "atBottom": true,
+        "totalItems": 1
+      }
+    },
+    {
+      "t": 14217,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "convId": "33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
+      "wideCount": 18,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          17
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "[已按隐私规则删除原文 len=13]",
+      "wideLastClass": "ds-sc-markdown",
+      "wideLastHasUpper": true,
+      "wideLastHasLower": false,
+      "domUpperHits": [
+        [
+          "P.",
+          "DIV.ds-sc-markdown",
+          "DIV.ds-sc-msg-assistant.ds-sc-msg-main-bot",
+          "DIV.ds-sc-message-list",
+          "DIV.ds-studio-chat-container.ds-studio-chat-pending"
+        ]
+      ],
+      "domLowerHitCount": 0,
+      "bodyTextLen": 288174,
+      "vlist": {
+        "exists": true,
+        "mounted": 3,
+        "itemLens": [
+          9782,
+          10055,
+          10128
+        ],
+        "itemHasUpper": [
+          false,
+          false,
+          false
+        ],
+        "itemHasLower": [
+          false,
+          false,
+          false
+        ],
+        "scrollTop": 0,
+        "scrollHeight": 270,
+        "clientHeight": 270,
+        "atBottom": true,
+        "totalItems": 1
+      }
+    },
+    {
+      "t": 15226,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "convId": "33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
+      "wideCount": 18,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          17
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "[已按隐私规则删除原文 len=13]",
+      "wideLastClass": "ds-sc-markdown",
+      "wideLastHasUpper": true,
+      "wideLastHasLower": false,
+      "domUpperHits": [
+        [
+          "P.",
+          "DIV.ds-sc-markdown",
+          "DIV.ds-sc-msg-assistant.ds-sc-msg-main-bot",
+          "DIV.ds-sc-message-list",
+          "DIV.ds-studio-chat-container.ds-studio-chat-pending"
+        ]
+      ],
+      "domLowerHitCount": 0,
+      "bodyTextLen": 288174,
+      "vlist": {
+        "exists": true,
+        "mounted": 3,
+        "itemLens": [
+          9782,
+          10055,
+          10128
+        ],
+        "itemHasUpper": [
+          false,
+          false,
+          false
+        ],
+        "itemHasLower": [
+          false,
+          false,
+          false
+        ],
+        "scrollTop": 0,
+        "scrollHeight": 270,
+        "clientHeight": 270,
+        "atBottom": true,
+        "totalItems": 1
+      }
+    },
+    {
+      "t": 16232,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "convId": "33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
+      "wideCount": 18,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          17
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "[已按隐私规则删除原文 len=13]",
+      "wideLastClass": "ds-sc-markdown",
+      "wideLastHasUpper": true,
+      "wideLastHasLower": false,
+      "domUpperHits": [
+        [
+          "P.",
+          "DIV.ds-sc-markdown",
+          "DIV.ds-sc-msg-assistant.ds-sc-msg-main-bot",
+          "DIV.ds-sc-message-list",
+          "DIV.ds-studio-chat-container.ds-studio-chat-pending"
+        ]
+      ],
+      "domLowerHitCount": 0,
+      "bodyTextLen": 288174,
+      "vlist": {
+        "exists": true,
+        "mounted": 3,
+        "itemLens": [
+          9782,
+          10055,
+          10128
+        ],
+        "itemHasUpper": [
+          false,
+          false,
+          false
+        ],
+        "itemHasLower": [
+          false,
+          false,
+          false
+        ],
+        "scrollTop": 0,
+        "scrollHeight": 270,
+        "clientHeight": 270,
+        "atBottom": true,
+        "totalItems": 1
+      }
+    },
+    {
+      "t": 17232,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "convId": "33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
+      "wideCount": 18,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          17
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "[已按隐私规则删除原文 len=13]",
+      "wideLastClass": "ds-sc-markdown",
+      "wideLastHasUpper": true,
+      "wideLastHasLower": false,
+      "domUpperHits": [
+        [
+          "P.",
+          "DIV.ds-sc-markdown",
+          "DIV.ds-sc-msg-assistant.ds-sc-msg-main-bot",
+          "DIV.ds-sc-message-list",
+          "DIV.ds-studio-chat-container.ds-studio-chat-pending"
+        ]
+      ],
+      "domLowerHitCount": 0,
+      "bodyTextLen": 288174,
+      "vlist": {
+        "exists": true,
+        "mounted": 3,
+        "itemLens": [
+          9782,
+          10055,
+          10128
+        ],
+        "itemHasUpper": [
+          false,
+          false,
+          false
+        ],
+        "itemHasLower": [
+          false,
+          false,
+          false
+        ],
+        "scrollTop": 0,
+        "scrollHeight": 270,
+        "clientHeight": 270,
+        "atBottom": true,
+        "totalItems": 1
+      }
+    },
+    {
+      "t": 18234,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "convId": "33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
+      "wideCount": 18,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          17
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "[已按隐私规则删除原文 len=13]",
+      "wideLastClass": "ds-sc-markdown",
+      "wideLastHasUpper": true,
+      "wideLastHasLower": false,
+      "domUpperHits": [
+        [
+          "P.",
+          "DIV.ds-sc-markdown",
+          "DIV.ds-sc-msg-assistant.ds-sc-msg-main-bot",
+          "DIV.ds-sc-message-list",
+          "DIV.ds-studio-chat-container.ds-studio-chat-pending"
+        ]
+      ],
+      "domLowerHitCount": 0,
+      "bodyTextLen": 289470,
+      "vlist": {
+        "exists": true,
+        "mounted": 3,
+        "itemLens": [
+          9782,
+          10055,
+          10128
+        ],
+        "itemHasUpper": [
+          false,
+          false,
+          false
+        ],
+        "itemHasLower": [
+          false,
+          false,
+          false
+        ],
+        "scrollTop": 0,
+        "scrollHeight": 270,
+        "clientHeight": 270,
+        "atBottom": true,
+        "totalItems": 1
+      }
+    },
+    {
+      "t": 19234,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "convId": "33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
+      "wideCount": 18,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          17
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "[已按隐私规则删除原文 len=13]",
+      "wideLastClass": "ds-sc-markdown",
+      "wideLastHasUpper": true,
+      "wideLastHasLower": false,
+      "domUpperHits": [
+        [
+          "P.",
+          "DIV.ds-sc-markdown",
+          "DIV.ds-sc-msg-assistant.ds-sc-msg-main-bot",
+          "DIV.ds-sc-message-list",
+          "DIV.ds-studio-chat-container.ds-studio-chat-pending"
+        ]
+      ],
+      "domLowerHitCount": 0,
+      "bodyTextLen": 289470,
+      "vlist": {
+        "exists": true,
+        "mounted": 3,
+        "itemLens": [
+          9782,
+          10055,
+          10128
+        ],
+        "itemHasUpper": [
+          false,
+          false,
+          false
+        ],
+        "itemHasLower": [
+          false,
+          false,
+          false
+        ],
+        "scrollTop": 0,
+        "scrollHeight": 270,
+        "clientHeight": 270,
+        "atBottom": true,
+        "totalItems": 1
+      }
+    },
+    {
+      "t": 20236,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "convId": "33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=0]",
+      "wideCount": 18,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          17
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "[已按隐私规则删除原文 len=13]",
+      "wideLastClass": "ds-sc-markdown",
+      "wideLastHasUpper": true,
+      "wideLastHasLower": false,
+      "domUpperHits": [
+        [
+          "P.",
+          "DIV.ds-sc-markdown",
+          "DIV.ds-sc-msg-assistant.ds-sc-msg-main-bot",
+          "DIV.ds-sc-message-list",
+          "DIV.ds-studio-chat-container.ds-studio-chat-pending"
+        ]
+      ],
+      "domLowerHitCount": 0,
+      "bodyTextLen": 290692,
+      "vlist": {
+        "exists": true,
+        "mounted": 3,
+        "itemLens": [
+          9782,
+          10055,
+          10128
+        ],
+        "itemHasUpper": [
+          false,
+          false,
+          false
+        ],
+        "itemHasLower": [
+          false,
+          false,
+          false
+        ],
+        "scrollTop": 0,
+        "scrollHeight": 270,
+        "clientHeight": 270,
+        "atBottom": true,
+        "totalItems": 1
+      }
+    },
+    {
+      "t": 21236,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "convId": "33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "[已按隐私规则删除原文 len=18]",
+      "wideCount": 18,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          17
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "[已按隐私规则删除原文 len=19]",
+      "wideLastClass": "ds-sc-markdown",
+      "wideLastHasUpper": true,
+      "wideLastHasLower": false,
+      "domUpperHits": [
+        [
+          "P.",
+          "DIV.ds-sc-markdown",
+          "DIV.ds-sc-msg-assistant.ds-sc-msg-main-bot",
+          "DIV.ds-sc-message-list",
+          "DIV.ds-studio-chat-container.ds-studio-chat-pending"
+        ]
+      ],
+      "domLowerHitCount": 0,
+      "bodyTextLen": 290692,
+      "vlist": {
+        "exists": true,
+        "mounted": 3,
+        "itemLens": [
+          9782,
+          10055,
+          10128
+        ],
+        "itemHasUpper": [
+          false,
+          false,
+          false
+        ],
+        "itemHasLower": [
+          false,
+          false,
+          false
+        ],
+        "scrollTop": 0,
+        "scrollHeight": 270,
+        "clientHeight": 270,
+        "atBottom": true,
+        "totalItems": 1
+      }
+    }
+  ],
+  "msel": [
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 5,
+      "at": 1793460452377,
+      "outcome": "executed"
+    }
+  ],
+  "chatReadAudit": [
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 4,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 3,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 398,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 21,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 475,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 497,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 3,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 518,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 3,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 484,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 3,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 490,
+      "outcome": "executed"
+    }
+  ]
+}

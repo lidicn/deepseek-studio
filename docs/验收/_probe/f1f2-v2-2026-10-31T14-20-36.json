@@ -1,0 +1,2536 @@
+{
+  "at": "2026-10-31T14:23:25.479Z",
+  "pageTarget": {
+    "id": "2E48F4A447D9FE3A151960BB4A62066E",
+    "url": "https://chat.deepseek.com/"
+  },
+  "apiRes": {
+    "status": 500,
+    "elapsedMs": 150000,
+    "body": "[已按隐私规则删除原文 len=71]"
+  },
+  "verdict": {
+    "apiStatus": 500,
+    "apiElapsedMs": 150000,
+    "apiBody": "[已按隐私规则删除原文 len=71]",
+    "markerLower": "f1v3-mvwhnmld",
+    "markerUpper": "F1V3-MVWHNMLD",
+    "answerText": null,
+    "answerContainsMarker": false,
+    "answerIsUserBubbleOnly": false,
+    "answerEqualsPreTurnText": null,
+    "hostSamples": 74,
+    "hostDistinctStates": [
+      "true|null|3|10123"
+    ],
+    "hostStateStable": true,
+    "hostFirst": {
+      "t": 1793456457544,
+      "wallMs": 105,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=20]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    "hostLast": {
+      "t": 1793456604283,
+      "wallMs": 11,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=20]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    "domSamples": 148,
+    "domDistinctStates": 1,
+    "domStateStable": true,
+    "domFirst": {
+      "__exception": "{\"exceptionId\":1,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n "
+    },
+    "domLast": {
+      "__exception": "{\"exceptionId\":148,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"43\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    "mselSamples": [],
+    "chatReadAuditCount": 50,
+    "chatReadOutcomes": {
+      "executed|studio://host-internal": 48,
+      "execution-failed|studio://host-internal": 2
+    },
+    "flagRestoredTo": "undefined",
+    "ev1_chatReadPayloadShape": {
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "hasSessionField": true
+    },
+    "ev2_hostPageSessions": {
+      "logPath": "logs\\verify-f1f2\\app.stdout.log",
+      "distinctPageSessions": [
+        "f7958227-39e2-4010-a6bb-5d8768c203dc"
+      ],
+      "pageSessionCount": 1,
+      "chatSessionIds": [
+        "33507439-d490-4054-bbbc-dcd3d4d6f37a"
+      ],
+      "parentMessageChain": [
+        "26"
+      ],
+      "chatBodyCount": 1
+    },
+    "ev3_pageConvId": null,
+    "ev3_pageConvIdMatchesHost": false,
+    "j7_post": {
+      "mountedItems": 3,
+      "markerMounted": 0,
+      "lastItemLen": 10125,
+      "vlistScrollTop": 0,
+      "vlistScrollHeight": 180,
+      "vlistClientHeight": 180,
+      "atBottom": true,
+      "vlistExists": true
+    },
+    "pageAnswerHasUpper": null,
+    "domUpperHitChains": null,
+    "pageAnswerHasLower": null
+  },
+  "hostSamples": [
+    {
+      "t": 1793456457544,
+      "wallMs": 105,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=20]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456459457,
+      "wallMs": 12,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456461461,
+      "wallMs": 8,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456463468,
+      "wallMs": 9,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456465473,
+      "wallMs": 9,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456467483,
+      "wallMs": 8,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456469500,
+      "wallMs": 22,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456471525,
+      "wallMs": 35,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456473505,
+      "wallMs": 12,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456475512,
+      "wallMs": 8,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456478002,
+      "wallMs": 489,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456479529,
+      "wallMs": 9,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456481596,
+      "wallMs": 44,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456483577,
+      "wallMs": 8,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456485579,
+      "wallMs": 7,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456487582,
+      "wallMs": 8,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456489591,
+      "wallMs": 13,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456491607,
+      "wallMs": 12,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456493615,
+      "wallMs": 12,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456495612,
+      "wallMs": 7,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456497640,
+      "wallMs": 31,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456499629,
+      "wallMs": 11,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456505805,
+      "wallMs": 4167,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456506193,
+      "wallMs": 2532,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456506196,
+      "wallMs": 527,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456507696,
+      "wallMs": 7,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456509711,
+      "wallMs": 8,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456513022,
+      "wallMs": 1286,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456513761,
+      "wallMs": 11,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456515777,
+      "wallMs": 15,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456520173,
+      "wallMs": 2399,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456520308,
+      "wallMs": 517,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456521887,
+      "wallMs": 79,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456524359,
+      "wallMs": 542,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456525828,
+      "wallMs": 7,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456527840,
+      "wallMs": 7,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456529847,
+      "wallMs": 6,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456531859,
+      "wallMs": 9,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456533858,
+      "wallMs": 7,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456535867,
+      "wallMs": 10,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456538068,
+      "wallMs": 193,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456541517,
+      "wallMs": 1620,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456541930,
+      "wallMs": 19,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456543945,
+      "wallMs": 18,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456549872,
+      "wallMs": 3935,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456550945,
+      "wallMs": 2998,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456551013,
+      "wallMs": 1056,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456552393,
+      "wallMs": 426,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456556669,
+      "wallMs": 2695,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456556683,
+      "wallMs": 691,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456558477,
+      "wallMs": 481,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456560068,
+      "wallMs": 61,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456562026,
+      "wallMs": 8,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456564040,
+      "wallMs": 9,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456566041,
+      "wallMs": 7,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456568050,
+      "wallMs": 9,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456570086,
+      "wallMs": 24,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456572578,
+      "wallMs": 509,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456574180,
+      "wallMs": 88,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456576279,
+      "wallMs": 170,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456579076,
+      "wallMs": 919,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456580182,
+      "wallMs": 9,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456582195,
+      "wallMs": 7,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456584197,
+      "wallMs": 6,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456586207,
+      "wallMs": 8,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456588209,
+      "wallMs": 6,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456590213,
+      "wallMs": 6,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456592224,
+      "wallMs": 11,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456594231,
+      "wallMs": 7,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456596235,
+      "wallMs": 7,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456598247,
+      "wallMs": 7,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456600262,
+      "wallMs": 7,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456602271,
+      "wallMs": 10,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=160]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456604283,
+      "wallMs": 11,
+      "ok": true,
+      "reason": null,
+      "count": 3,
+      "lastTextLen": 10123,
+      "lastText": "[已按隐私规则删除原文 len=20]",
+      "payloadKeys": [
+        "sessionId",
+        "count",
+        "messages"
+      ],
+      "messageKeys": [
+        "role",
+        "text",
+        "index",
+        "id"
+      ],
+      "lastTextHasUpper": false,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    }
+  ],
+  "domSamples": [
+    {
+      "__exception": "{\"exceptionId\":1,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n "
+    },
+    {
+      "__exception": "{\"exceptionId\":2,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n "
+    },
+    {
+      "__exception": "{\"exceptionId\":3,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n "
+    },
+    {
+      "__exception": "{\"exceptionId\":4,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n "
+    },
+    {
+      "__exception": "{\"exceptionId\":5,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n "
+    },
+    {
+      "__exception": "{\"exceptionId\":6,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n "
+    },
+    {
+      "__exception": "{\"exceptionId\":7,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n "
+    },
+    {
+      "__exception": "{\"exceptionId\":8,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n "
+    },
+    {
+      "__exception": "{\"exceptionId\":9,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n "
+    },
+    {
+      "__exception": "{\"exceptionId\":10,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":11,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":12,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":13,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":14,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":15,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":16,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":17,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":18,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":19,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":20,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":21,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":22,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":23,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":24,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":25,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":26,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":27,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":28,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":29,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":30,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":31,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":32,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":33,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":34,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":35,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":36,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":37,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":38,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":39,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":40,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":41,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":42,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":43,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":44,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":45,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":46,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":47,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":48,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":49,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":50,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":51,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":52,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":53,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":54,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":55,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":56,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":57,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":58,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":59,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":60,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":61,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":62,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":63,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":64,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":65,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":66,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":67,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":68,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":69,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":70,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":71,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":72,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":73,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":74,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":75,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":76,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":77,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":78,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":79,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":80,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":81,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":82,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":83,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":84,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":85,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":86,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":87,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":88,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":89,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":90,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":91,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":92,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":93,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":94,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":95,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":96,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":97,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":98,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":99,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\n"
+    },
+    {
+      "__exception": "{\"exceptionId\":100,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":101,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":102,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":103,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":104,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":105,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":106,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":107,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":108,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":109,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":110,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":111,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":112,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":113,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":114,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":115,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":116,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":117,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":118,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":119,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":120,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":121,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":122,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":123,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":124,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":125,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":126,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":127,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":128,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":129,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":130,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":131,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":132,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":133,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":134,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":135,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":136,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"43\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":137,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"43\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":138,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"43\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":139,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"43\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":140,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"43\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":141,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"43\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":142,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"43\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":143,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"43\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":144,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"43\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":145,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"43\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":146,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"43\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":147,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"43\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    },
+    {
+      "__exception": "{\"exceptionId\":148,\"text\":\"Uncaught\",\"lineNumber\":66,\"columnNumber\":46,\"scriptId\":\"43\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"ReferenceError\",\"description\":\"ReferenceError: rawTxt is not defined\\n    at <anonymous>:67:47\\n    at Array.map (<anonymous>)\\n    at <anonymous>:67:25\\"
+    }
+  ],
+  "msel": [],
+  "chatReadAudit": [
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 9,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2394,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 510,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 74,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 537,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 4,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 4,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 3,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 4,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 4,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 4,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 186,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 26294,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1600,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 15,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 14,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 3930,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2987,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1051,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 423,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2690,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 683,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 478,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 56,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 4,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 3,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 3,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 3,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 20,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 30002,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 506,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 750,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 83,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 167,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 915,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 4,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 3,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 3,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 7,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 5,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 3,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 7,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 8,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 30018,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 4,
+      "outcome": "executed"
+    }
+  ]
+}

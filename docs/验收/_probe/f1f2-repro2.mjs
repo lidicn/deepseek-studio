@@ -30,7 +30,8 @@ const MARK_LOWER = 'f1v3-' + Date.now().toString(36);
 const MARK_UPPER = MARK_LOWER.toUpperCase();
 const TS = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 const OUT = join('docs', '验收', '_probe', `f1f2-v2-${TS}.json`);
-const SHORT_PROMPT = process.argv[2] ?? `只回一行，把 ${MARK_LOWER} 全部改成大写写出来，不要做任何其他操作。`;
+const SHORT_PROMPT = (process.argv[2] && process.argv[2].trim()) ? process.argv[2]
+  : `只回一行，把 ${MARK_LOWER} 全部改成大写写出来，不要做任何其他操作。`;
 
 const cfg = JSON.parse(readFileSync(join(homedir(), '.config', 'deepseek-studio', 'config.json'), 'utf8'));
 const token = cfg.token;
@@ -81,7 +82,9 @@ const DOM_SNAP = `(() => {
     t: Math.round(performance.now()),
     url: location.href,
     // 证据③：页面上真实的会话 id（路径里的 /a/chat/s/<id>）
-    convId: (/\/a\/chat\/s\/([0-9a-f-]+)/.exec(location.pathname) || [])[1] ?? null,
+    // 注意：别在这里写 /\/a\/chat\/.../ —— 模板字符串里反斜杠斜杠会被吃掉，正则字面量就变成
+    // 行注释，后面整行变语法错（本轮踩过：DOM 采样全线抛 SyntaxError）
+    convId: (location.pathname.split('/a/chat/s/')[1] ?? '').split('/')[0] || null,
     hasChatContainer: !!root,
     rootTextLen: root ? txt(root).length : null,
     rootTextTail: root ? txt(root).slice(-160) : null,
@@ -92,7 +95,61 @@ const DOM_SNAP = `(() => {
     wideClasses: Object.entries(cls).sort((a,b)=>b[1]-a[1]).slice(0, 6),
     wideLastText: txt(lastWide).slice(0, 200),
     wideLastClass: lastWide ? String(lastWide.className).slice(0, 90) : null,
+    // 大写形 = 模型答案；小写形 = 用户气泡（提示词原文）
+    wideLastHasUpper: (txt(lastWide) || '').includes(__MARK_UPPER__),
+    wideLastHasLower: (txt(lastWide) || '').includes(__MARK_LOWER__),
+    // 【P10 修正】原实现扫 #root * 且带 bbox 过滤 → Studio 注入层镜像
+    // （.ds-sc-message-list，挂在 document.body 下、在 #root 之外）永远扫不到，
+    // 于是 pageAnswerHasUpper 恒 false，把「实现读不到」洗成「模型没照做（待测）」。
+    // 现在扫 document.body 全量，只按结构排除左栏（nav/aside/[class*=sidebar]），
+    // 并把命中节点的祖先链整条记下来（含 .ds-sc-* 镜像 → 一眼能看出答案在哪个源）。
+    domUpperHits: (() => {
+      const M = __MARK_UPPER__;
+      const hits = [];
+      for (const n of document.body.querySelectorAll('*')) {
+        if ((n.textContent || '').length < M.length) continue;
+        if (!(n.textContent || '').includes(M)) continue;
+        if (n.closest('nav, aside, [class*="sidebar"], [class*="history"]')) continue;
+        if (!(n.offsetWidth || n.offsetHeight || n.getClientRects().length)) continue; // 跳过 display:none
+        hits.push(n);
+      }
+      // 只留最深的 3 个（外层祖先也含标记，链会重复）
+      const deepest = hits.filter((n) => !hits.some((m) => m !== n && n.contains(m)));
+      return deepest.slice(-3).map(n => {
+        const chain = []; let p = n;
+        while (p && p !== document.body) { chain.push(p.tagName + '.' + String(p.className || '').split(/\\s+/).slice(0,3).join('.')); p = p.parentElement; }
+        return chain.slice(0, 10);
+      });
+    })(),
+    domLowerHitCount: (() => {
+      let n = 0;
+      for (const el of document.querySelectorAll('#root *')) {
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height || (r.left < 360 && r.width < 460)) continue;
+        if ((el.textContent || '').includes(__MARK_LOWER__)) n++;
+      }
+      return n;
+    })(),
     bodyTextLen: txt(document.body).length,
+    // 虚拟列表实时状态：挂载了几项、每项文本长度、滚动指标
+    // （本轮实测：只挂 3 项、scrollTop=0、scrollHeight==clientHeight=150 → 列表停在最老一屏）
+    vlist: (() => {
+      const v = document.querySelector('.ds-virtual-list:not(.ds-virtual-list--printable)');
+      if (!v) return { exists: false };
+      const items = Array.from(v.querySelectorAll('.ds-virtual-list-visible-items > *'));
+      return {
+        exists: true,
+        mounted: items.length,
+        itemLens: items.map((it) => ((it.textContent ?? '').replace(/\s+/g, ' ').trim()).length),
+        itemHasUpper: items.map((it) => (it.textContent || '').includes(__MARK_UPPER__)),
+        itemHasLower: items.map((it) => (it.textContent || '').includes(__MARK_LOWER__)),
+        scrollTop: Math.round(v.scrollTop),
+        scrollHeight: v.scrollHeight,
+        clientHeight: v.clientHeight,
+        atBottom: v.scrollTop + v.clientHeight >= v.scrollHeight - 40,
+        totalItems: v.querySelectorAll('.ds-virtual-list-items > *').length,
+      };
+    })(),
   };
 })()`;
 
@@ -106,18 +163,30 @@ async function hostChatRead() {
     const j = await res.json().catch(() => null);
     const msgs = j?.data?.messages ?? [];
     const last = msgs[msgs.length - 1];
+    // v2：chat-read 新增 data.mirror（SSE 派生镜像，答案可能在 assistantTexts 里而不是 messages[].text）
+    const mirror = j?.data?.mirror ?? null;
+    const mirrorTexts = Array.isArray(mirror?.assistantTexts) ? mirror.assistantTexts : [];
+    const mirrorHasUpper = mirrorTexts.some((t) => typeof t === 'string' && t.includes(MARK_UPPER))
+      || (typeof mirror?.lastAssistantText === 'string' && mirror.lastAssistantText.includes(MARK_UPPER));
     return {
       t: Date.now(), wallMs: Date.now() - t0,
       ok: j?.ok ?? null, reason: j?.reason ?? null, count: j?.data?.count ?? null,
       lastTextLen: typeof last?.text === 'string' ? last.text.length : null,
       lastText: typeof last?.text === 'string' ? last.text.slice(0, 160) : null,
-      // 证据①：chat-read 返回体里有没有 session / 消息标识（现在没有 → 宿主无法对账轮次）
+      // 证据①：chat-read 返回体里有没有 session / 消息标识
       payloadKeys: j?.data ? Object.keys(j.data) : null,
       messageKeys: msgs[0] ? Object.keys(msgs[0]) : null,
+      // 镜像（SSE 派生答案源）证据
+      mirrorCount: mirror ? (mirror.count ?? null) : null,
+      mirrorAssistantTextCount: mirrorTexts.length,
+      mirrorLastLen: typeof mirror?.lastAssistantText === 'string' ? mirror.lastAssistantText.length : null,
+      mirrorHasUpper,
       // 大写标记 = 模型答案；小写标记 = 用户气泡（提示词原文）
       lastTextHasUpper: typeof last?.text === 'string' ? last.text.includes(MARK_UPPER) : null,
-      anyMsgHasUpper: msgs.some((m) => typeof m?.text === 'string' && m.text.includes(MARK_UPPER)),
+      anyMsgHasUpper: msgs.some((m) => typeof m?.text === 'string' && m.text.includes(MARK_UPPER)) || mirrorHasUpper,
       anyMsgHasLowerOnly: msgs.some((m) => typeof m?.text === 'string' && m.text.includes(MARK_LOWER) && !m.text.includes(MARK_UPPER)),
+      // 正控用：能读到多少条历史消息
+      anyMsgText: msgs.some((m) => typeof m?.text === 'string' && m.text.length > 0),
     };
   } catch (e) { return { t: Date.now(), error: String(e) }; }
 }
@@ -152,21 +221,61 @@ function collectHostSessionEvidence(logPath) {
     chatBodyCount: chatBodies.length,
   };
 }
-const hostSessionEvidence = collectHostSessionEvidence(process.argv[3]);
-console.log('=== 宿主 page session 证据 ===');
-console.log(JSON.stringify(hostSessionEvidence, null, 2));
+// ---------- 先导航到既有会话并等它渲染完，再发消息 ----------
+// 教训（本轮踩过）：在**首页**发消息 = 页面根本没有会话可读，宿主 fail-closed 超时是**正确行为**，
+// 但那样测不到「读虚拟列表里的会话消息」这条修复路径 → 必须先落到会话页。
+const CONV_URL = process.env.F1_CONV_URL
+  ?? 'https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a';
+const READY_PROBE = `(() => ({
+  skeleton: document.querySelectorAll('[class*="ds-skeleton"]').length,
+  rootLen: (document.querySelector('#root')?.textContent ?? '').replace(/\\s+/g,' ').trim().length,
+  vlist: !!document.querySelector('.ds-virtual-list:not(.ds-virtual-list--printable)'),
+  url: location.href,
+}))()`;
+const curUrl = await evaluate('location.href');
+if (curUrl !== CONV_URL) {
+  console.log(`navigate -> ${CONV_URL}`);
+  await send('Page.navigate', { url: CONV_URL });
+}
+let readyState = { ok: false };
+let prevLen = -1, stable = 0;
+const readyDeadline = Date.now() + 90000;
+while (Date.now() < readyDeadline) {
+  const s = await evaluate(READY_PROBE);
+  if (s && !s.__exception && s.skeleton === 0 && s.rootLen > 500 && s.rootLen === prevLen) {
+    stable += 1;
+    if (stable >= 2) { readyState = { ok: true, ...s }; break; }
+  } else stable = 0;
+  prevLen = s?.rootLen ?? -1;
+  await new Promise((r) => setTimeout(r, 2000));
+}
+console.log('=== 会话页就绪探测 ===');
+console.log(JSON.stringify(readyState, null, 2));
 
-// ---------- 记录 flag 原值并打开页内预取 ----------
-const flagBefore = await evaluate('typeof window.__studioMemorySelect === "undefined" ? "__undefined__" : JSON.stringify(window.__studioMemorySelect)');
-await evaluate('window.__studioMemorySelect = true; return window.__studioMemorySelect;');
-console.log(`flag: before=${JSON.stringify(flagBefore)} → now=true`);
+// ---------- 正控（Studio-PM 要求）：能读到上一轮消息才算测对了路径，否则直接停 ----------
+const positiveControl = await hostChatRead();
+const pcPass = !!(positiveControl.ok === true && (positiveControl.count ?? 0) > 0 && positiveControl.anyMsgText === true);
+console.log('=== 正控：宿主 chat-read 能否读到历史消息 ===');
+console.log(JSON.stringify({ ...positiveControl, lastText: '[已隐去]', pass: pcPass }, null, 2));
+if (!readyState.ok || !pcPass) {
+  console.log('!! 正控不过（会话页未就绪 或 chat-read 读不到历史消息）—— 本轮**停止**，不发消息、不出判据表。');
+  console.log('   reason: ready=' + readyState.ok + ' chatReadOk=' + positiveControl.ok + ' count=' + (positiveControl.count ?? 'null') + ' reason=' + (positiveControl.reason ?? '-'));
+  ws.close();
+  process.exit(9);
+}
+console.log('正控通过：路径正确，继续发送。');
+
+// ---------- 记录 flag 原值并打开页内预取（IIFE 包裹；顶层 return 在 Runtime.evaluate 里是语法错）----------
+const flagBefore = await evaluate('(() => { if (!("__studioMemorySelect" in window)) return "__undefined__"; return JSON.stringify(window.__studioMemorySelect); })()');
+const flagSet = await evaluate('(() => { window.__studioMemorySelect = true; return String(window.__studioMemorySelect); })()');
+console.log(`flag: before=${JSON.stringify(flagBefore)} → set 结果=${JSON.stringify(flagSet)}`);
 
 const domSamples = [];
 const hostSamples = [];
 let running = true;
 const domTimer = setInterval(async () => {
   if (!running) return;
-  try { const s = await evaluate(DOM_SNAP); if (s) domSamples.push(s); } catch {}
+  try { const s = await evaluate(DOM_SNAP.replaceAll('__MARK_UPPER__', JSON.stringify(MARK_UPPER)).replaceAll('__MARK_LOWER__', JSON.stringify(MARK_LOWER))); if (s) domSamples.push(s); } catch {}
 }, 1000);
 const hostTimer = setInterval(async () => {
   if (!running) return;
@@ -206,10 +315,16 @@ const post = await evaluate(`(() => {
 console.log('=== J7 视口外消息可读性 ===');
 console.log(JSON.stringify(post, null, 2));
 
-// ---------- 复原 flag ----------
+// ---------- 复原 flag（IIFE；顶层 return 是语法错，上一轮就因此没复原成功）----------
 const restored = await evaluate(
-  flagBefore === '__undefined__' ? 'delete window.__studioMemorySelect; return typeof window.__studioMemorySelect;'
-                               : 'window.__studioMemorySelect = JSON.parse(' + JSON.stringify(flagBefore) + '); return window.__studioMemorySelect;');
+  flagBefore === '__undefined__'
+    ? '(() => { delete window.__studioMemorySelect; return typeof window.__studioMemorySelect; })()'
+    : `(() => { window.__studioMemorySelect = JSON.parse(${JSON.stringify(flagBefore)}); return String(window.__studioMemorySelect); })()`);
+
+// ---------- 宿主 page session 证据（跑完再取：此时页面已连接、且已发生过真实发送）----------
+const hostSessionEvidence = collectHostSessionEvidence(process.argv[3]);
+console.log('=== 宿主 page session 证据（跑完取） ===');
+console.log(JSON.stringify(hostSessionEvidence, null, 2));
 
 // ---------- audit（修正解析：{object:"list",data:[...]}）----------
 let auditAll = [];
@@ -268,7 +383,24 @@ const verdict = {
     payloadKeys: hostSamples[0]?.payloadKeys ?? null,
     messageKeys: hostSamples[0]?.messageKeys ?? null,
     hasSessionField: !!(hostSamples[0]?.payloadKeys ?? []).some((k) => /session|conv|message_id|turn/i.test(k)),
+    // v2：镜像（SSE 派生答案源）字段——Core 说答案在 data.mirror.assistantTexts 而不在 messages[].text
+    mirrorInPayload: (hostSamples[0]?.payloadKeys ?? []).includes('mirror'),
+    mirrorCount: hostSamples.at(-1)?.mirrorCount ?? null,
+    mirrorAssistantTextCount: hostSamples.at(-1)?.mirrorAssistantTextCount ?? null,
+    mirrorLastLen: hostSamples.at(-1)?.mirrorLastLen ?? null,
+    mirrorHasUpper: hostSamples.at(-1)?.mirrorHasUpper ?? null,
   },
+  // 正控（PM 要求）：路径正确的证据，进报告
+  positiveControl: {
+    pass: pcPass, ok: positiveControl.ok, count: positiveControl.count,
+    reason: positiveControl.reason ?? null, messageCount: positiveControl.count ?? null,
+    messageKeys: positiveControl.messageKeys ?? null,
+    // 发送前的镜像基线：第五轮新增——答案靠镜像渲染时，判「本轮」要看 mirrorCount 是否增长
+    mirrorCount: positiveControl.mirrorCount ?? null,
+    mirrorLastLen: positiveControl.mirrorLastLen ?? null,
+    mirrorHasUpper: positiveControl.mirrorHasUpper ?? null,
+  },
+  pageReady: { ok: readyState.ok, skeleton: readyState.skeleton ?? null, rootLen: readyState.rootLen ?? null, url: readyState.url ?? null },
   ev2_hostPageSessions: hostSessionEvidence,
   ev3_pageConvId: domSamples[0]?.convId ?? null,
   ev3_pageConvIdMatchesHost: hostSessionEvidence?.chatSessionIds?.length
@@ -277,11 +409,48 @@ const verdict = {
     : null,
   // J7：最新消息当时是否已挂载进 DOM（0 = 被虚拟列表卸载 → 纯 DOM 实现读不到）
   j7_post: post,
+  // 模型是否服从指令（**真实 DOM** 里有没有大写形；不看 Studio 镜像，普通轮镜像恒空）：
+  //   true  → 模型照做了，J2/J5 可直接判
+  //   false → 模型没照做，本轮 J2/J5 记「待测」（不算实现 FAIL），换一轮重跑
+  //   undefined → 证据缺失 → 待测
+  pageAnswerHasUpper: (() => {
+    const last = domSamples.at(-1);
+    if (!last) return null;
+    // P10 修正：两条证据任一命中即认定模型照做（只信 #root 扫描会把镜像排除在外）
+    if (Array.isArray(last.domUpperHits) && last.domUpperHits.length > 0) return true;
+    if (last.wideLastHasUpper === true) return true;
+    return false;
+  })(),
+  pageAnswerHasUpperSource: (() => {
+    const last = domSamples.at(-1);
+    if (!last) return null;
+    if (Array.isArray(last.domUpperHits) && last.domUpperHits.length > 0) return 'domUpperHits';
+    if (last.wideLastHasUpper === true) return 'wideLastHasUpper';
+    return 'none';
+  })(),
+  domUpperHitChains: domSamples.at(-1)?.domUpperHits ?? null,
+  pageAnswerHasLower: domSamples.at(-1)?.domLowerHitCount ?? null,
 };
 console.log('=== VERDICT ===');
 console.log(JSON.stringify(verdict, null, 2));
 
 mkdirSync(join('docs', '验收', '_probe'), { recursive: true });
-writeFileSync(OUT, JSON.stringify({ at: new Date().toISOString(), pageTarget: { id: page.id, url: page.url }, apiRes, verdict, hostSamples, domSamples, msel, chatReadAudit }, null, 2));
+// 落盘前清洗：会话原文一律不留（项目规则：用户会话原文不进仓库/不进群）
+// 字段名黑名单 + 超过 300 字符的字符串一律只留长度；状态/长度/布尔判定全部保留。
+const DENY = new Set(['hostWouldRead', 'docNewest', 'hostFinal', 'docFinal', 'dsMarkdownLast', 'wideLastText',
+  'rootTextTail', 'lastText', 'body', 'apiBody', 'answerText', 'text', 'answer', 'preTurnText']);
+const scrub = (o) => {
+  if (Array.isArray(o)) return o.forEach(scrub);
+  if (o && typeof o === 'object') {
+    for (const k of Object.keys(o)) {
+      const val = o[k];
+      if (typeof val === 'string') {
+        if (DENY.has(k) || val.length > 300) o[k] = `[已按隐私规则删除原文 len=${val.length}]`;
+      } else scrub(val);
+    }
+  }
+  return o;
+};
+writeFileSync(OUT, JSON.stringify(scrub({ at: new Date().toISOString(), pageTarget: { id: page.id, url: page.url }, apiRes, verdict, hostSamples, domSamples, msel, chatReadAudit }), null, 2));
 console.log('written: ' + OUT);
 ws.close();

@@ -249,11 +249,26 @@ console.log('=== trace 增量统计 ===');
 console.log(JSON.stringify(traceStats, null, 2));
 
 mkdirSync(join('docs', '验收', '_probe'), { recursive: true });
-writeFileSync(OUT, JSON.stringify({
+// 落盘前清洗：会话原文一律不留（项目规则：用户会话原文不进仓库/不进群）
+const DENY = new Set(['hostWouldRead', 'docNewest', 'hostFinal', 'docFinal', 'dsMarkdownLast', 'wideLastText',
+  'rootTextTail', 'lastText', 'body', 'apiBody', 'answerText', 'text', 'answer', 'preTurnText']);
+const scrub = (o) => {
+  if (Array.isArray(o)) return o.forEach(scrub);
+  if (o && typeof o === 'object') {
+    for (const k of Object.keys(o)) {
+      const val = o[k];
+      if (typeof val === 'string') {
+        if (DENY.has(k) || val.length > 300) o[k] = `[已按隐私规则删除原文 len=${val.length}]`;
+      } else scrub(val);
+    }
+  }
+  return o;
+};
+writeFileSync(OUT, JSON.stringify(scrub({
   at: new Date().toISOString(), p0,
   short: shortRun.summary, shortSamples: shortRun.samples,
   chain: chainRun.summary, chainSamples: chainRun.samples,
   f2, audit, traceStats,
-}, null, 2));
+}), null, 2));
 console.log('written: ' + OUT);
 ws.close();

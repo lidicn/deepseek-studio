@@ -1,0 +1,1618 @@
+{
+  "at": "2026-10-31T14:13:26.052Z",
+  "pageTarget": {
+    "id": "E2876F1B08F733A3A6BA47E7435BEAF0",
+    "url": "https://chat.deepseek.com/"
+  },
+  "apiRes": {
+    "status": 500,
+    "elapsedMs": 127917,
+    "body": "[已按隐私规则删除原文 len=71]"
+  },
+  "verdict": {
+    "apiStatus": 500,
+    "apiElapsedMs": 127917,
+    "apiBody": "[已按隐私规则删除原文 len=71]",
+    "markerLower": "f1v3-mvwhbo23",
+    "markerUpper": "F1V3-MVWHBO23",
+    "answerText": null,
+    "answerContainsMarker": false,
+    "answerIsUserBubbleOnly": false,
+    "answerEqualsPreTurnText": null,
+    "hostSamples": 63,
+    "hostDistinctStates": [
+      "false|no-messages-found|null|null"
+    ],
+    "hostStateStable": true,
+    "hostFirst": {
+      "t": 1793455880272,
+      "wallMs": 137,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    "hostLast": {
+      "t": 1793456004596,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    "domSamples": 126,
+    "domDistinctStates": 1,
+    "domStateStable": true,
+    "domFirst": {
+      "__exception": "{\"exceptionId\":2,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"27\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.4\"}}"
+    },
+    "domLast": {
+      "__exception": "{\"exceptionId\":127,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"157\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.254\"}}"
+    },
+    "mselSamples": [],
+    "chatReadAuditCount": 50,
+    "chatReadOutcomes": {
+      "execution-failed|studio://host-internal": 50
+    },
+    "flagRestoredTo": {
+      "__exception": "{\"exceptionId\":128,\"text\":\"Uncaught\",\"lineNumber\":0,\"columnNumber\":36,\"scriptId\":\"159\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Illegal return statement\",\"objectId\":\"-2266198974073726092.2.256\"}}"
+    },
+    "ev1_chatReadPayloadShape": {
+      "payloadKeys": null,
+      "messageKeys": null,
+      "hasSessionField": false
+    },
+    "ev2_hostPageSessions": {
+      "logPath": "logs\\verify-f1f2\\app.stdout.log",
+      "distinctPageSessions": [],
+      "pageSessionCount": 0,
+      "chatSessionIds": [],
+      "parentMessageChain": [],
+      "chatBodyCount": 0
+    },
+    "ev3_pageConvId": null,
+    "ev3_pageConvIdMatchesHost": null,
+    "j7_post": {
+      "mountedItems": 0,
+      "markerMounted": 0,
+      "lastItemLen": null,
+      "vlistScrollTop": null,
+      "vlistScrollHeight": null,
+      "vlistClientHeight": null,
+      "atBottom": null,
+      "vlistExists": false
+    },
+    "pageAnswerHasUpper": null,
+    "domUpperHitChains": null,
+    "pageAnswerHasLower": null
+  },
+  "hostSamples": [
+    {
+      "t": 1793455880272,
+      "wallMs": 137,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455882142,
+      "wallMs": 5,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455884155,
+      "wallMs": 5,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455886168,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455888176,
+      "wallMs": 6,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455890181,
+      "wallMs": 5,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455892197,
+      "wallMs": 5,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455894200,
+      "wallMs": 6,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455896205,
+      "wallMs": 6,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455898214,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455900222,
+      "wallMs": 5,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455902234,
+      "wallMs": 3,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455904242,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455906243,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455908248,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455910268,
+      "wallMs": 7,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455912268,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455914274,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455916282,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455918288,
+      "wallMs": 5,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455920289,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455922296,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455924296,
+      "wallMs": 3,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455926309,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455928311,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455930325,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455932332,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455934341,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455936351,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455938355,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455940357,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455942362,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455944364,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455946366,
+      "wallMs": 3,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455948381,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455950388,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455952388,
+      "wallMs": 3,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455954398,
+      "wallMs": 3,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455956403,
+      "wallMs": 3,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455958416,
+      "wallMs": 3,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455960424,
+      "wallMs": 3,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455962433,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455964443,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455966450,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455968463,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455970463,
+      "wallMs": 3,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455972467,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455974470,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455976473,
+      "wallMs": 5,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455978472,
+      "wallMs": 3,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455980483,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455982491,
+      "wallMs": 3,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455984502,
+      "wallMs": 5,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455986516,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455988526,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455990537,
+      "wallMs": 3,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455992552,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455994561,
+      "wallMs": 3,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455996561,
+      "wallMs": 3,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793455998571,
+      "wallMs": 2,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456000588,
+      "wallMs": 5,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456002590,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    },
+    {
+      "t": 1793456004596,
+      "wallMs": 4,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null,
+      "payloadKeys": null,
+      "messageKeys": null,
+      "lastTextHasUpper": null,
+      "anyMsgHasUpper": false,
+      "anyMsgHasLowerOnly": false
+    }
+  ],
+  "domSamples": [
+    {
+      "__exception": "{\"exceptionId\":2,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"27\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.4\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":3,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"33\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.6\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":4,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"34\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.8\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":5,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"35\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.10\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":6,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"36\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.12\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":7,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"37\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.14\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":8,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"38\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.16\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":9,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"39\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.18\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":10,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"40\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.20\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":11,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"41\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.22\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":12,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"42\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.24\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":13,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"43\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.26\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":14,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"44\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.28\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":15,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"45\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.30\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":16,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"46\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.32\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":17,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"47\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.34\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":18,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"48\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.36\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":19,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"49\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.38\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":20,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"50\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.40\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":21,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"51\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.42\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":22,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"52\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.44\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":23,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"53\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.46\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":24,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"54\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.48\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":25,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"55\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.50\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":26,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"56\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.52\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":27,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"57\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.54\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":28,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"58\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.56\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":29,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"59\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.58\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":30,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"60\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.60\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":31,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"61\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.62\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":32,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"62\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.64\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":33,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"63\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.66\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":34,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"64\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.68\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":35,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"65\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.70\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":36,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"66\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.72\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":37,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"67\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.74\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":38,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"68\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.76\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":39,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"69\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.78\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":40,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"70\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.80\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":41,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"71\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.82\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":42,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"72\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.84\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":43,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"73\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.86\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":44,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"74\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.88\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":45,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"75\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.90\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":46,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"76\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.92\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":47,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"77\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.94\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":48,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"78\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.96\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":49,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"79\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.98\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":50,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"80\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.100\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":51,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"81\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.102\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":52,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"82\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.104\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":53,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"83\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.106\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":54,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"84\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.108\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":55,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"85\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.110\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":56,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"86\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.112\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":57,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"87\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.114\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":58,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"88\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.116\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":59,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"89\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.118\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":60,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"90\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.120\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":61,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"91\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.122\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":62,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"92\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.124\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":63,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"93\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.126\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":64,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"94\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.128\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":65,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"95\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.130\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":66,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"96\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.132\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":67,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"97\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.134\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":68,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"98\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.136\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":69,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"99\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.138\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":70,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"100\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.140\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":71,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"101\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.142\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":72,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"102\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.144\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":73,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"103\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.146\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":74,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"104\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.148\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":75,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"105\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.150\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":76,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"106\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.152\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":77,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"107\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.154\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":78,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"108\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.156\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":79,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"109\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.158\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":80,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"110\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.160\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":81,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"111\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.162\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":82,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"112\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.164\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":83,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"113\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.166\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":84,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"114\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.168\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":85,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"115\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.170\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":86,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"116\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.172\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":87,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"117\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.174\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":88,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"118\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.176\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":89,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"119\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.178\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":90,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"120\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.180\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":91,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"121\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.182\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":92,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"122\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.184\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":93,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"123\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.186\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":94,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"124\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.188\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":95,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"125\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.190\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":96,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"126\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.192\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":97,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"127\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.194\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":98,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"128\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.196\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":99,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"129\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.198\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":100,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"130\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.200\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":101,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"131\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.202\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":102,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"132\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.204\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":103,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"133\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.206\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":104,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"134\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.208\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":105,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"135\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.210\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":106,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"136\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.212\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":107,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"137\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.214\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":108,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"138\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.216\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":109,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"139\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.218\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":110,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"140\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.220\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":111,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"141\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.222\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":112,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"142\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.224\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":113,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"143\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.226\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":114,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"144\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.228\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":115,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"145\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.230\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":116,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"146\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.232\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":117,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"147\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.234\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":118,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"148\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.236\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":119,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"149\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.238\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":120,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"150\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.240\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":121,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"151\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.242\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":122,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"152\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.244\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":123,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"153\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.246\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":124,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"154\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.248\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":125,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"155\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.250\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":126,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"156\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.252\"}}"
+    },
+    {
+      "__exception": "{\"exceptionId\":127,\"text\":\"Uncaught\",\"lineNumber\":15,\"columnNumber\":20,\"scriptId\":\"157\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Unexpected token ':'\",\"objectId\":\"-2266198974073726092.2.254\"}}"
+    }
+  ],
+  "msel": [],
+  "chatReadAudit": [
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    }
+  ]
+}
