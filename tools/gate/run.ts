@@ -4,8 +4,11 @@
  *
  * DCD 裁定 §1.4（20261017）：gate 分两级。
  *
- * 阻塞级（红了必合）：typecheck → vitest → boundary → contract → coverage
- *   任一步失败立即停止。
+ * 阻塞级（红了必合）：typecheck → vitest → eval-golden → boundary → contract →
+ *   coverage → empty-files → doc-drift → e2e-replay。任一步失败立即停止。
+ *   20261031 门禁接线：eval-golden（40 条契约 golden）、doc-drift（文档↔代码引用校验，
+ *   重写版）、e2e-replay（带断言的离线回放）入闸；CI（.github/workflows/ci.yml）自此
+ *   只跑 npm run gate，不再维护平行步骤清单。
  *
  * 信息级（红了照常合，但输出进日志留档）：symbols → m3-clean → security
  *   M3 未完、面板 innerHTML 历史债，这些尺红是真实待办，不是噪音。
@@ -28,10 +31,15 @@ interface Step {
 const blockingSteps: Step[] = [
   { name: 'typecheck', cmd: 'npx tsc --noEmit' },
   { name: 'vitest', cmd: 'npx vitest run' },
+  // 门禁接线（20261031）：40 条契约 golden 入闸（纯函数、离线、确定性 100%）
+  { name: 'eval-golden', cmd: 'npx tsx tools/eval/run.ts' },
   { name: 'boundary-audit', cmd: 'npx tsx tools/audit/boundary.ts' },
   { name: 'contract-guard', cmd: 'npx tsx tools/contract/check.ts' },
   { name: 'coverage-check', cmd: 'npx tsx tools/coverage/check.ts' },
   { name: 'empty-files', cmd: 'npx tsx tools/audit/empty-files.ts' },
+  // 门禁接线（20261031）：原 CI 独有的两步并入 gate（CI 自此只跑 npm run gate）
+  { name: 'doc-drift', cmd: 'npx tsx tools/audit/doc-drift.ts' },
+  { name: 'e2e-replay', cmd: 'npx tsx tools/e2e/runner.ts tools/e2e/fixtures/simple-task.json' },
 ];
 
 /** 信息级：红了照常合，输出进 logs/gate-info.log。 */
@@ -92,3 +100,4 @@ function main(): void {
 }
 
 main();
+

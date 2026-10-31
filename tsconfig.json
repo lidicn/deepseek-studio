@@ -19,6 +19,6 @@
     "baseUrl": ".",
     "paths": {}
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
+  "include": ["src/**/*.ts", "tests/**/*.ts", "tools/**/*.ts", "vitest.config.ts"],
   "exclude": ["node_modules"]
 }

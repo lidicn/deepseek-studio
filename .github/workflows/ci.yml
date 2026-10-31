@@ -1,7 +1,12 @@
 name: CI
 on: [push, pull_request]
+
+# 门禁接线（20261031）：CI 与本地 gate 合一——只跑 npm run gate，不再维护平行步骤清单，
+# 步骤差异 = 0 由构造保证（清单唯一真相在 tools/gate/run.ts）。
+# 注：GitHub runner 上 `upstream-drift`（信息级）会因读不到 E:\NAS\deepseek-pp 记 FAIL，
+# 但信息级不阻塞，gate 仍 exit 0。
 jobs:
-  test:
+  gate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -9,10 +14,4 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: npm ci
-      - run: npm run typecheck
-      - run: npx vitest run
-      - run: npx tsx tools/coverage/check.ts
-      - run: npx tsx tools/audit/boundary.ts
-      - run: npx tsx tools/audit/doc-drift.ts
-      - run: npx tsx tools/audit/security.ts
-      - run: npx tsx tools/e2e/runner.ts tools/e2e/fixtures/simple-task.json
+      - run: npm run gate

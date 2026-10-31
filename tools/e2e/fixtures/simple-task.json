@@ -3,9 +3,13 @@
   "replayLines": [
     {"kind": "loop", "type": "tool"},
     {"kind": "bus", "event": "after-call"},
-    {"kind": "loop", "type": "assistant"},
-    {"kind": "loop", "type": "tool"},
+    {"kind": "loop", "type": "assistant", "text": "开始执行任务..."},
     {"kind": "bus", "event": "after-call"},
-    {"kind": "loop", "type": "assistant"}
-  ]
+    {"kind": "loop", "type": "assistant", "text": "任务完成 <task_complete>{}</task_complete>"}
+  ],
+  "expect": {
+    "stopReason": "completed",
+    "round": 2,
+    "toolCalls": 1
+  }
 }

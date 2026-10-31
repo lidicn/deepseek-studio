@@ -39,8 +39,10 @@ export function createReplayEngine(lines: string[]): ModelEngine {
     if (obj.kind === 'bus' && obj.event === 'after-call') {
       currentToolCalls++;
     } else if (obj.kind === 'loop' && obj.type === 'assistant') {
+      // 门禁接线（20261031）：文法定义了 text 却从未使用，导致回放永远产出 '(replay)'，
+      // task_complete 哨兵无法进入回放、e2e 只能断言退化路径。现支持 {"kind":"loop","type":"assistant","text":"..."}。
       turns.push({
-        content: currentContent || '(replay)',
+        content: obj.text || currentContent || '(replay)',
         toolCalls: currentToolCalls,
         ...(currentRecords.length > 0 ? { toolCallRecords: currentRecords } : {}),
       });
