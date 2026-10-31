@@ -9,8 +9,266 @@
 mod sidecar;
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use url::Url;
+
+/// 主窗口关闭是「退出整个应用」的唯一入口：关闭流程只允许进入一次，
+/// 避免多个窗口的 CloseRequested 并发触发多次 sidecar 关闭 / 窗口销毁。
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// P0 定位打点（多窗退出挂死）：带毫秒时间戳与线程 id，用于区分三种挂起位置——
+/// 后台收尾线程没起来、`sidecar.shutdown()` 阻塞、`run_on_main_thread` 未调度，
+/// 以及逐个 `destroy()` 卡住。定位完成后整块删除。
+fn p0_log(msg: impl AsRef<str>) {
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    eprintln!(
+        "[p0 {}ms {:?}] {}",
+        ms,
+        std::thread::current().id(),
+        msg.as_ref()
+    );
+}
+
+/// debug 构建会附带一个控制台窗口；从资源管理器双击启动时它会一直挂在桌面上，
+/// 和主窗口一起被当成“多出来的窗口”。仅当本进程独占该控制台时隐藏它，
+/// 从终端 / IDE 启动时保持原样，避免把开发者自己的终端一起藏掉。
+#[cfg(all(windows, debug_assertions))]
+fn hide_orphan_console() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetConsoleWindow() -> isize;
+        fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
+    }
+    unsafe {
+        let hwnd = GetConsoleWindow();
+        if hwnd == 0 {
+            return;
+        }
+        let mut pids = [0u32; 4];
+        let attached = GetConsoleProcessList(pids.as_mut_ptr(), pids.len() as u32);
+        if attached == 1 {
+            ShowWindow(hwnd, 0); // SW_HIDE
+        }
+    }
+}
+
+#[cfg(not(all(windows, debug_assertions)))]
+fn hide_orphan_console() {}
+
+/// B（T-1 兜底）：退出前回收**本 app 归属**的 WebView2 进程。
+///
+/// 为什么需要：野窗口（Tauri 从未登记、但 HWND 与 WebView2 还活着）不在 Tauri 管理内，
+/// 事件循环收尾时会一直等它的 WebView2 → `app.exit(0)` 只是"请求"退出（tauri app.rs:581），
+/// 进程永远退不掉（20261031 实测：多窗关闭 30s 不退；强杀后仍残留 6 个 msedgewebview2）。
+///
+/// 匹配方式：**父进程 PID 匹配**——WebView2 的 browser 进程（每个窗口一个）由宿主进程
+/// 直接拉起，其 `th32ParentProcessID` 就是本 app 的 PID；只杀父进程为「我」的
+/// `msedgewebview2.exe`，不误伤同机其它 WebView2。
+///
+/// 演进（20261031）：
+/// 1. 原实现用 PowerShell CIM 枚举命令行 → 实测单次 **9.9s**，且每次都闪控制台黑框；
+/// 2. 改为 Toolhelp32Snapshot 枚举（毫秒级）：0.87–3.05s，取决于后续 `taskkill` spawn；
+/// 3. 现改为 `OpenProcess + TerminateProcess` 直接结束（不再 spawn 子进程、不再有黑框），
+///    并在结束后短轮询等 PID 真正消失——`TerminateProcess` 是异步的，
+///    立刻 `process::exit(0)` 会让验证侧仍看到「残留」。
+#[cfg(windows)]
+fn terminate_app_webviews() -> usize {
+    let me = std::process::id();
+    let table = process_table();
+    let roots: Vec<u32> = table
+        .iter()
+        .filter(|(_, ppid, name)| *ppid == me && name.starts_with("msedgewebview2"))
+        .map(|(pid, _, _)| *pid)
+        .collect();
+    if roots.is_empty() {
+        return 0;
+    }
+    // BFS 展开后代（browser 自己的 renderer / gpu 子进程），再倒序结束（叶子先死）。
+    let mut order: Vec<u32> = Vec::new();
+    let mut queue: Vec<u32> = roots;
+    while let Some(p) = queue.pop() {
+        if order.contains(&p) {
+            continue;
+        }
+        order.push(p);
+        for (pid, ppid, _) in &table {
+            if *ppid == p && !order.contains(pid) {
+                queue.push(*pid);
+            }
+        }
+    }
+    let mut killed = 0usize;
+    for pid in order.iter().rev() {
+        if terminate_pid(*pid) {
+            killed += 1;
+        }
+    }
+    // 不做「等 PID 消失」的轮询：WebView2 的 browser 进程被杀后，只要宿主还活着，
+    // 它的守护逻辑会**立刻重启**一个 browser 进程（20261031 实测：R71 杀完再等 300ms，
+    // 反而留下 1 个；R73 杀 14 个后等 300ms，残留 5 个）。这里杀完立即返回，
+    // 由紧随其后的 `std::process::exit(0)` 一并终结，宿主先死则不会被重启。
+    killed
+}
+
+#[cfg(not(windows))]
+fn terminate_app_webviews() -> usize {
+    0
+}
+
+/// 读一次系统进程表：`(pid, ppid, 小写 exe 名)`。
+#[cfg(windows)]
+fn process_table() -> Vec<(u32, u32, String)> {
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct PROCESSENTRY32W {
+        dwSize: u32,
+        cntUsage: u32,
+        th32ProcessID: u32,
+        th32DefaultHeapID: usize,
+        th32ModuleID: u32,
+        cntThreads: u32,
+        th32ParentProcessID: u32,
+        pcPriClassBase: i32,
+        dwFlags: u32,
+        szExeFile: [u16; 260],
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateToolhelp32Snapshot(flags: u32, process_id: u32) -> isize;
+        fn Process32FirstW(snapshot: isize, entry: *mut PROCESSENTRY32W) -> i32;
+        fn Process32NextW(snapshot: isize, entry: *mut PROCESSENTRY32W) -> i32;
+        fn CloseHandle(handle: isize) -> i32;
+    }
+
+    const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
+    const INVALID_HANDLE_VALUE: isize = -1;
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Vec::new();
+    }
+    let mut rows = Vec::new();
+    unsafe {
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            cntUsage: 0,
+            th32ProcessID: 0,
+            th32DefaultHeapID: 0,
+            th32ModuleID: 0,
+            cntThreads: 0,
+            th32ParentProcessID: 0,
+            pcPriClassBase: 0,
+            dwFlags: 0,
+            szExeFile: [0u16; 260],
+        };
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                let name = String::from_utf16_lossy(&entry.szExeFile).to_ascii_lowercase();
+                rows.push((entry.th32ProcessID, entry.th32ParentProcessID, name));
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+    }
+    rows
+}
+
+/// 进程是否还活着（`OpenProcess` 失败即视为已消失）。
+#[cfg(windows)]
+pub(crate) fn pid_alive(pid: u32) -> bool {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
+        fn CloseHandle(handle: isize) -> i32;
+    }
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle == 0 {
+        return false;
+    }
+    unsafe {
+        CloseHandle(handle);
+    }
+    true
+}
+
+#[cfg(not(windows))]
+pub(crate) fn pid_alive(_pid: u32) -> bool {
+    false
+}
+
+/// 结束单个进程；成功返回 true。`TerminateProcess` 是异步的（返回不代表已消失）。
+#[cfg(windows)]
+fn terminate_pid(pid: u32) -> bool {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
+        fn TerminateProcess(handle: isize, code: u32) -> i32;
+        fn CloseHandle(handle: isize) -> i32;
+    }
+    const PROCESS_TERMINATE: u32 = 0x0001;
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    if handle == 0 {
+        return false;
+    }
+    let ok = unsafe { TerminateProcess(handle, 1) } != 0;
+    unsafe {
+        CloseHandle(handle);
+    }
+    ok
+}
+
+#[cfg(not(windows))]
+fn terminate_pid(_pid: u32) -> bool {
+    false
+}
+
+/// 结束「pid 及其全部后代」的进程树（后代先死，父进程后死），返回结束个数。
+/// 供 sidecar 关闭复用：替代 `taskkill /T /F` 子进程（不再 spawn、不再闪黑框）。
+#[cfg(windows)]
+pub(crate) fn terminate_tree(root: u32) -> usize {
+    let table = process_table();
+    let mut order: Vec<u32> = Vec::new();
+    let mut queue: Vec<u32> = vec![root];
+    while let Some(p) = queue.pop() {
+        if order.contains(&p) {
+            continue;
+        }
+        order.push(p);
+        for (pid, ppid, _) in &table {
+            if *ppid == p && !order.contains(pid) {
+                queue.push(*pid);
+            }
+        }
+    }
+    let mut killed = 0usize;
+    for pid in order.iter().rev() {
+        if terminate_pid(*pid) {
+            killed += 1;
+        }
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+    while std::time::Instant::now() < deadline && order.iter().any(|p| pid_alive(*p)) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    killed
+}
+
+#[cfg(not(windows))]
+pub(crate) fn terminate_tree(_root: u32) -> usize {
+    0
+}
 
 /// 运行时读取注入脚本（而非 include_str! 编译时嵌入）。
 /// 搜索顺序：当前工作目录 → 相对于 exe 目录（向上找项目根）→ exe 同级。
@@ -443,12 +701,34 @@ fn open_workbench(app: tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
     let url = Url::parse(&workbench_url()).map_err(|e| format!("invalid workbench url: {}", e))?;
-    WebviewWindowBuilder::new(&app, "workbench", WebviewUrl::External(url))
-        .title("DeepSeek++ Studio · 工作台")
-        .inner_size(1440.0, 900.0)
-        .min_inner_size(1024.0, 720.0)
-        .build()
-        .map_err(|e| format!("failed to create workbench window: {}", e))?;
+    // A（T-1 治本）：建窗必须离开 IPC 回调。
+    //
+    // 根因（20261031 实测 + tauri 源码）：wry runtime 建 webview 是
+    // 「send_user_message 投递 + rx.recv() 阻塞等事件循环建窗」（tauri-runtime-wry-2.12.1
+    // lib.rs:365-405）；而 `send_user_message` 在**主线程上会内联执行**（同文件 lib.rs:263-280）。
+    // IPC 回调本身就跑在主线程（p0 日志 ThreadId(1)）→ WebView2 控制器创建被嵌在 WebView2 的
+    // IPC 消息派发里 → UI 线程没法泵消息 → 死锁：HWND 建出来、webview 停在 about:blank、
+    // Tauri 永远不登记它（teardown 只看得到 ["main"]），退出时它的 WebView2 又拖住收尾。
+    //
+    // 改法：建窗放到工作线程执行——主线程立即返回，事件循环空闲，能正常处理投递过来的建窗消息。
+    // 前端 `__studioOpenWorkbench` 本来就是 fire-and-forget，不依赖同步返回。
+    std::thread::spawn(move || {
+        p0_log("workbench build begin (worker)");
+        let built = WebviewWindowBuilder::new(&app, "workbench", WebviewUrl::External(url))
+            .title("DeepSeek++ Studio · 工作台")
+            .inner_size(1440.0, 900.0)
+            .min_inner_size(1024.0, 720.0)
+            .build();
+        // P0 定位：工作台窗到底有没有被 Tauri 登记（上一轮 teardown 只看到 ["main"]，而 OS 层窗口仍在）。
+        p0_log(format!(
+            "workbench build ok={} tracked={:?}",
+            built.is_ok(),
+            app.webview_windows().keys().collect::<Vec<_>>()
+        ));
+        if let Err(e) = built {
+            eprintln!("[studio] failed to create workbench window: {}", e);
+        }
+    });
     Ok(())
 }
 
@@ -568,7 +848,25 @@ fn open_bot_window(
                 if app.get_webview_window(&label).is_some() {
                     return Err(format!("duplicate window label {:?}", label));
                 }
-                create_bot_window(&app, &ctx, &label, &bot_id, visible, data_dir)?;
+                // A（T-1 治本）：同 open_workbench —— 建窗移出 IPC 回调（主线程）。
+                // wry 的建 webview 会「投递 + rx.recv() 阻塞等事件循环」，在 IPC 回调里
+                // 等于主线程自锁（窗口半成品、Tauri 不登记、退出拖住收尾）。
+                // 这里把建窗丢到工作线程：主线程立即返回，事件循环保持可用。
+                let app_for_build = app.clone();
+                let ctx_for_build = BotWindowContext {
+                    base_script: ctx.base_script.clone(),
+                    disable_inject: ctx.disable_inject,
+                };
+                std::thread::spawn(move || {
+                    p0_log(format!("bot window build begin: {}", label));
+                    match create_bot_window(&app_for_build, &ctx_for_build, &label, &bot_id, visible, data_dir) {
+                        Ok(()) => p0_log(format!("bot window build ok: {}", label)),
+                        Err(e) => {
+                            eprintln!("[studio] bot window create failed: {}", e);
+                            p0_log(format!("bot window build failed: {}", label));
+                        }
+                    }
+                });
             }
         }
     }
@@ -576,6 +874,8 @@ fn open_bot_window(
 }
 
 fn main() {
+    hide_orphan_console();
+
     // 远程调试口：默认常开 CDP，便于本地工具/自动化直连 WebView2。
     // 关闭方式：设置 STUDIO_DISABLE_CDP=1；换端口：STUDIO_CDP_PORT=<port>。
     // 端口选择：9222 是历史默认口，旧脚本都连它；空闲时优先用它，
@@ -611,6 +911,12 @@ fn main() {
         // v0.30 单实例锁：第二个 deepseek-studio.exe 进程不再创建窗口，
         // 而是聚焦到已有主窗口（根治多实例 × N bot 窗口 = 窗口爆炸）。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // v0.32：正在退出时不要再把即将销毁的主窗口 show 出来。
+            // 否则「关闭 → 立刻重新点图标」会把正在收尾的窗口闪一下再消失。
+            if SHUTTING_DOWN.load(Ordering::SeqCst) {
+                eprintln!("[studio] second instance ignored (shutting down)");
+                return;
+            }
             // 第二实例启动时：把已有主窗口提到前台、取消最小化、聚焦。
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
@@ -791,6 +1097,8 @@ fn main() {
             let label = window.label().to_string();
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 eprintln!("[studio] CloseRequested for window: {}", label);
+                // P0 定位：CloseRequested 入口（任何窗口都打），与后续 p0 时间戳同源，便于对齐整条退出时序。
+                p0_log(format!("close-requested: {}", label));
                 // v0.24：bot 窗口直接放行原生关闭——不保存几何（避免污染主窗口状态）、
                 // 也不关闭 sidecar（它是全应用共享的常驻宿主进程）。仅主窗口走下方优雅关闭。
                 if label != "main" {
@@ -800,7 +1108,35 @@ fn main() {
                     );
                     return;
                 }
+                // 退出流程已经启动：放行后续的关闭请求（例如 destroy 触发的重入）。
+                if SHUTTING_DOWN.load(Ordering::SeqCst) {
+                    return;
+                }
+                SHUTTING_DOWN.store(true, Ordering::SeqCst);
+                // P0 定位：确认走的是「主窗关闭 → 接管退出流程」这条分支（而不是被 SHUTTING_DOWN 提前 return）。
+                p0_log("close-flow begin (main)");
                 api.prevent_close();
+
+                // 用户视角优先：先把窗口藏掉，再记账保存窗口状态。
+                // 20261031 实测（roundT1-fin-*）：`save_window_state` 在负载机器上要 568ms，
+                // 排在 hide 前面会让「关闭后 300ms 内主窗不可见」这条验收线永远过不了。
+                //
+                // 顺序：**主窗最先藏**（用户点的就是它）→ 其余窗 → 保存状态。
+                // v0.32：主窗口立刻隐藏——sidecar 收尾需要几秒，但用户视角应当
+                // “即刻关闭”。窗口留在屏幕上的那几秒正是“关闭时卡住/乱闪”的来源。
+                let _ = window.hide();
+                // P0 定位：主窗 hide 是否被调用（对照上轮实测：主窗直到销毁才消失）。
+                p0_log("hide main");
+
+                // v0.31：退出前先把其余窗口隐藏掉。否则主窗口销毁后焦点会在剩余的
+                // bot/workbench 窗口之间来回跳，表现为关闭时多个窗口连续闪烁。
+                for (other_label, other) in window.app_handle().webview_windows() {
+                    if other_label != label {
+                        let _ = other.hide();
+                        // P0 定位：确认「其余窗 hide」确实被调用（上一轮实测其余窗 30s 全程可见，需区分没调用 vs 调了没生效）。
+                        p0_log(format!("hide other: {}", other_label));
+                    }
+                }
 
                 // v0.12 Phase 3：保存窗口状态（size 必存，position 尽力）
                 let mut state = WindowState::default();
@@ -821,13 +1157,62 @@ fn main() {
                 let app_handle = window.app_handle().clone();
                 let label = window.label().to_string();
                 std::thread::spawn(move || {
+                    // P0 打点 1/3：后台收尾线程是否真的起来（没起来 = spawn 之前就卡）。
+                    p0_log("exit-closure entered");
                     if let Some(handle) = app_handle.try_state::<sidecar::SidecarHandle>() {
+                        p0_log("sidecar shutdown begin");
                         handle.shutdown();
-                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        p0_log("sidecar shutdown returned");
+                        // 原来这里固定 sleep 500ms，等 sidecar 自己优雅退出。
+                        // 现在 shutdown() 内部已是决定性的进程树结束（TerminateProcess），
+                        // 再等这 500ms 纯属给「关闭慢」加账 —— 去掉。
+                    } else {
+                        p0_log("no sidecar state; skip shutdown");
                     }
-                    if let Some(win) = app_handle.get_webview_window(&label) {
-                        let _ = win.destroy();
-                    }
+                    // 窗口操作统一回主线程；先销毁其余窗口、最后销毁主窗口，
+                    // 保证焦点始终落在即将消失的主窗口上，不再闪。
+                    let app_for_windows = app_handle.clone();
+                    let queued = app_handle.run_on_main_thread(move || {
+                        p0_log("main-thread teardown entered");
+                        let teardown_label = label.clone();
+                        let all: Vec<String> = app_for_windows
+                            .webview_windows()
+                            .keys()
+                            .cloned()
+                            .collect();
+                        p0_log(format!("teardown window set: {:?}", all));
+                        for (other_label, other) in app_for_windows.webview_windows() {
+                            if other_label != label {
+                                let _ = other.hide();
+                                // P0 打点 2/3：每个窗 destroy 前后。
+                                p0_log(format!("destroy begin: {}", other_label));
+                                let _ = other.destroy();
+                                p0_log(format!("destroy done: {}", other_label));
+                            }
+                        }
+                        if let Some(main) = app_for_windows.get_webview_window(&teardown_label) {
+                            p0_log("destroy begin: main");
+                            let _ = main.destroy();
+                            p0_log("destroy done: main");
+                        } else {
+                            p0_log("main window already gone before destroy");
+                        }
+                        // B（T-1 兜底）：先回收本 app 归属的 WebView2（含 Tauri 未登记的野窗口），
+                        // 否则事件循环收尾会一直等这些 WebView2 → app.exit(0) 只是"请求"退出，
+                        // 进程永远退不掉（实测 30s 不退 + 强杀后残留 6 个 msedgewebview2）。
+                        let killed_webviews = terminate_app_webviews();
+                        p0_log(format!("teardown: terminated app webviews = {}", killed_webviews));
+                        // P0 打点 3/3：调 exit 之前。
+                        p0_log("calling app.exit(0)");
+                        app_for_windows.exit(0);
+                        p0_log("app.exit(0) returned");
+                        // 收尾：app.exit(0) 只是"请求"退出，事件循环仍可能等野 WebView2
+                        // 而迟迟不结束（20261031 实测 exit 之后还要再拖十几秒）。
+                        // WebView2 已在上面回收完毕，这里直接结束进程，跳过慢收尾。
+                        p0_log("calling std::process::exit(0)");
+                        std::process::exit(0);
+                    });
+                    p0_log(format!("run_on_main_thread queued ok={:?}", queued.is_ok()));
                 });
             }
         })

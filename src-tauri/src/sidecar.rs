@@ -103,21 +103,32 @@ fn probe_health() -> bool {
         .unwrap_or(false)
 }
 
+/// 8760 端口上是否仍有人监听（只做 TCP 连通判断，不要求 HTTP 200）。
+///
+/// 用途：关闭时判断是否还需要跑 `netstat` / PowerShell CIM 这些昂贵兜底。
+/// 端口已经空闲就说明宿主彻底没了，没必要再花 1~2s 扫进程表。
+fn port_in_use() -> bool {
+    match format!("{}:{}", HEALTH_HOST, HEALTH_PORT).parse() {
+        Ok(addr) => TcpStream::connect_timeout(&addr, HEALTH_PROBE_TIMEOUT).is_ok(),
+        Err(_) => false,
+    }
+}
+
 fn terminate_process_tree_by_pid(pid: u32) {
     #[cfg(windows)]
     {
-        let pid = pid.to_string();
-        // taskkill /T 只终结「已知父子关系」的进程。tsx CLI 会把真正跑宿主的
-        // node 作为孙进程 fork 出来，任务关系不总挂在 child PID 下，/T 覆盖不到。
-        // 所以这里连打两次：先按 child PID 砍树，再按端口反查 LISTENING 进程补刀。
-        // 残留 node 占着 8760 会让下一轮宿主撞 EADDRINUSE → process.exit(2)，
-        // 被映射成 StartupFailed（确定性失败、不再重试），表现为「再也起不来」。
-        let _ = Command::new("taskkill")
-            .args(["/PID", pid.as_str(), "/T", "/F"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        terminate_listener_on_port(HEALTH_PORT);
+        // 20261031：改为进程内 `OpenProcess + TerminateProcess` 枚举结束整棵树
+        // （见 main.rs `terminate_tree`）。原来每次 `taskkill /T /F` 都要 spawn 一个
+        // 子进程 + 一个控制台窗口：实测在负载机器上单次要 1~3s，且每次都闪一下黑框
+        // ——「关闭慢」和「关闭乱闪」两个用户抱怨都指向这一行。
+        // terminate_tree 会先按 Toolhelp 展开后代（tsx CLI 会把真正跑宿主的 node
+        // 作为孙进程 fork 出来），叶子先死、父进程后死，300ms 内等 PID 真正消失。
+        let _ = crate::terminate_tree(pid);
+        // 端口已空闲说明宿主彻底没了 → 没必要再跑一次 netstat 全表扫描。
+        // 实测那一步在负载机器上要 1~2s，且会闪一个控制台黑框。
+        if port_in_use() {
+            terminate_listener_on_port(HEALTH_PORT);
+        }
     }
     #[cfg(not(windows))]
     {
@@ -209,28 +220,17 @@ fn terminate_host_by_cmdline() {
 fn terminate_host_by_cmdline() {}
 
 /// 轮询等待 PID 彻底消失，最多 `budget`。进程不存在即视为已消失（查询报错）。
+///
+/// 20261031：原来每次轮询都 spawn 一次 `tasklist`（100ms 一拍）→ 关闭窗口期会连闪
+/// 十几个控制台黑框，正是用户抱怨的「关闭时乱闪」。改为进程内 `OpenProcess` 判活。
 #[cfg(windows)]
 fn wait_pid_gone(pid: u32, budget: Duration) {
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
-        // tasklist /FI 查不到该 PID 时 exit code 非 0 → 进程已消失。
-        let alive = Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {}", pid), "/NH"])
-            .output()
-            .map(|o| {
-                let s = String::from_utf8_lossy(&o.stdout);
-                s.lines().any(|l| {
-                    l.split_whitespace()
-                        .next()
-                        .and_then(|n| n.parse::<u32>().ok())
-                        == Some(pid)
-                })
-            })
-            .unwrap_or(false);
-        if !alive {
+        if !crate::pid_alive(pid) {
             return;
         }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(25));
     }
 }
 
@@ -435,10 +435,10 @@ impl SidecarSupervisor {
                     self.emit(SidecarEvent::FatalStartup { reason });
                     return;
                 }
-            // health timeout 且端口确实没人应答 → 上一轮的宿主其实起来了、
-            // 只是慢，而它现在已经不在我们管的 child 句柄里（被杀过一轮）。
-            // 按命令行清一次，避免它变成下一轮的端口占用者。
-            terminate_host_by_cmdline();
+                // health timeout 且端口确实没人应答 → 上一轮的宿主其实起来了、
+                // 只是慢，而它现在已经不在我们管的 child 句柄里（被杀过一轮）。
+                // 按命令行清一次，避免它变成下一轮的端口占用者。
+                terminate_host_by_cmdline();
                 self.set_state(SidecarState::Crashed(reason.clone()));
                 self.write_crash_log(&reason);
                 self.emit(SidecarEvent::Crash {
@@ -560,15 +560,20 @@ impl SidecarSupervisor {
             let _ = child.kill();
             let _ = child.wait();
             // 强杀之后同样兜底：taskkill /T 覆盖不到 tsx fork 出的孙进程。
-            terminate_listener_on_port(HEALTH_PORT);
-            terminate_host_by_cmdline();
+            // v0.32：端口已空闲就跳过这两步（单次 1~2s，是退出慢的主因）。
+            if port_in_use() {
+                terminate_listener_on_port(HEALTH_PORT);
+                terminate_host_by_cmdline();
+            }
         }
         self.child_pid.store(0, Ordering::SeqCst);
         // 兜底：无论上面哪条路径，退出前确认 8760 真的没人听了。
         // 否则下次启动的宿主会撞 EADDRINUSE → exit(2) → StartupFailed。
         // 端口兜底读不到 OwningProcess=0 的 socket，命令行兜底才是主路径。
-        terminate_host_by_cmdline();
-        terminate_listener_on_port(HEALTH_PORT);
+        if port_in_use() {
+            terminate_host_by_cmdline();
+            terminate_listener_on_port(HEALTH_PORT);
+        }
         self.set_state(SidecarState::Stopped);
         eprintln!("[sidecar] stopped (graceful shutdown)");
     }
@@ -618,21 +623,39 @@ impl SidecarHandle {
 
     pub fn shutdown(&self) {
         self.shutdown_requested.store(true, Ordering::SeqCst);
-        let deadline = Instant::now() + GRACEFUL_TIMEOUT + Duration::from_secs(1);
 
-        // 监管线程可能正在 spawn 子进程，循环读取 PID 才能在拿到 PID 的第一时间
-        // 结束整棵进程树。必须等监管线程确认停止后才允许应用退出。
-        while !self.stopped.load(Ordering::SeqCst) && Instant::now() < deadline {
-            let pid = self.child_pid.load(Ordering::SeqCst);
-            if pid != 0 {
-                terminate_process_tree_by_pid(pid);
+        // 20261031 实测（T-1 复测 roundT1-clean-workbench-a）：这一段曾耗时 **13.66s**
+        // （p0：`sidecar shutdown begin` → `sidecar shutdown returned`），
+        // 因为原实现每 500ms 重跑一次 taskkill+netstat 全表扫描，而 deadline 只在
+        // 循环开头检查 → 一次迭代就能超时，整段被拖成十几秒。
+        // 现在：立刻打一次（taskkill /T /F 是决定性的），随后只等监管线程确认停止，
+        // 硬上限 2s；期间最多每 500ms 补打一次。
+        let hard_deadline = Instant::now() + Duration::from_millis(800);
+        let mut next_kill = Instant::now();
+        loop {
+            if self.stopped.load(Ordering::SeqCst) {
+                break;
             }
-            thread::sleep(EXIT_POLL_INTERVAL);
+            let now = Instant::now();
+            if now >= hard_deadline {
+                break;
+            }
+            if now >= next_kill {
+                let pid = self.child_pid.load(Ordering::SeqCst);
+                if pid != 0 {
+                    terminate_process_tree_by_pid(pid);
+                }
+                next_kill = now + Duration::from_millis(500);
+            }
+            thread::sleep(Duration::from_millis(50));
         }
 
-        let pid = self.child_pid.load(Ordering::SeqCst);
-        if pid != 0 {
-            terminate_process_tree_by_pid(pid);
+        // 到硬上限还没确认停止 → 只在子进程确实还活着时补一刀（避免重复的进程树枚举）。
+        if !self.stopped.load(Ordering::SeqCst) {
+            let pid = self.child_pid.load(Ordering::SeqCst);
+            if pid != 0 && crate::pid_alive(pid) {
+                terminate_process_tree_by_pid(pid);
+            }
         }
     }
 }

@@ -1,0 +1,20 @@
+turn 1 (5.1s)  DONE
+  ├─ request.sent    17.7KB
+  ├─ sse(chars): text×10 think×176 tool×1
+  ├─ tool.parsed     memory_save  ok
+  ├─ continuation.decision: tools-returned -> triggered=false
+  ├─ tool.exec       memory_save  1.9s  ok
+  ├─ request.sent    2.7KB
+  ├─ request.sent    19.8KB
+  ├─ continuation.decision: no-tools -> triggered=false
+  └─ turn.end stopReason=completed finished=true
+turn 2 (0.9s)  DONE
+  ├─ request.sent    18.6KB
+  ├─ sse(chars): text×12 think×36 tool×0
+  ├─ continuation.decision: no-tools -> triggered=false
+  └─ turn.end stopReason=completed finished=true
+turn 3 (1.2s)  DONE
+  ├─ request.sent    24.2KB
+  ├─ sse(chars): text×14 think×0 tool×0
+  ├─ continuation.decision: no-tools -> triggered=false
+  └─ turn.end stopReason=completed finished=true

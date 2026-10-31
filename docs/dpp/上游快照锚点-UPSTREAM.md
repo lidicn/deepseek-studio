@@ -11,7 +11,7 @@
 | 形态 | MV3 浏览器扩展，WXT + React + TS |
 | 快照锚点 commit | `187f6227e1fed07405c0802374b69c16e29eb6e2`（2026-10-08） |
 | 锚点时上游版本 | `package.json` → 1.16.0 |
-| 当前漂移（实测 2026-10-27） | 锚点之后上游又走 **260 提交**，改动 **374 文件** |
+| 当前漂移（实测 2026-10-31） | 锚点之后上游又走 **414 提交**，改动 **543 文件**（上游 HEAD `660feda`） |
 
 ## 2. 正确用法（替代原来的内嵌拷贝）
 
@@ -22,7 +22,7 @@
  * @upstream-commit 187f6227 @upstream-path src/core/inline-agent/step-control.ts
 ```
 
-3. 现有 7 个移植文件已带锚点，由 `scripts/check-upstream-drift.mjs` 检测；该脚本读的是真实上游，**不依赖**被删除的目录。
+3. 现有 **5** 个移植文件已带锚点（2026-10-31 实测；D-7 删除 `message-anchor.ts` / `trace-store.ts` 后由 7 减为 5），由 `scripts/check-upstream-drift.mjs` 检测；该脚本读的是真实上游，**不依赖**被删除的目录。
 4. 上游 `AGENTS.md` 的架构不变量（prompt bytes、storage key、runtime message 名、工具授权路径）对 studio 同样生效。
 
 ## 3. 为什么删（四条实测）

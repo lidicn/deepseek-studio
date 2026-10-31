@@ -1,0 +1,413 @@
+{
+  "at": "2026-10-31T10:02:28.164Z",
+  "pageTarget": {
+    "id": "0CBB8D62DDA658822D3940E93E18E12D",
+    "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a"
+  },
+  "apiRes": {
+    "status": 200,
+    "elapsedMs": 6734,
+    "body": "{\"ok\":true,\"answer\":\"1) 根目录前 5 项：`'`(0B 文件)、`.codebuddy/`、`.codegraph/`、`.diag.txt`(0B)、`.diag2.txt`(167B)\\n2) name = `deepseek-studio`，version = `0.4.0`\\n3) `src` 下共 **224** 个 `.ts` 文件\\n4) 最大：`E:/NAS/deepseek-studio/src/inject/main-world-interceptor.ts`（145,297 字节；其后 desktop-host.ts 102,770、memory-store.ts 71,633）\\n5) 前 20 行已读取（文件头注释 + import 区，见上一步工具输出）\\n6) 作用：它是注入到页面 main world 的拦截控制器，在 document_start 挂 fetch/XHR 拦截——从流式响应里解析 `<shell_exec>` 等工具调用标签、剥离可见标签并经宿主 ws 投递真实执行，再把结果回注进下一次请求，形成「模型发起→宿主执行→结果回注」闭环。\\n\\nCHAIN-DONE\"}"
+  },
+  "verdict": {
+    "apiStatus": 200,
+    "apiElapsedMs": 6734,
+    "apiBody": "{\"ok\":true,\"answer\":\"1) 根目录前 5 项：`'`(0B 文件)、`.codebuddy/`、`.codegraph/`、`.diag.txt`(0B)、`.diag2.txt`(167B)\\n2) name = `deepseek-studio`，version = `0.4.0`\\n3) `src` 下共 **224** 个 `.ts` 文件\\n4) 最大：`E:/NAS/deepseek-studio/src/inject/main-world-interceptor.ts`（145,297 字节；其后 desktop-host.ts 102,770、memory-store.ts 71,633）\\n5) 前 20 行已读取（文件头注释 + import 区，见上一步工具输出）\\n6) 作用：它是注入到页面 main world 的拦截控制器，在 document_start 挂 fetch/XHR 拦截——从流式响应里解析 `<shell_exec>` 等工具调用标签、剥离可见标签并经宿主 ws 投递真实执行，再把结果回注进下一次请求，形成「模型发起→宿主执行→结果回注」闭环。\\n\\nCHAIN-DONE\"}",
+    "hostSamples": 3,
+    "hostDistinctStates": [
+      "false|no-messages-found|null|null"
+    ],
+    "hostStateStable": true,
+    "hostFirst": {
+      "t": 1793440943442,
+      "wallMs": 11,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null
+    },
+    "hostLast": {
+      "t": 1793440947454,
+      "wallMs": 6,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null
+    },
+    "domSamples": 6,
+    "domDistinctStates": 2,
+    "domStateStable": false,
+    "domFirst": {
+      "t": 470727,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "",
+      "wideCount": 3,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          2
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "根目录前 5 项：'(0B 文件)、.codebuddy/、.codegraph/、.diag.txt(0B)、.diag2.txt(167B) name = deepseek-studio，version = 0.4.0 src 下共 224 个 .ts 文件 最大：E:/NAS/deepseek-studio/src/inject/main-world-interceptor.ts（145,2",
+      "wideLastClass": "ds-sc-markdown",
+      "bodyTextLen": 35304
+    },
+    "domLast": {
+      "t": 475739,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "",
+      "wideCount": 4,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          3
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "F1-V2-OK",
+      "wideLastClass": "ds-sc-markdown",
+      "bodyTextLen": 35311
+    },
+    "mselSamples": [
+      {
+        "origin": "studio://host-internal",
+        "durationMs": 20,
+        "at": 1793440790612,
+        "outcome": "executed"
+      },
+      {
+        "origin": "studio://host-internal",
+        "durationMs": 9,
+        "at": 1793440791439,
+        "outcome": "executed"
+      }
+    ],
+    "chatReadAuditCount": 22,
+    "chatReadOutcomes": {
+      "execution-failed|studio://host-internal": 22
+    },
+    "flagRestoredTo": {
+      "__exception": "{\"exceptionId\":2,\"text\":\"Uncaught\",\"lineNumber\":0,\"columnNumber\":36,\"scriptId\":\"50\",\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"SyntaxError\",\"description\":\"SyntaxError: Illegal return statement\",\"objectId\":\"1343083531177068676.2.4\"}}"
+    }
+  },
+  "hostSamples": [
+    {
+      "t": 1793440943442,
+      "wallMs": 11,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null
+    },
+    {
+      "t": 1793440945445,
+      "wallMs": 7,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null
+    },
+    {
+      "t": 1793440947454,
+      "wallMs": 6,
+      "ok": false,
+      "reason": "no-messages-found",
+      "count": null,
+      "lastTextLen": null,
+      "lastText": null
+    }
+  ],
+  "domSamples": [
+    {
+      "t": 470727,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "",
+      "wideCount": 3,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          2
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "根目录前 5 项：'(0B 文件)、.codebuddy/、.codegraph/、.diag.txt(0B)、.diag2.txt(167B) name = deepseek-studio，version = 0.4.0 src 下共 224 个 .ts 文件 最大：E:/NAS/deepseek-studio/src/inject/main-world-interceptor.ts（145,2",
+      "wideLastClass": "ds-sc-markdown",
+      "bodyTextLen": 35304
+    },
+    {
+      "t": 471725,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "",
+      "wideCount": 4,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          3
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "F1-V2-OK",
+      "wideLastClass": "ds-sc-markdown",
+      "bodyTextLen": 35311
+    },
+    {
+      "t": 472733,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "",
+      "wideCount": 4,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          3
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "F1-V2-OK",
+      "wideLastClass": "ds-sc-markdown",
+      "bodyTextLen": 35311
+    },
+    {
+      "t": 473735,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "",
+      "wideCount": 4,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          3
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "F1-V2-OK",
+      "wideLastClass": "ds-sc-markdown",
+      "bodyTextLen": 35311
+    },
+    {
+      "t": 474734,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "",
+      "wideCount": 4,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          3
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "F1-V2-OK",
+      "wideLastClass": "ds-sc-markdown",
+      "bodyTextLen": 35311
+    },
+    {
+      "t": 475739,
+      "url": "https://chat.deepseek.com/a/chat/s/33507439-d490-4054-bbbc-dcd3d4d6f37a",
+      "hasChatContainer": false,
+      "rootTextLen": null,
+      "rootTextTail": null,
+      "nDsMarkdown": 0,
+      "nAssistantMain": 0,
+      "dsMarkdownLast": "",
+      "wideCount": 4,
+      "wideClasses": [
+        [
+          "ds-sc-markdown",
+          3
+        ],
+        [
+          "ds-sc-message-list",
+          1
+        ]
+      ],
+      "wideLastText": "F1-V2-OK",
+      "wideLastClass": "ds-sc-markdown",
+      "bodyTextLen": 35311
+    }
+  ],
+  "msel": [
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 20,
+      "at": 1793440790612,
+      "outcome": "executed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 9,
+      "at": 1793440791439,
+      "outcome": "executed"
+    }
+  ],
+  "chatReadAudit": [
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1038,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 15423,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2366,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1982,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 4,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 1428,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 31,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 48,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 220,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 299,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 5282,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 8,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 61,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 8,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 6,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 135,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 4,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 3,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    },
+    {
+      "origin": "studio://host-internal",
+      "durationMs": 2,
+      "outcome": "execution-failed"
+    }
+  ]
+}
