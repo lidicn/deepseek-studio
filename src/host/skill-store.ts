@@ -102,8 +102,19 @@ export function scanSkills(skillsDir?: string): SkillInfo[] {
     if (!fs.existsSync(dir)) return skills;
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
       const skillDir = path.join(dir, entry.name);
+      // readdirSync(withFileTypes) 对 junction / symlink 只报 isSymbolicLink()，
+      // isDirectory() 为 false。技能目录经常用 junction 挂载（如 ego-browser），
+      // 直接跳过会导致技能面板和 `/` 提示都看不到它，所以这里用 statSync 跟随链接。
+      let isDirectory = entry.isDirectory();
+      if (!isDirectory) {
+        try {
+          isDirectory = fs.statSync(skillDir).isDirectory();
+        } catch {
+          isDirectory = false;
+        }
+      }
+      if (!isDirectory) continue;
       const skillMd = path.join(skillDir, 'SKILL.md');
       if (!fs.existsSync(skillMd)) continue;
       try {

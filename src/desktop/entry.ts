@@ -21,7 +21,12 @@ import { createChatSendCapability } from '../capabilities/chat-send';
 import { createHostClient, type HostClient } from './host-client';
 import { installMainWorldInterceptor, setInterceptorTraceSink, configureMemorySelect } from '../inject/main-world-interceptor';
 import { installTraceReportHandle } from '../inject/main-world-interceptor';
-import { initSkillPopup, setSkillPopupSkills, type SkillPopupItem } from '../inject/skill-popup';
+import {
+  initSkillPopup,
+  setSkillPopupRefreshHandler,
+  setSkillPopupSkills,
+  type SkillPopupItem,
+} from '../inject/skill-popup';
 import { globalEvents, globalState } from '../ui/studio-ui-core';
 import { createChatRoom, type ChatRoomRuntimeConfig } from '../ui/studio-chat-room';
 import { installStudioSettingsEntry } from '../ui/studio-settings-entry';
@@ -267,24 +272,38 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
       // 再异步向宿主要 skill.list；宿主 WS 可能尚未连上，按秒级重试，连上后热更新。
       try {
         initSkillPopup([]);
+        // 启动后新增/删除技能时，`/` 提示需要重新扫描，否则只能重启 Studio 才看得到。
+        let skillListLoading: Promise<boolean> | null = null;
         const loadSkillList = async (): Promise<boolean> => {
-          const r = await host.sendToolCall({
-            callId: `skill_list_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-            invocationName: 'skill.list',
-            params: {},
-          });
-          const data = r.data as { skills?: unknown[] } | undefined;
-          if (!r.ok || !data || !Array.isArray(data.skills)) return false;
-          const items: SkillPopupItem[] = data.skills
-            .filter((s): s is { name: string; description?: string } =>
-              !!s && typeof (s as { name?: unknown }).name === 'string')
-            .map((s) => ({
-              name: s.name,
-              description: typeof s.description === 'string' ? s.description : '',
-            }));
-          setSkillPopupSkills(items);
-          return true;
+          // 去重：输入 `/` 的连续按键和启动重试可能并发触发同一个扫描。
+          if (skillListLoading) return skillListLoading;
+          skillListLoading = (async () => {
+            try {
+              const r = await host.sendToolCall({
+                callId: `skill_list_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                invocationName: 'skill.list',
+                params: {},
+              });
+              const data = r.data as { skills?: unknown[] } | undefined;
+              if (!r.ok || !data || !Array.isArray(data.skills)) return false;
+              const items: SkillPopupItem[] = data.skills
+                .filter((s): s is { name: string; description?: string } =>
+                  !!s && typeof (s as { name?: unknown }).name === 'string')
+                .map((s) => ({
+                  name: s.name,
+                  description: typeof s.description === 'string' ? s.description : '',
+                }));
+              setSkillPopupSkills(items);
+              return true;
+            } finally {
+              skillListLoading = null;
+            }
+          })();
+          return skillListLoading;
         };
+        setSkillPopupRefreshHandler(() => {
+          void loadSkillList();
+        });
         void (async () => {
           for (let attempt = 0; attempt < 10; attempt++) {
             try {

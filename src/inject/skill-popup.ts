@@ -26,11 +26,14 @@ export interface SkillPopupCopy {
   readonly hint: string;
   /** 技能列表为空时的提示（后台未就绪 / 一个技能都没存）。 */
   readonly emptyHint?: string;
+  /** 有技能、但当前前缀没有匹配项时的提示。 */
+  readonly noMatchHint?: string;
 }
 
 const DEFAULT_COPY: SkillPopupCopy = {
   hint: '↑↓ Navigate · Enter Select · Esc Close',
   emptyHint: 'No saved skills yet — save one from the conversation first',
+  noMatchHint: 'No matching skill — clear the filter to see all',
 };
 
 let popupEl: HTMLElement | null = null;
@@ -44,6 +47,36 @@ let textareaObserver: MutationObserver | null = null;
 let initialized = false;
 /** 空列表时也要弹（否则用户完全看不到反馈）。 */
 let showingEmptyHint = false;
+/** 有技能但当前前缀无匹配：同样要弹，不能静默消失。 */
+let showingNoMatchHint = false;
+
+/**
+ * 技能清单刷新钩子。
+ *
+ * 为什么要有：skill.list 只在启动时拉一次，启动后新建的技能（例如会话中让
+ * agent 写的 media-search）不会出现在 `/` 提示里，直到重启 Studio。用户只能
+ * 手敲技能名，敲错一个字母就变成普通文本，模型也不会加载对应 SKILL.md。
+ * 输入 `/` 时按节流触发一次重新扫描，让新技能立即可见。
+ */
+let refreshHandler: (() => void) | null = null;
+let lastRefreshAt = 0;
+const REFRESH_THROTTLE_MS = 2000;
+
+export function setSkillPopupRefreshHandler(fn: (() => void) | null): void {
+  refreshHandler = fn;
+}
+
+function requestSkillRefresh(): void {
+  if (!refreshHandler) return;
+  const now = Date.now();
+  if (now - lastRefreshAt < REFRESH_THROTTLE_MS) return;
+  lastRefreshAt = now;
+  try {
+    refreshHandler();
+  } catch {
+    // 刷新失败不影响本次已缓存的候选
+  }
+}
 
 export function initSkillPopup(initialSkills: readonly SkillPopupItem[], nextCopy: Partial<SkillPopupCopy> = {}): void {
   skills = [...initialSkills];
@@ -88,7 +121,7 @@ export function setSkillPopupSkills(next: readonly SkillPopupItem[]): void {
   skills = [...next];
   if (!initialized) return;
   // 列表变了 → 现有过滤结果可能已过期，重新按当前输入算一次。
-  handleInput(textarea);
+  handleInput(textarea, false);
 }
 
 export function stopSkillPopup(): void {
@@ -136,30 +169,31 @@ function onInputCapture(e: Event): void {
   handleInput(el);
 }
 
-function handleInput(el: HTMLTextAreaElement | null): void {
+function handleInput(el: HTMLTextAreaElement | null, allowRefresh = true): void {
   if (!el) return;
   textarea = el;
   const val = el.value;
 
   if (val.startsWith('/') && !val.slice(1).includes(' ')) {
+    // 启动后新增的技能不在缓存里；打开提示时顺带重扫一次（内部有节流）。
+    if (allowRefresh) requestSkillRefresh();
     const query = val.slice(1).toLowerCase();
     filtered = query === ''
       ? [...skills]
       : skills.filter((s) => s.name.toLowerCase().startsWith(query));
 
     if (filtered.length === 0) {
-      if (skills.length === 0) {
-        // 空列表也要给反馈（后台未就绪 / 还没保存技能）
-        showingEmptyHint = true;
-        activeIdx = 0;
-        showPopup();
-      } else {
-        hidePopup();
-      }
+      // 空列表和「前缀打错」都要给可见反馈。之前无匹配直接 hidePopup()，
+      // 用户少敲一个字母（/media-seach）时就像整个技能提示坏了。
+      showingEmptyHint = skills.length === 0;
+      showingNoMatchHint = skills.length > 0;
+      activeIdx = 0;
+      showPopup();
       return;
     }
 
     showingEmptyHint = false;
+    showingNoMatchHint = false;
     activeIdx = 0;
     showPopup();
     return;
@@ -169,7 +203,7 @@ function handleInput(el: HTMLTextAreaElement | null): void {
 
 function onKeydown(e: KeyboardEvent): void {
   if (!isVisible()) return;
-  if (showingEmptyHint) {
+  if (showingEmptyHint || showingNoMatchHint) {
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -269,9 +303,12 @@ function showPopup(): void {
 function buildItems(): void {
   if (!popupEl) return;
 
-  if (showingEmptyHint) {
+  if (showingEmptyHint || showingNoMatchHint) {
+    const message = showingNoMatchHint
+      ? (copy.noMatchHint ?? '')
+      : (copy.emptyHint ?? '');
     popupEl.innerHTML = `
-      <div class="ds-studio-skill-empty">${escapeHtml(copy.emptyHint ?? '')}</div>
+      <div class="ds-studio-skill-empty">${escapeHtml(message)}</div>
       <div class="ds-studio-skill-hint">${escapeHtml(copy.hint)}</div>
     `;
     return;
@@ -311,6 +348,7 @@ function highlightActive(): void {
 function hidePopup(): void {
   if (popupEl) popupEl.style.display = 'none';
   showingEmptyHint = false;
+  showingNoMatchHint = false;
 }
 
 function isVisible(): boolean {
@@ -329,6 +367,7 @@ function installDiag(): void {
         skillNames: skills.map((s) => s.name),
         filtered: filtered.length,
         showingEmptyHint,
+        showingNoMatchHint,
         visible: isVisible(),
         textareaConnected: Boolean(textarea?.isConnected),
         textareaValue: textarea?.isConnected ? textarea.value : null,
