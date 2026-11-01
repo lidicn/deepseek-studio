@@ -35,7 +35,9 @@
 | `src/host/memory/audit.ts` | 138 | 5 683 | 4 个方法 |
 | `src/host/memory/candidates.ts` | 134 | 5 245 | 7 个方法 |
 
-**1659 行 → 门面 361 行（-78%）**，方法总数 43 一一对应，无合并、无改名、无删。
+**1659 行 → 门面 361 行（-78%）**，**原类 42 个方法**（AST 权威计数，不含 ctor）→ 搬进域模块 **41 个** + 留门面 `getWorkspaceId` **1 个** = 42，一一对应，无合并、无改名、无删。
+
+> **自我更正**：本报告早期版本写「43 个方法」，那是把 7 个类属性里的某项误计入了方法数；AST 复核后的正确数字是 **42**（`Object.getOwnPropertyNames(MemoryStore.prototype)` 口径下同为 42 个方法 + 1 个 constructor）。搬进域模块的是 **41 个**，归一化哈希已对这 41 个**逐一验证、零差异**。
 
 ### 依赖方向（无环）
 
@@ -191,7 +193,8 @@ PM 在第 6–7 步前点名要求「做完这两步后专门跑一遍 `save →
 | 工具 | 用途 | 结果 |
 |---|---|---|
 | `memory-refactor-scan.mjs` | AST 提取导出面 / SQL 多重集 / `enc1:` 计数 / 类成员 | 基线与终值逐项相等 |
-| `memory-refactor-graph.mjs` | 提取 `this.<x>` 调用图与签名（归属决策依据） | 43 方法调用图 |
+| `memory-refactor-graph.mjs` | 提取 `this.<x>` 调用图与签名（归属决策依据） | 42 方法调用图 |
+| `memory-refactor-body-hash.mjs` | **R3 归一化哈希自证**：搬运体还原 `ctx.`→`this.` 后与原文逐字节比对 | **41/41 identical，differing=0（EXIT=0）** |
 | `memory-refactor-apply.mjs` | 搬运引擎（8 步、幂等、每步从原始副本重生成） | 8 步全绿 |
 | `memory-refactor-frozen-diff.mjs` | 8 个冻结符号逐字 diff + 类壳比对 | **PASS（EXIT=0）** |
 | `memory-refactor-proto-diff.mjs` | 公开/private 方法面分组比对 + private 去处核对 | **PASS（EXIT=0）**；公开 23/23、private 无丢失 |
