@@ -5,6 +5,13 @@
 > 机器门：`contract_cite` + `contract_fresh` + `citations` 全 pass；`reasoning_ratio` warn（0.834 > 0.75 非阻断）｜ body 13,019 字符｜ 交付正文：新增 6 文件 + 改 1 文件 + 测试 1 个
 > 原始回收：`E:\NAS\Lever-Hub\out\597b86ff6817fb0aa7368fba01f2e4fc.md`（投喂稿+推理在 `### MiMo 输出` 之前）
 
+> **⚠ 行号重锚说明（2026-11-01，重构落地后补）**：本稿的行号引用已按重构后的真实位置重锚。
+> 正文中仍以 `L1-L471` / `L472-L1626` 描述的是**重构前**的原始区间记号（保留为历史语义，未改）；
+> 对应关系为——冻结区 `L1-L471` → 现 `L1-L194`，类体 `L472-L1626` → 现 `L196-L330`，
+> 尾部 `getMemoryStore`/`closeMemoryStores` → 现 `:339`/`:356`（逐条见下文各处 `path:line` 引用）。
+> 重锚**只改行号与必要的路径前缀，正文语义一字未动**；校验见
+> `docs/验收报告/20261101-Core-MemoryStore巨石重构-完成报告.md` 与 `logs/verify-exit/memory-refactor-frozen-diff.mjs`。
+
 ---
 
 ### 3.1 设计
@@ -14,8 +21,8 @@
 **1. 范围**
 
 - 只做结构重排：`src/host/memory-store.ts`（1659 行）拆成「门面 + 域模块」，行为、SQL 语义、表结构、`enc1:` 前缀、全部公开导出名不变。
-- **行位与字节都冻结不动**的已读符号（它们带 range_sha，移动即失分）：`workspaceSlug` `src/host/memory-store.ts:76`、`workspaceStorePath` `src/host/memory-store.ts:86`、`workspaceIndexPath` `src/host/memory-store.ts:95`、`listWorkspaceIds` `src/host/memory-store.ts:125`、`defaultStorePath` `src/host/memory-store.ts:186`、`mergeUpdateGovernance` `src/host/memory-store.ts:263`。因此 **L1-L471 一行不改**。
-- 允许位移的只有：类体 `MemoryStore` `src/host/memory-store.ts:472`（L472-L1626）与其后的 `getMemoryStore` `src/host/memory-store.ts:1637`、`closeMemoryStores` `src/host/memory-store.ts:1654`（文本不变，行号上移，位移量写进提交说明）。
+- **行位与字节都冻结不动**的已读符号（它们带 range_sha，移动即失分）：`workspaceSlug` `src/host/memory-store.ts:75`、`workspaceStorePath` `src/host/memory-store.ts:85`、`workspaceIndexPath` `src/host/memory-store.ts:94`、`listWorkspaceIds` `src/host/memory-store.ts:124`、`defaultStorePath` `src/host/memory-store.ts:146`、`mergeUpdateGovernance` `src/host/memory-store.ts:167`。因此 **L1-L471 一行不改**。
+- 允许位移的只有：类体 `MemoryStore` `src/host/memory-store.ts:196`（L472-L1626）与其后的 `getMemoryStore` `src/host/memory-store.ts:339`、`closeMemoryStores` `src/host/memory-store.ts:356`（文本不变，行号上移，位移量写进提交说明）。
 - 非目标：不改导出名、不改 memories.db/SQL/索引/`enc1:`、不做向量检索、不换存储后端、不移出 src、不加依赖。
 - 不触碰（仅点名）：`src-tauri/inject/entry.js`、`src/inject/**`。
 - §2 未读清单中的三个被引用文件（audit-crypto / bot/types / untrusted-memory）保持原引用与原实现不动，本单不展开。
@@ -48,11 +55,11 @@ src/host/memory-store.ts   门面：全部既有导出 + MemoryStore 类壳（�
 1. core 不 import 任何域模块；域模块只 import core/types；门面 import 全部域模块。
 2. storage 与 retrieval 互不引用；retrieval 只读，禁止调用任何写接口。
 3. audit / candidates 需要写记忆或写日志时，只走 StoreContext 注入槽（`ctx.save` / `ctx.remove` / `ctx.recordLog`），禁止直接 import 对方域模块 —— 这是打破「审计↔存储」「候选↔存储」环的唯一机制。
-4. 唯一保留的跨层**值**引用：域模块按名字 import 门面里的纯函数 `mergeUpdateGovernance`（`src/host/memory-store.ts:263`），以保住它的 4 处名字级调用点 `src/host/memory-store.ts:740`、`src/host/memory-store.ts:801`、`src/host/memory-store.ts:870`、`src/host/memory-store.ts:911`。该引用限定为「提升的 function 声明」，禁止在模块初始化期求值。详见 §决策 D3。
+4. 唯一保留的跨层**值**引用：域模块按名字 import 门面里的纯函数 `mergeUpdateGovernance`（`src/host/memory-store.ts:167`），以保住它的 4 处名字级调用点 `src/host/memory/storage.ts:60`、`src/host/memory/storage.ts:121`、`src/host/memory/storage.ts:190`、`src/host/memory/storage.ts:231`。该引用限定为「提升的 function 声明」，禁止在模块初始化期求值。详见 §决策 D3。
 
 **4. StoreContext（新增，内部类型，不进公开导出面）**
 
-字段：`db`（原 db 句柄）、`workspaceId`、`basePath`、`save`、`remove`、`recordLog`。后三个是注入槽，在 ctor 里一次性装配；构造逻辑见 `src/host/memory-store.ts:489` 所在 ctor（该 ctor 与 `workspaceStorePath` 的调用点保持原样，调用点集合仍为 1 处）。
+字段：`db`（原 db 句柄）、`workspaceId`、`basePath`、`save`、`remove`、`recordLog`。后三个是注入槽，在 ctor 里一次性装配；构造逻辑见 `src/host/memory-store.ts:207` 所在 ctor（该 ctor 与 `workspaceStorePath` 的调用点保持原样，调用点集合仍为 1 处）。
 
 **5. 提取规则（机械、可核）**
 
@@ -67,9 +74,9 @@ src/host/memory-store.ts   门面：全部既有导出 + MemoryStore 类壳（�
 **6. 门面改造**
 
 - L1-L471 不动（保证已读符号行位 + range_sha 不变）。
-- 类壳保留类名与 `implements MemoryStoreV2`（`src/host/memory-store.ts:472`），方法收敛为一行委托。
+- 类壳保留类名与 `implements MemoryStoreV2`（`src/host/memory-store.ts:196`），方法收敛为一行委托。
 - types 的定义剪到 `memory/types.ts` 后，门面用**具名** re-export 逐名转出，保证 `MemoryType`、`MemoryRow`、`SaveMemoryParams` 等仍从 `src/host/memory-store` 导出；`StoreContext` 不得出现在门面导出列表。
-- 尾部 `getMemoryStore` `src/host/memory-store.ts:1637`、`closeMemoryStores` `src/host/memory-store.ts:1654` 文本不动（含 `globalStore`/`workspaceStores` 的惰性装配语义）。
+- 尾部 `getMemoryStore` `src/host/memory-store.ts:339`、`closeMemoryStores` `src/host/memory-store.ts:356` 文本不动（含 `globalStore`/`workspaceStores` 的惰性装配语义）。
 
 **7. 落地顺序（每步测试绿）**
 
@@ -264,9 +271,9 @@ test('MemoryStore 原型方法名集合不变', () => {
 
 ### 3.4 决策
 
-- **D1｜L1-L471 整段冻结。** 已读符号带 range_sha 与行号锚（如 `src/host/memory-store.ts:76`、`src/host/memory-store.ts:263`），移动即可能被判范围漂移。代价是 `getMemoryStore` `src/host/memory-store.ts:1637` / `closeMemoryStores` `src/host/memory-store.ts:1654` 行号上移，但字节不变，提交说明记录位移量。
+- **D1｜L1-L471 整段冻结。** 已读符号带 range_sha 与行号锚（如 `src/host/memory-store.ts:75`、`src/host/memory-store.ts:167`），移动即可能被判范围漂移。代价是 `getMemoryStore` `src/host/memory-store.ts:339` / `closeMemoryStores` `src/host/memory-store.ts:356` 行号上移，但字节不变，提交说明记录位移量。
 - **D2｜域函数用 `ctx` 参数，不用 `this` 型函数。** 备选方案是 `function save(this: MemoryStore, …)` + `.call(this, …)` 委托，可做到方法体逐字节不变；但它把 `MemoryStore` 类型反向引进域模块、且偏离「清晰分层」目标。故取 ctx 方案，用 R3 归一化哈希证明「只有 `this.`→`ctx.` 一处改动」。若后续发现测试断言 `fn.toString()`，无损切换到备选方案，文件布局不变。
-- **D3｜接受一条受限的值依赖：域模块 → `mergeUpdateGovernance`（`src/host/memory-store.ts:263`）。** 若把它搬到子模块，其 range_sha 与行位就断了；若改走注入槽，4 处名字级调用点（`src/host/memory-store.ts:740` 等）就没了。两者都直接违反已读契约，故保留原地 + 直呼其名，靠「只 import 提升的 function 声明、模块初始化期不求值」消解 TDZ/环风险。
+- **D3｜接受一条受限的值依赖：域模块 → `mergeUpdateGovernance`（`src/host/memory-store.ts:167`）。** 若把它搬到子模块，其 range_sha 与行位就断了；若改走注入槽，4 处名字级调用点（`src/host/memory/storage.ts:60` 等）就没了。两者都直接违反已读契约，故保留原地 + 直呼其名，靠「只 import 提升的 function 声明、模块初始化期不求值」消解 TDZ/环风险。
 - **D4｜目录名用 `src/host/memory/`，不用 `src/host/memory-store/`。** 同名文件+目录会让 `./memory-store` 的模块解析出现优先级歧义。
 - **D5｜不建 barrel。** `memory/index.ts` 会无意扩大导出面，与「导出符号不变」冲突；门面是唯一出口。
 - **D6｜未读区按 AST 定位、逐方法搬运，绝不按 §0 清单猜边界。** §0 的方法名清单只用于归属表，最终切块以实际文本为准；`compact` 与迁移归 storage，`listInvalidated` 归 retrieval（读侧），`recordLog` 归 audit（写日志属于审计域）。
@@ -297,11 +304,11 @@ test('MemoryStore 原型方法名集合不变', () => {
 
 ### 推理段（1 段 / 65,209 字符，非交付物，勿当代码采信）
 
-<think>The user wants a design document for refactoring memory-store.ts. They need sections 设计, 文件, 测试, 决策, 验收, with tail sentinel `<!--EOA:studio-memory-store-refactor-->`. Code snippets total ≤200 lines. Citations must only use paths/lines from §1 (i.e., `src/host/memory-store.ts:76`, etc.).
+<think>The user wants a design document for refactoring memory-store.ts. They need sections 设计, 文件, 测试, 决策, 验收, with tail sentinel `<!--EOA:studio-memory-store-refactor-->`. Code snippets total ≤200 lines. Citations must only use paths/lines from §1 (i.e., `src/host/memory-store.ts:75`, etc.).
 
 I must not fabricate function bodies for the unread MemoryStore class L472-L1626. But the task requires designing the module split. I can design at the level of module boundaries, symbol placement, façade retention — without inventing specifics of unread internals. I should mark the unread portion as the source of truth and give a mechanical extraction procedure.
 
-Citations allowed: `src/host/memory-store.ts:76`, `:77`, ... `:80`, `:86`-`:92`, `:95`-`:100`, `:111` (call site mentioned), `:125`-`:142`, `:186`-`:190`, `:263`-`:271`, `:472`, `:489`, `:740`, `:801`, `:870`, `:911`, `:1626`, `:1637`-`:1651`, `:1654`-`:1659`. Also paths in the unread list: `src/host/audit-crypto.ts:29`, `src/host/bot/types.ts:27`, `src/inject/untrusted-memory.ts:28` — those appear in §2 unread list with line numbers. Hmm, §4 says "引用一律用 path:line，且只能引用 §1 里出现过的路径与行号" — strictly §1. But §2 lists those files with line numbers. Safer to only cite memory-store.ts lines, and mention those files only in the 未读清单. Actually §2 is "未读清单" and rules say "未在 §1 出现的文件，只能进 §2 未读清单，不许编造函数体/字段". The existing §2 already lists them. I could keep them in my own 未读清单 section... but required sections are exactly 设计/文件/测试/决策/验收. I can mention unread items inside 设计 as "未读" notes without citing lines. Let me just avoid citing non-§1 lines entirely.
+Citations allowed: `src/host/memory-store.ts:75`, `:77`, ... `:80`, `:85`-`:92`, `:94`-`:100`, `:110` (call site mentioned), `:124`-`:142`, `:146`-`:190`, `:167`-`:271`, `:196`, `:207`, `:60`, `:121`, `:190`, `:231`, `:330`, `:339`-`:365`, `:356`-`:361`. Also paths in the unread list: `src/host/audit-crypto.ts:29`, `src/host/bot/types.ts:27`, `src/inject/untrusted-memory.ts:28` — those appear in §2 unread list with line numbers. Hmm, §4 says "引用一律用 path:line，且只能引用 §1 里出现过的路径与行号" — strictly §1. But §2 lists those files with line numbers. Safer to only cite memory-store.ts lines, and mention those files only in the 未读清单. Actually §2 is "未读清单" and rules say "未在 §1 出现的文件，只能进 §2 未读清单，不许编造函数体/字段". The existing §2 already lists them. I could keep them in my own 未读清单 section... but required sections are exactly 设计/文件/测试/决策/验收. I can mention unread items inside 设计 as "未读" notes without citing lines. Let me just avoid citing non-§1 lines entirely.
 
 Line budget: code snippets total ≤200 lines. So keep code minimal. Since I can't invent the unread internals, code should be limited to: module skeleton signatures, façade re-export pattern, dependency-injection seam. Keep it well under 200 lines — maybe ~120 lines total across 文件 section.
 
@@ -341,7 +348,7 @@ src/host/memory/store-workspace.ts? — no, keep workspace fns in façade.
 
 Hmm, maybe names: `src/host/memory-store/` directory with `storage.ts`, `retrieval.ts`, `audit.ts`, `candidates.ts`, `schema.ts`, `types.ts`. Careful: a directory named memory-store plus file memory-store.ts is confusing but legal in Node/TS resolution? `src/host/memory-store.ts` and `src/host/memory-store/storage.ts` — resolution of `./memory-store` would be ambiguous (file wins typically). Risky. Use `src/host/memory/` instead. Good — that avoids resolution ambiguity. I'll note this as a decision.
 
-Also: exported type symbols `MemoryType`, `MemoryCandidate`, `MemoryLogEntry`, `MemoryRow`, `SaveMemoryParams`, `SaveMemoryResult`, `MemorySaveWarning`, `MAX_MEMORIES`, `ExistingGovernanceFields` must stay exported from memory-store.ts (public export names unchanged). Also `MemoryStoreV2` is referenced in the class signature (implements MemoryStoreV2) — from unread code, presumably imported from `src/host/bot/types.ts` (unread list mentions bot/types.ts L27). I shouldn't invent; I can say: `MemoryStore implements MemoryStoreV2` per contract at `src/host/memory-store.ts:472`, and the interface's home module is in the unread list; keep the import as-is.
+Also: exported type symbols `MemoryType`, `MemoryCandidate`, `MemoryLogEntry`, `MemoryRow`, `SaveMemoryParams`, `SaveMemoryResult`, `MemorySaveWarning`, `MAX_MEMORIES`, `ExistingGovernanceFields` must stay exported from memory-store.ts (public export names unchanged). Also `MemoryStoreV2` is referenced in the class signature (implements MemoryStoreV2) — from unread code, presumably imported from `src/host/bot/types.ts` (unread list mentions bot/types.ts L27). I shouldn't invent; I can say: `MemoryStore implements MemoryStoreV2` per contract at `src/host/memory-store.ts:196`, and the interface's home module is in the unread list; keep the import as-is.
 
 Also note `src/inject/untrusted-memory.ts` and `src-tauri/inject/entry.js` are 禁止改 files — just name them.
 
@@ -460,11 +467,11 @@ Let me now write the actual response. Sections:
 ### 3.5 验收
 - A1-A8 checklist mapped to machine gates S1-S5.
 
-Now citations: use `src/host/memory-store.ts:76` style. Only §1 lines. Allowed lines: 76-80, 86-92, 95-100, 111, 125-142, 186-190, 263-271, 472, 489, 740, 801, 870, 911, 1626, 1637-1651, 1654-1659. I'll cite these sparingly and correctly.
+Now citations: use `src/host/memory-store.ts:75` style. Only §1 lines. Allowed lines: 76-80, 86-92, 95-100, 111, 125-142, 186-190, 263-271, 472, 489, 740, 801, 870, 911, 1626, 1637-1651, 1654-1659. I'll cite these sparingly and correctly.
 
-Note the read pack says workspaceSlug called at registerWorkspace L111 and workspaceStorePath L91 — those lines are cited in the contract call-sites, so referencing `src/host/memory-store.ts:111` is OK since the path+line appeared in §1. Good.
+Note the read pack says workspaceSlug called at registerWorkspace L111 and workspaceStorePath L91 — those lines are cited in the contract call-sites, so referencing `src/host/memory-store.ts:110` is OK since the path+line appeared in §1. Good.
 
-Also 未读清单 mention: `src/host/memory-store.ts#MemoryStore L472-L1626` — I can reference as `src/host/memory-store.ts:472` (start) and `:1626`.
+Also 未读清单 mention: `src/host/memory-store.ts#MemoryStore L472-L1626` — I can reference as `src/host/memory-store.ts:196` (start) and `:330`.
 
 Code line count: let me estimate. I'll aim ~150 lines total to be safe.
 
@@ -818,7 +825,7 @@ Let me write out content carefully.
 
 **1. 范围**
 - 只做结构重排：src/host/memory-store.ts 1659 行 → 门面 + 6 个域模块。行为、SQL、表结构、导出名一律不变。
-- 不动的符号（含行位）：workspaceSlug@76（src/host/memory-store.ts:76）、workspaceStorePath@86（:86）、workspaceIndexPath@95（:95）、listWorkspaceIds@125（:125）、defaultStorePath@186（:186）、mergeUpdateGovernance@263（:263）——这些是已读且带 range_sha 的符号，定义位置与字节都保留原样；只有 MemoryStore（src/host/memory-store.ts:472 起）与其后的 getMemoryStore/closeMemoryStores 允许位移。
+- 不动的符号（含行位）：workspaceSlug@76（src/host/memory-store.ts:75）、workspaceStorePath@86（:85）、workspaceIndexPath@95（:94）、listWorkspaceIds@125（:124）、defaultStorePath@186（:146）、mergeUpdateGovernance@263（:167）——这些是已读且带 range_sha 的符号，定义位置与字节都保留原样；只有 MemoryStore（src/host/memory-store.ts:196 起）与其后的 getMemoryStore/closeMemoryStores 允许位移。
 - 非目标：不改导出名、不改 memories.db/SQL/enc1:、不做向量检索、不换存储后端、不移出 src、不加依赖。
 - 不触碰：src-tauri/inject/entry.js、src/inject/**。
 
@@ -838,7 +845,7 @@ src/host/memory-store.ts  门面：全部既有导出 + MemoryStore 类壳（一
 - core 不 import 任何域模块；域模块只 import core/types；门面 import 全部。
 - storage 与 retrieval 互不引用；retrieval 只读，不得调用写接口。
 - audit / candidates 需要写记忆或写日志时，走 StoreContext 的注入槽 ctx.save / ctx.recordLog / ctx.remove，不直接 import 对方。
-- 唯一保留的跨层值引用：域模块按名字 import 门面里的纯函数 mergeUpdateGovernance（src/host/memory-store.ts:263），以保持其 4 处名字级调用点（src/host/memory-store.ts:740、:801、:870、:911）不变；该引用限定为"提升的 function 声明"，禁止在模块初始化期求值。见 §决策 D3。
+- 唯一保留的跨层值引用：域模块按名字 import 门面里的纯函数 mergeUpdateGovernance（src/host/memory-store.ts:167），以保持其 4 处名字级调用点（src/host/memory/storage.ts:60、:121、:190、:231）不变；该引用限定为"提升的 function 声明"，禁止在模块初始化期求值。见 §决策 D3。
 
 **4. StoreContext（唯一新增类型，不进公开导出面）**
 fields: db, workspaceId, basePath, save, remove, recordLog。
@@ -853,8 +860,8 @@ R6 SQL 字面量、enc1: 出现次数、索引/建表语句做重构前后多重
 
 **6. 门面改造**
 - L1-L471 不动（保证已读符号行位与 range_sha 不变）。
-- 类体缩为委托壳；类名、implements MemoryStoreV2（src/host/memory-store.ts:472）保持。
-- 尾部 getMemoryStore（src/host/memory-store.ts:1637）/closeMemoryStores（src/host/memory-store.ts:1654）文本不变、行号上移，提交说明里记录行号位移量。
+- 类体缩为委托壳；类名、implements MemoryStoreV2（src/host/memory-store.ts:196）保持。
+- 尾部 getMemoryStore（src/host/memory-store.ts:339）/closeMemoryStores（src/host/memory-store.ts:356）文本不变、行号上移，提交说明里记录行号位移量。
 - types.ts 的定义从门面剪切后，门面用具名 re-export 保证 MemoryType 等名字仍从 src/host/memory-store 导出；StoreContext 不得出现在门面导出列表。
 
 **7. 落地顺序**（7 步，每步绿）
@@ -1036,26 +1043,26 @@ Guard test content (its own subsection).
 验收 (≤5000): A1... checklist + 机器门 S1-S5 自检.
 
 Let me make sure citations appear and are valid. Use:
-- src/host/memory-store.ts:76 (workspaceSlug)
-- src/host/memory-store.ts:86
-- src/host/memory-store.ts:95
-- src/host/memory-store.ts:125
-- src/host/memory-store.ts:186
-- src/host/memory-store.ts:263
-- src/host/memory-store.ts:472
-- src/host/memory-store.ts:489 (ctor call to workspaceStorePath)
-- src/host/memory-store.ts:740 / 801 / 870 / 911
-- src/host/memory-store.ts:1637
-- src/host/memory-store.ts:1654
+- src/host/memory-store.ts:75 (workspaceSlug)
+- src/host/memory-store.ts:85
+- src/host/memory-store.ts:94
+- src/host/memory-store.ts:124
+- src/host/memory-store.ts:146
+- src/host/memory-store.ts:167
+- src/host/memory-store.ts:196
+- src/host/memory-store.ts:207 (ctor call to workspaceStorePath)
+- src/host/memory/storage.ts:60 / 121 / 190 / 231
+- src/host/memory-store.ts:339
+- src/host/memory-store.ts:356
 
 All from §1. Good.
 
-One more check: "引用一律用 path:line" — so each reference must be `src/host/memory-store.ts:76` format. Yes.
+One more check: "引用一律用 path:line" — so each reference must be `src/host/memory-store.ts:75` format. Yes.
 
 Now writing final. Keep the tone professional, no emojis. Chinese.
 
 I'll keep 设计 under 20000 chars easily.
 
-Also I should mention the facade must keep `workspaceStorePath` called from ctor at src/host/memory-store.ts:489 — if ctor stays in place, that call site is preserved (1 处, name-level).
+Also I should mention the facade must keep `workspaceStorePath` called from ctor at src/host/memory-store.ts:207 — if ctor stays in place, that call site is preserved (1 处, name-level).
 
 Write it.</think>
