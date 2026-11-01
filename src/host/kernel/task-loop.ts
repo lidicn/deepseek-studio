@@ -33,6 +33,13 @@ import { detectPlanRequest } from '../plan-gate';
 export type TaskLoopStopReason =
   | 'completed'
   | 'empty-response'
+  /**
+   * C1-F6：页还活着、但引擎连续读不到数据（`completion='disconnected'` + `reason='read-no-data'`）。
+   * 与 `empty-response` 分开，是为了让 `/v1/agent/send` 的返回体能区分两种场景：
+   * 「页端消失/传输断了」和「页在、只是读不到消息」。原来一律映射成 `empty-response`，
+   * 用户看到的文案永远一样，无法判断该重开页面还是该等。
+   */
+  | 'read-no-data'
   | 'no-tool-calls'
   | 'timeout'
   | 'aborted'
@@ -67,6 +74,7 @@ export function requireTaskLoopReply(result: TaskLoopRoundResult): string {
   const content = result.content.trim();
   const failedReason =
     result.stopReason === 'empty-response' ||
+    result.stopReason === 'read-no-data' ||
     result.stopReason === 'timeout' ||
     result.stopReason === 'aborted' ||
     result.stopReason === 'max-rounds';
@@ -185,18 +193,30 @@ function withAbort<T>(call: () => Promise<T>, signal?: AbortSignal): Promise<T> 
 }
 
 /**
- * 单轮判停（优先级写死：timeout > completed > empty-response > no-tool-calls）。
+ * 单轮判停（优先级写死：timeout > completed > read-no-data/empty-response > no-tool-calls）。
  * 返回 undefined 表示本轮有工具调用、应继续。
  *   - timedOut                                  → 'timeout'
  *   - 含 <task_complete>                         → 'completed'
- *   - content 为空且 toolCalls===0              → 'empty-response'
+ *   - content 为空且 toolCalls===0：
+ *       · engineReason==='read-no-data'         → 'read-no-data'（页在、读不到）
+ *       · 其余                                   → 'empty-response'
  *   - toolCalls===0                              → 'no-tool-calls'
  *   - 否则                                       → undefined（继续）
+ *
+ * C1-F6：`engineReason` 来自引擎 `EngineSendResult.reason`。原来这个字段在任务层被整个丢掉，
+ * 导致「页端消失」和「页存活无消息」在 API 返回体里都是 `empty-response`，用户无法区分。
  */
-function computeStop(content: string, toolCalls: number, timedOut?: boolean): TaskLoopStopReason | undefined {
+function computeStop(
+  content: string,
+  toolCalls: number,
+  timedOut?: boolean,
+  engineReason?: string,
+): TaskLoopStopReason | undefined {
   if (timedOut) return 'timeout';
   if (hasTaskComplete(content)) return 'completed';
-  if (content.trim() === '' && toolCalls === 0) return 'empty-response';
+  if (content.trim() === '' && toolCalls === 0) {
+    return engineReason === 'read-no-data' ? 'read-no-data' : 'empty-response';
+  }
   if (toolCalls === 0) return 'no-tool-calls';
   return undefined;
 }
@@ -292,7 +312,9 @@ export function createTaskLoop(opts: TaskLoopOptions): TaskLoop {
       }
 
       // 6. 判停
-      const stopReason = computeStop(result.content, result.toolCalls, result.timedOut);
+      // C1-F6：把引擎的 reason 一并传下去，否则 `read-no-data` 在这一层被丢掉，
+      // 「页端消失」与「页存活无消息」在 API 返回体里都变成 `empty-response`。
+      const stopReason = computeStop(result.content, result.toolCalls, result.timedOut, result.reason);
       previousToolCalls = result.toolCalls;
       last = {
         round,

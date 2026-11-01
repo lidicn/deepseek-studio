@@ -240,4 +240,90 @@ describe('WebEngine F1：答案选取', () => {
     expect(r.content).toBe('ANSWER-R5');
     expect(Date.now() - t0).toBeLessThan(1500);
   });
+
+  it('10. C1-F6：连续读不到数据 → 快速失败 read-no-data，不烧满 120s', async () => {
+    // 真机形状：宿主 `routeExecution` 把能力层 `error` **映射成 `reason`**
+    // （desktop-host.ts:1811 的 `reason: r.error`），引擎拿到的失败体是 `{ok:false, reason:...}`。
+    // 原 mock 用的是 `error`，与真机返回体形状不一致 → 单测绿、真机把软失败判成 hard
+    // → 重连×3 → `empty-response`（20261101 真机取证：引擎日志 `read-hard err=` 为空串）。
+    const dispatch = async (
+      tool: string,
+    ): Promise<{ ok: boolean; data?: unknown; error?: string; reason?: string }> => {
+      if (tool === 'chat-read') return { ok: false, reason: 'no-messages-found' };
+      return okResult();
+    };
+    const engine = createWebEngine({
+      dispatch, toolCallCounter: { current: 0 }, pollIntervalMs: 20, stepTimeoutMs: 60_000,
+      maxEmptyReads: 3,
+    });
+    const t0 = Date.now();
+    const r = await engine.send('提示语');
+    expect(r.content).toBe('');
+    expect(r.completion).toBe('disconnected');
+    expect(r.reason).toBe('read-no-data');
+    // 关键：3 拍 × 20ms 就返回，而不是 60s 看门狗
+    expect(Date.now() - t0).toBeLessThan(2_000);
+  });
+
+  it('11. C1-F6：页存活但无消息（wait 路径，真机 reason 形状）→ read-no-data，15s 级内返回', async () => {
+    // 覆盖「页存活无消息」场景：不是 send 路径，而是续跑轮 waitForNextReply。
+    // 页还在、chat-read 持续返回软失败 → 应走 empty 计数到阈值，而不是重连后 disconnected。
+    const dispatch = async (
+      tool: string,
+    ): Promise<{ ok: boolean; data?: unknown; error?: string; reason?: string }> => {
+      if (tool === 'chat-read') return { ok: false, reason: 'no-messages-found' };
+      return okResult();
+    };
+    const engine = createWebEngine({
+      dispatch, toolCallCounter: { current: 0 }, pollIntervalMs: 20, stepTimeoutMs: 60_000,
+      maxEmptyReads: 3,
+    });
+    const t0 = Date.now();
+    const r = await engine.waitForNextReply!();
+    expect(r.completion).toBe('disconnected');
+    expect(r.reason).toBe('read-no-data');
+    expect(Date.now() - t0).toBeLessThan(2_000);
+  });
+
+  it('12. C1-F6：能力层 error 形状同样识别（向后兼容，防只修一边）', async () => {
+    // `error` 是能力层字段（ExecuteResult），`reason` 是路由层字段（ToolExecutionResult）。
+    // 引擎必须两个都认，否则换一条执行路径就再断一次。
+    const dispatch = async (
+      tool: string,
+    ): Promise<{ ok: boolean; data?: unknown; error?: string; reason?: string }> => {
+      if (tool === 'chat-read') return { ok: false, error: 'no-messages-found' };
+      return okResult();
+    };
+    const engine = createWebEngine({
+      dispatch, toolCallCounter: { current: 0 }, pollIntervalMs: 20, stepTimeoutMs: 60_000,
+      maxEmptyReads: 3,
+    });
+    const r = await engine.send('提示语');
+    expect(r.completion).toBe('disconnected');
+    expect(r.reason).toBe('read-no-data');
+  });
+
+  it('13. C1-F6 负控：真正的硬失败（页没了）仍走重连，不被当软失败吞掉', async () => {
+    // `no-page-for-dom-capability` 不含 no-messages → 必须判 hard 走重连，
+    // 否则「页真的没了」会被当成「还没读到」而空转。
+    let reads = 0;
+    const dispatch = async (
+      tool: string,
+    ): Promise<{ ok: boolean; data?: unknown; error?: string; reason?: string }> => {
+      if (tool === 'chat-read') {
+        reads += 1;
+        return { ok: false, reason: 'no-page-for-dom-capability' };
+      }
+      return okResult();
+    };
+    const engine = createWebEngine({
+      dispatch, toolCallCounter: { current: 0 }, pollIntervalMs: 20, stepTimeoutMs: 60_000,
+      maxEmptyReads: 3, maxReconnectAttempts: 1, reconnectBackoffMs: 1,
+    });
+    const r = await engine.send('提示语');
+    expect(r.completion).toBe('disconnected');
+    // 走的是重连分支，不是 read-no-data
+    expect(r.reason).toBeUndefined();
+    expect(reads).toBeGreaterThan(0);
+  });
 });

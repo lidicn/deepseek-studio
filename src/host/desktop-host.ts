@@ -29,6 +29,7 @@ import {
 } from './tool-registry';
 import { DEFAULT_TOOL_DEFINITIONS, HOST_INTERNAL_ORIGIN } from './tool-definitions';
 import { createPageRuntimeHub, type PageRuntimeHub } from './page-runtime';
+import { appendTraceLine } from './trace-log';
 import { AGENT_SENTINEL, type AgentLoopEvent } from './agent-loop';
 import { createAgentChannel, type AgentChannel } from './agent-channel';
 import { pickFolderViaDialog } from './folder-picker';
@@ -356,6 +357,9 @@ async function listMemoryBroadcastRows(): Promise<
 export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   // C3：tool run 事件追踪（Workbench UI 投影）
   const pendingRuns = new Map<string, { tool: string; botId: string; startedAt: number }>();
+  // C1-F3：`memory.select` 的轮次序号（单调递增）。审计 canonicalTarget 与落盘 trace 用它对齐
+  // 「这是本会话第几次预取」，验收不再依赖页内钩子。
+  let mselSeqCounter = 0;
   const toolRunListeners = new Set<(event: import('../shared/tool-run-event').ToolRunEvent) => void>();
   function emitToolRun(event: import('../shared/tool-run-event').ToolRunEvent): void {
     for (const cb of toolRunListeners) { try { cb(event); } catch { /* ignore */ } }
@@ -1571,12 +1575,35 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     }
     // 5) 路由：宿主侧能力在宿主进程内执行；页端能力走页 DOM；无页则回退 Node 能力。
     const result = await routeExecution(def, name, params, outsideApproved, botId);
+    const durationMs = Date.now() - startedAt;
+    // C1-F3：`memory.select` 的耗时/轮次必须能从**落盘通道**取证
+    // （原来只有内存审计环 + 页内钩子，重启即丢、验收不可复现）。
+    const mselSeq = name === 'memory.select' ? ++mselSeqCounter : 0;
     audit.record({
       ...ctx,
       outcome: result.ok ? 'executed' : 'execution-failed',
       reason: result.ok ? (auth.reason === 'conversation-approved' ? 'conversation-approved' : result.reason) : result.reason,
-      durationMs: Date.now() - startedAt,
+      durationMs,
+      ...(name === 'memory.select'
+        ? { canonicalTarget: `sel:${conversationId ?? 'host-agent'}#${mselSeq}` }
+        : {}),
     });
+    if (name === 'memory.select') {
+      const bag = result.data as { memories?: unknown[] } | undefined;
+      const count = Array.isArray(bag?.memories) ? bag!.memories!.length : null;
+      appendTraceLine(
+        JSON.stringify({
+          kind: 'msel',
+          at: Date.now(),
+          sessionId: conversationId ?? 'host-agent',
+          seq: mselSeq,
+          durationMs,
+          ok: result.ok,
+          count,
+          reason: result.ok ? undefined : result.reason,
+        }),
+      );
+    }
     return result;
   }
 

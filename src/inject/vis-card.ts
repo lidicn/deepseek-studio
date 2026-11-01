@@ -170,7 +170,7 @@ function bindImageFallback(root: ShadowRoot): void {
   const images = root.querySelectorAll('img.ds-studio-vis-img');
   for (const img of images) {
     const imgEl = img as HTMLImageElement;
-    imgEl.addEventListener('error', () => {
+    const onError = (): void => {
       if (imgEl.dataset.dsProxyTried === '1') {
         replaceWithPlaceholder(imgEl);
         return;
@@ -188,14 +188,24 @@ function bindImageFallback(root: ShadowRoot): void {
         return;
       }
       void proxyImage(url).then((dataUrl) => {
-        if (!imgEl.isConnected) return;
+        // 真机根因（C1 可视化验收）：卡片常常先在**游离节点**上渲染（applyVisCards
+        // 在 msg.appendChild 之前调用），取图失败回调回来时元素还没入文档。
+        // 旧代码 `if (!imgEl.isConnected) return;` 直接退出 → 破图永远不降级。
+        // 游离节点上 replaceWith 同样安全，且能保证入文档后就是占位。
         if (dataUrl === null) {
           replaceWithPlaceholder(imgEl);
           return;
         }
+        if (!imgEl.isConnected) return;
         imgEl.src = dataUrl;
       });
-    });
+    };
+    imgEl.addEventListener('error', onError);
+    // 竞态兜底（真机实测）：监听是在 innerHTML 之后才绑的，而快速失败的图
+    // （DNS 立刻失败 / 内网不可达 / 协议被拒）在绑定前就已经 error 过了，
+    // 之后不会再触发 error → 页面上留下**破图**而不是渐变占位。
+    // complete && naturalWidth===0 就是「已经失败」，这里补一次同一条降级路径。
+    if (imgEl.complete && imgEl.naturalWidth === 0) onError();
   }
 }
 

@@ -11,6 +11,7 @@ import {
   checkModelEngine,
   checkMessageHistory,
   checkTaskLoop,
+  stripComments,
 } from '../../tools/contract/check';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -106,5 +107,49 @@ describe('契约守门 · TaskLoop 反例', () => {
     const tampered = taskLoopSrc.replace(/export\s+function\s+createTaskLoop/, 'function createTaskLoop');
     const violations = checkTaskLoop(tampered);
     expect(violations.some((v) => v.message.includes('createTaskLoop'))).toBe(true);
+  });
+});
+
+describe('契约守门 · 注释剥离（20261101 F6 假阳性防护）', () => {
+  it('12. union 内部 JSDoc 里的字面量不算合法/非法值', () => {
+    // 复刻 20261101 事故形态：TaskLoopStopReason union body 内部的 JSDoc 含白名单外字面量
+    const tampered = taskLoopSrc.replace(
+      /\| 'timeout'/,
+      "/** 说明：completion='disconnected'，reason='bogus-in-comment' */\n  | 'timeout'",
+    );
+    const violations = checkTaskLoop(tampered);
+    expect(violations.some((v) => v.message.includes('disconnected'))).toBe(false);
+    expect(violations.some((v) => v.message.includes('bogus-in-comment'))).toBe(false);
+    expect(violations).toEqual([]);
+  });
+
+  it('13. 负控：真实代码里的非法值仍被抓出（剥注释不得掩盖真违规）', () => {
+    const tampered = taskLoopSrc.replace(
+      /\| 'max-rounds'/,
+      "| 'max-rounds' | 'bogus-in-code'",
+    );
+    const violations = checkTaskLoop(tampered);
+    expect(violations.some((v) => v.message.includes('bogus-in-code'))).toBe(true);
+  });
+
+  it('14. read-no-data 已入合法值清单（F6 语义：页在但读不到）', () => {
+    // 真实源码含 read-no-data 成员，不应再报非法值
+    const violations = checkTaskLoop(taskLoopSrc);
+    expect(violations.some((v) => v.message.includes('read-no-data'))).toBe(false);
+    expect(violations).toEqual([]);
+  });
+
+  it('15. stripComments：注释移除，字符串/正则/模板字面量原样保留', () => {
+    const s = [
+      "const a = 'keep1'; // 'drop-line'",
+      "/* 'drop-block' */ const b = /'in-regex'/;",
+      'const c = `tpl`;',
+    ].join('\n');
+    const out = stripComments(s);
+    expect(out).toContain("'keep1'");
+    expect(out).toContain("/'in-regex'/");
+    expect(out).toContain('`tpl`');
+    expect(out).not.toContain('drop-line');
+    expect(out).not.toContain('drop-block');
   });
 });

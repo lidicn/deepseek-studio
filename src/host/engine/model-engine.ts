@@ -33,6 +33,11 @@ export interface EngineSendResult {
    */
   readonly toolCallRecords?: readonly ToolCallRecord[];
   /**
+   * C1-F6：本轮失败的结构化原因（additive）。例如 `read-no-data`：
+   * 连续多次 `chat-read` 都拿不到数据 → 快速失败，不再烧满 120s 看门狗。
+   */
+  readonly reason?: string;
+  /**
    * S2：本轮完成状态自证。老调用方不读此字段则完全无感知。
    *   complete     — 模型正常输出完毕
    *   truncated    — 看门狗截断（timedOut 的语义化别名）

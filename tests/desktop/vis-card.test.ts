@@ -44,6 +44,58 @@ describe('vis render 降级', () => {
     registerCoreVisComponents();
   });
 
+  /**
+   * 真机缺陷回归（2026-11-01 可视化验收）：
+   * 卡片常在**游离节点**上渲染（applyVisCards 在 appendChild 之前调用），
+   * 取图失败回调回来时元素还没入文档。旧代码 `if (!imgEl.isConnected) return;`
+   * 直接退出 → 破图永远不降级为占位。这条锁住「游离节点也要降级」。
+   */
+  it('游离节点上的坏图也要降级成占位（取图失败回调早于入文档）', async () => {
+    const g = globalThis as unknown as { __deepseekStudio?: unknown };
+    const prev = g.__deepseekStudio;
+    g.__deepseekStudio = {
+      host: {
+        // 宿主侧取图失败（真机实测 invalid.invalid → dns_failed，4ms 返回）
+        sendEnvelope: async () => ({ ok: false, error: 'dns_failed' }),
+      },
+    };
+    try {
+      const badDoc = {
+        v: 1,
+        root: {
+          type: 'Column',
+          children: [
+            { type: 'Image', src: 'https://invalid.invalid/x.jpg', alt: '坏图', ratio: '2/3', fallback: { hue: 12 } },
+          ],
+        },
+      };
+      // 关键：scope 不 append 到 document —— 模拟「卡片还没入文档」
+      const detached = document.createElement('div');
+      detached.innerHTML = `<pre><code>${JSON.stringify(badDoc)}</code></pre>`;
+      expect(detached.isConnected).toBe(false);
+
+      expect(applyVisCards(detached)).toBe(1);
+      const host = detached.querySelector('.ds-studio-vis-host') as HTMLElement;
+      const root = host.shadowRoot!;
+      const img = root.querySelector('img.ds-studio-vis-img') as HTMLImageElement;
+      expect(img).toBeTruthy();
+      expect(img.isConnected).toBe(false);
+
+      // jsdom 不会真加载图片，手动触发 error
+      img.dispatchEvent(new Event('error'));
+      // 等 proxyImage 的 then 链
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+
+      expect(root.querySelector('img.ds-studio-vis-img')).toBeNull();
+      const placeholder = root.querySelector('.ds-studio-vis-img--placeholder');
+      expect(placeholder).toBeTruthy();
+      expect(placeholder?.getAttribute('aria-label')).toBe('坏图');
+    } finally {
+      if (prev === undefined) delete g.__deepseekStudio;
+      else g.__deepseekStudio = prev;
+    }
+  });
+
   it('版本不匹配 ⇒ failed 且 html 为空', () => {
     const res = renderToHtml({ v: 99, root: { type: 'Text', text: 'x' } });
     expect(res.outcome.status).toBe('failed');

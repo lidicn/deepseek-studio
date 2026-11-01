@@ -182,6 +182,39 @@ describe('Studio 主视图', () => {
     });
   });
 
+  it('C1-F5：工具调用原文不进正文，改成明确提示（真机原文回放）', () => {
+    addMeasuredComposer();
+    ui = mount();
+    ui.addUserMessage('查一下目录');
+    ui.startAssistantMessage();
+    // 真机原文（docs/验收/20261031-C1-真机取证.md §3.6）
+    ui.appendToAssistantMessage('<search_files>{"operation":"list","root":"E:/NAS/deepseek-studio","limit":5}</search_files>');
+    ui.finishAssistantMessage({ recordFinal: false });
+
+    const text = ui.container.textContent ?? '';
+    // 正文里不得出现原始标签与参数原文。
+    expect(text).not.toContain('<search_files');
+    expect(text).not.toContain('</search_files');
+    expect(text).not.toContain('"operation"');
+    // 但也不能静默消失——必须给用户一句明确交代。
+    const note = ui.container.querySelector('.ds-sc-tooltext-note');
+    expect(note).not.toBeNull();
+    expect(note?.textContent).toContain('search_files');
+    expect(note?.textContent).toContain('没有执行');
+  });
+
+  it('C1-F5：带属性的工具标签同样不进正文', () => {
+    addMeasuredComposer();
+    ui = mount();
+    ui.startAssistantMessage();
+    ui.appendToAssistantMessage('<search_files operation="list">{"query":"x"}</search_files>剩下的正文');
+    ui.finishAssistantMessage({ recordFinal: false });
+
+    const markdown = ui.container.querySelector('.ds-sc-markdown');
+    expect(markdown?.textContent).toContain('剩下的正文');
+    expect(markdown?.textContent).not.toContain('search_files');
+  });
+
   it('工具结果晚于气泡定稿返回时，仍回写原 callId 卡片而不是新回合', () => {
     addMeasuredComposer();
     ui = mount();

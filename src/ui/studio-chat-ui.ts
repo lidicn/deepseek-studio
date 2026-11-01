@@ -11,6 +11,7 @@
  */
 
 import { renderMarkdown } from '../inject/markdown';
+import { scanRawToolText } from '../inject/raw-tool-text';
 import { applyVisCards } from '../inject/vis-card';
 import {
   createRedesignedToolCard,
@@ -757,7 +758,10 @@ export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioCha
     const streaming = currentAssistant.querySelector('.ds-sc-streaming') as HTMLElement | null;
     if (!streaming) return;
     if (currentRawText) {
-      streaming.innerHTML = renderMarkdown(currentRawText) + '<span class="ds-sc-cursor"></span>';
+      // C1-F5：流式期也可能先到「工具标签原文」，同样不能当正文渲染，
+      // 否则用户会在光标前看到半截 `<search_files>{…}`。
+      const scan = scanRawToolText(currentRawText);
+      streaming.innerHTML = renderMarkdown(scan.clean) + '<span class="ds-sc-cursor"></span>';
       enhanceCodeBlocks(streaming);
       applyVisCards(streaming);
     }
@@ -797,7 +801,12 @@ export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioCha
     // 刷出节流里未渲染的尾部
     if (streamRenderTimer) { clearTimeout(streamRenderTimer); streamRenderTimer = null; }
     const streaming = currentAssistant.querySelector('.ds-sc-streaming') as HTMLElement | null;
-    const displayText = (finishOptions?.fallbackText ?? currentRawText).trim();
+    // C1-F5：模型把工具调用原文当正文吐出来时，**不能当正文渲染**。
+    // 剥掉标签，并在气泡里留一行明确说明，而不是静默消失——
+    // 用户需要知道「这里本来有一次没执行的工具调用」。
+    const rawDisplay = (finishOptions?.fallbackText ?? currentRawText).trim();
+    const toolTextScan = scanRawToolText(rawDisplay);
+    const displayText = toolTextScan.clean.trim();
     if (streaming && displayText) {
       const html = renderMarkdown(displayText);
       const markdownDiv = document.createElement('div');
@@ -812,6 +821,16 @@ export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioCha
       // 此前这里的 `streaming` 节点被原样留在消息里 —— 里面的 `.ds-sc-cursor`
       // 会一直闪，视觉上等于「还在输出」。收尾时必须把光标摘掉。
       streaming.remove();
+    }
+    // C1-F5：被剥离的工具调用原文要给用户一句明确交代，不能静默消失。
+    if (toolTextScan.blocks > 0) {
+      const notice = document.createElement('div');
+      notice.className = 'ds-sc-tooltext-note';
+      const names = Array.from(new Set(toolTextScan.names)).join('、');
+      notice.textContent = toolTextScan.unclosed
+        ? `已隐藏 ${names || '工具'} 的未完成调用原文（流被截断，本次没有执行）`
+        : `已隐藏 ${names || '工具'} 的调用原文（这次调用没有执行）`;
+      currentAssistant.appendChild(notice);
     }
     if (recordFinalPending && finishOptions?.recordFinal !== false && displayText) {
       const limited = limitFinalAnswer(displayText);
@@ -1027,11 +1046,21 @@ export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioCha
         msg.className = 'ds-sc-msg-assistant ds-sc-msg-main-bot';
         const markdown = document.createElement('div');
         markdown.className = 'ds-sc-markdown';
+        // C1-F5：历史里可能存着旧版本落盘的「带工具标签原文」的最终答复，
+        // 重放时同样不能把它当正文展示。
+        const replayScan = scanRawToolText(event.text + (event.truncationMarker ?? ''));
         // security-ok: renderMarkdown 已通过 DOMPurify 清洗。
-        markdown.innerHTML = renderMarkdown(event.text + (event.truncationMarker ?? ''));
+        markdown.innerHTML = renderMarkdown(replayScan.clean);
         enhanceCodeBlocks(markdown);
         applyVisCards(markdown);
         msg.appendChild(markdown);
+        if (replayScan.blocks > 0) {
+          const notice = document.createElement('div');
+          notice.className = 'ds-sc-tooltext-note';
+          const names = Array.from(new Set(replayScan.names)).join('、');
+          notice.textContent = `已隐藏 ${names || '工具'} 的调用原文（这条调用当时没有执行）`;
+          msg.appendChild(notice);
+        }
         messageList.appendChild(msg);
         lastToolAssistant = null;
       } else if (event.type === 'system-error') {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createTaskLoop, TaskLoopError } from '../../src/host/kernel/task-loop';
+import { createTaskLoop, requireTaskLoopReply, TaskLoopError } from '../../src/host/kernel/task-loop';
 import type { TaskLoopRoundResult } from '../../src/host/kernel/task-loop';
 import { createMessageHistory } from '../../src/host/kernel/message-history';
 import { createHistoryStore } from '../../src/host/kernel/history-store';
@@ -921,5 +921,35 @@ describe('TaskLoop 续跑轮（v0.9 waitForNextReply）', () => {
     expect(r.stopReason).toBe('no-tool-calls');
     expect(engine.calls).toBe(2);
     expect(engine.texts[1]).not.toContain('执行命令');
+  });
+
+  it('65. C1-F6：引擎 reason=read-no-data → 任务层透传为 read-no-data，文案可区分', async () => {
+    // 页还活着、只是读不到：引擎返回 completion=disconnected + reason=read-no-data。
+    // 修复前这一层把 reason 丢掉，`/v1/agent/send` 一律回 (empty-response)，用户分不清
+    // 「页没了该重开」和「页在、只是没读到」。
+    const history = createMessageHistory();
+    const engine = fakeEngine([
+      { content: '', toolCalls: 0, completion: 'disconnected', reason: 'read-no-data' },
+    ]);
+    const loop = createTaskLoop({ engine, history });
+
+    const r = await loop.run('问一句');
+
+    expect(r.stopReason).toBe('read-no-data');
+    expect(() => requireTaskLoopReply(r)).toThrow(/read-no-data/);
+  });
+
+  it('66. C1-F6：引擎无 reason（页端消失）→ 仍映射 empty-response，与 #65 文案可区分', async () => {
+    // 负控：同样是「空内容 + disconnected」，但引擎没给 read-no-data
+    //（页端消失走的是重连路径），必须仍映射成 empty-response，不能被 #65 的改动吞成同一类。
+    const history = createMessageHistory();
+    const engine = fakeEngine([{ content: '', toolCalls: 0, completion: 'disconnected' }]);
+    const loop = createTaskLoop({ engine, history });
+
+    const r = await loop.run('问一句');
+
+    expect(r.stopReason).toBe('empty-response');
+    expect(() => requireTaskLoopReply(r)).toThrow(/empty-response/);
+    expect(() => requireTaskLoopReply(r)).not.toThrow(/read-no-data/);
   });
 });

@@ -188,6 +188,17 @@ export const STUDIO_CHAT_CSS = `
   line-height: 1.6;
 }
 
+/* C1-F5：模型把工具调用原文当正文吐出来时，正文剥离后给用户的明确交代。 */
+.ds-sc-tooltext-note {
+  margin-top: 10px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--ds-warn);
+  background: var(--ds-warn-soft);
+  color: var(--ds-warn);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 /* ===== 用户消息：右对齐气泡（聊天惯例） ===== */
 .ds-sc-msg-user {
   align-self: flex-end;

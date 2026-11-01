@@ -3,6 +3,7 @@
  * tools/contract/check.ts — 契约守门（S2）
  *
  * 静态读源码文本做断言，不 import 运行（避免副作用与循环依赖）。
+ * 判定前先剥注释（stripComments）：文档注释里的字面量不参与契约判定（20261101 F6 假阳性教训）。
  * 任何席位改坏 ModelEngine / MessageHistory / TaskLoop 的契约，这里立刻红。
  *
  * 用法：npx tsx tools/contract/check.ts
@@ -20,6 +21,106 @@ export interface ContractViolation {
   message: string;
 }
 
+// ---------------------------------------------------------------- 注释剥离
+
+// 这些关键字后面跟 / 是正则字面量开始（而非除号）
+const REGEX_ALLOWED_KEYWORDS = new Set([
+  'return', 'typeof', 'case', 'in', 'of', 'new', 'delete', 'void',
+  'instanceof', 'do', 'else', 'yield', 'await', 'throw',
+]);
+
+/**
+ * 剥掉 TS 源码里的注释（行注释 + 块注释/JSDoc），字符串 / 正则 / 模板字面量原样保留。
+ *
+ * 契约断言只看代码本体：文档注释里出现的 'xxx' 字面量不得参与契约判定。
+ * （20261101 F6 教训：task-loop.ts 类型 union 内部的 JSDoc 含 completion='disconnected'，
+ * 被白名单扫描当成非法成员，产生假红。）
+ *
+ * 实现为单遍扫描的 mini-lexer：字符串与正则字面量透传（不剥离其中的引号），
+ * 用「前一个有效 token」启发式区分除号与正则起始。已知限制：模板字符串 ${} 内
+ * 嵌套反引号不递归处理；三个目标文件（model-engine / message-history / task-loop）实测无此形态。
+ */
+export function stripComments(src: string): string {
+  const n = src.length;
+  let out = '';
+  let i = 0;
+  let prev = ''; // 上一个有效 token：标识符/数字完整串，或单个符号字符；'' 表示尚未出现
+
+  const regexStart = (): boolean => {
+    if (prev === '') return true;
+    if (/^[0-9a-zA-Z_$]+$/.test(prev)) {
+      return REGEX_ALLOWED_KEYWORDS.has(prev);
+    }
+    return !(prev === ')' || prev === ']' || prev === '"' || prev === "'" || prev === '`');
+  };
+
+  while (i < n) {
+    const c = src.charAt(i);
+    const d = src.charAt(i + 1);
+
+    // 行注释：吞到行尾（换行本身保留）
+    if (c === '/' && d === '/') {
+      while (i < n && src.charAt(i) !== '\n') i++;
+      continue;
+    }
+    // 块注释 / JSDoc：整体吞掉，替换成一个空格保持词法分隔
+    if (c === '/' && d === '*') {
+      i += 2;
+      while (i < n && !(src.charAt(i) === '*' && src.charAt(i + 1) === '/')) i++;
+      i = Math.min(i + 2, n);
+      out += ' ';
+      continue;
+    }
+    // 字符串 / 模板字面量：原样透传（含转义）
+    if (c === "'" || c === '"' || c === '`') {
+      const quote = c;
+      out += c;
+      i++;
+      while (i < n) {
+        const s = src.charAt(i);
+        out += s;
+        i++;
+        if (s === '\\' && i < n) {
+          out += src.charAt(i);
+          i++;
+          continue;
+        }
+        if (s === quote) break;
+      }
+      prev = quote;
+      continue;
+    }
+    // 正则字面量：按「前一个有效 token」区分除号与正则起始
+    if (c === '/' && regexStart()) {
+      out += c;
+      i++;
+      let inClass = false;
+      while (i < n) {
+        const s = src.charAt(i);
+        out += s;
+        i++;
+        if (s === '\\' && i < n) {
+          out += src.charAt(i);
+          i++;
+          continue;
+        }
+        if (s === '[') inClass = true;
+        else if (s === ']') inClass = false;
+        else if (s === '/' && !inClass) break;
+        else if (s === '\n') break; // 未闭合正则容错：不吞整行
+      }
+      prev = '/';
+      continue;
+    }
+    out += c;
+    if (!/\s/.test(c)) {
+      prev = /[0-9a-zA-Z_$]/.test(c) && /^[0-9a-zA-Z_$]+$/.test(prev) ? prev + c : c;
+    }
+    i++;
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- 断言函数（纯文本）
 
 /**
@@ -32,6 +133,7 @@ export interface ContractViolation {
 export function checkModelEngine(src: string): ContractViolation[] {
   const v: ContractViolation[] = [];
   const rule = 'ModelEngine';
+  src = stripComments(src); // 注释先剥：文档注释不得参与契约判定
 
   // 导出成员
   if (!/export\s+(interface|type)\s+ModelEngine\b/.test(src)) {
@@ -88,6 +190,7 @@ export function checkModelEngine(src: string): ContractViolation[] {
 export function checkMessageHistory(src: string): ContractViolation[] {
   const v: ContractViolation[] = [];
   const rule = 'MessageHistory';
+  src = stripComments(src); // 注释先剥：文档注释不得参与契约判定
 
   if (!/export\s+const\s+MESSAGE_HISTORY_VERSION\s*=\s*1\b/.test(src)) {
     v.push({ rule, message: 'MESSAGE_HISTORY_VERSION 不是 1' });
@@ -119,12 +222,14 @@ export function checkMessageHistory(src: string): ContractViolation[] {
 
 /**
  * TaskLoop 契约：
- * - TaskLoopStopReason 必须只有这些合法值：completed / no-tool-calls / timeout / max-rounds / empty-response / aborted
+ * - TaskLoopStopReason 必须只有这些合法值：completed / no-tool-calls / timeout / max-rounds / empty-response / read-no-data / aborted
+ *   （read-no-data = 页还活着、引擎连续读不到数据，与 empty-response=页端消失/传输断 二分；20261101 F6 新增）
  * - 必须导出 createTaskLoop
  */
 export function checkTaskLoop(src: string): ContractViolation[] {
   const v: ContractViolation[] = [];
   const rule = 'TaskLoop';
+  src = stripComments(src); // 注释先剥：union 内部 JSDoc 里的字面量不算成员（F6 假阳性根源）
 
   if (!/export\s+function\s+createTaskLoop\b/.test(src)) {
     v.push({ rule, message: '缺少 export function createTaskLoop' });
@@ -134,7 +239,7 @@ export function checkTaskLoop(src: string): ContractViolation[] {
   const stopType = src.match(/export\s+type\s+TaskLoopStopReason\s*=([\s\S]*?);/);
   if (stopType) {
     const body = stopType[1];
-    const allowed = ['completed', 'no-tool-calls', 'timeout', 'max-rounds', 'empty-response', 'aborted'];
+    const allowed = ['completed', 'no-tool-calls', 'timeout', 'max-rounds', 'empty-response', 'read-no-data', 'aborted'];
     // 提取所有字符串字面量
     const literals = [...body.matchAll(/'([^']+)'/g)].map((m) => m[1]);
     for (const a of allowed) {

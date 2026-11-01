@@ -10,7 +10,6 @@
  * 单步看门狗（默认 120s）兜底，超时把已见文本带 timedOut 标记返回。
  */
 
-import type { ExecuteResult } from '../../capabilities/types';
 import type { CompletionStatus, EngineSendResult, ModelEngine, ToolCallRecord } from './model-engine';
 import type { HarnessMetrics } from '../../shared/harness-metrics';
 import type { ToolEventBus } from '../../shared/tool-event-bus';
@@ -37,14 +36,36 @@ export function decideCompletion(opts: {
 // ---------------------------------------------------------------- options
 
 export interface WebEngineOptions {
-  /** 页端 DOM 能力调用入口（desktop-host.invokeTool：完整授权链 + 同意闸门）。 */
-  dispatch(tool: string, params: Record<string, unknown>): Promise<ExecuteResult>;
+  /**
+   * 页端 DOM 能力调用入口（desktop-host.invokeTool：完整授权链 + 同意闸门）。
+   *
+   * C1-F6 根因（20261101 真机取证）：这里原来声明成 `ExecuteResult`（只有 `error?`），
+   * 但实际注入的是 `desktop-host.routeExecution`，返回 `ToolExecutionResult`——它把能力层的
+   * `error` **映射成了 `reason`**（`desktop-host.ts:1811` 的 `reason: r.error`）。
+   * 声明与运行时形状不一致，TS 按错的形状检查，于是「读 `r.error` 得空串」在闸门下完全隐形：
+   * 真机 `chat-read` 软失败（`no-messages-found`）被判成硬失败 → 重连×3 → `empty-response`。
+   * 故这里显式声明两种字段都在。
+   */
+  dispatch(
+    tool: string,
+    params: Record<string, unknown>,
+  ): Promise<{ ok: boolean; data?: unknown; error?: string; reason?: string }>;
   /** 工具调用计数器（由 desktop-host 的 hub.onToolCall 累加）。 */
   toolCallCounter: { current: number };
   /** 完成检测轮询间隔（默认 1500ms）。 */
   pollIntervalMs?: number;
   /** 单步看门狗（默认 120_000ms）。 */
   stepTimeoutMs?: number;
+  /**
+   * C1-F6：连续多少次「读不到数据」就快速失败（默认 **9**）。
+   * 超过即返回 `completion='disconnected'` + `reason='read-no-data'`，
+   * 不再空转到 120s 看门狗——「读不到」和「模型还在答」必须能被区分。
+   *
+   * 为什么是 9 而不是 10：每拍还有读取代价，实测 10 拍 × 1500ms + 读取 ≈ **15.8s**，
+   * 超出 15s 速度线 0.85s（Verify 20261101 真机读数 `elapsedMs=15852`）。
+   * 9 拍 ≈ 13.5s + 读取代价，留出余量后仍严格落在 15s 内。
+   */
+  maxEmptyReads?: number;
   /** 中止钩子：AgentLoop.stop() 置位后，等待中的 send 尽快返回。 */
   isStopped?(): boolean;
   /** v0.9：读取页端 auto-continue 推送的模型回复（不渲染到 DOM）。 */
@@ -121,6 +142,9 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
   const stepTimeoutMs = options.stepTimeoutMs ?? 120_000;
   const maxReconnectAttempts = options.maxReconnectAttempts ?? 3;
   const reconnectBackoffMs = options.reconnectBackoffMs ?? 500;
+  // C1-F6：连续多少次「能力跑通但读不到数据」就快速失败，而不是烧满 120s 看门狗。
+  // 10 拍 × 默认 1.5s ≈ 15s，足够覆盖「页面刚发出去、DOM/镜像还没落地」的正常窗口。
+  const maxEmptyReads = options.maxEmptyReads ?? 9;
 
   // M2-2：本轮工具调用记录缓冲。仅当 options.onToolCall 存在时才创建（非 null）。
   // 每次 send / waitForNextReply 开始时重置，结束时随返回值带出。
@@ -185,12 +209,18 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
   }> {
     const r = await options.dispatch('chat-read', ensureLatest ? { ensureLatest: true } : {});
     if (!r.ok) {
-      const err = String(r.error ?? '');
+      // C1-F6：`error` 是能力层字段，`reason` 是宿主路由层字段（`routeExecution` 把前者映射成后者）。
+      // 两个都要读——只读 `error` 时真机恒为空串，软失败被误判成硬失败（见 WebEngineOptions.dispatch 注释）。
+      const err = String(r.error ?? r.reason ?? '');
       // 只有「能力跑通了、但这会儿没有可读的消息」才算「还没读到」→ 继续等。
       // 其余失败（no-page-for-dom-capability / 传输失败 …）都是**硬失败** → 走 S4 重连。
       if (err.includes('no-messages')) {
         return { state: 'empty', text: '', mirrorText: '', mirrorCount: 0, count: 0, texts: [] };
       }
+      // 取证打点（一行）：真机 F6 走到 hard 提前 return，但 `error` 的真实内容一直看不到，
+      // 导致「字段错位」与「实际是别的硬失败」两种解释都站不住。这里把 err 原样打出来，
+      // 用于区分 no-page-runtime / page-timeout / unknown-tool / 异常消息。
+      console.log(`[web-engine] read-hard err=${err.slice(0, 160)}`);
       return { state: 'hard', text: '', mirrorText: '', mirrorCount: 0, count: 0, texts: [] };
     }
     const data = r.data as {
@@ -286,13 +316,13 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
       try {
         const r = await Promise.race([
           options.dispatch('chat-read', {}),
-          new Promise<{ ok: false; error: string }>((resolve) =>
+          new Promise<{ ok: false; error: string; reason?: string }>((resolve) =>
             // 保留 dispatch 取消标志；timer 句柄透出供 finally 清理。
             (timer = setTimeout(() => resolve({ ok: false, error: 'health-timeout' }), 5000)),
           ),
         ]);
         if (r.ok) return { ok: true };
-        return { ok: false, reason: r.error ?? 'chat-read-failed' };
+        return { ok: false, reason: r.error ?? r.reason ?? 'chat-read-failed' };
       } finally {
         if (timer) clearTimeout(timer);
       }
@@ -351,6 +381,9 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
       let stopped = false;
       // F1：是否见到过「本轮」的新文本。没见到就**绝不返回旧答案**冒充本轮结果。
       let sawNewText = false;
+      // C1-F6：连续「读不到数据」计数（超过 maxEmptyReads 快速失败）。
+      let emptyReads = 0;
+      let readNoData = false;
 
       for (;;) {
         if (options.isStopped?.()) { stopped = true; break; }
@@ -396,8 +429,18 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
         }
         if (snap.state === 'empty') {
           // 「还没读到」不是错误：继续等（答案可能还没挂载 / 虚拟列表还没滚到底）。
+          // C1-F6：但连续读不到要快速失败——否则页面能力彻底不可用时仍会烧满 120s 看门狗。
+          emptyReads += 1;
+          if (emptyReads >= maxEmptyReads) {
+            readNoData = true;
+            console.log(
+              `[web-engine] read-no-data after ${emptyReads} empty reads (elapsedMs=${Date.now() - startedAt})`,
+            );
+            break;
+          }
           continue;
         }
+        emptyReads = 0;
         // 答案候选（按可靠性排序）：
         //   ① SSE 派生镜像（Studio 注入层 .ds-sc-msg-assistant）——不受虚拟列表影响，答案一落地就在；
         //   ② 真实 DOM 里「非本轮 prompt、非能力前导注入」的最后一条消息。
@@ -436,13 +479,16 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
       }
 
       const toolCalls = options.toolCallCounter.current - counterStart;
-      const completion = decideCompletion({ timedOut, dispatchFailed: false, stopped });
+      // C1-F6：连续读不到数据 → 快速失败（disconnected + read-no-data），不烧满看门狗。
+      const completion: 'complete' | 'truncated' | 'disconnected' | 'unknown' = readNoData
+        ? 'disconnected'
+        : decideCompletion({ timedOut, dispatchFailed: false, stopped });
       closeRoundForMetrics(completion);
       // F1：超时且从未见到本轮新文本 → 返回空内容，**不拿上一轮答案冒充本轮**。
       const finalContent = sawNewText ? lastText : '';
       console.log(
         `[web-engine][path] send-end completion=${completion} elapsedMs=${Date.now() - startedAt} ` +
-          `contentLen=${finalContent.length} toolCalls=${toolCalls}`,
+          `contentLen=${finalContent.length} toolCalls=${toolCalls}${readNoData ? ' reason=read-no-data' : ''}`,
       );
       logRound(Date.now() - startedAt, completion, toolCalls, finalContent);
       return {
@@ -451,6 +497,7 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
         timedOut: timedOut || undefined,
         toolCallRecords: currentRecords ?? undefined,
         completion,
+        ...(readNoData ? { reason: 'read-no-data' } : {}),
       };
     },
     /**
@@ -484,6 +531,9 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
       // PM 要求：两条路径的起止与选中依据要能判读。
       let bStarted = false;
       let lastSeen = { mirrorCount: baselineMirrorCount, mirrorText: baselineMirrorText, text: baselineText };
+      // C1-F6：连续读不到数据计数（同 send()）。
+      let emptyReads = 0;
+      let readNoData = false;
 
       for (;;) {
         if (options.isStopped?.()) { stopped = true; break; }
@@ -529,7 +579,18 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
           }
           continue;
         }
-        if (snap.state === 'empty') continue;
+        if (snap.state === 'empty') {
+          emptyReads += 1;
+          if (emptyReads >= maxEmptyReads) {
+            readNoData = true;
+            console.log(
+              `[web-engine] read-no-data after ${emptyReads} empty reads (wait path, elapsedMs=${Date.now() - startedAt})`,
+            );
+            break;
+          }
+          continue;
+        }
+        emptyReads = 0;
 
         // 答案候选：镜像优先（SSE 派生、不受虚拟列表影响），其次真实 DOM。
         // 判「是不是本轮」用**身份信号**（镜像助手消息条数增长）或文本变化，
@@ -567,14 +628,17 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
       }
 
       const toolCalls = options.toolCallCounter.current - counterStart;
-      const completion = decideCompletion({ timedOut, dispatchFailed: false, stopped });
+      // C1-F6：连续读不到数据 → 快速失败（同 send()）。
+      const completion: 'complete' | 'truncated' | 'disconnected' | 'unknown' = readNoData
+        ? 'disconnected'
+        : decideCompletion({ timedOut, dispatchFailed: false, stopped });
       closeRoundForMetrics(completion);
       // F1 同 send()：没见到本轮新文本就不返回旧答案。
       const finalContent = sawNewText ? lastText : '';
       // 本轮结束时的状态留作下一轮基线（多轮续跑逐轮推进，不会越比越旧）。
       roundBaseline = { mirrorCount: lastSeen.mirrorCount, mirrorText: lastSeen.mirrorText, text: lastSeen.text, at: Date.now() };
       console.log(
-        `[web-engine][path] wait-end completion=${completion} elapsedMs=${Date.now() - startedAt} contentLen=${finalContent.length}`,
+        `[web-engine][path] wait-end completion=${completion} elapsedMs=${Date.now() - startedAt} contentLen=${finalContent.length}${readNoData ? ' reason=read-no-data' : ''}`,
       );
       logRound(Date.now() - startedAt, completion, toolCalls, finalContent);
       return {
@@ -583,6 +647,7 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
         timedOut: timedOut || undefined,
         toolCallRecords: currentRecords ?? undefined,
         completion,
+        ...(readNoData ? { reason: 'read-no-data' } : {}),
       };
     },
   };

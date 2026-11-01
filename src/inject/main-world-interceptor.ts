@@ -52,6 +52,7 @@ import {
 } from '../shared/studio-context-budget';
 import { createToolCallDedupe } from '../shared/tool-call-dedupe';
 import { formatUntrustedMemoriesBlock } from './untrusted-memory';
+import { continuationReasonForReply, scanRawToolText, stripRawToolText } from './raw-tool-text';
 
 /**
  * 从文本里剔除原始工具调用标签（<shell_exec>…</shell_exec> 等），返回纯散文。
@@ -64,12 +65,13 @@ import { formatUntrustedMemoriesBlock } from './untrusted-memory';
  * 宿主的 AgentLoop 见到 content 里含 `<shell_exec>` 且 toolCalls=0 → 判定「未解析工具标签」
  * → 格式纠偏循环 → 永不 emit assistant → 聊天室收不到回复。
  * 这里在推送前剥标签，让 AgentLoop 只看到干净的散文。
+ *
+ * C1-F5：实现换成 `raw-tool-text` 的共用扫描器——旧正则只认「开标签不得带属性」的
+ * 精确形态，模型写出 `<search_files operation="list">` 时会漏剥，于是工具调用原文
+ * 被当正文渲染给用户（页面里确实出现过 `<search_files>{…}</search_files>`）。
  */
-const RAW_TOOL_TAG_GLOBAL_RE =
-  /<(?:local_file_(?:read|write|stat)|file_edit|search_files|shell_exec|python_exec|memory_save|mcp_(?:list|call|test|save))>[\s\S]*?<\/(?:local_file_(?:read|write|stat)|file_edit|search_files|shell_exec|python_exec|memory_save|mcp_(?:list|call|test|save))>/g;
-
 function stripRawToolTags(text: string): string {
-  return text.replace(RAW_TOOL_TAG_GLOBAL_RE, '');
+  return stripRawToolText(text);
 }
 
 /** 页端 → 宿主 的工具调用投递请求（与 host-client.sendToolCall 入参同构）。 */
@@ -2443,6 +2445,11 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               // 达工具续跑步数上限：正常结束。
               d('auto-continue reached MAX_LOOP, stop');
               interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'loop-depth-max', triggered: false });
+              // C1-F5：达上限时若正文里还留着工具调用原文，单独记一笔，别和「正常收尾」混同。
+              const maxLoopScan = scanRawToolText(reply);
+              if (maxLoopScan.blocks > 0) {
+                d(`max-loop end with unexecuted tool text: names=${maxLoopScan.names.join(',')}`);
+              }
               interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'max-loop' });
               const cleanReply = stripRawToolTags(reply).trim();
               if (!hadTools && cleanReply) {
@@ -2504,7 +2511,18 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                 } else {
                   // 循环真正结束（无工具、task_complete 或达上限）。
                   d(`auto-continue loop end: hadTools=${hadTools} taskComplete=${hasTaskComplete}`);
-                  interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'no-tools', triggered: false });
+                  // C1-F5：正文里若还留着工具调用原文，说明「模型吐了调用但没被执行」，
+                  // 不能记成 no-tools（那会让人以为这一轮只是普通问答）。
+                  const endScan = scanRawToolText(reply);
+                  if (endScan.blocks > 0) {
+                    d(`auto-continue end with unexecuted tool text: names=${endScan.names.join(',')} unclosed=${endScan.unclosed}`);
+                  }
+                  interceptorTrace.record({
+                    t: 'continuation.decision',
+                    turnId: traceTurnId,
+                    reason: continuationReasonForReply(reply),
+                    triggered: false,
+                  });
                   interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: true, stopReason: 'completed' });
                   const cleanReply = stripRawToolTags(reply).trim();
                   if (cleanReply) {

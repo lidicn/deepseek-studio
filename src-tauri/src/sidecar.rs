@@ -300,6 +300,50 @@ impl SidecarSupervisor {
         cmd.current_dir(&self.project_root)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
+
+        // ① 运行时日志落盘（路线图 §12 第 7 项）：
+        // 原来只有崩溃时写 crash.jsonl，运行时 stdout/stderr **全丢**——GUI 启动（不重定向）时
+        // sidecar 一条日志都不剩，「出问题没法查」的根因之一。
+        // 这里把子进程 stdout/stderr 落到 `<log_dir>/sidecar-<epoch_ms>.log`（按次命名），
+        // 并在启动时把路径打一行到 stderr 便于定位。
+        if let Some(ref log_dir) = self.crash_log_path {
+            let _ = std::fs::create_dir_all(log_dir);
+            let path = log_dir.join(format!("sidecar-{}.log", chrono_now_ms()));
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                Ok(f) => {
+                    let cloned = f.try_clone();
+                    cmd.stdout(Stdio::from(f));
+                    match cloned {
+                        Ok(f2) => {
+                            cmd.stderr(Stdio::from(f2));
+                        }
+                        Err(e) => {
+                            eprintln!("[studio] WARN: sidecar stderr clone failed: {e}");
+                            cmd.stderr(Stdio::inherit());
+                        }
+                    }
+                    eprintln!("[studio] sidecar runtime log: {}", path.display());
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[studio] WARN: sidecar log open failed: {e} (fallback to inherit)"
+                    );
+                }
+            }
+        }
+
+        // 不弹黑框：GUI 进程拉起 console 程序（node）时要显式 CREATE_NO_WINDOW。
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
         cmd.spawn()
     }
 
