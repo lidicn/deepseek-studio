@@ -237,13 +237,71 @@ fn wait_pid_gone(pid: u32, budget: Duration) {
 #[cfg(not(windows))]
 fn wait_pid_gone(_pid: u32, _budget: Duration) {}
 
+// ── TD-04：宿主入口形态与 node 解析 ─────────────────────────────────────
+
+/// 宿主入口形态。
+///
+/// 旧实现只有一种：`node node_modules/tsx/dist/cli.mjs src/api/main.ts` —— 它要求
+/// **目标机**同时具备 ① PATH 里有 node ② 安装目录里有 node_modules/tsx。
+/// tsx 在 devDependencies 里，打包根本不带 → 安装版宿主起不来。
+/// 现在：打包版跑随包分发的单文件 `<resource_dir>/host/main.mjs`；
+/// tsx 只在**开发构建**且宿主编译产物缺失时回退，且必须打 WARN。
+pub enum HostEntry {
+    /// 打包版：`node <script>`，并把 STUDIO_RESOURCE_ROOT 指到 resource_root。
+    Bundled { script: PathBuf, resource_root: PathBuf },
+    /// 开发回退：`node <project_root>/node_modules/tsx/dist/cli.mjs <project_root>/src/api/main.ts`。
+    Tsx { project_root: PathBuf },
+}
+
+/// 找不到可用 Node.js 时的专用退出码（TD-04）。
+pub const EXIT_NODE_MISSING: i32 = 21;
+/// 打包版找不到宿主单文件时的专用退出码（TD-04）。
+pub const EXIT_HOST_MISSING: i32 = 22;
+
+/// node 可执行文件：`STUDIO_NODE` 优先，否则 PATH 里的 `node`。
+pub fn node_executable() -> String {
+    std::env::var("STUDIO_NODE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "node".to_string())
+}
+
+/// 启动前探活：`<node> --version` 跑通才算可用。
+///
+/// 不可用时**不重试**：监管线程的重启逻辑对「没有 node」只会无限刷屏，
+/// 由调用方给专用退出码（EXIT_NODE_MISSING）并提示安装 Node.js ≥24。
+pub fn probe_node() -> Result<(), String> {
+    let node = node_executable();
+    let mut cmd = Command::new(&node);
+    cmd.arg("--version").stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        win_creation_flags(&mut cmd);
+    }
+    match cmd.output() {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => Err(format!("`{node} --version` 退出码 {:?}", out.status.code())),
+        Err(e) => Err(format!("无法执行 `{node}`：{e}")),
+    }
+}
+
+/// CREATE_NO_WINDOW：GUI 父进程拉 console 子进程时不弹黑框（与 spawn_child 同一套路）。
+#[cfg(windows)]
+fn win_creation_flags(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
 // ── 监管主体 ───────────────────────────────────────────────────────────
 
 pub struct SidecarSupervisor {
     state: SidecarState,
     child: Option<Child>,
     restarts: u8,
-    project_root: PathBuf,
+    /// TD-04：宿主入口（打包单文件 / dev tsx 回退）。
+    host_entry: HostEntry,
     event_tx: Sender<SidecarEvent>,
     shutdown_requested: Arc<AtomicBool>,
     child_pid: Arc<AtomicU32>,
@@ -252,7 +310,7 @@ pub struct SidecarSupervisor {
 
 impl SidecarSupervisor {
     pub fn new(
-        project_root: PathBuf,
+        host_entry: HostEntry,
         event_tx: Sender<SidecarEvent>,
         shutdown_requested: Arc<AtomicBool>,
         child_pid: Arc<AtomicU32>,
@@ -268,7 +326,7 @@ impl SidecarSupervisor {
             state: SidecarState::Spawning,
             child: None,
             restarts: 0,
-            project_root,
+            host_entry,
             event_tx,
             shutdown_requested,
             child_pid,
@@ -288,18 +346,33 @@ impl SidecarSupervisor {
         // 直连 `node node_modules/tsx/dist/cli.mjs` 实测 4.6 秒就绪。
         // 附带好处：子进程直接是 node.exe，`taskkill /T /F` 能覆盖 tsx 派生链，
         // 修掉「杀树不干净 → 残留 node 占 8760 → 下一轮 EADDRINUSE」。
-        let mut cmd = if cfg!(windows) {
-            let mut c = Command::new("node");
-            c.args(["./node_modules/tsx/dist/cli.mjs", "src/api/main.ts"]);
-            c
-        } else {
-            let mut c = Command::new("node");
-            c.args(["node_modules/tsx/dist/cli.mjs", "src/api/main.ts"]);
-            c
+        // TD-04：入口由 main.rs 解析后传入（打包版 Bundled，dev 回退 Tsx）。
+        // node 解析：STUDIO_NODE → PATH；不可用时 main.rs 已用专用退出码拦下。
+        let node = node_executable();
+        let mut cmd = match &self.host_entry {
+            HostEntry::Bundled { script, resource_root } => {
+                let mut c = Command::new(&node);
+                c.arg(script);
+                // 宿主据此找静态资源：<res>/src/ui/agent.html、<res>/dist/agent-panel.js。
+                // 安装版 resource_dir() 与开发树仓库根**目录结构同构**，宿主无须区分两种形态。
+                c.env("STUDIO_RESOURCE_ROOT", resource_root);
+                c.current_dir(resource_root);
+                c
+            }
+            HostEntry::Tsx { project_root } => {
+                let mut c = Command::new(&node);
+                // 旧路径（仅 dev 回退）：直连本地 tsx，绕过 npx/npm CLI
+                // （冷启动 12.7–41.2s → 4.6s，见本文件上方注释）。
+                if cfg!(windows) {
+                    c.args(["./node_modules/tsx/dist/cli.mjs", "src/api/main.ts"]);
+                } else {
+                    c.args(["node_modules/tsx/dist/cli.mjs", "src/api/main.ts"]);
+                }
+                c.current_dir(project_root);
+                c
+            }
         };
-        cmd.current_dir(&self.project_root)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
+        cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
 
         // ① 运行时日志落盘（路线图 §12 第 7 项）：
         // 原来只有崩溃时写 crash.jsonl，运行时 stdout/stderr **全丢**——GUI 启动（不重定向）时
@@ -632,14 +705,14 @@ pub struct SidecarHandle {
 }
 
 impl SidecarHandle {
-    pub fn start(project_root: PathBuf) -> (Self, Receiver<SidecarEvent>) {
+    pub fn start(host_entry: HostEntry) -> (Self, Receiver<SidecarEvent>) {
         let (event_tx, event_rx) = mpsc::channel::<SidecarEvent>();
         let shutdown_requested = Arc::new(AtomicBool::new(false));
         let child_pid = Arc::new(AtomicU32::new(0));
         let stopped = Arc::new(AtomicBool::new(false));
 
         let supervisor = Arc::new(Mutex::new(SidecarSupervisor::new(
-            project_root,
+            host_entry,
             event_tx,
             shutdown_requested.clone(),
             child_pid.clone(),

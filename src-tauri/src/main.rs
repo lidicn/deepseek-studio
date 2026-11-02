@@ -910,6 +910,106 @@ fn open_bot_window(
     Ok(())
 }
 
+// ── TD-04：资源根与宿主入口解析 ──────────────────────────────────────────
+
+/// 项目根（开发树）：从 `start` 向上找含 `package.json` 的目录。
+///
+/// 旧实现是 `exe_dir.parent()^3` + 硬编码的绝对路径兜底 —— 装到别人
+/// 机器上必然指向一个不存在的目录（发版阻断）。现在找不到就返回 `None`（安装版正常情况），
+/// 由调用方退到 `app_data_dir()`。
+fn find_project_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut cur = Some(start);
+    while let Some(dir) = cur {
+        if dir.join("package.json").is_file() {
+            return Some(dir.to_path_buf());
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+/// 宿主入口（TD-04）。
+///
+/// 候选顺序：
+///   1. `<resource_dir>/host/main.mjs` —— 打包版（bundle.resources 的产物）；
+///   2. `<project_root>/src-tauri/host/main.mjs` —— 开发树（`npm run build:host` 产物）；
+///   3. 都不在：**debug** 回退 tsx 并打 WARN（开发者本机不能被卡死）；
+///      **release** 直接专用退出码（安装版缺宿主文件是打包错误，不许静默降级）。
+/// 去掉 Windows 扩展长度前缀（`\\?\` / `\\?\UNC\`）。
+///
+/// 为什么必须去：Tauri 的 `resource_dir()` 返回 verbatim 路径（`\\?\E:\...`），而 Node 的
+/// CJS 入口解析（`resolveMainPath` → `realpathSync`）会把它当成盘符 `E:` →
+/// `EISDIR: illegal operation on a directory, lstat 'E:'`（20261103 真机实测：
+/// host entry 连续 6 次崩溃，sidecar gave up）。宿主是 node 进程，argv 与环境变量
+/// 都必须是普通形式。代价：超过 260 字符的路径会变脆（本应用远未到该长度）。
+fn strip_verbatim(p: &std::path::Path) -> std::path::PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return std::path::PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        return std::path::PathBuf::from(rest);
+    }
+    p.to_path_buf()
+}
+
+fn resolve_host_entry(
+    resource_dir: Option<&std::path::Path>,
+    project_root: Option<&std::path::Path>,
+) -> sidecar::HostEntry {
+    let has_ui = |root: &std::path::Path| {
+        root.join("src").join("ui").join("agent.html").is_file()
+    };
+
+    // ── 开发构建：只认**仓库内**产物（`npm run build:host` 的输出）。
+    //    刻意不认 resource_dir 下的同步副本（build:host 会往 target/debug/host 拷一份）：
+    //    ① 副本可能是旧的，dev 应该跑仓库里最新的那份；
+    //    ② 若认副本，「把 src-tauri/host/main.mjs 改名 → 应回退 tsx」这条 dev 回退验证
+    //       就永远测不出来（总有副本兜着）。
+    if cfg!(debug_assertions) {
+        if let Some(root) = project_root {
+            let script = root.join("src-tauri").join("host").join("main.mjs");
+            if script.is_file() && has_ui(root) {
+                return sidecar::HostEntry::Bundled {
+                    script: strip_verbatim(&script),
+                    resource_root: strip_verbatim(root),
+                };
+            }
+        }
+        let root = project_root
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        eprintln!(
+            "[studio] WARN: 未找到仓库内宿主单文件 <root>/src-tauri/host/main.mjs → 回退 tsx（仅开发可用，打包版必须带 host/main.mjs）"
+        );
+        return sidecar::HostEntry::Tsx { project_root: root };
+    }
+
+    // ── 打包版：只认 resource_dir。
+    if let Some(res) = resource_dir {
+        let script = res.join("host").join("main.mjs");
+        if script.is_file() && has_ui(res) {
+            return sidecar::HostEntry::Bundled {
+                script: strip_verbatim(&script),
+                resource_root: strip_verbatim(res),
+            };
+        }
+        if script.is_file() {
+            eprintln!(
+                "[studio] WARN: 资源根 {:?} 下缺 src/ui/agent.html —— /agent 面板会 404（其余 API 可用）",
+                res
+            );
+            return sidecar::HostEntry::Bundled {
+                script: strip_verbatim(&script),
+                resource_root: strip_verbatim(res),
+            };
+        }
+    }
+    eprintln!("[studio] 宿主入口缺失：<resource_dir>/host/main.mjs 不存在。");
+    eprintln!("[studio] 这是打包错误（bundle.resources 漏了 host/main.mjs）→ 先 `npm run build:host` 再打包。");
+    std::process::exit(sidecar::EXIT_HOST_MISSING);
+}
+
 fn main() {
     hide_orphan_console();
 
@@ -971,19 +1071,40 @@ fn main() {
         .setup(|app| {
             // v0.12：受监管 sidecar 启动
             if std::env::var("STUDIO_DISABLE_HOST").is_err() {
+                // TD-04：node 必须先有 —— 打包版跑随包单文件、dev 回退 tsx，两者都要 node。
+                // 找不到就用专用退出码，不进取监管线程的重试循环（那只会无限刷屏）。
+                if let Err(why) = sidecar::probe_node() {
+                    eprintln!("[studio] 宿主启动失败：找不到可用的 Node.js（{why}）");
+                    eprintln!(
+                        "[studio] 请安装 Node.js ≥24（https://nodejs.org/），或用 STUDIO_NODE 指定 node 可执行文件路径。"
+                    );
+                    std::process::exit(sidecar::EXIT_NODE_MISSING);
+                }
                 let exe_dir = std::env::current_exe()
                     .ok()
                     .and_then(|p| p.parent().map(|p| p.to_path_buf()))
                     .unwrap_or_else(|| std::path::PathBuf::from("."));
-                let project_root = exe_dir
-                    .parent()
-                    .and_then(|p| p.parent())
-                    .and_then(|p| p.parent())
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| std::path::PathBuf::from("E:/NAS/deepseek-studio"));
-                eprintln!("[studio] project_root: {:?}", project_root);
+                // TD-04：不再有硬编码兜底。开发树向上找 package.json；安装版退回 app_data_dir。
+                let project_root = find_project_root(&exe_dir)
+                    .or_else(|| app.path().app_data_dir().ok());
+                let resource_dir = app.path().resource_dir().ok();
+                eprintln!(
+                    "[studio] project_root: {:?} resource_dir: {:?}",
+                    project_root, resource_dir
+                );
+                let host_entry =
+                    resolve_host_entry(resource_dir.as_deref(), project_root.as_deref());
+                match &host_entry {
+                    sidecar::HostEntry::Bundled { script, resource_root } => {
+                        eprintln!("[studio] host entry: bundled {:?}", script);
+                        eprintln!("[studio] STUDIO_RESOURCE_ROOT: {:?}", resource_root);
+                    }
+                    sidecar::HostEntry::Tsx { project_root } => {
+                        eprintln!("[studio] host entry: tsx (dev fallback) {:?}", project_root);
+                    }
+                }
 
-                let (handle, event_rx) = sidecar::SidecarHandle::start(project_root);
+                let (handle, event_rx) = sidecar::SidecarHandle::start(host_entry);
                 let app_handle = app.handle().clone();
 
                 tauri::async_runtime::spawn(async move {

@@ -12,11 +12,12 @@ import { createWorkspace } from '../host/workspace';
 import { POLICY_MODE_LABELS } from '../host/policy';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { FilePersonaRegistry } from '../host/bot/persona-registry';
 import { generatePairingCode } from './agent-lan-access';
 // C1 P0-2：配置加载抽到独立模块（纯函数、无副作用、路径可注入 → 可安全单测）。
 import { loadConfig } from './config-loader';
+// TD-04：资源根解析（安装版靠 STUDIO_RESOURCE_ROOT，开发树回退 import.meta.url）。
+import { missingResourceFiles, resolveResourceRoot, resourceRootDiagnostics } from './resource-root';
 
 // ── v0.12 Phase 1：孤儿防护（DCD 修正条件 3）──────────────────────────────
 // 父进程（Tauri 主进程）消失 → self-exit，不留孤儿 Node。
@@ -76,17 +77,33 @@ export async function main(): Promise<void> {
   const effectivePairingCode = pairingCode || (lanEnabled ? generatePairingCode() : '');
   const workspace = workspaceRoot ? createWorkspace(workspaceRoot) : null;
   // M1 智能体面板静态资源（esbuild 产物：src/ui/agent.html + dist/agent-panel.js）
-  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  //
+  // TD-04（发版阻断）：资源根**不再**靠 import.meta.url 反推仓库根。
+  // 旧写法在开发树恰好成立（入口在 src/api/），安装版不成立 —— 打包后入口是
+  // <res>/host/main.mjs，上溯两级得到安装目录的父目录，资源全部找不到。
+  // 现在由 resolveResourceRoot 解析：① STUDIO_RESOURCE_ROOT（Tauri sidecar 传入
+  // resource_dir()）优先；② 缺省回退 import.meta.url 上溯两级（开发树行为不变）。
+  const resourceRoot = resolveResourceRoot(process.env, import.meta.url);
   const agentPage = {
-    htmlPath: path.join(repoRoot, 'src', 'ui', 'agent.html'),
-    jsPath: path.join(repoRoot, 'dist', 'agent-panel.js'),
-    cssPath: path.join(repoRoot, 'src', 'ui', 'agent.css'),
+    htmlPath: path.join(resourceRoot, 'src', 'ui', 'agent.html'),
+    jsPath: path.join(resourceRoot, 'dist', 'agent-panel.js'),
+    cssPath: path.join(resourceRoot, 'src', 'ui', 'agent.css'),
     // P2：PWA 附属资源。
-    manifestPath: path.join(repoRoot, 'src', 'ui', 'agent.webmanifest'),
-    swPath: path.join(repoRoot, 'src', 'ui', 'agent-sw.js'),
-    icon192Path: path.join(repoRoot, 'src', 'ui', 'icon-192.png'),
-    icon512Path: path.join(repoRoot, 'src', 'ui', 'icon-512.png'),
+    manifestPath: path.join(resourceRoot, 'src', 'ui', 'agent.webmanifest'),
+    swPath: path.join(resourceRoot, 'src', 'ui', 'agent-sw.js'),
+    icon192Path: path.join(resourceRoot, 'src', 'ui', 'icon-192.png'),
+    icon512Path: path.join(resourceRoot, 'src', 'ui', 'icon-512.png'),
   };
+  // TD-04：资源根体检 —— 缺文件时给一行明确诊断，而不是让 /agent 变成 500/白屏。
+  {
+    const missingResources = missingResourceFiles(resourceRoot, (p) => fs.existsSync(p));
+    const diagnostics = resourceRootDiagnostics(resourceRoot, missingResources);
+    if (diagnostics) {
+      console.error(diagnostics);
+    } else {
+      console.log(`[deepseek-studio] 资源根: ${resourceRoot}`);
+    }
+  }
   const personas = new FilePersonaRegistry();
   // F1：ApiEngine 启动前健康探测。key 失效或网络不通时清空 apiEngine，
   // 让 createDesktopHost 走 WebEngine（网页拦截），避免 AgentLoop 静默收空回复。
