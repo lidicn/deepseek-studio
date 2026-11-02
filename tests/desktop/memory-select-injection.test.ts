@@ -359,4 +359,86 @@ describe('P1 记忆注入：select 迟到也要落地', () => {
       h.handle.stop();
     }
   });
+
+  // ── Verify 真机抓到的缺陷：预热草稿被定格在第 6 字那版 ──────────
+
+  it('⑧ 防抖：逐字增长到 100 字后停止 → select 收到接近全文的文本（不是前 6 字）', async () => {
+    vi.useFakeTimers();
+    const h = installHarness();
+    try {
+      const ta = document.createElement('textarea');
+      document.body.appendChild(ta);
+      let draft = '';
+      for (let i = 0; i < 100; i += 1) {
+        draft += '甲';
+        ta.value = draft;
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        await vi.advanceTimersByTimeAsync(50); // 每 50ms 一个字（连续打字）
+      }
+      // 还在打字 → 防抖未到期，尚未发 select
+      expect(h.selectCalls).toHaveLength(0);
+
+      // 停手 600ms → 用**接近全文**的草稿发一次（缺陷修前这里会是前 6 字）
+      await vi.advanceTimersByTimeAsync(700);
+      expect(h.selectCalls).toHaveLength(1);
+      expect(h.selectCalls[0].taskText.length).toBeGreaterThanOrEqual(95);
+      expect(h.selectCalls[0].taskText).not.toBe(draft.slice(0, 6));
+    } finally {
+      h.handle.stop();
+    }
+  });
+
+  it('⑨ 前缀复用加阈值：6 字前缀 pending + 100 字最终文本 → 不复用，发送点为全文发起 select', async () => {
+    vi.useFakeTimers();
+    const h = installHarness({ select: () => { /* 手动结算 */ } });
+    try {
+      const prefix = '甲乙丙丁戊己'; // 6 字草稿
+      const full = prefix + '庚'.repeat(94); // 100 字最终文本（以草稿开头）
+      const ta = document.createElement('textarea');
+      document.body.appendChild(ta);
+      ta.value = prefix;
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      await vi.advanceTimersByTimeAsync(600);
+      expect(h.selectCalls).toHaveLength(1);
+      expect(h.selectCalls[0].taskText).toBe(prefix);
+
+      // 发送点：6 字前缀远够不上 80% → 不复用 → 为全文再 kick 一次 select
+      const xhr = pageSend(h.FakeXHR, full, 's-full');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.selectCalls.length).toBeGreaterThanOrEqual(2);
+      expect(h.selectCalls[h.selectCalls.length - 1].taskText).toBe(full);
+      expect(h.selectCalls[h.selectCalls.length - 1].taskText).not.toBe(prefix);
+      // 预算 120ms 内拿不到 → 照常发送（不阻塞），沿用上一帧
+      await vi.advanceTimersByTimeAsync(130);
+      expect(xhr.sent).toBe(true);
+    } finally {
+      h.handle.stop();
+    }
+  });
+
+  it('⑩ 预热不失控：连续输入 6 秒，select 次数有界（不超过冷却允许的次数）', async () => {
+    vi.useFakeTimers();
+    const h = installHarness();
+    try {
+      const ta = document.createElement('textarea');
+      document.body.appendChild(ta);
+      let draft = '';
+      // 每 1000ms 一轮、每轮追加 10 字（草稿足够长 → 预热真的会触发；
+      // 每次间隔都超过 600ms 静默 → 防抖会真的到期，频率只靠 2s 冷却压住）
+      for (let i = 0; i < 6; i += 1) {
+        draft += '甲乙丙丁戊己庚辛壬癸';
+        ta.value = draft;
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        await vi.advanceTimersByTimeAsync(1000);
+      }
+      // 冷却 2s → 6 秒窗口内最多 3 次
+      expect(h.selectCalls.length).toBeLessThanOrEqual(3);
+      expect(h.selectCalls.length).toBeGreaterThanOrEqual(2);
+      // 且每次 select 拿到的都是**当次最新**的草稿（不是第一次那份）
+      const last = h.selectCalls[h.selectCalls.length - 1];
+      expect(last.taskText.length).toBeGreaterThanOrEqual(30);
+    } finally {
+      h.handle.stop();
+    }
+  });
 });

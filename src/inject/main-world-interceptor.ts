@@ -228,11 +228,15 @@ function kickMemorySelect(taskText: string): MemorySelectPending | null {
   if (existing) {
     // 同一段文本 → 直接复用。
     if (existing.task === trimmed) return existing;
-    // 草稿是最终文本的前缀（用户还在把这句话写完）→ 复用草稿那次的选择，
-    // 否则发送点又要等一次 170ms 的 select，等不到 → 又是一轮 0 B。
-    if (trimmed.startsWith(existing.task) && existing.task.length >= MEM_SELECT_WARMUP_MIN_CHARS) {
+    // 草稿是最终文本的前缀（用户还在把这句话写完）→ **只有足够接近才复用**：
+    // 草稿长度 ≥ 最终文本的 80%（MEM_SELECT_PREFIX_REUSE_RATIO）。
+    // 旧实现只看「前缀 + 至少 6 字」→ 6 字前缀配 100 字正文也被复用，
+    // 于是全文从来没被 select 过，选出来的记忆与任务语义脱钩（Verify 真机抓到）。
+    if (trimmed.startsWith(existing.task) && isPrefixCloseEnough(existing.task, trimmed)) {
       return existing;
     }
+    // 否则：用最终文本再 kick 一次 select（发送点兜底，非阻塞）：
+    // 预算内 settle 就用它，预算耗尽沿用上一帧（见 consumeMemorySelect）。
   }
 
   const seq = ++memorySelectSeqCounter;
@@ -285,10 +289,36 @@ const MEM_SELECT_WAIT_BUDGET_MS = 120;
  *   - 输入停顿 MEM_SELECT_WARMUP_IDLE_MS 后异步发一次 select；
  *   - 冷却 MEM_SELECT_WARMUP_COOLDOWN_MS 内不重复发（失败也不打爆宿主）；
  *   - 草稿短于 MEM_SELECT_WARMUP_MIN_CHARS 不预热（太短的文本选不出记忆）。
+ *
+ * 真机读数（Verify 2026-11-02 订正）：
+ *   - **页面通道没有固定 ~150ms 开销**：延迟取决于 FTS 查询文本的**长度 × 重复度**
+ *     （6 字 10ms / 1741 字 96ms / 1533 字重复词 236ms，临界约 800-900 字）。
+ *     → 「文本越接近全文，select 越慢」是真实约束 → 预热必须提前，
+ *       不能指望在发送点等（发送点只有 120ms 预算）。
+ *   - **「长时间空闲导致首轮 0 B」不成立**：idle 35s 后粘贴即发，select 只要 12ms，
+ *     首轮就带上了。首轮是否 0 B 只取决于**该轮 select 往返是否 < 120ms**，与空闲无关。
  */
 const MEM_SELECT_WARMUP_IDLE_MS = 600;
 const MEM_SELECT_WARMUP_COOLDOWN_MS = 2_000;
 const MEM_SELECT_WARMUP_MIN_CHARS = 6;
+/**
+ * 前缀复用阈值：草稿长度必须 ≥ 最终文本的这个比例，才算「足够接近」可以复用。
+ *
+ * 6 字前缀配 100 字正文 → 绝不复用：否则**全文从来没被 select 过**，
+ * 选出来的记忆与任务语义脱钩（Verify 真机抓到：页内从未出现以最终全文发起的 select）。
+ */
+const MEM_SELECT_PREFIX_REUSE_RATIO = 0.8;
+
+/**
+ * 前缀是否「足够接近」最终文本（够长才复用）。
+ * @param prefix 已有的预取任务文本（草稿）
+ * @param full   最终文本
+ */
+function isPrefixCloseEnough(prefix: string, full: string): boolean {
+  // 最终文本本身就短（≤ 最小预热长度）时，前缀几乎就是全文 → 允许复用。
+  if (full.length <= MEM_SELECT_WARMUP_MIN_CHARS) return true;
+  return prefix.length >= full.length * MEM_SELECT_PREFIX_REUSE_RATIO;
+}
 
 /**
  * 同步取一个已 settle 的预取结果（不给 promise 加状态位，用 WeakMap 记录最后一次 settle 的值）。
@@ -371,9 +401,19 @@ function scheduleMemorySelectWarmup(draft: string): void {
   if (!isMemorySelectEnabled() || !memorySelectState.invoke) return;
   const trimmed = draft.trim();
   if (trimmed.length < MEM_SELECT_WARMUP_MIN_CHARS) return;
-  if (memorySelectState.warmupTimer !== null) return;
-  if (Date.now() - memorySelectState.warmupLastAt < MEM_SELECT_WARMUP_COOLDOWN_MS) return;
+  // 草稿**始终**更新：定时器读的是这份共享草稿，不更新就会拿着旧文本去查。
   memorySelectState.warmupDraft = trimmed;
+  // 冷却：刚发过就不重复发（连续打字时 select 次数有界的保证）。
+  if (Date.now() - memorySelectState.warmupLastAt < MEM_SELECT_WARMUP_COOLDOWN_MS) return;
+  // **真防抖**：定时器已挂 → 清掉重新计时，让它在「打字停下来」那一刻用**接近最终全文**
+  // 的文本去 select。
+  // 旧实现直接 return：草稿被定格在「第 6 个字符」那版 → 600ms 后拿 6 字去查，
+  // 而发送点的前缀复用又无条件接受这个 6 字前缀 → **全文从来没被 select 过**，
+  // 选出来的 12 条记忆与任务语义脱钩（Verify 真机抓到）。
+  if (memorySelectState.warmupTimer !== null) {
+    clearTimeout(memorySelectState.warmupTimer);
+    memorySelectState.warmupTimer = null;
+  }
   memorySelectState.warmupTimer = setTimeout(() => {
     memorySelectState.warmupTimer = null;
     memorySelectState.warmupLastAt = Date.now();
