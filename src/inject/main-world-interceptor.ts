@@ -50,6 +50,7 @@ import {
   renderStudioTraceReport,
   type StudioTraceCollector,
   type StudioTraceEvent,
+  type StudioTraceEventInput,
 } from '../shared/studio-trace';
 import {
   describeStudioBudget,
@@ -628,9 +629,12 @@ export function setInterceptorTraceSink(sink: ((line: string) => void) | null): 
 const interceptorTrace: StudioTraceCollector = {
   record(event) {
     traceCollector.record(event);
-    // 只在「一轮真正收尾」时落一行：turn.end 是所有退出路径（完成 / 截断 / 放弃 /
-    // 用户中止）的公共汇聚点，正好一轮一行。
-    if (event.t === 'turn.end' && traceLineSink) {
+    // 落盘两类：
+    //   - `turn.end`：一轮真正收尾（所有退出路径的公共汇聚点），正好一轮一行；
+    //   - `m15.*`：M1.5 观测（head_duplicated / continuation_prompt），Verify 要在
+    //     `logs/trace/trace-*.jsonl` 里直接 grep 到，才能真机取证「head 唯一」「字节账」。
+    // 其余事件只进内存环（`interceptorTraceSnapshot()` 可读），不落盘。
+    if (traceLineSink && (event.t === 'turn.end' || event.t.startsWith('m15.'))) {
       try {
         traceLineSink(JSON.stringify({ ...(event as Record<string, unknown>), ts: Date.now() }));
       } catch {
@@ -651,29 +655,36 @@ function byteLengthOf(text: string): number {
   }
 }
 
+/** 数 needle 在 text 里出现几次（M1.5 `head_duplicated.markerCount` 用）。 */
+function countOccurrencesOf(text: string, needle: string): number {
+  if (!needle) return 0;
+  let n = 0;
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf(needle, from);
+    if (at < 0) return n;
+    n += 1;
+    from = at + needle.length;
+  }
+}
+
 /**
  * M1.5 观测事件（契约 §7）：`m15.head_duplicated` / `m15.continuation_prompt`。
  *
  * 只加观测、**不改任何字节**。
  *
- * 注意：trace 的事件类型是 `src/shared/studio-trace.ts` 里的**封闭 union**，
- * 新增 `m15.*` 需要 Core 在 shared 里加类型（不在本卡域内）。本卡用一个窄 cast
- * 记进既有 `interceptorTrace` 通道：事件会进内存环（`interceptorTraceSnapshot()`
- * 可读，护栏断言就靠它），但**不会**进宿主 JSONL 落盘（那条通道只写 turn.end）。
+ * 这两个事件的类型 Core 已加进 `src/shared/studio-trace.ts` 的封闭 union
+ * （`StudioM15HeadDuplicatedEvent` / `StudioM15ContinuationPromptEvent`），
+ * 所以这里直接走 `StudioTraceEventInput` 正常类型化写入，**不再用窄 cast**。
+ * `record()` 的入参类型已把 `timestamp` 去掉（采集器补），发点不必传。
  */
-type M15TraceEvent =
-  | { readonly t: 'm15.head_duplicated'; readonly turnId: string; readonly bytes: number }
-  | {
-      readonly t: 'm15.continuation_prompt';
-      readonly turnId: string;
-      readonly bytes: number;
-      readonly hasCatalog: boolean;
-    };
 
-function recordM15Trace(event: M15TraceEvent): void {
-  interceptorTrace.record(
-    event as unknown as Parameters<typeof interceptorTrace.record>[0],
-  );
+/**
+ * 记一条 M1.5 观测事件到既有 `interceptorTrace` 通道。落盘条件见 `record()` 内
+ * `event.t === 'turn.end' || event.t.startsWith('m15.')` —— 两条都进宿主 JSONL。
+ */
+function recordM15Trace(event: StudioTraceEventInput): void {
+  interceptorTrace.record(event);
 }
 
 /**
@@ -1418,6 +1429,8 @@ function prepareOutgoingBody(rawBody: string, pending: PendingResult[], taskText
       recordM15Trace({
         t: 'm15.head_duplicated',
         turnId: traceTurnId,
+        markerCount: countOccurrencesOf(prompt, TOOL_CAPABILITY_MARKER),
+        phase: 'prepare-outgoing-body',
         bytes: byteLengthOf(prompt),
       });
     }

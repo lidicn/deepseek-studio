@@ -11,6 +11,7 @@ import {
   capabilityPromptText,
   catalogText,
   catalogTextToolNames,
+  setInterceptorTraceSink,
   __setCapabilityPromptForTesting,
 } from '../../src/inject/main-world-interceptor';
 
@@ -215,6 +216,33 @@ describe('M1.5 护栏：工具名可发现性（打真实路径）', () => {
       expect(events[events.length - 1].hasCatalog).toBe(false);
       expect(events[events.length - 1].bytes).toBeGreaterThan(0);
     } finally {
+      h.handle.stop();
+    }
+  });
+
+  it('m15.continuation_prompt 真正落进宿主 JSONL 通道（不只进内存环）', async () => {
+    // 落盘 sink 之前只写 turn.end，m15.* 只进内存环 → Verify 真机 grep 不到。
+    // 这里接一条真实 sink（entry.ts 接 host.trace 的同一入口），驱动真实续跑轮，
+    // 断言落盘行里能读到 m15.continuation_prompt（带 bytes / hasCatalog）。
+    vi.useFakeTimers();
+    const h = installHarness();
+    const lines: string[] = [];
+    setInterceptorTraceSink((line) => lines.push(line));
+    try {
+      await runContinuationRound(h, 'm15-disk');
+
+      const diskEvents = lines
+        .map((l) => JSON.parse(l) as { t?: string; bytes?: number; hasCatalog?: boolean })
+        .filter((e) => e.t === 'm15.continuation_prompt');
+      expect(diskEvents.length, 'm15.continuation_prompt 应已落进宿主 JSONL 通道').toBeGreaterThanOrEqual(1);
+      expect(diskEvents[diskEvents.length - 1].hasCatalog).toBe(false);
+      expect(diskEvents[diskEvents.length - 1].bytes).toBeGreaterThan(0);
+      // 内存环与落盘通道看到的是同一批事件（互证）
+      const memCount = interceptorTraceSnapshot()
+        .filter((e) => (e as unknown as { t: string }).t === 'm15.continuation_prompt').length;
+      expect(memCount).toBeGreaterThanOrEqual(1);
+    } finally {
+      setInterceptorTraceSink(null);
       h.handle.stop();
     }
   });
