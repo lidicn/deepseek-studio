@@ -36,6 +36,11 @@ import {
 } from './response-classifier';
 import type { ExecuteResult } from '../capabilities/types';
 import { createPowHeaders } from './pow';
+import {
+  resolveCatalogBudgetBytes,
+  renderCatalogNameIndex,
+  selectCatalogTools,
+} from './catalog-selection';
 import { createStepFlowContainer, type StepFlowHandle } from './step-flow-ui';
 import { hydrateCodeBlocks, type CodeRunner } from './render-code-runner';
 import type { StudioChatUIHandle } from '../ui/studio-chat-ui';
@@ -852,10 +857,27 @@ export function catalogText(): string {
 // 「审计」「bug」「代码」等关键词，导致模型不知道有工具而只聊天。修复：无条件注入
 // 工具能力提示词，由模型自己判断。判重由 injectInstructionIntoMessages 的 MARKER 负责。
 
-function formatMcpToolsBlock(): string {
+/**
+ * v1.0：MCP 工具目录提示块。
+ *
+ * 注入瘦身第 1 条：目录受**字节预算**约束 —— top-k 给 name+description，
+ * 其余只给名字（名字索引），保证「62 个工具名全部在 prompt 里」
+ * （`mcp_call` 按 serverId+tool 名字解析，名字缺了就调不到）。
+ * 回滚：`localStorage.setItem('studio.catalogBudget', '0')` ⇒ 全量，字节级一致。
+ *
+ * 注意：只压 **description**；工具名一个都不丢。
+ */
+function formatMcpToolsBlock(taskText = ''): string {
   if (currentMcpTools.length === 0) return '';
+  const budgetBytes = resolveCatalogBudgetBytes();
+  const selection = selectCatalogTools({
+    tools: currentMcpTools,
+    userText: taskText,
+    measure: (t) => utf8ByteLength(formatMcpToolLine(t)),
+    budgetBytes,
+  });
   const byServer = new Map<string, Array<{ name: string; description: string }>>();
-  for (const t of currentMcpTools) {
+  for (const t of selection.full) {
     if (!byServer.has(t.serverId)) byServer.set(t.serverId, []);
     byServer.get(t.serverId)!.push({ name: t.name, description: t.description });
   }
@@ -863,11 +885,29 @@ function formatMcpToolsBlock(): string {
   for (const [serverId, tools] of byServer) {
     lines.push(`### 服务器：${serverId}`);
     for (const t of tools) {
-      lines.push(`- ${t.name} — ${t.description}`);
+      lines.push(formatMcpToolLine(t));
     }
+  }
+  const index = renderCatalogNameIndex(selection.indexOnly);
+  if (index) {
+    lines.push(index);
   }
   lines.push('调用方式：<mcp_call>{"serverId":"服务器名","tool":"工具名","args":{...}}</mcp_call>');
   return lines.join('\n');
+}
+
+/** 单个 MCP 工具的完整行（同时用作字节计量单位）。 */
+function formatMcpToolLine(t: { name: string; description: string }): string {
+  return `- ${t.name} — ${t.description}`;
+}
+
+/** UTF-8 字节数（不是 .length：中文与 emoji 的字节数是码元的 2–4 倍）。 */
+function utf8ByteLength(text: string): number {
+  try {
+    return new TextEncoder().encode(text).byteLength;
+  } catch {
+    return text.length;
+  }
 }
 
 /**
@@ -950,12 +990,30 @@ export function capabilityPromptText(): string {
 
 export function buildCapabilityPrompt(taskText = ''): string {
   const blocks = [TOOL_CAPABILITY_PROMPT];
-  const mcpBlock = formatMcpToolsBlock();
+  const mcpBlock = formatMcpToolsBlock(taskText);
   if (mcpBlock) blocks.push(mcpBlock);
   const skillsBlock = formatSkillsBlock(taskText);
   if (skillsBlock) blocks.push(skillsBlock);
   blocks.push(TOOL_CAPABILITY_END_MARKER);
   return blocks.join('\n\n');
+}
+
+/**
+ * 注入 MCP 工具清单（测试 / 调试用）。
+ *
+ * 端到端用例需要「一个冷门工具被 top-k 挤掉后，仍能按名字被解析并调用」，
+ * 而 `currentMcpTools` 是模块级私有缓存、外部无法直接塞数据。
+ * 这里给一个显式入口，避免测试去 mock 整个拦截器。
+ */
+export function setMcpToolsForTesting(
+  tools: ReadonlyArray<{ serverId: string; name: string; description: string }> | null,
+): void {
+  currentMcpTools = tools ? tools.map((t) => ({ ...t })) : [];
+}
+
+/** 当前注入的 MCP 工具清单（只读副本）。 */
+export function mcpToolsForTesting(): ReadonlyArray<{ serverId: string; name: string; description: string }> {
+  return currentMcpTools.map((t) => ({ ...t }));
 }
 
 function isCapabilitySystemMessage(message: unknown): boolean {

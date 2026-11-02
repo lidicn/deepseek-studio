@@ -60,6 +60,60 @@ describe('同意模态（基础交互）', () => {
   });
 });
 
+/**
+ * 键盘处理的安全修复（2026-11-02）。
+ *
+ * ① 输入法守卫：中文输入法按回车是「确认候选词」，不是「批准」。
+ *    没有守卫时，用户在 IME 里选词按回车 → 直接批准工具执行。
+ * ② Enter 改绑 deny：原先 Enter = allow-once，误触即放行。
+ *    现在拒绝是键盘默认；「允许一次」只走显式点击。
+ */
+describe('同意模态（键盘处理：IME 守卫 + Enter 绑 deny）', () => {
+  function pressKey(init: KeyboardEventInit): void {
+    document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...init }));
+  }
+
+  it('isComposing=true 的 Enter → 不产生任何决策（不批准也不拒绝）', () => {
+    let decision = '';
+    mkHandle({ tool: 'chat-send' }, (d) => { decision = d; });
+    pressKey({ key: 'Enter', isComposing: true });
+    // 关键：绝不能是 allow-once
+    expect(decision).not.toBe('allow-once');
+    // 保守策略：输入法组字期间弹窗不响应（既不批准也不拒绝）
+    expect(decision).toBe('');
+  });
+
+  it('keyCode=229 的 Enter（旧 IME 兼容路径）→ 同样不产生任何决策', () => {
+    let decision = '';
+    mkHandle({ tool: 'chat-send' }, (d) => { decision = d; });
+    pressKey({ key: 'Enter', keyCode: 229 });
+    expect(decision).not.toBe('allow-once');
+    expect(decision).toBe('');
+  });
+
+  it('isComposing=false 的 Enter → 拒绝（不是允许一次）', () => {
+    let decision = '';
+    mkHandle({ tool: 'chat-send' }, (d) => { decision = d; });
+    pressKey({ key: 'Enter', isComposing: false });
+    expect(decision).toBe('deny');
+    expect(decision).not.toBe('allow-once');
+  });
+
+  it('Escape → 拒绝（行为不变）', () => {
+    let decision = '';
+    mkHandle({ tool: 'chat-send' }, (d) => { decision = d; });
+    pressKey({ key: 'Escape' });
+    expect(decision).toBe('deny');
+  });
+
+  it('「允许一次」仍可显式点击获得（键盘改绑不影响鼠标路径）', () => {
+    let decision = '';
+    mkHandle({ tool: 'chat-send' }, (d) => { decision = d; });
+    (document.querySelector('.ds-consent-allow-once') as HTMLButtonElement).click();
+    expect(decision).toBe('allow-once');
+  });
+});
+
 describe('T8-1：工具显示名映射（已知/未知/工作区）', () => {
   it('已知工具 policy.set → 自然语言，不泄漏原始协议名', () => {
     const handle = mkHandle({

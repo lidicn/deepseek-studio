@@ -278,9 +278,28 @@ function renderConsent(entry: QueuedConsent): void {
     settleConsent(entry, decision);
   }
 
+  /**
+   * 键盘处理。
+   *
+   * 两个安全修复（2026-11-02）：
+   *
+   * 1. **输入法守卫**：中文输入法按回车是「确认候选词」，不是「批准」。
+   *    没有守卫时，用户在输入法里选词按回车 → 直接批准工具执行。
+   *    `isComposing` 是标准判定；`keyCode === 229` 是旧浏览器的兼容路径
+   *    （部分 IME 在 isComposing 置位前就派发 keydown）。
+   *    命中任一 → **直接忽略该次按键**，不 settle（保守：宁可让用户再点一次）。
+   *
+   * 2. **Enter 改绑 deny**：原先 Enter = allow-once，误触即放行。
+   *    现在 Enter 与 Escape 一样是「拒绝」——拒绝是安全侧的默认。
+   *    「允许一次」只走**显式点击**；键盘用户仍可用
+   *    Tab 聚焦到「允许一次」按钮后按 Enter/Space（原生 `<button>` 激活），
+   *    不丢键盘可达性。
+   */
   function onKey(e: KeyboardEvent): void {
+    // 输入法组字中：回车是选词，不是决策 → 整个弹窗不响应。
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Escape') settle('deny');
-    else if (e.key === 'Enter') settle('allow-once');
+    else if (e.key === 'Enter') settle('deny');
   }
 
   btnAllowOnce.addEventListener('click', () => settle('allow-once'));
