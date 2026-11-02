@@ -5,6 +5,8 @@ node_modules/
 dist/
 src-tauri/target/
 src-tauri/gen/
+# TD-04：宿主单文件打包产物（由 `npm run build:host` 现场生成，不入库）
+src-tauri/host/
 yuanbao-audit/src-tauri-yuanbao/gen/
 yuanbao-audit/src-tauri-yuanbao/target/
 
