@@ -1138,6 +1138,17 @@ fn main() {
                 // 单次写 ≈36ms；关闭路径一次要写十几行，光日志就把「300ms 内主窗不可见」
                 // 吃掉（实测 handler 内 358ms 才走到 hide）。hide 是纯 Win32 调用，先做它。
                 if label == "main" {
+                    // 20261103 实测（T1fix-workbench / T1fix-bot）：只藏主窗时，OS 会把前台
+                    // 移交给同 app 里仍然可见的第二个窗 —— 采样为「关闭后可见窗 >0 持续
+                    // 1,121ms / 2,604ms」「前台落到工作台/bot 窗 hits=4 / 9」。
+                    // 根因是顺序：主窗 hide 在入口执行，`hide other:` 要等到 +289ms 后那段循环。
+                    // 修法：**先藏其余窗、再藏主窗**，让前台没有可移交的目标（焦点闪消失）。
+                    // 只做 hide；destroy 仍留在下方那段（两者顺序敏感，勿合并）。
+                    for (other_label, other) in window.app_handle().webview_windows() {
+                        if other_label != label {
+                            let _ = other.hide();
+                        }
+                    }
                     let _ = window.hide();
                     p0_log("hide main (first, before any log write)");
                 }
