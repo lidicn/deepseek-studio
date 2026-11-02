@@ -139,6 +139,22 @@ describe('契约守门 · 注释剥离（20261101 F6 假阳性防护）', () => 
     expect(violations).toEqual([]);
   });
 
+  it('14b. interrupted 已入合法值清单（M1 语义：流过完但无完成哨兵、本轮有可见输出）', () => {
+    // 真实源码含 interrupted 成员（M1），不应再报非法值；负控见 14c
+    const violations = checkTaskLoop(taskLoopSrc);
+    expect(violations.some((v) => v.message.includes('interrupted'))).toBe(false);
+    expect(violations).toEqual([]);
+  });
+
+  it('14c. 负控：清单外的假值（bogus-term）仍被拒——守门只准因设计变更扩清单，不准变成什么都放', () => {
+    const tampered = taskLoopSrc.replace(
+      /\| 'aborted'/,
+      "| 'aborted' | 'bogus-term'",
+    );
+    const violations = checkTaskLoop(tampered);
+    expect(violations.some((v) => v.message.includes("非法值 'bogus-term'"))).toBe(true);
+  });
+
   it('15. stripComments：注释移除，字符串/正则/模板字面量原样保留', () => {
     const s = [
       "const a = 'keep1'; // 'drop-line'",

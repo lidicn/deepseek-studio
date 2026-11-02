@@ -222,8 +222,9 @@ export function checkMessageHistory(src: string): ContractViolation[] {
 
 /**
  * TaskLoop 契约：
- * - TaskLoopStopReason 必须只有这些合法值：completed / no-tool-calls / timeout / max-rounds / empty-response / read-no-data / aborted
+ * - TaskLoopStopReason 必须只有这些合法值：completed / no-tool-calls / timeout / max-rounds / empty-response / read-no-data / interrupted / aborted
  *   （read-no-data = 页还活着、引擎连续读不到数据，与 empty-response=页端消失/传输断 二分；20261101 F6 新增）
+ *   （interrupted = M1 新终态：流已过完但无完成哨兵、且本轮有可见输出；用户主动 stop 不归它；20261102 M1 新增）
  * - 必须导出 createTaskLoop
  */
 export function checkTaskLoop(src: string): ContractViolation[] {
@@ -239,7 +240,7 @@ export function checkTaskLoop(src: string): ContractViolation[] {
   const stopType = src.match(/export\s+type\s+TaskLoopStopReason\s*=([\s\S]*?);/);
   if (stopType) {
     const body = stopType[1];
-    const allowed = ['completed', 'no-tool-calls', 'timeout', 'max-rounds', 'empty-response', 'read-no-data', 'aborted'];
+    const allowed = ['completed', 'no-tool-calls', 'timeout', 'max-rounds', 'empty-response', 'read-no-data', 'interrupted', 'aborted'];
     // 提取所有字符串字面量
     const literals = [...body.matchAll(/'([^']+)'/g)].map((m) => m[1]);
     for (const a of allowed) {
