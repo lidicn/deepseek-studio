@@ -193,7 +193,7 @@ describe('F5 · 分词口径的边界与护栏', () => {
     expect(set.truncated).toBe(true); // 超界被截断（而不是无限膨胀）
   });
 
-  it('超长中文查询的检索耗时远低于页端 120ms 预算', async () => {
+  it('超长中文查询的检索不会病态变慢（宽松上界，只抓病态）', async () => {
     const s = newStore();
     seed(s, CORPUS);
     // 再塞一批无关行，制造一定规模
@@ -205,8 +205,22 @@ describe('F5 · 分词口径的边界与护栏', () => {
     const hits = await s.search(long);
     const elapsed = Date.now() - t0;
     expect(Array.isArray(hits)).toBe(true);
-    expect(elapsed).toBeLessThan(120); // 页端预算 MEM_SELECT_WAIT_BUDGET_MS = 120
+    // 宽松 wall-clock 上界，只抓「病态变慢」（如分词退化成 O(n²)），不是抓预算：
+    // 本用例在同一进程内还要建 300+ 行数据，全量 gate 并行负载下 wall-clock 噪声大，
+    // 不适合做精确断言（确定性护栏由下面两条不依赖时长的断言承担）。
+    // 120ms（MEM_SELECT_WAIT_BUDGET_MS）是**页端 select 往返**预算，由真机验收兜
+    // （Verify 实测全文 select 27ms，占预算 22%）——不属于单测断言范围。
+    expect(elapsed).toBeLessThan(500);
     s.close();
+  });
+
+  it('确定性护栏：输入翻 10 倍，token 数不增（上界封顶，与时长无关）', () => {
+    // 不依赖 wall-clock 的确定性断言：token 集合有硬上界，输入超长时封顶而非线性膨胀。
+    const base = buildRetrievalTokenSet('请核实工具清单这件事'.repeat(50));
+    const tenX = buildRetrievalTokenSet('请核实工具清单这件事'.repeat(500));
+    expect(tenX.like.length).toBeLessThanOrEqual(base.like.length);
+    expect(tenX.fts.length).toBeLessThanOrEqual(base.fts.length);
+    expect(tenX.truncated).toBe(true);
   });
 
   it('回退口径有效：legacy 下中文长句召不回（开关生效）；英文/路径结果与新口径一致', async () => {
