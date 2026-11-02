@@ -121,15 +121,83 @@ export interface MainWorldInterceptorHandle {
 // v1.0：记忆列表缓存（由宿主推送，用于注入系统提示词的 "Existing Memories" 部分）
 let currentMemories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }> = [];
 
+/** 页端注入用的一条记忆。 */
+type StudioMemoryRow = { id: string; type: string; name: string; content: string; tags: string[] };
+
+/**
+ * 一次 memory.select 预取的完整状态。
+ *
+ * P1 真 bug（真机 14 轮记忆段恒 0 B）：页面通道的 memory.select 往返实测
+ * 149/166/170ms，**稳定超过**发送点 120ms 预算 → 每轮都在预算内拿不到结果；
+ * 更糟的是超时后 `memorySelectState.pending` 被置空，那条迟到的 promise
+ * 没人再接，`.then` 里的 `if (pending === pendingSel)` 守卫把它直接丢掉。
+ * 结果：记忆**一次都没进过**任何一轮请求体。
+ *
+ * 修法两条（本结构承载）：
+ *   1) **迟到结果必须落地**：settle 的唯一落点在 `kickMemorySelect` 里挂的
+ *      continuation —— 无论早晚，结果都会写进 currentMemories（作为「上一帧」
+ *      稳定生效），下一轮就带得上；旧结果按 seq 排队，不覆盖更新的结果。
+ *   2) **预热提前**：见 scheduleMemorySelectWarmup（打字停顿就发 select）。
+ */
+interface MemorySelectPending {
+  /** 预取 promise（永不 reject：失败解析为空数组）。建对象时占位，随后就地替换。 */
+  promise: Promise<StudioMemoryRow[]>;
+  /** 本次预取对应的任务文本（草稿或最终用户输入）。 */
+  readonly task: string;
+  /** 单调序号：越大越新。迟到结果按它排队，避免旧结果盖掉新结果。 */
+  readonly seq: number;
+  /** 是否已经 settle（settled=true 时 rows 才有值，且已写进 currentMemories）。 */
+  settled: boolean;
+  /** settle 后的结果（空数组 = 没选出记忆）。 */
+  rows: StudioMemoryRow[] | null;
+  /** 发送点预算已耗尽过：不再重复等它（但迟到结果仍会自行落地）。 */
+  timedOut: boolean;
+}
+
 /** M10-8B（B1）：按任务预取记忆的有界等待状态。feature flag 默认关。
  *  C1-F1 修复：enabled 不再是安装时一次性固化的 boolean，支持运行期动态读取——
  *  真机注入时 flag 可能为 null，之后页端设置后要能生效。 */
 const memorySelectState: {
   enabled: boolean | (() => boolean);
-  pending: Promise<Array<{ id: string; type: string; name: string; content: string; tags: string[] }>> | null;
+  pending: MemorySelectPending | null;
   lastTask: string;
   invoke: ((taskText: string) => Promise<{ ok: boolean; data?: { memories?: unknown } }>) | null;
-} = { enabled: false, pending: null, lastTask: '', invoke: null };
+  /** 已写入 currentMemories 的最大 seq（迟到结果按 seq 排队）。 */
+  appliedSeq: number;
+  /** 预热定时器与冷却（打字停顿就发 select，不等发送点）。 */
+  warmupTimer: ReturnType<typeof setTimeout> | null;
+  warmupDraft: string;
+  warmupLastAt: number;
+} = {
+  enabled: false,
+  pending: null,
+  lastTask: '',
+  invoke: null,
+  appliedSeq: 0,
+  warmupTimer: null,
+  warmupDraft: '',
+  warmupLastAt: Number.NEGATIVE_INFINITY,
+};
+
+/** 预取序号计数器（单调递增）：用于「迟到结果按新旧排队」。 */
+let memorySelectSeqCounter = 0;
+
+/** 测试用：重置记忆预取状态，避免同文件多个用例互相污染（生产路径不会调用）。 */
+export function __resetMemorySelectForTests(): void {
+  memorySelectState.pending = null;
+  memorySelectState.lastTask = '';
+  memorySelectState.appliedSeq = 0;
+  memorySelectState.warmupLastAt = Number.NEGATIVE_INFINITY;
+  memorySelectState.warmupDraft = '';
+  if (memorySelectState.warmupTimer !== null) {
+    clearTimeout(memorySelectState.warmupTimer);
+    memorySelectState.warmupTimer = null;
+  }
+  memorySelectSeqCounter = 0;
+  currentMemories = [];
+  lastMemorySegmentBytes = 0;
+  lastMemorySegmentRows = 0;
+}
 
 /** 运行期求值 enabled：支持静态 boolean 或 getter 函数。 */
 function isMemorySelectEnabled(): boolean {
@@ -145,24 +213,82 @@ export function configureMemorySelect(opts: {
   memorySelectState.invoke = opts.invoke ?? null;
 }
 
-/** 启动一次新的预取（若 taskText 与上次相同则复用 in-flight）。 */
-function kickMemorySelect(taskText: string): void {
-  if (!isMemorySelectEnabled() || !memorySelectState.invoke) return;
+/**
+ * 启动一次预取；同一段文本（或草稿是最终文本的前缀）复用已有预取，不再打一次 select。
+ *
+ * 关键：**settle 的落点挂在这里**，不在发送点。发送点只是「等不等得到」，
+ * 这里才是「结果最终去哪」——迟到的结果也必须写进 currentMemories。
+ */
+function kickMemorySelect(taskText: string): MemorySelectPending | null {
+  if (!isMemorySelectEnabled() || !memorySelectState.invoke) return null;
   const trimmed = taskText.trim();
-  if (!trimmed) return;
-  if (memorySelectState.pending && memorySelectState.lastTask === trimmed) return;
+  if (!trimmed) return null;
+
+  const existing = memorySelectState.pending;
+  if (existing) {
+    // 同一段文本 → 直接复用。
+    if (existing.task === trimmed) return existing;
+    // 草稿是最终文本的前缀（用户还在把这句话写完）→ 复用草稿那次的选择，
+    // 否则发送点又要等一次 170ms 的 select，等不到 → 又是一轮 0 B。
+    if (trimmed.startsWith(existing.task) && existing.task.length >= MEM_SELECT_WARMUP_MIN_CHARS) {
+      return existing;
+    }
+  }
+
+  const seq = ++memorySelectSeqCounter;
+  const entry: MemorySelectPending = {
+    promise: Promise.resolve([] as StudioMemoryRow[]),
+    task: trimmed,
+    seq,
+    settled: false,
+    rows: null,
+    timedOut: false,
+  };
+  const promise = memorySelectState.invoke(trimmed)
+    .then((r) => (r.ok && Array.isArray(r.data?.memories) ? r.data!.memories as StudioMemoryRow[] : []))
+    .catch(() => [] as StudioMemoryRow[]);
+  entry.promise = promise;
+
+  // **唯一落点**：无论早晚 settle，结果都落到 currentMemories（作为「上一帧」）。
+  void promise.then((rows) => {
+    entry.settled = true;
+    entry.rows = rows;
+    settledMemoryRows.set(promise, rows);
+    applyMemoryRows(entry, rows);
+  });
+
+  memorySelectState.pending = entry;
   memorySelectState.lastTask = trimmed;
-  memorySelectState.pending = memorySelectState.invoke(trimmed).then((r) => {
-    const rows = r.ok && Array.isArray(r.data?.memories) ? r.data!.memories as Array<{ id: string; type: string; name: string; content: string; tags: string[] }> : [];
-    return rows;
-  }).catch(() => []);
+  return entry;
+}
+
+/** 把一次预取的结果写进 currentMemories（按 seq 排队：旧结果不覆盖新结果）。 */
+function applyMemoryRows(entry: MemorySelectPending, rows: StudioMemoryRow[] | null): void {
+  if (!rows) return;
+  if (rows.length === 0) return; // 没选出记忆 → 保持上一帧，不清空
+  if (entry.seq <= memorySelectState.appliedSeq) return; // 已有更新的结果落地了
+  memorySelectState.appliedSeq = entry.seq;
+  currentMemories = rows;
 }
 
 /**
  * memory.select 预取的有界等待预算（毫秒）。
  * 预算内拿到结果 → 本轮就注入；预算耗尽 → 沿用上一帧记忆，照常发送（绝不阻塞）。
+ *
+ * **不许调大**：真机 select 往返 149-170ms，调大预算等于每次发送都多等 170ms，
+ * 用户能感觉到。正确的解法是「提前预热」（打字停顿就发）+「迟到结果落地」。
  */
 const MEM_SELECT_WAIT_BUDGET_MS = 120;
+
+/**
+ * 打字预热参数（照搬技能清单的预热模式）：
+ *   - 输入停顿 MEM_SELECT_WARMUP_IDLE_MS 后异步发一次 select；
+ *   - 冷却 MEM_SELECT_WARMUP_COOLDOWN_MS 内不重复发（失败也不打爆宿主）；
+ *   - 草稿短于 MEM_SELECT_WARMUP_MIN_CHARS 不预热（太短的文本选不出记忆）。
+ */
+const MEM_SELECT_WARMUP_IDLE_MS = 600;
+const MEM_SELECT_WARMUP_COOLDOWN_MS = 2_000;
+const MEM_SELECT_WARMUP_MIN_CHARS = 6;
 
 /**
  * 同步取一个已 settle 的预取结果（不给 promise 加状态位，用 WeakMap 记录最后一次 settle 的值）。
@@ -171,11 +297,11 @@ const MEM_SELECT_WAIT_BUDGET_MS = 120;
  * 保证 readyState=4 链不悬），不能 await；但如果预取**已经**完成，
  * 本轮仍应带上新记忆。取不到就返回 null（调用方沿用上一帧记忆）。
  */
-const settledMemoryRows = new WeakMap<object, Array<{ id: string; type: string; name: string; content: string; tags: string[] }>>();
+const settledMemoryRows = new WeakMap<object, StudioMemoryRow[]>();
 
 function takeSettledRows(
-  pendingRef: Promise<Array<{ id: string; type: string; name: string; content: string; tags: string[] }>> | null,
-): Array<{ id: string; type: string; name: string; content: string; tags: string[] }> | null {
+  pendingRef: Promise<StudioMemoryRow[]> | null,
+): StudioMemoryRow[] | null {
   if (!pendingRef) return null;
   const known = settledMemoryRows.get(pendingRef);
   if (!known) return null;
@@ -188,44 +314,73 @@ function takeSettledRows(
  * **共用 helper**（卡 B 修复）：此前 fetch 路径与 XHR 延迟路径各写了一套消费逻辑，
  * XHR 那套用 `void pendingSel.then(...)`（微任务排在当前同步块之后），
  * 紧接着 `prepareChatSend()` 同步读 `currentMemories` —— 拿到的还是**上一轮**的值。
- * 结果：为预取等了 120ms，本轮注入的仍是旧记忆，新记忆要等下一条 chat 请求才生效。
- *
- * 修法：**等待与赋值都在本函数内完成**，调用方在它 resolve 之后才构造请求体，
- * 于是「本轮就带上新记忆」。两条路径共用本函数，根治「两份实现各写一遍」的分叉。
  *
  * 预算语义（limitMs）：pending 在预算内 settle → 用新结果；预算耗尽仍未 settle →
  * 保持上一帧 currentMemories（降级，不清空），**绝不卡住发送**。
  *
- * 副作用：settled 的结果记进 settledMemoryRows，供 abort 路径**同步**取值
- * （proto.abort 要求同步补发，不能 await）。
+ * P1 修复要点：超时**不再**把 pending 从 state 上摘掉（摘掉 = 迟到结果被守卫丢弃）。
+ * pending 留在 state 上：迟到结果仍会在自己的 continuation 里落到 currentMemories，
+ * 下一轮就带得上；且已经超时过的 pending 不会被重复等待（避免每轮都白等 120ms）。
  */
 async function consumeMemorySelect(
-  pendingRef: Promise<Array<{ id: string; type: string; name: string; content: string; tags: string[] }>> | null,
-  limitMs = 120,
+  pending: MemorySelectPending | null,
+  limitMs = MEM_SELECT_WAIT_BUDGET_MS,
 ): Promise<void> {
-  if (!pendingRef) return;
+  if (!pending) return;
+  if (pending.settled) {
+    // 已经 settle（多半是打字预热那轮）：立刻用，不等。
+    applyMemoryRows(pending, pending.rows);
+    return;
+  }
+  if (pending.timedOut) return; // 已经超时过：不重复等（迟到结果仍会自行落地）
+
   const budget = new Promise<null>((resolve) => setTimeout(() => resolve(null), limitMs));
-  let rows: Array<{ id: string; type: string; name: string; content: string; tags: string[] }> | null = null;
+  let rows: StudioMemoryRow[] | null = null;
   try {
-    rows = await Promise.race([pendingRef, budget]);
+    rows = await Promise.race([pending.promise, budget]);
   } catch {
     rows = null; // 预取失败：保持上一帧，不抛
   }
   if (rows) {
-    settledMemoryRows.set(pendingRef, rows);
-    if (rows.length > 0) {
-      currentMemories = rows;
-    }
+    applyMemoryRows(pending, rows);
+    return;
   }
-  // 只清理**本次消费的那一个** pending；超时返回时若已有更新的预取，不能抹掉。
-  if (memorySelectState.pending === pendingRef) {
-    memorySelectState.pending = null;
-  }
+  // 超时：pending 留在 state 上（迟到结果照样落地），只是不再重复等它。
+  pending.timedOut = true;
 }
 
 /** 有界等待预取结果；超时/失败保持上一帧 currentMemories，不阻塞请求。 */
 async function awaitMemorySelectBudget(limitMs = MEM_SELECT_WAIT_BUDGET_MS): Promise<void> {
   await consumeMemorySelect(memorySelectState.pending, limitMs);
+}
+
+/**
+ * 打字预热排队：输入停顿 MEM_SELECT_WARMUP_IDLE_MS 后异步发一次 memory.select。
+ *
+ * 为什么（真机读数）：页面通道的 memory.select 往返 149/166/170ms，
+ * **稳定超过**发送点 120ms 预算 → 只在发送点预取，每轮都拿不到 → 记忆段恒 0 B。
+ * 改成「用户还在打字时就发」，按下发送时通常已 settle → 当轮就带得上。
+ *
+ * 约束（照搬技能预热）：
+ *   - 不阻塞输入（纯 setTimeout，不 await）；
+ *   - 同一静默窗口只排一次；冷却内不重复发；
+ *   - 失败静默：不弹错、不重试，发送点的 120ms 兜底照旧。
+ */
+function scheduleMemorySelectWarmup(draft: string): void {
+  // feature flag 默认关：关着就别排定时器（否则每次输入停顿都白排一次）。
+  if (!isMemorySelectEnabled() || !memorySelectState.invoke) return;
+  const trimmed = draft.trim();
+  if (trimmed.length < MEM_SELECT_WARMUP_MIN_CHARS) return;
+  if (memorySelectState.warmupTimer !== null) return;
+  if (Date.now() - memorySelectState.warmupLastAt < MEM_SELECT_WARMUP_COOLDOWN_MS) return;
+  memorySelectState.warmupDraft = trimmed;
+  memorySelectState.warmupTimer = setTimeout(() => {
+    memorySelectState.warmupTimer = null;
+    memorySelectState.warmupLastAt = Date.now();
+    const text = memorySelectState.warmupDraft;
+    memorySelectState.warmupDraft = '';
+    kickMemorySelect(text);
+  }, MEM_SELECT_WARMUP_IDLE_MS);
 }
 
 // v1.0：MCP 工具列表缓存（启动时从宿主拉取，用于动态注入提示词，让 agent 知道有哪些 MCP 工具可用）
@@ -1049,6 +1204,15 @@ function appendResultsToMessages(messages: unknown[], block: string): unknown[] 
  * 同时兼容 DeepSeek 的 `messages` 数组与 `prompt` 字符串两种形态。
  * 返回新的 JSON 字符串；无改动返回 null。
  */
+/**
+ * P1 可观测点：最近一次构造请求体时的记忆段读数。
+ *   - bytes：记忆段字节数（Verify 真机抓包按这个判定「记忆到底进没进」）
+ *   - rows ：参与注入的记忆条数
+ * 之前没有读数，真机只能看到「记忆段恒 0 B」，分不清是没选出记忆还是没注入。
+ */
+let lastMemorySegmentBytes = 0;
+let lastMemorySegmentRows = 0;
+
 function formatMemoriesBlock(): string {
   // STUDIO_UNTRUSTED_MEMORY_* markers are neutralized by the formatter wrapper.
   return formatUntrustedMemoriesBlock(currentMemories);
@@ -1073,6 +1237,9 @@ function extractChatSessionIdFromBody(rawBody: string): string | undefined {
 }
 
 function prepareOutgoingBody(rawBody: string, pending: PendingResult[], taskText = ''): string | null {
+  // P1 可观测点：每轮先清零，解析失败/非 chat 体时不会被上一轮的读数蒙混。
+  lastMemorySegmentBytes = 0;
+  lastMemorySegmentRows = 0;
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(rawBody) as Record<string, unknown>;
@@ -1109,6 +1276,10 @@ function prepareOutgoingBody(rawBody: string, pending: PendingResult[], taskText
   const hasResults = effectivePending.length > 0;
   const block = hasResults ? formatToolResultBlock(effectivePending.slice()) : '';
   const memoriesBlock = formatMemoriesBlock();
+  // P1 可观测点：本轮记忆段的字节数（Verify 真机抓包用「记忆段字节」判定是否注入成功）。
+  // 之前没有这个读数，真机只能看到「记忆段恒 0 B」却说不清是没选出记忆还是没注入。
+  lastMemorySegmentBytes = byteLengthOf(memoriesBlock);
+  lastMemorySegmentRows = currentMemories.length;
   if (Array.isArray(parsed.messages)) {
     let msgs: unknown[] = parsed.messages as unknown[];
     // 每次发送都重建：技能选择必须跟随当前用户任务，不能沿用上一轮的全量技能块。
@@ -1259,7 +1430,7 @@ function installFetchHook(
     // M10-8B（B1）：首轮发送前有界等待 memory.select 结果（≤120ms）；超时回落上一帧。
     // C1-F1 修复：enabled 运行期动态求值，注入时 flag=null 之后变 true 也能生效。
     if (isMemorySelectEnabled() && isDeepSeekChatEndpoint(url, method) && !loopState?.inFirstAttemptResend) {
-      await awaitMemorySelectBudget(120);
+      await awaitMemorySelectBudget(MEM_SELECT_WAIT_BUDGET_MS);
     }
 
     // P0：技能清单运行期新鲜度——chat 请求在注入前有界等待刷新（≤150ms）。
@@ -1271,6 +1442,8 @@ function installFetchHook(
     // 请求侧回填：把累积的工具结果写进下一次对话请求的 prompt
     if (pending.length > 0 && isDeepSeekChatEndpoint(url, method) && !loopState?.inFirstAttemptResend) {
       init = augmentInit(init, pending, loopState?.originalTask ?? '');
+      // P1 可观测点：记忆段字节数（与 XHR 路径同口径）。
+      diag(`memory.bytes=${lastMemorySegmentBytes} rows=${lastMemorySegmentRows}`);
     }
 
     // 非对话响应不拦截（直接放行，避免影响其它请求）
@@ -1558,6 +1731,9 @@ function installXhrHooks(
         diag(`xhr chat body injected len=${next.length}`);
       }
       body = outBody;
+      // P1 可观测点：记忆段字节数（Verify 真机抓包判定「记忆进没进」用）。
+      // 走 diag → host.log → stdout，形如 `[page <id>] [interceptor] memory.bytes=1234 rows=3`。
+      diag(`memory.bytes=${lastMemorySegmentBytes} rows=${lastMemorySegmentRows}`);
       // v0.8：记住最近一次 chat 请求 body 作为自动续跑模板。
       if (loopState) {
         loopState.lastChatBody = outBody;
@@ -1583,9 +1759,13 @@ function installXhrHooks(
       && !loopState?.inFirstAttemptResend
       ? memorySelectState.pending
       : null;
+    // P1：已 settle 的预取（多半是打字预热那轮）**不再等**——结果早已写进
+    // currentMemories，等它只是白等一个微任务；已经超时过的也不重复等
+    //（迟到结果仍会自行落地到 currentMemories，下一轮就带得上）。
+    const memoryNeedsWait = pendingSel !== null && !pendingSel.settled && !pendingSel.timedOut;
     // 首轮原样重发不刷新：重发必须逐字节幂等，刷新只会引入新的注入窗口。
     const skillsWait = isChat && !loopState?.inFirstAttemptResend ? kickSkillsRefresh() : null;
-    if (pendingSel || skillsWait) {
+    if (memoryNeedsWait || skillsWait) {
       let settled = false;
       /**
        * 记忆消费**只做一次**，结果由两条路径共享：
@@ -1648,11 +1828,11 @@ function installXhrHooks(
         (this as Record<string, unknown>).__dsDelayedSend = undefined;
         // abort 路径不能 await（proto.abort 要求同步补发）。
         // pendingSel 若**已经 settle**，这里用同步取值拿到本轮记忆；否则放弃本轮记忆更新，沿用上一帧。
-        const rows = takeSettledRows(pendingSel);
+        const rows = takeSettledRows(pendingSel?.promise ?? null);
         if (rows && rows.length > 0) currentMemories = rows;
-        if (pendingSel && memorySelectState.pending === pendingSel) {
-          memorySelectState.pending = null;
-        }
+        // P1：**不再**把 pending 从 state 上摘掉 —— 摘掉就等于把那条迟到的 select
+        // 结果丢掉（真机 12 轮记忆段恒 0 B 的直接原因）。留在 state 上，
+        // 迟到结果仍会落到 currentMemories，下一轮就带得上。
         doSendNow();
       };
       // 暴露给 proto.abort 包装：延迟期间用户 abort → 立即触发 send 再 abort。
@@ -2886,6 +3066,49 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     };
   })();
 
+  // P1 打字预热：用户还在打字时就异步发一次 memory.select（不阻塞输入），
+  // 按下发送时通常已 settle → 当轮就带得上记忆。
+  // 真机读数：页面通道 select 往返 149/166/170ms，**稳定超过**发送点 120ms 预算，
+  // 只在发送点预取必然每轮都拿不到 → 记忆段恒 0 B（真机 14 轮实测）。
+  // 发送点的 120ms 预算保留作兜底（预热没赶上时仍不阻塞发送）。
+  const stopMemorySelectWarmup = ((): (() => void) => {
+    if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') {
+      return () => { /* 无 DOM（单测/非浏览器环境）时不需要预热 */ };
+    }
+    const draftOf = (target: EventTarget | null): string => {
+      if (!target) return '';
+      const el = target as HTMLElement;
+      const tag = el.tagName;
+      if (tag === 'TEXTAREA' || tag === 'INPUT') {
+        const value = (el as HTMLTextAreaElement).value;
+        return typeof value === 'string' ? value : '';
+      }
+      if (el.isContentEditable) return el.innerText ?? el.textContent ?? '';
+      return '';
+    };
+    const onInput = (event: Event): void => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      const tag = target.tagName;
+      // 只管输入类元素：textarea / input / contenteditable。
+      if (tag !== 'TEXTAREA' && tag !== 'INPUT' && !target.isContentEditable) return;
+      scheduleMemorySelectWarmup(draftOf(target));
+    };
+    document.addEventListener('input', onInput, true);
+    return () => {
+      try {
+        document.removeEventListener('input', onInput, true);
+      } catch {
+        /* ignore */
+      }
+      if (memorySelectState.warmupTimer !== null) {
+        clearTimeout(memorySelectState.warmupTimer);
+        memorySelectState.warmupTimer = null;
+      }
+      memorySelectState.warmupDraft = '';
+    };
+  })();
+
   return {
     stop() {
       try {
@@ -2907,6 +3130,12 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       // P1：卸载后不再预热（移除 input 监听 + 清掉排队中的预热）。
       try {
         stopSkillsPrewarm();
+      } catch {
+        /* ignore */
+      }
+      // P1：记忆预热同理，卸载后不再发 memory.select。
+      try {
+        stopMemorySelectWarmup();
       } catch {
         /* ignore */
       }
