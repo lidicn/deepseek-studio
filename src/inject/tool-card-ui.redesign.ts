@@ -695,6 +695,9 @@ function wireItem(item: HTMLElement): void {
       if (open) body.removeAttribute('hidden');
       else body.setAttribute('hidden', '');
       row.setAttribute('aria-expanded', open ? 'true' : 'false');
+      // 手动意图优先（出资人 2026-11-01）：用户点过之后，本轮内不再被
+      // 「按状态自动决定展开态」的逻辑覆盖。
+      item.dataset.dsUserToggled = 'true';
     });
   }
   const more = item.querySelector('.ds-flow-more') as HTMLButtonElement | null;
@@ -749,6 +752,19 @@ function findItem(container: HTMLElement, callId: string): HTMLElement | null {
   return null;
 }
 
+/**
+ * 按状态决定初始展开态（出资人 2026-11-01 混合策略）。
+ *
+ * - `running`（正在执行）→ 展开：用户要看它此刻在干什么。
+ * - `failed` / `denied`（失败、被拦截、审批被拒）→ 展开：折叠着放错误等于藏 bug。
+ * - `ok` / 其它 → 折叠：正常完成的工具折成一行「已调用工具 · N 次」。
+ *
+ * **手动优先**：用户点过之后 `data-user-toggled="true"`，状态自动值不再覆盖用户意图。
+ */
+function initialExpandedForStatus(status: ToolCallStatus): boolean {
+  return status === 'running' || status === 'failed' || status === 'denied';
+}
+
 function getOrCreateFlow(container: HTMLElement): HTMLElement {
   let flow = container.querySelector('.ds-flow') as HTMLElement | null;
   if (flow) return flow;
@@ -756,6 +772,9 @@ function getOrCreateFlow(container: HTMLElement): HTMLElement {
   ensureStyle();
   flow = document.createElement('section');
   flow.className = 'ds-flow';
+  // 出资人要求（2026-11-01 混合策略）：工具组**默认折叠**，
+  // 但 running / failed / denied 的那张卡片会在自己的行上自动展开。
+  // 手动点击 summary 仍然可以折叠/展开整个组（手动意图不被后续渲染覆盖）。
   flow.setAttribute('data-open', 'false');
   flow.innerHTML = `
     <button type="button" class="ds-flow-summary" aria-expanded="false">
@@ -776,6 +795,9 @@ function getOrCreateFlow(container: HTMLElement): HTMLElement {
     else list.setAttribute('hidden', '');
     flow!.setAttribute('data-open', open ? 'true' : 'false');
     summary.setAttribute('aria-expanded', open ? 'true' : 'false');
+    // 用户手动折叠/展开整个组后，**本轮内**不再被状态自动值覆盖
+    // （否则失败卡在下一轮渲染时被自动弹开/收起，用户的意图就丢了）。
+    flow!.setAttribute('data-user-toggled', 'true');
   });
 
   // 过程在上、结论在下：插入到消息元素最前面
@@ -789,11 +811,14 @@ function updateSummary(container: HTMLElement): void {
   const items = flow.querySelectorAll('.ds-flow-item');
   let total = 0;
   let running = 0;
+  let attention = 0;
   for (let i = 0; i < items.length; i += 1) {
     const el = items[i] as HTMLElement;
     const duration = toFiniteNumber(el.dataset.durationMs);
     if (duration !== undefined) total += duration;
     if (el.dataset.status === 'running') running += 1;
+    // 失败/被拦截/审批拒绝：折叠着放错误等于藏 bug，整组必须可见。
+    if (el.dataset.status === 'failed' || el.dataset.status === 'denied') attention += 1;
   }
   const text = `已调用工具 · ${items.length} 次${running > 0 ? ` · ${running} 执行中` : ''}`;
   const textEl = flow.querySelector('.ds-flow-summary-text');
@@ -801,6 +826,33 @@ function updateSummary(container: HTMLElement): void {
   if (textEl) textEl.textContent = text;
   if (timeEl) timeEl.textContent = total > 0 ? formatDurationMs(total) : '';
   flow.setAttribute('data-count', String(items.length));
+
+  // 组级自动展开：容器折叠会把里面展开的卡片一起藏起来。
+  // 所以「有正在执行的」或「有失败/被拦截的」时，整组自动展开；
+  // 全部 ok 后再折回一行「已调用工具 · N 次」。
+  //
+  // 手动意图的处理（真机发现）：用户手动折叠过一次后，`data-user-toggled` 会一直留着，
+  // 于是**后来**出现的失败卡/执行中卡就永远被折叠挡住 —— 那等于把错误藏起来，
+  // 违背「折叠着放错误等于藏 bug」的初衷。
+  // 所以：用户手动折叠只压制「无异常时自动展开/自动折回」，
+  // 一旦出现 running / failed / denied，**强制展开**（用户可再手动折起，但那一刻是
+  // 明知有错还选择不看，与「自动藏起错误」性质不同）。
+  const list = flow.querySelector('.ds-flow-list') as HTMLElement | null;
+  const summary = flow.querySelector('.ds-flow-summary') as HTMLElement | null;
+  if (!list || !summary) return;
+  const userToggled = flow.getAttribute('data-user-toggled') === 'true';
+  const hasAttention = running > 0 || attention > 0;
+  const isOpen = !list.hasAttribute('hidden');
+  if (hasAttention && !isOpen) {
+    list.removeAttribute('hidden');
+    flow.setAttribute('data-open', 'true');
+    summary.setAttribute('aria-expanded', 'true');
+  } else if (!hasAttention && isOpen && !userToggled) {
+    // 全部 ok 且用户没手动操作过 → 折回一行（正常完成的工具折成一行）。
+    list.setAttribute('hidden', '');
+    flow.setAttribute('data-open', 'false');
+    summary.setAttribute('aria-expanded', 'false');
+  }
 }
 
 /* ─────────────────────────────── 对外 API（逐条对齐 v1 契约） ─────────────────────────────── */
@@ -822,11 +874,18 @@ export function createRedesignedToolCard(data: ToolCardData, callId: string, con
     item.setAttribute('role', 'listitem');
     item.dataset.callId = String(callId);
     list.appendChild(item);
-    renderItem(item, data, status, data.durationMs, Date.now(), false);
+    // 初始展开态按状态决定：running / failed / denied 展开，ok 折叠。
+    renderItem(item, data, status, data.durationMs, Date.now(), initialExpandedForStatus(status));
   } else {
     const startedAt = toFiniteNumber(item.dataset.startedAt) ?? Date.now();
     const row = item.querySelector('.ds-flow-row');
-    const expanded = row ? row.getAttribute('aria-expanded') === 'true' : false;
+    // 手动意图优先：用户点过就沿用用户的展开态；没点过才按状态自动决定。
+    // 例外：状态变成 **failed/denied** 时强制展开——「折叠着放错误等于藏 bug」，
+    // 用户手动折叠过一次（早于失败发生）不该把后来的失败永久藏住。
+    const userToggled = item.dataset.dsUserToggled === 'true';
+    const expanded = userToggled && !initialExpandedForStatus(status)
+      ? (row ? row.getAttribute('aria-expanded') === 'true' : false)
+      : initialExpandedForStatus(status);
     renderItem(item, data, status, data.durationMs, startedAt, expanded);
   }
 
@@ -852,7 +911,13 @@ export function updateRedesignedToolCardByCallId(
   if (existing) {
     const startedAt = toFiniteNumber(existing.dataset.startedAt) ?? Date.now();
     const row = existing.querySelector('.ds-flow-row');
-    const expanded = row ? row.getAttribute('aria-expanded') === 'true' : false;
+    // 手动意图优先：用户点过就沿用用户状态；没点过才按新状态自动决定
+    // （running→展开、failed/denied→展开、ok→折叠）。
+    // 例外：变成 failed/denied 时强制展开（错误不能被此前的手动折叠藏住）。
+    const userToggled = existing.dataset.dsUserToggled === 'true';
+    const expanded = userToggled && !initialExpandedForStatus(status)
+      ? (row ? row.getAttribute('aria-expanded') === 'true' : false)
+      : initialExpandedForStatus(status);
     renderItem(existing, merged, status, durationMs, startedAt, expanded);
     updateSummary(container);
     return;

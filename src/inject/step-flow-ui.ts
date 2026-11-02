@@ -240,6 +240,7 @@ export function createStepFlowContainer(onStop?: () => void): StepFlowHandle {
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'ds-sf-tool-toggle';
+    // 默认折叠（出资人 2026-11-01 混合策略：默认折叠，按状态自动展开由 redesign 卡负责）。
     toggle.setAttribute('aria-expanded', 'false');
 
     const stateIcon = document.createElement('span');
@@ -269,7 +270,7 @@ export function createStepFlowContainer(onStop?: () => void): StepFlowHandle {
 
     const detail = document.createElement('div');
     detail.className = 'ds-sf-tool-summary';
-    detail.hidden = true;
+    detail.hidden = true; // 默认折叠
 
     toggle.addEventListener('click', () => {
       const expanded = toggle.getAttribute('aria-expanded') === 'true';
@@ -382,11 +383,13 @@ export function createStepFlowContainer(onStop?: () => void): StepFlowHandle {
   function finish(totalSteps: number, totalTools: number, _elapsed: number): void {
     state.stepCount = totalSteps;
     state.toolCount = totalTools;
-    // 折叠所有工具组
+    // 混合策略（出资人 2026-11-01）：默认折叠，但**用户手动展开过的组跨步骤保持展开**
+    // （否则用户刚点开就被下一步折叠，很恼人）。
+    // data-user-toggled 标记「用户点过这个组」——点过的组本轮一律不动
+    // （用户自己折叠的就保持折叠，自己展开的就保持展开）；没点过的才在步骤结束时折叠。
     stream.querySelectorAll('.ds-sf-tool-group').forEach((group) => {
-      if (group.getAttribute('data-user-toggled') !== 'true') {
-        group.setAttribute('data-collapsed', 'true');
-      }
+      if (group.getAttribute('data-user-toggled') === 'true') return;
+      group.setAttribute('data-collapsed', 'true');
     });
     state.currentToolGroup = null;
     setPhase('complete');

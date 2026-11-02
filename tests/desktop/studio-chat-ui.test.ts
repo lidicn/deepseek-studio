@@ -110,6 +110,38 @@ describe('Studio 主视图', () => {
     expect(ui.container.style.pointerEvents).toBe('');
   });
 
+  /**
+   * 出资人 2026-11-01：中间文字显示区域要能像 DSH 那样调整宽度。
+   * 断言：手柄存在 → 键盘可调 → 宽度写入 --sc-content-width → 持久化 → 夹紧范围。
+   */
+  it('正文宽度可调：手柄存在，键盘可调宽度并写入 --sc-content-width', () => {
+    addMeasuredComposer();
+    window.localStorage.removeItem('studio.chat.contentWidth');
+    ui = mount();
+
+    const handle = ui.container.querySelector('.ds-sc-width-handle') as HTMLElement;
+    expect(handle).not.toBeNull();
+    expect(handle.getAttribute('role')).toBe('separator');
+
+    // 默认宽度
+    expect(ui.container.style.getPropertyValue('--sc-content-width')).toBe('800px');
+
+    // 键盘左移 → 变宽 16px
+    handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    expect(ui.container.style.getPropertyValue('--sc-content-width')).toBe('816px');
+    expect(window.localStorage.getItem('studio.chat.contentWidth')).toBe('816');
+
+    // 键盘右移 → 变窄
+    handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(ui.container.style.getPropertyValue('--sc-content-width')).toBe('800px');
+
+    // 夹紧到最小值
+    for (let i = 0; i < 40; i += 1) {
+      handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    }
+    expect(ui.container.style.getPropertyValue('--sc-content-width')).toBe('520px');
+  });
+
   it('工具卡只写入 .ds-sc-msg-assistant，原生消息树完全不变', () => {
     addMeasuredComposer();
     const native = document.createElement('div');

@@ -60,14 +60,12 @@ describe('running 渲染与行级结构', () => {
     };
     expect(createRedesignedToolCard(data, 'call-1', container)).toBe('call-1');
 
-    // 顶部摘要行默认收起列表
+    // 混合策略（出资人 2026-11-01）：running 属「正在执行」→ 整组自动展开，
+    // 且这张卡片自身也自动展开（用户要看它此刻在干什么）。
     const summary = q<HTMLButtonElement>(container, '.ds-flow-summary');
-    expect(summary.getAttribute('aria-expanded')).toBe('false');
-    expect(textOf(container, '.ds-flow-summary-text')).toContain('已调用工具');
-
-    // 展开列表
-    summary.click();
+    expect(summary.getAttribute('aria-expanded')).toBe('true');
     expect(container.querySelector('.ds-flow-list')?.hasAttribute('hidden')).toBe(false);
+    expect(textOf(container, '.ds-flow-summary-text')).toContain('已调用工具');
 
     const item = itemOf(container);
     expect(item.getAttribute('role')).toBe('listitem');
@@ -78,13 +76,13 @@ describe('running 渲染与行级结构', () => {
     const dot = q<HTMLElement>(item, '.ds-flow-dot');
     expect(getComputedStyle(dot).backgroundColor).not.toBe('transparent');
 
-    // 行按钮默认折叠 body
+    // 行按钮：running → 默认展开 body
     const row = q<HTMLButtonElement>(item, '.ds-flow-row');
-    expect(row.getAttribute('aria-expanded')).toBe('false');
+    expect(row.getAttribute('aria-expanded')).toBe('true');
     const bodyId = row.getAttribute('aria-controls');
     expect(bodyId).toBeTruthy();
     const body = document.getElementById(bodyId!);
-    expect(body?.hasAttribute('hidden')).toBe(true);
+    expect(body?.hasAttribute('hidden')).toBe(false);
 
     // 工具名 + 摘要 + 状态 + 耗时 都在行里
     expect(textOf(item, '.ds-flow-tool')).toBe('read_file');
@@ -446,21 +444,146 @@ describe('安全与 DOM 隔离', () => {
   });
 });
 
-describe('可访问性与降级', () => {
-  it('条目行 aria-expanded / aria-controls / 可聚焦', () => {
+/**
+ * 混合策略（出资人 2026-11-01 拍板）：
+ * 默认折叠，但 running（正在执行）/ failed（失败·被拦截·审批拒绝）自动展开；
+ * ok 折成一行。手动点击优先于状态自动值。
+ */
+describe('混合展开策略（默认折叠 + 按状态自动展开）', () => {
+  it('ok 状态：初始折叠，且整组折成一行', () => {
+    const container = makeContainer();
+    const data: ToolCardData = { toolName: 'ok_tool', params: { p: 1 } };
+    createRedesignedToolCard(data, 's-ok', container);
+    updateRedesignedToolCardByCallId('s-ok', data, { ok: true, data: 'done' }, container, 10);
+
+    const item = itemOf(container);
+    expect(item.dataset.status).toBe('succeeded');
+    const row = q<HTMLButtonElement>(item, '.ds-flow-row');
+    expect(row.getAttribute('aria-expanded')).toBe('false');
+    const body = document.getElementById(row.getAttribute('aria-controls')!);
+    expect(body?.hasAttribute('hidden')).toBe(true);
+
+    // 整组折叠成一行
+    const list = q<HTMLElement>(container, '.ds-flow-list');
+    expect(list.hasAttribute('hidden')).toBe(true);
+    expect(textOf(container, '.ds-flow-summary-text')).toContain('已调用工具 · 1 次');
+  });
+
+  it('failed 状态：初始展开 + 整组展开（折叠着放错误等于藏 bug）', () => {
+    const container = makeContainer();
+    const data: ToolCardData = { toolName: 'bad_tool', params: { p: 1 } };
+    createRedesignedToolCard(data, 's-fail', container);
+    updateRedesignedToolCardByCallId('s-fail', data, { ok: false, error: 'spawn-failed' }, container, 7);
+
+    const item = itemOf(container);
+    expect(item.dataset.status).toBe('failed');
+    const row = q<HTMLButtonElement>(item, '.ds-flow-row');
+    expect(row.getAttribute('aria-expanded')).toBe('true');
+    const body = document.getElementById(row.getAttribute('aria-controls')!);
+    expect(body?.hasAttribute('hidden')).toBe(false);
+
+    // 整组也展开，用户能一眼看到这张红卡
+    const list = q<HTMLElement>(container, '.ds-flow-list');
+    expect(list.hasAttribute('hidden')).toBe(false);
+  });
+
+  it('手动折叠优先：用户点过之后，状态自动值不再覆盖', () => {
+    const container = makeContainer();
+    const data: ToolCardData = { toolName: 'bad_tool', params: { p: 1 } };
+    createRedesignedToolCard(data, 's-manual', container);
+    updateRedesignedToolCardByCallId('s-manual', data, { ok: false, error: 'boom' }, container, 5);
+
+    const item = itemOf(container);
+    const row = q<HTMLButtonElement>(item, '.ds-flow-row');
+    expect(row.getAttribute('aria-expanded')).toBe('true');
+    row.click(); // 用户手动折叠
+    expect(row.getAttribute('aria-expanded')).toBe('false');
+    expect(item.dataset.dsUserToggled).toBe('true');
+
+    // 后续再更新状态（仍 failed）→ 不得把用户的折叠弹开
+    updateRedesignedToolCardByCallId('s-manual', data, { ok: false, error: 'boom2' }, container, 9);
+    expect(row.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('running 状态：初始展开（正在执行要看它在干什么）', () => {
+    const container = makeContainer();
+    createRedesignedToolCard({ toolName: 'run_tool', params: {} }, 's-run', container);
+    const item = itemOf(container);
+    expect(item.dataset.status).toBe('running');
+    const row = q<HTMLButtonElement>(item, '.ds-flow-row');
+    expect(row.getAttribute('aria-expanded')).toBe('true');
+    const list = q<HTMLElement>(container, '.ds-flow-list');
+    expect(list.hasAttribute('hidden')).toBe(false);
+  });
+
+  /**
+   * 真机发现（2026-11-02）：用户手动折叠过一次后，`data-user-toggled` 会一直留着，
+   * 于是**后来**出现的失败卡/执行中卡被折叠挡住 —— 等于把错误藏起来。
+   * 修正：手动折叠只压制「无异常时的自动展开」；一旦出现 running/failed/denied，强制展开。
+   */
+  it('手动折叠过之后新出现的失败卡仍强制展开（错误不能被藏住）', () => {
+    const container = makeContainer();
+    const data: ToolCardData = { toolName: 'bad_tool', params: {} };
+    createRedesignedToolCard(data, 's-late-fail', container);
+    const item = itemOf(container);
+
+    // 用户手动折叠（此时还是 running）
+    q<HTMLButtonElement>(item, '.ds-flow-row').click();
+    expect(q<HTMLButtonElement>(item, '.ds-flow-row').getAttribute('aria-expanded')).toBe('false');
+    expect(item.dataset.dsUserToggled).toBe('true');
+
+    // 随后失败 → 必须强制展开
+    // 注意：renderItem 会用 innerHTML 重建行，旧 row 引用已脱离 DOM，必须重新取。
+    updateRedesignedToolCardByCallId('s-late-fail', data, { ok: false, error: 'boom' }, container, 3);
+    expect(item.dataset.status).toBe('failed');
+    const row = q<HTMLButtonElement>(item, '.ds-flow-row');
+    expect(row.getAttribute('aria-expanded')).toBe('true');
+    const body = document.getElementById(row.getAttribute('aria-controls')!);
+    expect(body?.hasAttribute('hidden')).toBe(false);
+
+    // 组也必须展开（否则展开的红卡仍在折叠的组里看不见）
+    const list = q<HTMLElement>(container, '.ds-flow-list');
+    expect(list.hasAttribute('hidden')).toBe(false);
+  });
+
+  it('用户手动折叠过整组后，新出现的失败卡仍把组强制展开', () => {
+    const container = makeContainer();
+    const data: ToolCardData = { toolName: 'bad_tool', params: {} };
+    createRedesignedToolCard(data, 's-group-late-fail', container);
+    const flow = container.querySelector('.ds-flow') as HTMLElement;
+    const summary = q<HTMLButtonElement>(container, '.ds-flow-summary');
+    const list = q<HTMLElement>(container, '.ds-flow-list');
+
+    // 用户手动折叠整组
+    summary.click();
+    expect(list.hasAttribute('hidden')).toBe(true);
+    expect(flow.getAttribute('data-user-toggled')).toBe('true');
+
+    // 随后出现失败卡 → 组强制展开
+    updateRedesignedToolCardByCallId('s-group-late-fail', data, { ok: false, error: 'boom' }, container, 3);
+    expect(list.hasAttribute('hidden')).toBe(false);
+  });
+});
+
+describe('可访问性与降级', () => {  it('条目行 aria-expanded / aria-controls / 可聚焦', () => {
     const container = makeContainer();
     createRedesignedToolCard({ toolName: 'a11y', params: { p: 1 } }, 'a1', container);
-    q<HTMLButtonElement>(container, '.ds-flow-summary').click();
     const item = itemOf(container);
 
     const row = q<HTMLButtonElement>(item, '.ds-flow-row');
     row.focus();
     expect(document.activeElement).toBe(row);
-    expect(row.getAttribute('aria-expanded')).toBe('false');
-    row.click();
+    // 无 result → running → 默认展开（混合策略）
     expect(row.getAttribute('aria-expanded')).toBe('true');
+    // 手动折叠仍然可用
+    row.click();
+    expect(row.getAttribute('aria-expanded')).toBe('false');
     const body = document.getElementById(row.getAttribute('aria-controls')!);
     expect(body).not.toBeNull();
+    expect(body?.hasAttribute('hidden')).toBe(true);
+    // 再点展开
+    row.click();
+    expect(row.getAttribute('aria-expanded')).toBe('true');
     expect(body?.hasAttribute('hidden')).toBe(false);
   });
 
@@ -474,14 +597,20 @@ describe('可访问性与降级', () => {
     expect(document.activeElement).toBe(summary);
     expect(summary.type).toBe('button');
 
-    summary.click();
+    // running → 组自动展开
     expect(list.hasAttribute('hidden')).toBe(false);
     expect(summary.getAttribute('aria-expanded')).toBe('true');
     expect(container.querySelector('.ds-flow')?.getAttribute('data-open')).toBe('true');
 
+    // 手动折叠
     summary.click();
     expect(list.hasAttribute('hidden')).toBe(true);
     expect(summary.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.ds-flow')?.getAttribute('data-open')).toBe('false');
+
+    summary.click();
+    expect(list.hasAttribute('hidden')).toBe(false);
+    expect(summary.getAttribute('aria-expanded')).toBe('true');
   });
 
   it('样式：无渐变、左侧发丝线时间线、深色与 reduced-motion 降级', () => {

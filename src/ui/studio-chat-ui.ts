@@ -358,6 +358,74 @@ export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioCha
   messageList.className = 'ds-sc-message-list';
   container.appendChild(messageList);
 
+  /**
+   * 正文区宽度可调（出资人 2026-11-01：「中间文字显示区域要跟 dsh 一样可以调整宽度」）。
+   *
+   * 做法：右侧一条拖动手柄，拖动改 --sc-content-width；宽度持久化在 localStorage，
+   * 下次打开沿用。手柄用 pointer 事件（鼠标/触控同一套），并做键盘可达（←/→ 微调）。
+   */
+  const CONTENT_WIDTH_KEY = 'studio.chat.contentWidth';
+  const CONTENT_WIDTH_MIN = 520;
+  const CONTENT_WIDTH_MAX = 1600;
+  const CONTENT_WIDTH_DEFAULT = 800;
+  const widthHandle = document.createElement('div');
+  widthHandle.className = 'ds-sc-width-handle';
+  widthHandle.setAttribute('role', 'separator');
+  widthHandle.setAttribute('aria-orientation', 'vertical');
+  widthHandle.setAttribute('aria-label', '调整正文宽度');
+  widthHandle.tabIndex = 0;
+  container.appendChild(widthHandle);
+
+  const readStoredWidth = (): number => {
+    try {
+      const raw = window.localStorage.getItem(CONTENT_WIDTH_KEY);
+      const n = raw === null ? NaN : Number(raw);
+      if (!Number.isFinite(n)) return CONTENT_WIDTH_DEFAULT;
+      return Math.min(CONTENT_WIDTH_MAX, Math.max(CONTENT_WIDTH_MIN, Math.round(n)));
+    } catch {
+      return CONTENT_WIDTH_DEFAULT;
+    }
+  };
+  const storeWidth = (px: number): void => {
+    try { window.localStorage.setItem(CONTENT_WIDTH_KEY, String(Math.round(px))); } catch { /* 隐私模式等 */ }
+  };
+  let contentWidth = readStoredWidth();
+  const applyContentWidth = (px: number): void => {
+    contentWidth = Math.min(CONTENT_WIDTH_MAX, Math.max(CONTENT_WIDTH_MIN, Math.round(px)));
+    container.style.setProperty('--sc-content-width', `${contentWidth}px`);
+    widthHandle.setAttribute('aria-valuenow', String(contentWidth));
+  };
+  applyContentWidth(contentWidth);
+
+  widthHandle.addEventListener('pointerdown', (event: PointerEvent) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = contentWidth;
+    const onMove = (move: PointerEvent): void => {
+      // 往左拖 → 变宽（内容区右边缘固定在屏幕中心，左边扩张）。
+      applyContentWidth(startWidth + (startX - move.clientX));
+    };
+    const onUp = (): void => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      storeWidth(contentWidth);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  });
+  widthHandle.addEventListener('keydown', (event: KeyboardEvent) => {
+    const step = event.shiftKey ? 64 : 16;
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      applyContentWidth(contentWidth + step);
+      storeWidth(contentWidth);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      applyContentWidth(contentWidth - step);
+      storeWidth(contentWidth);
+    }
+  });
+
   // 执行 Inspector：把 Workbench 右侧工具视图吸收进主 UI，不再另开桌面窗口。
   const inspector = document.createElement('aside');
   inspector.className = 'ds-sc-inspector';

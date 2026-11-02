@@ -21,6 +21,44 @@ export interface ClassifiedResponse {
   retryAfterMs?: number;
 }
 
+/**
+ * 载荷级错误分类的**唯一真源**（R4.5-N2）。
+ *
+ * 之前 HTTP 侧（parseBodyError）与 SSE 侧（classifySseFrame）各写了一套，
+ * 两者对同一个 `code=0` 的判定**相反**：
+ *   - HTTP 侧：`code === 0 && !err` → 不算错（DeepSeek 的正常成功包也带 code/status: 0）；
+ *   - SSE 侧：`code === 0` 且带 error/message → 判 **fatal**。
+ * 结果：同样的载荷，走 HTTP 是可重试、走 SSE 却 fatal —— 与上游语义冲突，
+ * 表现为「流里报了个 0 就直接放弃本轮」。
+ *
+ * 现在两条路径共用本函数，语义一致：
+ *   - 单独 `code:0`（无 error/message）→ **不算错**（正常成功包也带 code:0）；
+ *   - `code:0` 且带 error/message → 可重试（与 HTTP 侧 body-error 同口径）；
+ *   - 401/403/402 → 不可重试（鉴权/计费）；
+ *   - 429/500 → 可重试；其余带 error 的 code → 可重试。
+ *
+ * @param code 载荷里的 code/status（数字）；无则 undefined
+ * @param errText 载荷里的 error/message 文本；无则空串
+ * @param reasonPrefix 错误原因前缀（'body-error' / 'sse-error-payload'）
+ */
+export function classifyErrorPayload(
+  code: number | undefined,
+  errText: string,
+  reasonPrefix: string,
+): { retryable: boolean; reason: string } | null {
+  const hasErr = errText.trim().length > 0;
+  if (code === undefined && !hasErr) return null;
+  // DeepSeek 的正常成功包也会带 code/status: 0。单独 code:0 且没有明确错误信息时
+  // **绝不能**误报为上游失败（HTTP 侧一直这么判，SSE 侧此前不一致）。
+  if (code === 0 && !hasErr) return null;
+  // 401/403/402 等鉴权/计费错误即使包在 200 里也是 fatal（不可重试）。
+  if (code === 401 || code === 403 || code === 402) {
+    return { retryable: false, reason: `${reasonPrefix}-${code}` };
+  }
+  // 429 限流与 5xx、以及其余带错误信息的载荷 → 可重试。
+  return { retryable: true, reason: `${reasonPrefix}-${code ?? 'unknown'}` };
+}
+
 /** 解析 200 响应体里的错误载荷（DeepSeek 偶发在 200 内回 status=0 / error.message）。 */
 function parseBodyError(bodyText: string | null): { retryable: boolean; reason: string } | null {
   if (!bodyText) return null;
@@ -52,17 +90,22 @@ function parseBodyError(bodyText: string | null): { retryable: boolean; reason: 
   if (!obj || typeof obj !== 'object') return null;
   const o = obj as Record<string, unknown>;
   const code = typeof o.code === 'number' ? o.code : typeof o.status === 'number' ? o.status : undefined;
-  const err = o.error;
-  if (code === undefined && !err) return null;
-  // DeepSeek 的正常成功包也会带 code/status: 0。只有 0 与明确 error 同时出现时
-  // 才是“200 内嵌错误”；单独 code:0 绝不能误报为上游失败。
-  if (code === 0 && !err) return null;
-  // 401/403/402 等鉴权/计费错误即使包在 200 里也是 fatal
-  if (code === 401 || code === 403 || code === 402 || code === 429) {
-    return { retryable: code === 429, reason: `body-error-${code}` };
+  const errText = extractErrorText(o.error) || extractErrorText(o.message);
+  return classifyErrorPayload(code, errText, 'body-error');
+}
+
+/**
+ * 提取错误文本（兼容两种形态）：
+ *   - 字符串：`error: 'boom'` / `message: 'boom'`
+ *   - 对象：`error: { message: 'boom' }`（DeepSeek 实际用的是这一种）
+ */
+function extractErrorText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') {
+    const inner = (value as Record<string, unknown>).message;
+    if (typeof inner === 'string') return inner;
   }
-  // 其余 body 错误（含 status=0）按可重试处理
-  return { retryable: true, reason: `body-error-${code ?? 'unknown'}` };
+  return '';
 }
 
 /**
@@ -114,10 +157,18 @@ export function classifySseFrame(eventType: string | null, parsed: unknown): Cla
   if (!parsed || typeof parsed !== 'object') return null;
   const o = parsed as Record<string, unknown>;
   const code = typeof o.code === 'number' ? o.code : typeof o.status === 'number' ? o.status : undefined;
-  if ((code === 0 || code === 429 || code === 500) && (o.error || o.message)) {
-    return { verdict: code === 429 || code === 500 ? 'retryable' : 'fatal', status: 200, reason: `sse-error-payload-${code}` };
-  }
-  return null;
+  const errText = extractErrorText(o.error) || extractErrorText(o.message);
+  // R4.5-N2：与 HTTP 侧共用 classifyErrorPayload（同一真源）。
+  // 关键差异：此前 SSE 侧把 `code=0` 判 fatal，而 HTTP 侧判「不算错」——
+  // 同一个载荷走两条路径结论相反。现在一致：code=0 且带 error/message → 可重试；
+  // 单独 code:0（正常成功包也带）→ 不算错。
+  const classified = classifyErrorPayload(code, errText, 'sse-error-payload');
+  if (!classified) return null;
+  return {
+    verdict: classified.retryable ? 'retryable' : 'fatal',
+    status: 200,
+    reason: classified.reason,
+  };
 }
 
 /**

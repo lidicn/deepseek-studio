@@ -74,6 +74,27 @@ describe('StepFlowContainer (v0.18)', () => {
     sf.destroy();
   });
 
+  it('用户手动展开过的工具组，步骤结束（finish）后不被折叠', () => {
+    const sf = createStepFlowContainer();
+    sf.addToolEntry(0, 'a');
+    const group = sf.container.querySelector('.ds-sf-tool-group') as HTMLElement;
+    const toggle = sf.container.querySelector('.ds-sf-tool-group-toggle') as HTMLButtonElement;
+
+    // 步骤进行中：组是展开的；步骤结束 → 自动折叠
+    sf.finish(1, 1, 5);
+    expect(group.getAttribute('data-collapsed')).toBe('true');
+
+    // 用户手动点开 → 记下用户意图
+    toggle.click();
+    expect(group.getAttribute('data-collapsed')).toBe('false');
+    expect(group.getAttribute('data-user-toggled')).toBe('true');
+
+    // 下一次步骤结束：用户手动展开过的组**不再被折叠**
+    sf.finish(2, 2, 9);
+    expect(group.getAttribute('data-collapsed')).toBe('false');
+    sf.destroy();
+  });
+
   it('停止按钮接线 onStop', () => {
     const onStop = vi.fn();
     const sf = createStepFlowContainer(onStop);

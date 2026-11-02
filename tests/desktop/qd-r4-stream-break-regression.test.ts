@@ -179,8 +179,15 @@ describe('QD-R4-01 自动续跑的重试不再被自己的 pending 守卫挡死'
       await vi.advanceTimersByTimeAsync(30_000);
       // 页面 + 续跑#1 + 重试#1。修复前这里是 2（定时器回调被 pending 守卫 return）。
       expect(chatRequests(FakeXHR)).toHaveLength(3);
-      // 重试不应把 loopDepth 顶到上限：第 3 次请求的 loop 编号必须仍是 2 而不是 3。
-      expect(diagLines.some((l) => l.includes('auto-continue loop=2 computing PoW'))).toBe(true);
+      // 重试不应把 loopDepth 顶到上限：第 3 次请求的 loop 编号必须仍是 **1**。
+      //
+      // R4-H1（墨鉴 2026-11-02）修正：原实现 `:2357`/`:2359` **各** `loopDepth += 1`，
+      // 正常工具续跑每轮 +2 → 工具轮次预算被砍半（「跑几个工具后 tools 失灵」的机制）。
+      // 本用例原先断言 `loop=2`，那是**被审计判定为缺陷的旧行为**（+2 的结果）；
+      // 修复后正常续跑每轮 +1，重试不消耗 → 编号停在 1。
+      expect(diagLines.some((l) => l.includes('auto-continue loop=1 computing PoW'))).toBe(true);
+      // 负控：不能出现 +2 时代的 loop=2（重试若消耗预算就会变成 2）。
+      expect(diagLines.some((l) => l.includes('auto-continue loop=2 computing PoW'))).toBe(false);
       expect(chatUI.setBusy.mock.calls).toEqual([[true]]);
     } finally {
       handle.stop();

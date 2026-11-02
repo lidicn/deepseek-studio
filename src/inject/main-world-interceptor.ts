@@ -168,20 +168,74 @@ function kickMemorySelect(taskText: string): void {
   }).catch(() => []);
 }
 
-/** 有界等待预取结果；超时/失败保持上一帧 currentMemories，不阻塞请求。 */
-async function awaitMemorySelectBudget(limitMs = 120): Promise<void> {
-  const pendingRef = memorySelectState.pending;
+/**
+ * memory.select 预取的有界等待预算（毫秒）。
+ * 预算内拿到结果 → 本轮就注入；预算耗尽 → 沿用上一帧记忆，照常发送（绝不阻塞）。
+ */
+const MEM_SELECT_WAIT_BUDGET_MS = 120;
+
+/**
+ * 同步取一个已 settle 的预取结果（不给 promise 加状态位，用 WeakMap 记录最后一次 settle 的值）。
+ *
+ * 用途：abort 路径必须同步补发（proto.abort → 立即 origSend 再 origAbort，
+ * 保证 readyState=4 链不悬），不能 await；但如果预取**已经**完成，
+ * 本轮仍应带上新记忆。取不到就返回 null（调用方沿用上一帧记忆）。
+ */
+const settledMemoryRows = new WeakMap<object, Array<{ id: string; type: string; name: string; content: string; tags: string[] }>>();
+
+function takeSettledRows(
+  pendingRef: Promise<Array<{ id: string; type: string; name: string; content: string; tags: string[] }>> | null,
+): Array<{ id: string; type: string; name: string; content: string; tags: string[] }> | null {
+  if (!pendingRef) return null;
+  const known = settledMemoryRows.get(pendingRef);
+  if (!known) return null;
+  return known;
+}
+
+/**
+ * 消费一次 memory.select 预取结果并写入 currentMemories。
+ *
+ * **共用 helper**（卡 B 修复）：此前 fetch 路径与 XHR 延迟路径各写了一套消费逻辑，
+ * XHR 那套用 `void pendingSel.then(...)`（微任务排在当前同步块之后），
+ * 紧接着 `prepareChatSend()` 同步读 `currentMemories` —— 拿到的还是**上一轮**的值。
+ * 结果：为预取等了 120ms，本轮注入的仍是旧记忆，新记忆要等下一条 chat 请求才生效。
+ *
+ * 修法：**等待与赋值都在本函数内完成**，调用方在它 resolve 之后才构造请求体，
+ * 于是「本轮就带上新记忆」。两条路径共用本函数，根治「两份实现各写一遍」的分叉。
+ *
+ * 预算语义（limitMs）：pending 在预算内 settle → 用新结果；预算耗尽仍未 settle →
+ * 保持上一帧 currentMemories（降级，不清空），**绝不卡住发送**。
+ *
+ * 副作用：settled 的结果记进 settledMemoryRows，供 abort 路径**同步**取值
+ * （proto.abort 要求同步补发，不能 await）。
+ */
+async function consumeMemorySelect(
+  pendingRef: Promise<Array<{ id: string; type: string; name: string; content: string; tags: string[] }>> | null,
+  limitMs = 120,
+): Promise<void> {
   if (!pendingRef) return;
   const budget = new Promise<null>((resolve) => setTimeout(() => resolve(null), limitMs));
-  const rows = await Promise.race([pendingRef, budget]);
-  if (rows) {
-    currentMemories = rows;
+  let rows: Array<{ id: string; type: string; name: string; content: string; tags: string[] }> | null = null;
+  try {
+    rows = await Promise.race([pendingRef, budget]);
+  } catch {
+    rows = null; // 预取失败：保持上一帧，不抛
   }
-  // 只清理本次消费的那一个 pending；超时返回时若已有更新的预取，
-  // 不能把后续 XHR 还需要消费的 pending 一并抹掉。
+  if (rows) {
+    settledMemoryRows.set(pendingRef, rows);
+    if (rows.length > 0) {
+      currentMemories = rows;
+    }
+  }
+  // 只清理**本次消费的那一个** pending；超时返回时若已有更新的预取，不能抹掉。
   if (memorySelectState.pending === pendingRef) {
     memorySelectState.pending = null;
   }
+}
+
+/** 有界等待预取结果；超时/失败保持上一帧 currentMemories，不阻塞请求。 */
+async function awaitMemorySelectBudget(limitMs = MEM_SELECT_WAIT_BUDGET_MS): Promise<void> {
+  await consumeMemorySelect(memorySelectState.pending, limitMs);
 }
 
 // v1.0：MCP 工具列表缓存（启动时从宿主拉取，用于动态注入提示词，让 agent 知道有哪些 MCP 工具可用）
@@ -421,8 +475,36 @@ function byteLengthOf(text: string): number {
  * 表现为「工具卡片转完，回复停了」且状态栏永停在「执行中…」。
  *
  * 修复：让守卫显式豁免重试入口。重试只重发上一份 body，不依赖 pending。
+ *
+ * R4-H3（墨鉴 2026-11-02）：原先是**模块级单例 boolean** —— 并发的两个会话
+ * （QD-R7-01 之后多轮可以并发）会互相污染：会话 A 的重试标志会把会话 B 的
+ * pending 守卫也豁免掉，或 B 的结算把 A 的标志清掉。
+ * 改成**按会话键**存（与 QD-R7-01 的「预算按轮次」同口径）：
+ *   - 键取 chat 请求体里的 chat_session_id（无则退化为 turnId/流标识）；
+ *   - 读：只看**当前会话**是否有待发重试；
+ *   - 写/清：只动当前会话那条。
  */
-let continuationRetryPending = false;
+const continuationRetryPending = new Map<string, boolean>();
+/**
+ * 当前会话的稳定标识（由拦截器在捕获 chat 请求体时写入）。
+ *
+ * 之所以用模块级变量而不是直接读 loopState.lastChatBody：
+ * loopState 是 installMainWorldInterceptor 的**闭包内**变量，模块顶层拿不到。
+ * 这里由「捕获请求体」的路径统一写入，读写重试标志的地方都走它。
+ */
+let currentChatSessionKey = '';
+/** 取当前会话的稳定标识（用于按会话维度隔离重试标志）。 */
+function currentSessionKey(): string {
+  return currentChatSessionKey || 'unknown-session';
+}
+function isContinuationRetryPending(): boolean {
+  return continuationRetryPending.get(currentSessionKey()) === true;
+}
+function setContinuationRetryPending(value: boolean): void {
+  const key = currentSessionKey();
+  if (value) continuationRetryPending.set(key, true);
+  else continuationRetryPending.delete(key);
+}
 // QD-R5-01: first-attempt (non-continuation) stream break auto-retry budget.
 // Why a separate counter: the continuation path already has errorRetryCount + exponential
 // backoff (see the retryable branch of autoContinueWithPow), but a first-attempt failure
@@ -1055,6 +1137,10 @@ function captureChatRequest(body: string, loopState: LoopState, diag: Intercepto
       const fromPath = normalizeSessionKeyFromPathname(pathname);
       if (fromPath) loopState.newChatSessionId = fromPath;
     }
+    // R4-H3：把当前会话标识写进模块级变量，供「按会话维度隔离重试标志」使用。
+    // 取值优先级：请求体里的 chat_session_id → URL 里的会话 id → 未知（此时同一时刻
+    // 只有一个会话在跑，退化为共享键也不会误伤）。
+    currentChatSessionKey = loopState.newChatSessionId ?? '';
     let userText = typeof parsed.prompt === 'string' ? parsed.prompt : '';
     if (!userText && Array.isArray(parsed.messages)) {
       for (let i = parsed.messages.length - 1; i >= 0; i--) {
@@ -1348,7 +1434,20 @@ function installXhrHooks(
     // C1-F1: 如果 proto.send 因 memory.select 有界等待被延迟，
     // 用户此时 abort → 立即触发延迟 send（doSend 里会检测已 abort 并立即 origAbort），
     // 保证 readyState=4 回调链正常触发，不留下悬挂 XHR。
-    const delayedSend = (this as Record<string, unknown>).__dsDelayedSend as ((body?: Document | XMLHttpRequestBodyInit | null) => void) | undefined;
+    // 卡 B：延迟 send 现在分「正常（异步消费记忆后发）」与「abort（同步补发）」两条，
+    // abort 路径必须同步完成「补发 origSend + origAbort」，所以用同步版本。
+    const delayedSend = (this as Record<string, unknown>).__dsDelayedSend as
+      | ((body?: Document | XMLHttpRequestBodyInit | null) => void)
+      | undefined;
+    const delayedSendSync = (this as Record<string, unknown>).__dsDelayedSendSync as
+      | (() => void)
+      | undefined;
+    if (typeof delayedSendSync === 'function') {
+      (this as Record<string, unknown>).__dsDelayedSend = undefined;
+      (this as Record<string, unknown>).__dsDelayedSendSync = undefined;
+      delayedSendSync();
+      return undefined;
+    }
     if (typeof delayedSend === 'function') {
       (this as Record<string, unknown>).__dsDelayedSend = undefined;
       delayedSend();
@@ -1445,19 +1544,34 @@ function installXhrHooks(
     const skillsWait = isChat && !loopState?.inFirstAttemptResend ? kickSkillsRefresh() : null;
     if (pendingSel || skillsWait) {
       let settled = false;
-      // 延迟执行真正的 origSend；检测到 abort 时先发再 origAbort，保证 readyState=4。
-      const doDelayedSend = () => {
-        if (settled) return;
-        settled = true;
-        (this as Record<string, unknown>).__dsDelayedSend = undefined;
-        // 消费 pending 结果（若此时 fetch 路径还没消费）
-        if (pendingSel && memorySelectState.pending === pendingSel) {
-          void pendingSel.then((rows) => {
-            if (rows && rows.length > 0) currentMemories = rows;
-          });
-          memorySelectState.pending = null;
-        }
-        const wasAborted = Boolean((this as Record<string, unknown>)[DS_ABORTED_FLAG]);
+      /**
+       * 记忆消费**只做一次**，结果由两条路径共享：
+       *   - 正常路径：consumePromise resolve 后 → doSendNow()（本轮就带上新记忆）；
+       *   - abort 路径：同步取 takeSettledRows（不 await）。
+       *
+       * 预算：consumeMemorySelect 自带 120ms —— pending 可能**永不 settle**
+       * （真机见过宿主无响应），所以等的是「消费函数」而不是 pending 本身，
+       * 到点必然返回（降级用上一帧记忆），绝不把发送卡住。
+       */
+      const consumePromise = consumeMemorySelect(pendingSel, MEM_SELECT_WAIT_BUDGET_MS);
+      /**
+       * 延迟执行真正的 origSend；检测到 abort 时先发再 origAbort，保证 readyState=4。
+       *
+       * 卡 B 修复：XHR 路径消费 memory.select 预取结果时**必须先 await** 再构造请求体。
+       * 旧实现用 `void pendingSel.then(...)`（微任务排在当前同步块之后），紧接着的
+       * `prepareChatSend()` 同步读 currentMemories 拿到的还是上一轮的值：
+       * 为预取等了 120ms，本轮注入的仍是旧记忆，新记忆要等下一条 chat 请求才生效。
+       *
+       * **同步性约束**：abort 包装（proto.abort）会**同步**调用本函数，
+       * 要求「先补发 origSend、再 origAbort」在同一同步块内完成，readyState=4 链不能悬。
+       * 因此拆成两段：
+       *   - `doSendNow()`：同步做「prepareChatSend + origSend(+origAbort)」，绝不 await；
+       *   - 记忆消费在两条路径前都**先 await**（正常路径 await pendingSel；
+       *     abort 路径 pendingSel 若已 settle 则同步取其值，取不到就放弃本轮记忆更新）。
+       * 正常路径：await consumeMemorySelect(pendingSel) → doSendNow()。
+       * abort 路径：同步取 pendingSel 已 settle 的值（拿不到就跳过）→ doSendNow()。
+       */
+      const doSendNow = (): void => {
         try {
           // 延迟发送也必须先挂响应钩子，否则工具解析、哨兵和断流结算全部失效。
           prepareChatSend();
@@ -1465,20 +1579,49 @@ function installXhrHooks(
         } catch (e) {
           // 延迟 send 的异常走 setTimeout 回调；这里让 onreadystatechange 链自然处理。
           // eslint-disable-next-line no-console
-          console.error('[interceptor] delayed xhr origSend threw:', e);
+          console.error('[interceptor] delayed xhr origSend threw:', (e as Error)?.message ?? e);
           return;
         }
-        if (wasAborted) {
+        if (Boolean((this as Record<string, unknown>)[DS_ABORTED_FLAG])) {
           (origAbort as (...a: unknown[]) => unknown).call(this);
         }
       };
+      const doDelayedSend = (): void => {
+        if (settled) return;
+        settled = true;
+        (this as Record<string, unknown>).__dsDelayedSend = undefined;
+        // 记忆消费由下面的 consumePromise 统一做（只做一次，结果共享给 abort 路径）。
+        // 这里只负责构造请求体并发送。
+        void consumePromise.then(doSendNow);
+      };
+      /**
+       * abort 专用的同步补发：不做 await，直接用 pendingSel **已 settle** 的值
+       * （settledMemoryRows 记录），没有就用上一帧记忆。
+       * 之后同步执行 doSendNow()（含 origAbort），保证 readyState=4 链完整。
+       */
+      const doDelayedSendSyncForAbort = (): void => {
+        if (settled) return;
+        settled = true;
+        (this as Record<string, unknown>).__dsDelayedSend = undefined;
+        // abort 路径不能 await（proto.abort 要求同步补发）。
+        // pendingSel 若**已经 settle**，这里用同步取值拿到本轮记忆；否则放弃本轮记忆更新，沿用上一帧。
+        const rows = takeSettledRows(pendingSel);
+        if (rows && rows.length > 0) currentMemories = rows;
+        if (pendingSel && memorySelectState.pending === pendingSel) {
+          memorySelectState.pending = null;
+        }
+        doSendNow();
+      };
       // 暴露给 proto.abort 包装：延迟期间用户 abort → 立即触发 send 再 abort。
       (this as Record<string, unknown>).__dsDelayedSend = doDelayedSend;
-      // 两类等待各自有界，全部就绪（或各自超时）后再发；总延迟 ≤ max(120, 150)ms。
-      const waits: Array<Promise<unknown>> = [];
-      if (pendingSel) waits.push(raceBudget(pendingSel, 120));
-      if (skillsWait) waits.push(raceBudget(skillsWait, SKILLS_WAIT_BUDGET_MS));
-      void Promise.all(waits).then(() => doDelayedSend());
+      // abort 专用的同步补发入口（卡 B）：必须同步完成「origSend + origAbort」，
+      // 不能 await 记忆消费（否则 readyState=4 链会悬）。
+      (this as Record<string, unknown>).__dsDelayedSendSync = doDelayedSendSyncForAbort;
+      // 技能刷新也要有界（≤150ms）；两者各自超时后即发。
+      const skillsPromise = skillsWait
+        ? raceBudget(skillsWait, SKILLS_WAIT_BUDGET_MS).then(() => undefined)
+        : Promise.resolve();
+      void Promise.all([consumePromise, skillsPromise]).then(() => doDelayedSend());
       // proto.send 同步返回 void；origSend 将在预算到期后或依赖就绪后执行。
       return void 0;
     }
@@ -1760,7 +1903,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       if (loopState.cancelAutoContinue) loopState.cancelAutoContinue();
       const timer = loopState.autoContinueTimerRef;
       if (timer) { clearTimeout(timer); loopState.autoContinueTimerRef = null; }
-      continuationRetryPending = false;
+      setContinuationRetryPending(false);
       pending.length = 0;
       interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'user-aborted', triggered: false });
       interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'user-aborted' });
@@ -2010,7 +2153,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
         loopDepth = 0;
         return;
       }
-      continuationRetryPending = true;
+      setContinuationRetryPending(true);
     }
     if (autoContinueTimer) clearTimeout(autoContinueTimer);
     autoContinueTimer = setTimeout(() => {
@@ -2030,7 +2173,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     firstAttemptResendActive = true;
     firstAttemptResendPending = true;
     // 豁免 autoContinueWithPow 的 pending 守卫（重发不依赖 pending）。
-    continuationRetryPending = true;
+    setContinuationRetryPending(true);
     if (autoContinueTimer) clearTimeout(autoContinueTimer);
     autoContinueTimer = setTimeout(() => {
       autoContinueTimer = null;
@@ -2128,7 +2271,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       // 否则状态栏在重试退避窗口里闪一下「完成」，用户会以为已经结束。
       const stillRunning = firstAttemptResendActive
         || firstAttemptResendPending
-        || continuationRetryPending
+        || isContinuationRetryPending()
         || autoContinueTimer !== null;
       if (!stillRunning) {
         try { chatUI.setBusy(false); } catch { /* ignore */ }
@@ -2159,7 +2302,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   // QD-R4-04：把「取消在飞续跑」暴露给 XHR hook（用户 abort 分支用）。
   loopState.cancelAutoContinue = () => {
     if (autoContinueTimer) { clearTimeout(autoContinueTimer); autoContinueTimer = null; }
-    continuationRetryPending = false;
+    setContinuationRetryPending(false);
     loopState.protocolRepairUsed = false;
     loopState.protocolRepairPending = false;
     loopState.autoContinueTimerRef = autoContinueTimer;
@@ -2175,7 +2318,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     // 所以这里清了，本次请求体就是干净的。
     pending.length = 0;
     if (autoContinueTimer) { clearTimeout(autoContinueTimer); autoContinueTimer = null; }
-    continuationRetryPending = false;
+    setContinuationRetryPending(false);
     idleContinueCount = 0;
     collectedExecutions.length = 0;
     toolCallDedupe.reset();
@@ -2227,7 +2370,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     // 续跑发出前 pending 已被清空（F8 修复），若此处仍要求 pending>0，
     // 429/5xx/断网后的退避定时器回调会被第一行守卫挡死，一次重试都发不出去。
     if (!loopState.lastChatBody) return;
-    if (pending.length === 0 && !continuationRetryPending && !loopState.protocolRepairPending) return;
+    if (pending.length === 0 && !isContinuationRetryPending() && !loopState.protocolRepairPending) return;
     const isProtocolRepair = loopState.protocolRepairPending === true;
     loopState.protocolRepairPending = false;
     // QD-R5-01：首轮重发必须原样重发。套上 <original_task>/<tool_results> 会把
@@ -2238,14 +2381,23 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     // QD-R4-04：用户主动停止后，任何续跑（含定时器回调）一律不再发出。
     if (loopState.abortedByUser) {
       d('auto-continue suppressed: user aborted this turn');
-      continuationRetryPending = false;
+      setContinuationRetryPending(false);
       return;
     }
-    // 重试不应消耗 loopDepth：它是「工具续跑」的步数预算，
-    // 一次 429 就吃掉一步会让真正的工具轮次被提前耗尽。
-    if (!continuationRetryPending && !isProtocolRepair) loopDepth += 1;
-    continuationRetryPending = false;
-    if (!resendVerbatim && !isProtocolRepair) loopDepth += 1;
+    // R4-H1（墨鉴）：loopDepth 是「工具续跑」的**轮次预算**，每轮只应 +1。
+    // 原实现有两处独立自增：
+    //   :2357 `if (!continuationRetryPending && !isProtocolRepair) loopDepth += 1;`
+    //   :2359 `if (!resendVerbatim && !isProtocolRepair) loopDepth += 1;`
+    // 正常工具续跑（非重试、非协议修复、非原样重发）**两个条件同时成立 → 每轮 +2**，
+    // 工具轮次预算被砍半 —— 这就是「跑几个工具后 tools 失灵」的机制。
+    //
+    // 修法：合并成一次判断，只在「正常工具续跑」时 +1；
+    //   - 重试（continuationRetryPending）：不消耗预算；
+    //   - 协议修复（isProtocolRepair）：不消耗预算；
+    //   - 原样重发（resendVerbatim）：不消耗预算。
+    const isNormalToolContinuation = !isContinuationRetryPending() && !isProtocolRepair && !resendVerbatim;
+    if (isNormalToolContinuation) loopDepth += 1;
+    setContinuationRetryPending(false);
     // v0.18：步骤编号随续跑递增，工具归到对应步骤
     stepFlowStep = loopDepth;
     stepReasoningAccum = '';
@@ -2426,7 +2578,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               d(`auto-continue retryable: status=${xhr.status} reason=${verdict.reason}, retry ${errorRetryCount}/${MAX_ERROR_RETRIES} in ${delay}ms`);
               // QD-R4-01：标记重试入口，否则定时器回调会被 autoContinueWithPow 的
               // pending 守卫挡死（pending 在发出续跑前已清空）。
-              continuationRetryPending = true;
+              setContinuationRetryPending(true);
               autoContinueTimer = setTimeout(() => { autoContinueTimer = null; void autoContinueWithPow(); }, delay);
               interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: `error-retry-${verdict.reason}`, triggered: true });
             } else if (isTruncated) {
@@ -2438,7 +2590,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               if (autoContinueTimer) clearTimeout(autoContinueTimer);
               const delay = errorBackoffMs(errorRetryCount - 1);
               d(`auto-continue truncated continuation: bytes=${loopState.streamBytes}, retry ${errorRetryCount}/${MAX_ERROR_RETRIES} in ${delay}ms`);
-              continuationRetryPending = true;
+              setContinuationRetryPending(true);
               autoContinueTimer = setTimeout(() => { autoContinueTimer = null; void autoContinueWithPow(); }, delay);
               interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'continuation-truncated', triggered: true });
             } else if (loopDepth >= MAX_LOOP) {
@@ -2715,6 +2867,27 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       } catch {
         /* ignore */
       }
+      // R4-H2（墨鉴）：卸载后**不得再发出幽灵续跑请求**。
+      // 原实现 stop() 只卸 hook，续跑定时器（autoContinueTimer）仍在飞，
+      // 定时器回调 → autoContinueWithPow() → 继续发 chat 请求（用户已离开/页面已卸载）。
+      // 这里清掉所有续跑相关定时器与待发标志：
+      //   - autoContinueTimer：工具续跑 / 错误重试 / 协议修复的调度定时器；
+      //   - loopState.autoContinueTimerRef：首轮原样重发的调度定时器；
+      //   - continuationRetryPending / firstAttemptResendPending / protocolRepairPending：
+      //     「待发出」标志，即使定时器已清，也不得在后续路径里复活。
+      if (autoContinueTimer !== null) {
+        clearTimeout(autoContinueTimer);
+        autoContinueTimer = null;
+      }
+      const refTimer = loopState.autoContinueTimerRef;
+      if (refTimer) {
+        clearTimeout(refTimer);
+        loopState.autoContinueTimerRef = null;
+      }
+      setContinuationRetryPending(false);
+      firstAttemptResendPending = false;
+      loopState.protocolRepairPending = false;
+      loopState.abortedByUser = true;
       // P0：卸载后不再用本实例的 sender 发运行期刷新（避免 stop 之后还在拉清单）。
       if (skillsRefreshSender === sender) skillsRefreshSender = null;
     },

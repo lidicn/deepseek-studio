@@ -24,9 +24,9 @@ export const STUDIO_CHAT_CSS = `
   --ds-ink-3: #8b8b95;
   --ds-line: #e9e9e4;
   --ds-line-2: #d7d7d1;
-  --ds-accent: #4D6BFE;
-  --ds-accent-ink: #3a55d8;
-  --ds-accent-soft: rgba(77, 107, 254, 0.12);
+  --ds-accent: #4176e6;
+  --ds-accent-ink: #34415b;
+  --ds-accent-soft: rgba(65, 118, 230, 0.10);
   --ds-on-accent: #ffffff;
   --ds-violet: #8b5cf6;
   --ds-ok: #22c55e;
@@ -35,11 +35,24 @@ export const STUDIO_CHAT_CSS = `
   --ds-danger-soft: rgba(239, 68, 68, 0.06);
   --ds-warn: #8a5b00;
   --ds-warn-soft: rgba(138, 91, 0, 0.07);
-  --ds-user-bg: #3f5ae0;
-  --ds-user-ink: #ffffff;
+  /* 用户气泡：改用 DSH（DeepSeek Harness Desktop）的观感——冷灰底 + 深色字，不再是扎眼的深蓝实心块。
+   * 色值取自 DSH 主题令牌真源（dsh-client-ui-theme/lib/client.js）：
+   *   --dsw-specific-bubble        = --dsw-static-deepseek-50  → #edf3fe
+   *   --dsw-specific-bubble-highlight = --dsw-static-deepseek-200 → #d3e2ff
+   *   --dsw-static-neutral-bluish-1000 = #0f1115（正文墨色）
+   *   --dsw-static-neutral-bluish-200  = #e1e5ee（气泡描边）
+   *   --dsw-static-neutral-bluish-700  = #61666b（次级文字）
+   * 深蓝实心块太抢眼（出资人 2026-11-01 反馈），改为浅蓝底 + 深墨字，权重靠排版而非色块。 */
+  --ds-user-bg: #edf3fe;
+  --ds-user-ink: #0f1115;
+  --ds-user-border: #d3e2ff;
+  --ds-user-bg-hover: #d3e2ff;
   --ds-code-bg: #f4f4f1;
   --ds-think-bg: rgba(31, 31, 38, 0.035);
   --ds-shadow-soft: 0 6px 18px rgba(24, 24, 32, 0.1);
+  /* 正文区宽度（可调）：用户像 DSH 那样拖动调整中间文字区的宽度。
+   * 几何尺寸，不是主题色，用 --sc- 前缀，不进 --ds-* 明暗契约。 */
+  --sc-content-width: 800px;
   /* chrome 增补令牌：玻璃面 + 浮起投影，只服务骨架件 */
   --ds-chrome-surface: rgba(255, 255, 255, 0.84);
   --ds-chrome-blur: saturate(180%) blur(14px);
@@ -86,7 +99,9 @@ export const STUDIO_CHAT_CSS = `
 .ds-sc-message-list {
   flex: 1;
   overflow-y: auto;
-  padding: 28px max(20px, calc(50% - 400px)) 14px;
+  /* 正文区宽度可调：--sc-content-width 由拖动手柄写入容器 style（并持久化）。
+   * 左右对称 padding 让内容居中，且宽度 = min(--sc-content-width, 可用宽度)。 */
+  padding: 28px max(20px, calc(50% - var(--sc-content-width, 800px) / 2)) 14px;
   /* fab 避让：JS 把 fab 下沿高度写入 --sc-fab-guard，首行内容让到悬浮按钮下面。
    * 这是几何尺寸不是主题色，用 --sc- 前缀，不进 --ds-* 明暗两套契约。 */
   padding-top: max(28px, var(--sc-fab-guard, 0px));
@@ -107,6 +122,45 @@ export const STUDIO_CHAT_CSS = `
 .ds-sc-message-list::-webkit-scrollbar-thumb:hover {
   background: var(--ds-ink-3);
   background-clip: padding-box;
+}
+
+/* ===== 正文宽度调节手柄（出资人 2026-11-01：宽度可调，像 DSH 一样拖动） ===== */
+.ds-sc-width-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  /* 贴在**正文区右缘**，不是容器右缘：正文区宽 = --sc-content-width，
+   * 左右 padding = max(20px, 50% - width/2)，所以右缘 = 50% + width/2。
+   * 用 calc 把手柄定位到该处；视口很窄时 padding 退化为 20px，用 min 兜住。 */
+  right: max(20px, calc(50% - var(--sc-content-width, 800px) / 2));
+  width: 12px;
+  margin-right: -6px;
+  cursor: ew-resize;
+  z-index: 5;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+.ds-sc-width-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 3px;
+  height: 44px;
+  border-radius: 999px;
+  background: var(--ds-line-2);
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+.ds-sc-width-handle:hover::after,
+.ds-sc-width-handle:focus-visible::after {
+  opacity: 1;
+  background: var(--ds-accent);
+}
+.ds-sc-width-handle:focus-visible {
+  outline: 1px solid var(--ds-accent);
+  outline-offset: -1px;
 }
 
 /* ===== 空状态 ===== */
@@ -199,12 +253,13 @@ export const STUDIO_CHAT_CSS = `
   line-height: 1.6;
 }
 
-/* ===== 用户消息：右对齐气泡（聊天惯例） ===== */
+/* ===== 用户消息：右对齐气泡（DSH 观感：浅蓝底 + 深墨字，不再深蓝实心块） ===== */
 .ds-sc-msg-user {
   align-self: flex-end;
   max-width: min(72%, 560px);
   background: var(--ds-user-bg);
   color: var(--ds-user-ink);
+  border: 1px solid var(--ds-user-border);
   border-radius: 16px 16px 5px 16px;
   padding: 9px 15px;
   font-size: 14.5px;
@@ -212,6 +267,11 @@ export const STUDIO_CHAT_CSS = `
   white-space: pre-wrap;
   word-break: break-word;
   position: relative;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.ds-sc-msg-user:hover {
+  background: var(--ds-user-bg-hover);
+  border-color: var(--ds-accent-soft);
 }
 
 /* ===== 助手消息：无框正文文档流，层级靠字号/行高/留白 ===== */
@@ -313,12 +373,12 @@ export const STUDIO_CHAT_CSS = `
 }
 
 /* ===== 思考块：可折叠 + 降噪（细边线、极浅底） ===== */
+/* 出资人 2026-11-01：展开态那条深蓝竖线太扎眼 → 去掉，只留中性细边线。 */
 .ds-sc-think {
   margin: 0 0 14px; overflow: hidden;
   border-left: 2px solid var(--ds-line-2); background: var(--ds-think-bg);
   border-radius: 0 8px 8px 0;
 }
-.ds-sc-think.open { border-left-color: var(--ds-accent); }
 .ds-sc-think-head {
   display: flex; align-items: center; gap: 7px; padding: 5px 12px;
   color: var(--ds-ink-3); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase;
@@ -742,9 +802,9 @@ export const STUDIO_CHAT_CSS = `
     --ds-ink-3: #8a8a95;
     --ds-line: #2b2b32;
     --ds-line-2: #3b3b45;
-    --ds-accent: #5D7BFF;
+    --ds-accent: #5686fe;
     --ds-accent-ink: #93a9ff;
-    --ds-accent-soft: rgba(122, 148, 255, 0.16);
+    --ds-accent-soft: rgba(86, 134, 254, 0.14);
     --ds-on-accent: #ffffff;
     --ds-violet: #a68cff;
     --ds-ok: #22c55e;
@@ -753,8 +813,11 @@ export const STUDIO_CHAT_CSS = `
     --ds-danger-soft: rgba(239, 68, 68, 0.1);
     --ds-warn: #e0b262;
     --ds-warn-soft: rgba(224, 178, 98, 0.1);
-    --ds-user-bg: #3f52c9;
-    --ds-user-ink: #f3f4ff;
+    /* 用户气泡深色态：同样走 DSH 观感（深色底 + 浅字），不再深蓝实心块。 */
+    --ds-user-bg: #23262e;
+    --ds-user-ink: #e9ecf2;
+    --ds-user-border: #34415b;
+    --ds-user-bg-hover: #2b2f3a;
     --ds-code-bg: #202027;
     --ds-think-bg: rgba(255, 255, 255, 0.04);
     --ds-shadow-soft: 0 6px 18px rgba(0, 0, 0, 0.45);
