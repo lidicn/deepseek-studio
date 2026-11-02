@@ -104,6 +104,8 @@ export function createHostClient(options: HostClientOptions): HostClient {
   // v0.31：监听 userToken 变更（登出/换号），变更后重新 hello 上报最新账号指纹。
   let tokenStorageHandler: ((ev: StorageEvent) => void) | null = null;
   const pendingToolCalls = new Map<string, { resolve: (r: ExecuteResult) => void; timer: ReturnType<typeof setTimeout> }>();
+  // C1 墨鉴 R3-6：同意弹窗句柄表 —— 宿主发 consent-abort 时据此关掉对应弹窗。
+  const consentHandles = new Map<string, { dispose(): void }>();
   const pendingKv = new Map<string, { resolve: (v: unknown, error?: string) => void }>();
   const pendingEnvelope = new Map<string, { resolve: (v: unknown) => void }>();
   const connectedCallbacks = new Set<() => void>();
@@ -215,9 +217,21 @@ export function createHostClient(options: HostClientOptions): HostClient {
           send({ type: 'result', callId: msg.callId, ok: false, error: e instanceof Error ? e.message : String(e) }),
         );
     } else if (msg.type === 'consent-required') {
-      showConsent({ tool: msg.tool, params: msg.params, meta: msg.meta }, (decision: ConsentDecision) => {
+      const handle = showConsent({ tool: msg.tool, params: msg.params, meta: msg.meta }, (decision: ConsentDecision) => {
+        // 已决策 → 从作废表里摘掉（避免 abort 晚到时误关别的弹窗）。
+        consentHandles.delete(msg.callId);
         send({ type: 'consent-decision', callId: msg.callId, decision });
       });
+      // C1 墨鉴 R3-6：登记同意弹窗的句柄 —— 宿主超时/断连时会发 consent-abort，
+      // 页面据此**关掉那个弹窗**（否则用户对着一个已作废的弹窗点「同意」，点了没反应）。
+      consentHandles.set(msg.callId, handle);
+    } else if (msg.type === 'consent-abort') {
+      // C1 墨鉴 R3-6：同意请求已作废（宿主超时或页端断开）→ 关掉弹窗，不再回 decision。
+      const h = consentHandles.get(msg.callId);
+      if (h) {
+        consentHandles.delete(msg.callId);
+        h.dispose();
+      }
     } else if (msg.type === 'tool-call-result') {
       const p = pendingToolCalls.get(msg.callId);
       if (p) {

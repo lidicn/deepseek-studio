@@ -51,6 +51,9 @@ const infoSteps: Step[] = [
   // 先以信息级接入（移植文件与上游有意分叉，红是真实待办而非噪音）；待 7 个移植文件
   // 与上游对齐后再升阻塞级。需能读到 E:\NAS\deepseek-pp，缺失时脚本自行 exit 1 不崩闸门。
   { name: 'upstream-drift', cmd: 'node scripts/check-upstream-drift.mjs' },
+  // 原文入库守卫（20261102）：抓包/postData 类会话原文不得进仓库（20261031 net-memsel 事件教训）。
+  // 信息级：红了不阻塞，点名文件与规则进 logs/gate-info.log，提交前人工处置（移 logs/** 或脱敏）。
+  { name: 'private-leak', cmd: 'npx tsx tools/audit/private-leak.ts' },
 ];
 
 function main(): void {

@@ -200,6 +200,21 @@ PM 在第 6–7 步前点名要求「做完这两步后专门跑一遍 `save →
 | `memory-refactor-proto-diff.mjs` | 公开/private 方法面分组比对 + private 去处核对 | **PASS（EXIT=0）**；公开 23/23、private 无丢失 |
 | `memory-chain-probe.ts` | 两条链路专项：递归打桩计数 + 半更新自洽校验 | **PROBE_EXIT=0**；见 §6.3 |
 
+### 6.5 行尾归一化（2026-11-01 补）
+
+**发现**：7 个重构产物文件（门面 + 6 模块）**行尾是混的** —— 搬运来的方法体是 CRLF（原文 `memory-store.ts` 是全 CRLF），新写的头部/import 是 LF（生成器模板用 `\n`）。
+
+**仓库惯例**：`core.autocrlf=true`，git 侧规范是 LF（checkout 时才转成本地行尾）；仓库里 LF 与 CRLF 文件本来混存（`desktop-host.ts`/`task-loop.ts` 全 LF，`web-engine.ts`/`agent-loop.ts` 全 CRLF），gate 不检查行尾。
+
+**处理**：
+1. 生成器加 `toLF()` 归一化（`logs/verify-exit/memory-refactor-apply.mjs`）——**写文件前统一为 LF**，与 git 侧规范一致、避免将来 checkout/提交反复横跳；
+2. 重新生成全部 8 步后，**7 个文件与 HEAD 提交产物逐字节一致**（`git diff --numstat` 输出为空），即**零回归**——顺带验证了生成器的可复现性（原始副本 → 生成器 → 与提交产物逐字节相同）；
+3. 两个比对工具补 **EOL 归一化**（`memory-refactor-body-hash.mjs`、`memory-refactor-frozen-diff.mjs`）——原先直接比原始文本，`\r\n` vs `\n` 会让 41 个搬运体全部误判 `differing`。修正后 `identical 41 / differing 0`。
+
+**最终行尾**：7 个文件**全 LF**（门面 361 / types 136 / core 440 / storage 474 / retrieval 145 / audit 138 / candidates 134 行）。
+
+> 一条如实记录：`git status` 仍把这 7 个文件标为 `M`，但 `git diff --numstat` 为**空**——那是 `core.autocrlf=true` 的转换伪影（git 提示 "LF will be replaced by CRLF"），**内容零差异**，不是未提交改动。
+
 ---
 
 ## 七、改动文件清单（全部我域内）

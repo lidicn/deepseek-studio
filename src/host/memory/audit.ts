@@ -9,6 +9,7 @@
 import type { MemoryLogEntry, MemoryRow } from './types';
 import type { StoreContext } from './types';
 import { parseCandidate, parseSnapshot, snapshotFingerprint, snapshotOf } from './core';
+import { isAuditDecryptFailed } from '../audit-crypto';
 
 // ── 域方法 ──────────────────────────────────────────────────────────────
 
@@ -60,16 +61,23 @@ export async function listLog(ctx: StoreContext, opts?: { limit?: number; memory
       >[];
       entries = rows.map((r) => {
         const noteValue = ctx.audit.open(r.note);
+        // C1 P0-1 / BUG-017：解密失败返回哨兵 → 显式标记，rollback 据此拒绝操作。
+        const beforeRaw = ctx.audit.open(r.before_json);
+        const afterRaw = ctx.audit.open(r.after_json);
+        const beforeUndecryptable = isAuditDecryptFailed(beforeRaw);
+        const afterUndecryptable = isAuditDecryptFailed(afterRaw);
         return {
           id: Number(r.id),
           ts: Number(r.ts ?? 0),
           op: String(r.op ?? ''),
           memoryId: typeof r.memory_id === 'string' ? r.memory_id : null,
           actor: typeof r.actor === 'string' ? r.actor : null,
-          before: parseSnapshot(ctx.audit.open(r.before_json)),
-          after: parseSnapshot(ctx.audit.open(r.after_json)),
+          before: beforeUndecryptable ? null : parseSnapshot(beforeRaw),
+          after: afterUndecryptable ? null : parseSnapshot(afterRaw),
+          ...(beforeUndecryptable ? { beforeUndecryptable: true } : {}),
+          ...(afterUndecryptable ? { afterUndecryptable: true } : {}),
           note:
-            noteValue === null || noteValue === undefined
+            noteValue === null || noteValue === undefined || isAuditDecryptFailed(noteValue)
               ? null
               : typeof noteValue === 'string'
                 ? noteValue
@@ -89,6 +97,19 @@ export async function rollback(ctx: StoreContext, logId: number): Promise<{ ok: 
     const all = await listLog(ctx, { limit: 100000 });
     const entry = all.find((e) => e.id === logId);
     if (!entry) return { ok: false, error: 'log entry not found' };
+
+    // C1 P0-1 / BUG-017：**before 存在但解不开 → 必须拒绝，禁止走删除分支**。
+    // 原实现：解密失败返回 null → `entry.before` 为 null → 落到 `deleteMemoryRow` 分支
+    // → **本该恢复的操作变成静默删除**，还返回 `{ok:true}`，用户毫不知情。
+    // 现在：显式拒绝并报错，数据原地不动。
+    if (entry.beforeUndecryptable) {
+      return {
+        ok: false,
+        error:
+          'audit snapshot cannot be decrypted (key mismatch or corrupted ciphertext) — ' +
+          'refusing to roll back because the previous state is unknown; the memory row was left untouched',
+      };
+    }
 
     if (entry.op === 'candidate-promote') {
       if (entry.memoryId) ctx.deleteMemoryRow(entry.memoryId);

@@ -35,6 +35,16 @@ export interface MemoryLogEntry {
   before: MemoryRow | null;
   after: MemoryRow | null;
   note: string | null;
+  /**
+   * C1 P0-1 / BUG-017：before 快照**存在但解不开**（密钥不对 / 密文损坏）。
+   *
+   * 原实现里解密失败返回 null，与「本来就没有 before」不可区分 →
+   * rollback 走 `deleteMemoryRow` 分支 → **本该恢复的操作变成静默删除**。
+   * 现在显式标记，rollback 据此**拒绝操作并报错**（fail-closed）。
+   */
+  beforeUndecryptable?: boolean;
+  /** 同上：after 快照存在但解不开。 */
+  afterUndecryptable?: boolean;
 }
 
 export interface MemoryRow extends Memory {

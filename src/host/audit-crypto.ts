@@ -17,12 +17,32 @@ import * as crypto from 'node:crypto';
 /** 密文前缀。带此前缀 = 密文；不带 = 历史明文（兼容读取）。 */
 export const AUDIT_SEAL_PREFIX = 'enc1:';
 
+/**
+ * 「解密失败」哨兵（C1 P0-1 / BUG-017）。
+ *
+ * 背景：原实现在解密失败时 `return null`，与「本来就没有内容」**不可区分**。
+ * 后果：`memory/audit.ts` 的 rollback 分支 `if (entry.before) {...} else { deleteMemoryRow(...) }`
+ * 会把「before 存在但解不开」误判成「本来就没有 before」→ **本该恢复的操作变成静默删除**，
+ * 而且还返回 `{ok:true}`，用户完全看不出发生了什么。
+ *
+ * 现在：解密失败返回本哨兵，调用方必须显式识别并**拒绝操作**（fail-closed）。
+ */
+export const AUDIT_DECRYPT_FAILED = Symbol('audit-decrypt-failed');
+
+/** 该值是否为「解密失败」哨兵。 */
+export function isAuditDecryptFailed(v: unknown): boolean {
+  return v === AUDIT_DECRYPT_FAILED;
+}
+
 export interface AuditCrypto {
   /** 密钥是否可用（false 时降级明文）。 */
   readonly available: boolean;
   /** 加密任意可 JSON 序列化的值。 */
   seal(value: unknown): string;
-  /** 解密；历史明文按 JSON 解析，解析失败则原样返回字符串。 */
+  /**
+   * 解密；历史明文按 JSON 解析，解析失败则原样返回字符串。
+   * **解密失败返回 `AUDIT_DECRYPT_FAILED` 哨兵**（不是 null）——调用方据此拒绝操作。
+   */
   open(text: unknown): unknown;
 }
 
@@ -31,13 +51,42 @@ export function auditKeyPath(dbPath: string): string {
   return path.join(path.dirname(dbPath), `${path.basename(dbPath)}.audit.key`);
 }
 
+/**
+ * 读取（或创建）审计密钥。
+ *
+ * C1 P0-1 / BUG-017：**坏钥绝不覆盖**。
+ * 原实现遇到格式不对的密钥文件时直接 `writeFileSync` 覆盖写入新钥 ——
+ * 旧钥一旦被覆盖，库里所有历史密文就**永久解不开**（不可逆数据丢失），
+ * 而且没有任何提示，用户直到某次 rollback 才发现自己回不去了。
+ *
+ * 现在：坏钥**改名备份为 `<path>.bad`**（保留原始字节供人工恢复），
+ * 并**拒绝在本进程内生成新钥顶替**（返回 null → 降级为明文快照并告警），
+ * 让历史密文保持原样、不被新的错误密钥污染。
+ */
 function readOrCreateKey(dbPath: string): Buffer | null {
   const keyPath = auditKeyPath(dbPath);
   try {
     if (fs.existsSync(keyPath)) {
       const hex = fs.readFileSync(keyPath, 'utf8').trim();
       if (/^[0-9a-f]{64}$/i.test(hex)) return Buffer.from(hex, 'hex');
-      console.warn('[memory] audit key file malformed, regenerating:', keyPath);
+      // 坏钥：改名备份，绝不覆盖。旧密文仍可能用旧钥解开（备份文件保留）。
+      const backup = `${keyPath}.bad`;
+      console.warn(
+        '[memory] audit key file malformed, backing up (NOT overwriting) so history stays recoverable:',
+        keyPath,
+        '->',
+        backup,
+      );
+      try {
+        fs.renameSync(keyPath, backup);
+      } catch (e) {
+        console.warn(
+          '[memory] audit key backup rename failed, refusing to overwrite original:',
+          e instanceof Error ? e.message : String(e),
+        );
+        return null;
+      }
+      return null;
     }
     const key = crypto.randomBytes(32);
     fs.writeFileSync(keyPath, key.toString('hex'), { mode: 0o600 });
@@ -109,7 +158,9 @@ export function loadAuditCrypto(dbPath: string): AuditCrypto {
           '[memory] audit snapshot decrypt failed:',
           e instanceof Error ? e.message : String(e),
         );
-        return null;
+        // C1 P0-1 / BUG-017：返回**哨兵**而不是 null —— 调用方要能区分
+        // 「本来就没有内容」与「有内容但解不开」，后者必须拒绝写操作（fail-closed）。
+        return AUDIT_DECRYPT_FAILED;
       }
     },
   };

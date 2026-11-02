@@ -27,6 +27,16 @@ export type HostToPageMessage =
   // v0.24：botId 全程可选，缺省='main'（单窗口/旧注入脚本行为不变）。
   | { type: 'dispatch'; callId: string; tool: string; params: unknown; botId?: string }
   | { type: 'consent-required'; callId: string; tool: string; params: unknown; meta?: ConsentMeta; botId?: string }
+  /**
+   * C1 墨鉴 R3-6：同意请求**作废**通知（宿主 → 页端）。
+   *
+   * 背景：宿主的 consent 超时（60s）或页端断开时，原来**只结算宿主侧的 Promise**，
+   * 不通知页端 → 页端的同意弹窗还挂在屏幕上，用户看得见、还能点，
+   * 但宿主那边早就判超时拒绝了 → 「点了没反应」的假象。
+   *
+   * 现在：宿主在超时/断连时发这条消息，页端 `dispose()` 掉那个弹窗（不再回 decision）。
+   */
+  | { type: 'consent-abort'; callId: string; reason: string }
   /** v0.6：宿主把工具执行结果回传给页端（按 callId 关联页端发来的 tool-call）。 */
   | {
       type: 'tool-call-result';

@@ -33,6 +33,25 @@ const TRACE_LINE_MAX_CHARS = 16_000;
  * 否则连接被静默断开 → 页端 host-client 永远连不上 → 所有工具调用 no-host）。
  */
 const PNA_LOCAL_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+/**
+ * C1 墨鉴 R3-10：要求**已完成 hello 握手**的入站消息类型。
+ *
+ * 原实现只有 `result` / `consent-decision` 两个分支校验 ready，
+ * `kv-*` / `tool-call` / `runtime-envelope` 这些**要求宿主执行动作**的消息没校验 →
+ * 连上来但从不发 hello 的本机进程可以直接读写用户 KV 或投递工具调用。
+ *
+ * `hello` / `log` / `trace` / `integrity-alert` / `assistant-reply` / `stream-delta` /
+ * `debug-eval-result` 不在列：它们要么是握手本身，要么是纯上报（不要求宿主执行动作）。
+ */
+const REQUIRES_READY: ReadonlySet<PageToHostMessage['type']> = new Set([
+  'kv-get',
+  'kv-set',
+  'kv-remove',
+  'tool-call',
+  'runtime-envelope',
+]);
+
 function isPnaAllowedOrigin(origin: string | undefined): boolean {
   if (!origin) return false;
   try {
@@ -71,6 +90,11 @@ export interface PageRuntimeHubOptions {
   token?: WSQueryTokenSource;
   dispatchTimeoutMs?: number;
   consentTimeoutMs?: number;
+  /**
+   * C1 墨鉴 R3-8：页端发来的 tool-call（宿主执行）的超时上限（默认 60s）。
+   * 原实现无超时 → 执行卡住时页端 pending 永久悬挂。
+   */
+  toolCallTimeoutMs?: number;
   onError?: (message: string, error?: unknown) => void;
   /**
    * v0.6：页端 tool-call 的真实执行器。收到页端 tool-call 后，宿主先把上游
@@ -154,6 +178,8 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
   const path = options.path ?? '/studio';
   const dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
   const consentTimeoutMs = options.consentTimeoutMs ?? 60_000;
+  // C1 墨鉴 R3-8：tool-call 执行超时上限。
+  const toolCallTimeoutMs = options.toolCallTimeoutMs ?? 60_000;
   // 重要：不能用 { server, path } 让 ws 自己挂 upgrade 监听——同一 HTTP server 上的
   // 多个 WebSocketServer 会对「不匹配的路径」调用 abortHandshake(400) 毁掉别人的连接
   // （两个通道互踩：/studio 被 /agent-ws 的服务掐断，反之亦然）。
@@ -198,6 +224,12 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
   // ownerId 绑死连接后，跨连接的回执一律忽略。
   const pendingDispatch = new Map<string, { ownerId: string; resolve: (r: ExecuteResult) => void; timer: ReturnType<typeof setTimeout> }>();
   const pendingConsent = new Map<string, { ownerId: string; resolve: (d: ConsentDecision) => void; timer: ReturnType<typeof setTimeout> }>();
+  // C1 墨鉴 R3-8：页端发来的 tool-call（反向投递的工具调用）在宿主侧是**在途请求**，
+  // 原实现没有登记、没有超时、也不受 failAllPending 管辖 →
+  //   ① 执行永不返回时，页端的 pending 永久悬挂；
+  //   ② 页端断开时，宿主这边还在跑，结果发给一个已死的 socket（孤儿）。
+  // 现在登记到 pendingToolCalls：加超时、并在 failAllPending（断连）时结算。
+  const pendingToolCalls = new Map<string, { ownerId: string; timer: ReturnType<typeof setTimeout> }>();
 
   /**
    * C4 修复：页端断开时立即结算所有待决请求，不干等 30s/60s 超时。
@@ -216,6 +248,12 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
       clearTimeout(p.timer);
       pendingConsent.delete(id);
       p.resolve('deny');
+    }
+    // C1 墨鉴 R3-8：页端发来的 tool-call 也在途，断连时必须一并结算（否则是孤儿）。
+    for (const [id, p] of pendingToolCalls) {
+      if (ownerId !== undefined && p.ownerId !== ownerId) continue;
+      clearTimeout(p.timer);
+      pendingToolCalls.delete(id);
     }
   }
 
@@ -308,6 +346,25 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         if (!rec.untrusted) {
           options.onConnect?.({ id, botId: rec.botId });
         }
+        // C1 墨鉴 R3-10：入站消息的**统一握手门**（前置检查，不进 if/else 链）。
+        //
+        // 原实现只有 `result` 与 `consent-decision` 两个分支校验 `!rec.ready || rec.untrusted`，
+        // 而 `kv-get`/`kv-set`/`kv-remove`/`tool-call`/`runtime-envelope` 等**要求宿主执行动作**
+        // 的消息**没有校验** → 一个连上来但从不发 hello 的本机进程，
+        // 可以直接读写用户 KV 或投递工具调用（与 R2-02「ready 才算可信页」的语义矛盾）。
+        //
+        // 为什么是前置检查而不是 else if 分支：else if 链**只走一个分支**，
+        // 放在链里会把 kv-*/tool-call 的正常处理**整个吞掉**（工具调用永远收不到回执 → 超时）。
+        // 现在：在链之前拦，拦下后直接 return（不回落到任何分支）。
+      } else if (REQUIRES_READY.has(msg.type) && (!rec.ready || rec.untrusted)) {
+        // 未完成 hello 握手（!ready）或已被判定篡改（untrusted）→ 拒绝执行。
+        // 对「需要回执」的消息回一个失败，让对端不必悬挂等一个永远不会来的结果。
+        if (msg.type === 'kv-get' || msg.type === 'kv-set' || msg.type === 'kv-remove') {
+          safeSend(ws, { type: 'kv-result', requestId: msg.requestId, ok: false, error: 'page-not-ready' });
+        } else if (msg.type === 'tool-call') {
+          safeSend(ws, { type: 'tool-call-result', callId: msg.callId, ok: false, error: 'page-not-ready' });
+        }
+        return;
       } else if (msg.type === 'result') {
         // QD-R2-03 入站身份门：
         // ① 未握手（!ready）或已被判定篡改（untrusted）的连接发的任何 result 一律忽略。
@@ -451,8 +508,25 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         // 报文 msg.botId 仅作兜底。用于路由到对应 bot 的 executor / counter / 白名单。
         const callBotId = rec.botId ?? msg.botId;
         options.onToolCall?.({ callId: msg.callId, invocationName: msg.invocationName, tool: mapped.id, params: mapped.params, botId: callBotId });
+        // C1 墨鉴 R3-8：登记在途 tool-call —— 加超时、并在页端断开时被 failAllPending 结算。
+        // 原实现没有登记也没有超时：执行永不返回时页端 pending 永久悬挂；
+        // 页端断开时宿主这边还在跑，结果发给一个已死的 socket（孤儿）。
+        const toolTimer = setTimeout(() => {
+          if (!pendingToolCalls.delete(msg.callId)) return;
+          options.onToolResult?.({ callId: msg.callId, tool: mapped.id, ok: false, error: 'tool-call-timeout', botId: callBotId });
+          safeSend(ws, { type: 'tool-call-result', callId: msg.callId, ok: false, error: 'tool-call-timeout' });
+        }, toolCallTimeoutMs);
+        pendingToolCalls.set(msg.callId, { ownerId: id, timer: toolTimer });
+        const settleToolCall = (): boolean => {
+          const p = pendingToolCalls.get(msg.callId);
+          if (!p) return false;
+          clearTimeout(p.timer);
+          pendingToolCalls.delete(msg.callId);
+          return true;
+        };
         void exec(mapped.id, mapped.params, callBotId, msg.conversationId)
           .then((r) => {
+            if (!settleToolCall()) return; // 已超时/已断连 → 不再回执（避免重复回执）
             options.onToolResult?.({ callId: msg.callId, tool: mapped.id, ok: r.ok, error: r.reason, botId: callBotId, ...(r.details !== undefined ? { details: r.details as Record<string, unknown> } : {}) });
             safeSend(ws, {
               type: 'tool-call-result',
@@ -469,6 +543,7 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           })
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e);
+            if (!settleToolCall()) return;
             options.onToolResult?.({ callId: msg.callId, tool: mapped.id, ok: false, error: message, botId: callBotId });
             safeSend(ws, {
               type: 'tool-call-result',
@@ -528,6 +603,10 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         }
         const timer = setTimeout(() => {
           pendingDispatch.delete(callId);
+          // C1 墨鉴 R3-6：超时必须**通知页端**，否则对端 pending 永久悬挂
+          // （页端还在等 result，用户看到界面卡住却等不到任何反馈）。
+          // 回执形态与页端→宿主的 result 对称：ok=false + error。
+          safeSend(picked.ws, { type: 'tool-call-result', callId, ok: false, error: 'page-timeout' });
           resolve({ ok: false, error: 'page-timeout' });
         }, dispatchTimeoutMs);
         // QD-R2-03：记录这条等待属于哪个连接，回执时同连接才认。
@@ -545,6 +624,10 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         }
         const timer = setTimeout(() => {
           pendingConsent.delete(callId);
+          // C1 墨鉴 R3-6/R3-7：同意超时必须**作废页端那个弹窗**。
+          // 否则弹窗一直挂在屏幕上，用户还能点「同意」——但宿主已判超时拒绝，
+          // 用户点了完全没反应（PM 验收点名的「还能点但点了无效」）。
+          safeSend(picked.ws, { type: 'consent-abort', callId, reason: 'consent-timeout' });
           resolve('deny');
         }, consentTimeoutMs);
         pendingConsent.set(callId, { ownerId: picked.id, resolve, timer });

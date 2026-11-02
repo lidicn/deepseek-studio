@@ -163,6 +163,11 @@ export interface DesktopHostOptions {
   policyMode?: PolicyMode;
   /** M7 D3：ApiEngine 配置（真实 API key，缺省走 WebEngine 网页拦截）。 */
   apiEngine?: { baseURL: string; apiKey: string; model: string };
+  /**
+   * C1 墨鉴 R2-2：KV 落盘文件路径（默认 ~/.config/deepseek-studio/storage.json）。
+   * 缺省行为不变；显式传（测试用临时目录）才能观测「stop 前 flush 是否落盘」。
+   */
+  storageFilePath?: string;
   /** 限流与并发（透传给 API server，默认串行 + 60/分钟）。 */
   rateLimit?: RateLimitOptions;
   /**
@@ -1355,13 +1360,24 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   });
 
   // v0.7：全局 KV 存储（页端 chrome.storage shim 经 ws 读写此 backend，落盘）。
-  const storageFilePath = path.join(os.homedir(), '.config', 'deepseek-studio', 'storage.json');
+  // C1 墨鉴 R2-2：路径可注入（默认仍是用户真实配置目录，行为不变；测试用临时目录）。
+  const storageFilePath = options.storageFilePath ?? path.join(os.homedir(), '.config', 'deepseek-studio', 'storage.json');
   const kvBackend = createFileStorageKvBackend({ filePath: storageFilePath });
   const kvCache: Record<string, unknown> = {};
   let kvLoaded = false;
+  // C1 墨鉴 R2-4：首载竞态保护。
+  // 原实现首载时 `Object.assign(kvCache, await kvBackend.readAll())` —— 若首载**等待期间**
+  // 有人 kvSet 了新值（写进 kvCache），readAll() 读回的**磁盘旧值**会把它**覆盖**，
+  // 刚写入的值凭空消失。现在：首载期间写入的键**优先**，不被磁盘值覆盖。
+  const kvWrittenDuringLoad = new Set<string>();
   async function kvGet(key: string): Promise<unknown> {
     if (!kvLoaded) {
-      Object.assign(kvCache, await kvBackend.readAll());
+      const disk = await kvBackend.readAll();
+      // 只填**尚未在首载期间被写过**的键（已写的以内存新值为准）。
+      for (const [k, v] of Object.entries(disk)) {
+        if (kvWrittenDuringLoad.has(k)) continue;
+        kvCache[k] = v;
+      }
       kvLoaded = true;
     }
     return kvCache[key];
@@ -1375,35 +1391,83 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     if (kvFlushTimer) return;
     kvFlushTimer = setTimeout(() => {
       kvFlushTimer = null;
-      const set = { ...pendingKvSet };
-      const remove = [...pendingKvRemove];
-      for (const k of Object.keys(pendingKvSet)) delete pendingKvSet[k];
-      pendingKvRemove.length = 0;
-      kvBackend.writeBatch({ set, remove }).catch((err) => {
-        console.warn('[kv] flush failed:', err);
-      });
+      flushKvNow();
     }, 100);
   }
+  // C1 墨鉴 R2-2：退出前必须把待写批次**同步落盘**。
+  // 原实现只有 100ms 防抖定时器，stop() 不 flush → 退出前最后 100ms 窗口内的写入
+  // **静默丢失**（定时器随进程一起没了）。现在提供显式 flush，stop() 里调用。
+  async function flushKvNow(): Promise<void> {
+    if (kvFlushTimer) {
+      clearTimeout(kvFlushTimer);
+      kvFlushTimer = null;
+    }
+    const set = { ...pendingKvSet };
+    const remove = [...pendingKvRemove];
+    for (const k of Object.keys(pendingKvSet)) delete pendingKvSet[k];
+    pendingKvRemove.length = 0;
+    if (Object.keys(set).length === 0 && remove.length === 0) return;
+    try {
+      await kvBackend.writeBatch({ set, remove });
+    } catch (err) {
+      console.warn('[kv] flush failed:', err);
+    }
+  }
+  // C1 墨鉴 R2-2：在途 KV 操作计数。
+  // kvSet/kvRemove 的第一步是 `await kvGet(key)`（首载）——这一步是异步的，
+  // 如果 stop() 发生在它之前，值还没进 kvCache/pendingKvSet → flush 落盘的是空批次 → 仍然丢。
+  // 现在：stop() 先等在途操作全部完成，再 flush 待写批次。
+  let kvInFlight = 0;
+  let kvInFlightWaiters: Array<() => void> = [];
+  function kvBegin(): void {
+    kvInFlight += 1;
+  }
+  function kvEnd(): void {
+    kvInFlight -= 1;
+    if (kvInFlight <= 0) {
+      kvInFlight = 0;
+      const waiters = kvInFlightWaiters;
+      kvInFlightWaiters = [];
+      for (const w of waiters) w();
+    }
+  }
+  async function kvWaitIdle(): Promise<void> {
+    if (kvInFlight <= 0) return;
+    await new Promise<void>((resolve) => kvInFlightWaiters.push(resolve));
+  }
+
   async function kvSet(key: string, value: unknown): Promise<void> {
-    await kvGet(key); // ensure loaded
-    kvCache[key] = value;
-    pendingKvSet[key] = value;
-    const ri = pendingKvRemove.indexOf(key);
-    if (ri >= 0) pendingKvRemove.splice(ri, 1);
-    scheduleKvFlush();
-    if (key === STUDIO_EXECUTION_INDEX_KEY && isStudioExecutionIndex(value)) {
-      emitExecutionIndex(value);
-    } else if (key.startsWith(STUDIO_EXECUTION_SESSION_PREFIX) && isStudioExecutionSession(value)) {
-      emitExecutionSession(value);
+    kvBegin();
+    try {
+      await kvGet(key); // ensure loaded
+      kvCache[key] = value;
+      kvWrittenDuringLoad.add(key);
+      pendingKvSet[key] = value;
+      const ri = pendingKvRemove.indexOf(key);
+      if (ri >= 0) pendingKvRemove.splice(ri, 1);
+      scheduleKvFlush();
+      if (key === STUDIO_EXECUTION_INDEX_KEY && isStudioExecutionIndex(value)) {
+        emitExecutionIndex(value);
+      } else if (key.startsWith(STUDIO_EXECUTION_SESSION_PREFIX) && isStudioExecutionSession(value)) {
+        emitExecutionSession(value);
+      }
+    } finally {
+      kvEnd();
     }
   }
   async function kvRemove(key: string): Promise<void> {
-    await kvGet(key);
-    delete kvCache[key];
-    delete pendingKvSet[key];
-    if (!pendingKvRemove.includes(key)) pendingKvRemove.push(key);
-    scheduleKvFlush();
-    if (key === STUDIO_EXECUTION_INDEX_KEY) emitExecutionCleared();
+    kvBegin();
+    try {
+      await kvGet(key);
+      delete kvCache[key];
+      kvWrittenDuringLoad.add(key);
+      delete pendingKvSet[key];
+      if (!pendingKvRemove.includes(key)) pendingKvRemove.push(key);
+      scheduleKvFlush();
+      if (key === STUDIO_EXECUTION_INDEX_KEY) emitExecutionCleared();
+    } finally {
+      kvEnd();
+    }
   }
 
   let epoch = 0;
@@ -2083,6 +2147,12 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       ensureMcpConfig();
     },
     async stop() {
+      // C1 墨鉴 R2-2：**先等在途 KV 操作完成，再 flush 待写批次**。
+      // 原来只有 100ms 防抖定时器，退出前最后 100ms 窗口内的写入会随进程一起消失（静默丢失）。
+      // 还要等在途操作：kvSet 的第一步是 await kvGet(key)（首载），stop 发生在它之前时
+      // 值还没进 pendingKvSet → 光 flush 也落盘的是空批次。
+      await kvWaitIdle();
+      await flushKvNow();
       agentChannel?.dispose();
       agentChannel = null;
       conversationStore.bumpGeneration();

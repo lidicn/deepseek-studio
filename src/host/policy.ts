@@ -129,6 +129,21 @@ export const RISK_PATTERNS: readonly RiskPattern[] = [
   // 注意：选项前的”-” 是非单词字符，用 \b 包裹选项会导致完全匹配不上
   // （测试曾暴露：rm -rf 一条都识别不出）。这里显式用空白界定选项。
   { id: 'destructive-delete', label: '递归删除', pattern: /\b(rm|rmdir|del|erase)\b[^\n]{0,80}?(?:\s-{1,2}[a-zA-Z]*[rf][a-zA-Z]*|\s\/[sf]\b)/i },
+  /**
+   * C1 墨鉴 R15-002：Python 代码里的破坏性调用。
+   *
+   * 背景：原风险模式只认 shell 命令名（rm/rmdir/del/erase），
+   * 而 `python.exec` 的代码文本里的 `shutil.rmtree(...)` / `os.remove(...)` /
+   * `os.rmdir(...)` / `os.unlink(...)` **一个都不匹配** → 即便 python.exec 走检测，
+   * 这类代码也不会被识别为风险。
+   *
+   * 现在：单独一条模式覆盖 Python 的删除/清空 API（可与 shell 模式并存、互不干扰）。
+   */
+  {
+    id: 'python-destructive',
+    label: 'Python 破坏性调用',
+    pattern: /\b(?:shutil\s*\.\s*rmtree|os\s*\.\s*(?:remove|unlink|rmdir|removedirs)|pathlib\s*\.\s*Path\s*\([^)]*\)\s*\.\s*(?:unlink|rmdir)|send2trash)/i,
+  },
   { id: 'powershell-force-delete', label: 'PowerShell 强制删除', pattern: /Remove-Item[\s\S]*-(Recurse|Force)/i },
   { id: 'disk-format', label: '格式化/磁盘写入', pattern: /\b(format|mkfs|diskpart)\b|\bdd\s+if=/i },
   { id: 'privilege-elevation', label: '提权执行', pattern: /\b(sudo|runas|gsudo|doas)\b|Start-Process[\s\S]*-Verb\s+RunAs/i },
@@ -136,7 +151,14 @@ export const RISK_PATTERNS: readonly RiskPattern[] = [
   { id: 'system-path', label: '系统目录写入', pattern: /(\/etc\/|\/usr\/|\/bin\/|\/sbin\/|\/System\/|\/Library\/|C:\\Windows|C:\\Program\s*Files)/i },
   { id: 'pipe-to-interpreter', label: '下载管道到解释器', pattern: /(curl|wget|Invoke-WebRequest|iwr)[\s\S]*\|\s*(sh|bash|zsh|python|powershell|pwsh|iex)/i },
   { id: 'dynamic-eval', label: '动态执行注入', pattern: /\b(eval|Invoke-Expression|iex)\s*\(?/i },
-  { id: 'git-destructive', label: 'Git 破坏性操作', pattern: /git\s+(push[\s\S]*(--force|-f\b)|reset\s+--hard|clean\s+-fd|checkout\s+--\s+\.)/i },
+  // C1 墨鉴 R15-001：原正则 `clean\s+-fd` 只匹配 `-fd`，
+  // **`git clean -xfd` / `-fdx` / `-df` 全部逃检**（历史上就有 `git checkout -- .`
+  // 丢未提交改动的前科，破坏性命令守卫不能再漏）。
+  // 现在按「git 子命令 + 选项字母任意组合」匹配：
+  //   - clean：必须含 `-f`/`--force`（force 才真删），`-x`/`-d`/`-n` 可任意搭配；
+  //   - checkout/restore：目标为 `.` 或 `--`（丢弃工作区改动）；
+  //   - reset --hard / push --force 保持原有覆盖。
+  { id: 'git-destructive', label: 'Git 破坏性操作', pattern: /git\s+(?:push[\s\S]*?(?:--force|-f\b)|reset\s+--hard|clean\s+(?:-\w+\s+)*-\w*f\w*|clean\s+(?:-\w+\s+)*--force\b|checkout\s+(?:--\s+)?\.|restore\s+(?:--\s+)?\.)/i },
   { id: 'power-control', label: '系统关机/重启', pattern: /\b(shutdown|reboot|halt|init\s+0)\b|Stop-Computer|Restart-Computer/i },
 ];
 
@@ -293,6 +315,32 @@ export function evaluatePolicy(input: PolicyInput): PolicyVerdict {
   // 其它档位由 risk:privileged 走同意闸门。
   if (EXECUTION_TOOLS.includes(tool) && mode === 'workspace') {
     return { decision: 'deny', reason: 'mode-restricted', detail: tool };
+  }
+
+  // C1 墨鉴 R15-002：python.exec 的代码文本此前**从不经过风险检测**。
+  // 它不在 PROCESS_TOOLS 里 → 不进上面的 isProcessTool 分支 → detectRisks 从不调用；
+  // 而 workspace 档只对 EXECUTION_TOOLS 硬拒，**auto 档直接落到下面的 not-governed allow**
+  // → auto 档下 `python.exec` 里写 `os.remove(...)` / `shutil.rmtree(...)` 等破坏性代码
+  // 不会被识别为风险，也就不会触发同意闸门。
+  //
+  // 现在：python.exec 在 **auto / ask** 档按其 `code` 文本做风险检测，
+  // 命中即走同意闸门（与 shell 同口径）；full 档仍放行但如实记录 riskFlags（可审计）。
+  if (tool === 'python.exec') {
+    const code = firstString(params, ['code']);
+    const risks = code ? detectRisks(code) : [];
+    if (mode === 'auto' && risks.length > 0) {
+      return { decision: 'require-consent', reason: 'risk-detected', riskFlags: risks };
+    }
+    if (mode === 'ask' && risks.length > 0) {
+      return { decision: 'require-consent', reason: 'risk-detected', riskFlags: risks };
+    }
+    if (mode === 'full') {
+      return {
+        decision: 'allow',
+        reason: risks.length > 0 ? 'risk-detected' : 'not-governed',
+        riskFlags: risks,
+      };
+    }
   }
 
   // 其它工具不归本引擎管辖，沿用既有 risk 阈值同意闸门。

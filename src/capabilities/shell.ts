@@ -275,14 +275,59 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
         }
       }
 
+      // C1 P1-1 / BUG-009：**显式传入的 `cmd /c` 也必须做元字符检查**。
+      // 原实现的元字符检查只覆盖两条自动加前缀的路径（CMD_BUILTINS 与 .cmd/.bat 脚本）；
+      // 用户自己写 `argv: ['cmd','/c','echo','x&calc']` 时**一个都不查** →
+      // cmd /c 二次解释 → & 之后的内容被当成命令执行（命令注入）。
+      // 现在：`cmd /c`（含 cmd.exe 变体）前缀之后的所有参数一律检查元字符。
+      if (process.platform === 'win32') {
+        const CMD_METACHARS = /[&|<>^]/;
+        const isCmdExe = /^cmd(\.exe)?$/i.test(argv[0]);
+        const isCmdSlashC = isCmdExe && argv.length >= 2 && /^\/c$/i.test(argv[1]);
+        if (isCmdSlashC) {
+          // cmd /c 之后的**全部**参数都要查（含第一段）。
+          for (let i = 2; i < argv.length; i += 1) {
+            if (CMD_METACHARS.test(argv[i])) {
+              return {
+                ok: false,
+                error: 'shell-metachar-in-cmd-builtin',
+                data: {
+                  hint: `显式传入的 cmd /c 其参数含 cmd 元字符（& | < > ^），` +
+                    '会被 cmd 二次解释导致命令注入。请改用 argv 数组逐段传递，不要拼接 cmd /c。',
+                },
+              };
+            }
+          }
+        }
+      }
+
       // v0.9：Windows 中文路径编码修复——powershell -Command 的参数经 argv 传递时
       // 中文会变 ????（PowerShell 用系统 ANSI 代码页解析命令行）。改用 -EncodedCommand（Base64 UTF-16LE）。
+      //
+      // C1 P1-1 / BUG-008：原实现 `argv = [...argv.slice(0, cmdIdx), '-EncodedCommand', encoded]`
+      // 把 `-Command` **之后**的所有参数全丢了（`-Command <script> -NoProfile` 里的 -NoProfile 消失）。
+      // 现在：保留 cmdIdx 之后的参数（顺序不变），只把 script 换成 encoded。
       if (process.platform === 'win32' && (/^powershell(\.exe)?$/i.test(argv[0]) || /^pwsh(\.exe)?$/i.test(argv[0] || ''))) {
         const cmdIdx = argv.findIndex((a) => a === '-Command' || a === '-c');
         if (cmdIdx >= 0 && argv[cmdIdx + 1]) {
           const script = argv[cmdIdx + 1];
-          const encoded = Buffer.from(script, 'utf16le').toString('base64');
-          argv = [...argv.slice(0, cmdIdx), '-EncodedCommand', encoded];
+          const tail = argv.slice(cmdIdx + 2);
+          // 修正时踩到 PowerShell 自身的限制（实测）：`-EncodedCommand` **不接受**尾部参数 ——
+          // `powershell -EncodedCommand <enc> -Tail` 直接报
+          // "a command is already specified with -Command or -EncodedCommand"（退出码 -196608）。
+          // 而原生 `-Command` 是**接受**尾部参数的（它们成为脚本的 $args）。
+          //
+          // 所以口径是：
+          //   - **没有**尾部参数 → 转 -EncodedCommand（中文编码修复的原始目标场景）；
+          //   - **有**尾部参数 → 保持原生 `-Command`（尾部参数按 PowerShell 原生语义传给脚本），
+          //     宁可放弃中文编码修复，也不能丢参数。
+          if (tail.length === 0) {
+            const encoded = Buffer.from(script, 'utf16le').toString('base64');
+            argv = [...argv.slice(0, cmdIdx), '-EncodedCommand', encoded];
+          } else {
+            // 有尾部参数：保持原生 -Command，参数一个不丢（顺序不变）。
+            argv = [...argv.slice(0, cmdIdx), '-Command', script, ...tail];
+          }
         }
       }
 
