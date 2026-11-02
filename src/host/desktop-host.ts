@@ -112,7 +112,7 @@ import { createFileEditCapability } from '../capabilities/edit-engine';
 import { getMemoryStore } from './memory-store';
 import { normalizeMemorySaveParams } from './memory-tool-params';
 import { scanSkills, ensureSkillsDir, resolveSkillsDir } from './skill-store';
-import { getMcpController, ensureMcpConfig, getMcpServer, removeMcpServer, maskMcpServerSecrets, mergeMaskedSecrets, type McpServerConfig } from './mcp-controller';
+import { getMcpController, ensureMcpConfig, getMcpServer, removeMcpServer, maskMcpServerSecrets, mergeMaskedSecrets, toMcpServerSummary, type McpServerConfig } from './mcp-controller';
 import { createAutomationManager, type AutomationManager } from './automation';
 import { execPythonInSandbox } from './sandbox-executor';
 import {
@@ -583,6 +583,18 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           },
         },
         // v1.0：列出已配置的 MCP 服务器及其工具。
+        // C1 P1 安全批 F11：**连接串凭据掩码对所有入口生效**（UI 与模型共用同一条
+        // /studio 通道，宿主按 invocationName 路由、没有「谁发的」这一维度 →
+        // 按入口区分不了，只能按字段一刀切）。
+        //
+        // 原实现把每台服务器的 `url` / `command` / `args` **原样**回传。而 `mcp.list`
+        // **在模型表里**且 `approvalClass:'none'`（零审批）→ 模型调一次就能拿到
+        // `url` 里内嵌的 userinfo/查询参数凭据、`args` 里 `--token xxx` 形态的凭据。
+        // R2-02 只堵了 `mcp.get` 的 `env`/`headers`，这条是**另一个出口**。
+        //
+        // 现在：`url` 的 userinfo 密码 + 凭据形态查询参数、`args` 的凭据形态参数值
+        // 一律掩码；`id` / `transport` / `command` / `toolCount` 保留。
+        // UI 要看原文 → 走本地桥的配置面（设计稿 §2.2），不为此新开工具。
         'mcp.list': {
           id: 'mcp.list',
           async execute(): Promise<ExecuteResult> {
@@ -590,17 +602,20 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             const serverIds = controller.listServerIds();
             // 回传每台服务器的真实传输配置：UI 列表原来把 transport 写死成 stdio，
             // 编辑弹窗也无处回填，表现为「存的是 HTTP，再打开变成 stdio」。
-            const configs = serverIds.map((id) => {
-              const cfg = getMcpServer(id);
-              return {
-                id,
-                transport: cfg?.transport ?? 'stdio',
-                url: cfg?.url,
-                command: cfg?.command,
-                args: cfg?.args ?? [],
-              };
-            });
+            //
+            // 工具数按 serverId 归集：getAllTools 的每项都带 serverId。
             const tools = await controller.getAllTools();
+            const toolCountByServer = new Map<string, number>();
+            for (const t of tools) {
+              toolCountByServer.set(t.serverId, (toolCountByServer.get(t.serverId) ?? 0) + 1);
+            }
+            const configs = serverIds.map((id) => {
+              // 取控制器**本实例内存态**的配置（与 listServerIds 同一份），
+              // 不用模块级 getMcpServer（它按 defaultConfigPath() 另读一份文件，
+              // 实例用显式 configPath 构造时会读错文件 → 掩码错对象）。
+              const cfg = controller.getServerConfig(id);
+              return toMcpServerSummary(id, cfg, toolCountByServer.get(id) ?? 0);
+            });
             return {
               ok: true,
               data: {

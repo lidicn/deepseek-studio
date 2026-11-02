@@ -120,6 +120,166 @@ export function mergeMaskedSecrets(
   };
 }
 
+/**
+ * C1 P1 安全批 F11：`mcp.list` 返回值里的**连接串凭据**掩码。
+ *
+ * ── 缺陷（设计稿 F11，PM 核实成立）──
+ *
+ * `mcp.list` **在模型表里**（`tool-contract.ts` 的 `mcp_list` → `mcp.list`），
+ * 且 `approvalClass:'none'`（**零审批**）→ 模型调一次就把每台 MCP 服务器的
+ * `url` / `command` / `args` **原样送进模型上下文**。
+ * 而 `url` 可能内嵌 userinfo（`https://user:pass@host`）或查询参数
+ * （`?token=` / `?key=` / `?api_key=`），`args` 可能内嵌 `--token xxx` /
+ * `--api-key=xxx` —— **凭据照样外泄**。
+ *
+ * R2-02 只堵了 `mcp.get` 那条路（`env` / `headers` 掩码）。本函数补上 `mcp.list`。
+ *
+ * ── 为什么「对所有入口生效」而不是「只对模型面」──
+ *
+ * UI 与模型**共用同一条 `/studio` 通道**（宿主按 `invocationName` 路由，
+ * 没有「谁发的」这一维度）→ **按入口区分不了**，只能按**字段**一刀切掩码。
+ * UI 要看原文，走本地桥的配置面（设计稿 §2.2），不为此事新开工具。
+ *
+ * ── 掩码口径（PM 裁定）──
+ *
+ *   - `url`：userinfo（`user:pass@`）→ 掩码 password；查询参数里
+ *     `token` / `key` / `api_key` / `apikey` / `secret` / `password` / `access_token`
+ *     / `auth` 形态的**值** → 掩码。**参数名保留**（调用方要知道配了什么）。
+ *   - `args`：`--token xxx` / `--token=xxx` / `--api-key xxx` 等
+ *     **凭据形态参数的值** → 掩码；`--token` 这种**参数名本身**保留。
+ *   - 保留：`id` / `transport` / `toolCount` / 服务器名 / `command`
+ *     （`command` 是可执行名如 `npx`，不是凭据；`args` 里的路径参数也不是凭据）。
+ *
+ * 掩码值沿用 `MCP_SECRET_MASK`（`****`），与 R2-02 同一常量。
+ */
+
+/** 查询参数名 → 命中即掩码其值（大小写不敏感）。 */
+const SECRET_QUERY_KEYS: ReadonlySet<string> = new Set([
+  'token', 'key', 'api_key', 'apikey', 'secret', 'password', 'passwd', 'pwd',
+  'access_token', 'accesstoken', 'auth', 'authorization', 'credential', 'credentials',
+  'session', 'sessionid', 'session_id', 'signature', 'sig', 'jwt', 'bearer',
+]);
+
+/** 命令行参数名 → 命中即掩码其值（大小写不敏感，去掉前导 `-` 与下划线/连字符归一）。 */
+const SECRET_ARG_NAMES: ReadonlySet<string> = new Set([
+  'token', 'key', 'api-key', 'apikey', 'api_key', 'secret', 'password', 'passwd', 'pwd',
+  'access-token', 'accesstoken', 'access_token', 'auth', 'authorization', 'credential',
+  'credentials', 'session', 'session-id', 'sessionid', 'session_id', 'signature', 'sig', 'jwt', 'bearer',
+]);
+
+/** 参数名归一：小写、去前导 `-`/`--`、去掉 `_` 与 `-`。 */
+function normalizeSecretName(raw: string): string {
+  return raw.toLowerCase().replace(/^-+/, '').replace(/[_-]/g, '');
+}
+
+/** 查询参数名归一：小写 + 去掉 `_` 与 `-`（与参数名同一套判定）。 */
+function normalizeQueryName(raw: string): string {
+  return raw.toLowerCase().replace(/[_-]/g, '');
+}
+
+/**
+ * 掩码 URL 里的凭据：userinfo 的密码 + 凭据形态查询参数的值。
+ * 非 URL / 解析失败 → 原样返回（不吞掉、不改写）。
+ */
+export function maskMcpServerUrl(url: string | undefined): string | undefined {
+  if (!url) return url;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    // 不是合法 URL：可能用户填的是模板串（如 `${MCP_URL}`）。原样返回，不猜。
+    return url;
+  }
+  let changed = false;
+  // userinfo：`https://user:pass@host` → 密码打码，用户名保留。
+  if (parsed.password) {
+    parsed.password = MCP_SECRET_MASK;
+    changed = true;
+  }
+  // 查询参数：凭据形态的**值**打码，参数名保留。
+  for (const name of [...parsed.searchParams.keys()]) {
+    if (!SECRET_QUERY_KEYS.has(normalizeQueryName(name))) continue;
+    parsed.searchParams.set(name, MCP_SECRET_MASK);
+    changed = true;
+  }
+  return changed ? parsed.toString() : url;
+}
+
+/**
+ * 掩码 args 里的凭据形态参数值。
+ *
+ * 两种形态都吃：
+ *   - `--token xxx`（值是下一个元素）→ 只打码 `xxx`，`--token` 保留；
+ *   - `--token=xxx`（值在同一元素里）→ 打码 `=xxx` 后的值。
+ *
+ * `--token` 后面若**没有**下一个元素（或下一个元素本身又是 `--xxx` 形态的参数名）→
+ * 不打码（没有值可打码，也不猜）。
+ */
+export function maskMcpServerArgs(args: readonly string[] | undefined): string[] | undefined {
+  if (!args) return undefined;
+  const out = [...args];
+  for (let i = 0; i < out.length; i += 1) {
+    const cur = out[i];
+    if (!cur.startsWith('-')) continue;
+    const eq = cur.indexOf('=');
+    if (eq > 0) {
+      // `--name=value` 形态
+      const name = normalizeSecretName(cur.slice(0, eq));
+      if (SECRET_ARG_NAMES.has(name) || SECRET_ARG_NAMES.has(name.replace(/-/g, '_'))) {
+        out[i] = `${cur.slice(0, eq + 1)}${MCP_SECRET_MASK}`;
+      }
+      continue;
+    }
+    // `--name value` 形态：值在下一个元素
+    const name = normalizeSecretName(cur);
+    if (!SECRET_ARG_NAMES.has(name) && !SECRET_ARG_NAMES.has(name.replace(/-/g, '_'))) continue;
+    const next = out[i + 1];
+    if (next === undefined || (next.startsWith('-') && next.length > 1)) continue;
+    out[i + 1] = MCP_SECRET_MASK;
+    i += 1;
+  }
+  return out;
+}
+
+/**
+ * F11：`mcp.list` 的一台服务器「连接串」视图（凭据已掩码）。
+ * 保留 `id` / `transport` / `command` / `toolCount`，掩码 `url` / `args`。
+ */
+export interface McpServerSummary {
+  readonly id: string;
+  readonly transport: 'stdio' | 'http' | 'sse';
+  readonly url?: string;
+  readonly command?: string;
+  readonly args?: readonly string[];
+  /** 该服务器提供的工具数（不泄工具名以外的内容）。 */
+  readonly toolCount?: number;
+}
+
+/**
+ * F11：把一台 MCP 服务器的连接配置转成**可安全外发**的摘要。
+ * `url` / `args` 里的凭据一律掩码；`id` / `transport` / `command` / `toolCount` 保留。
+ */
+export function toMcpServerSummary(
+  id: string,
+  cfg: McpServerConfig | null | undefined,
+  toolCount?: number,
+): McpServerSummary {
+  if (!cfg) {
+    return { id, transport: 'stdio', ...(toolCount !== undefined ? { toolCount } : {}) };
+  }
+  const transport = cfg.transport ?? 'stdio';
+  const url = maskMcpServerUrl(cfg.url);
+  const args = maskMcpServerArgs(cfg.args);
+  return {
+    id,
+    transport,
+    ...(url !== undefined ? { url } : {}),
+    ...(cfg.command !== undefined ? { command: cfg.command } : {}),
+    ...(args !== undefined ? { args } : {}),
+    ...(toolCount !== undefined ? { toolCount } : {}),
+  };
+}
+
 export interface McpCallResult {
   readonly ok: boolean;
   readonly data?: unknown;
