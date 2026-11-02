@@ -28,7 +28,20 @@ export async function search(ctx: StoreContext, query: string, opts?: { personaT
     let rows: MemoryRow[];
     if (ctx.db) {
       rows = [];
-      // trigram 要求查询 >= 3 字符；不足走 LIKE
+      // C1 墨鉴 BUG-011：FTS 与 LIKE 做**并集**，不再「FTS 有命中就跳过 LIKE」。
+      //
+      // 原实现：`if (rows.length === 0) { LIKE 兜底 }` —— 只要 FTS 命中 1 条就不再走 LIKE。
+      // trigram 分词下 **2 字符 token 必然失配**（实测：`MATCH "AI"` / `MATCH "助手"` 均返回 0 行，
+      // 而 `"会议纪"`（3 字符）命中），所以查询「AI 助手」时：
+      //   - FTS 侧只有 3+ 字符 token 可能命中；
+      //   - 纯靠「AI」匹配的记录**永远召不回来**（漏召回）。
+      //
+      // 现在：两分支**各自独立取数**（FTS 按 bm25，LIKE 取子串命中），
+      // 按 id **去重合并**。取数上限从 limit*4 放宽到 limit*8，
+      // 保证并集在截断前尽量完整（去重后仍可能超过 limit，最终统一排序后截断）。
+      const cap = limit * 8;
+      const seen = new Set<string>();
+      // trigram 要求查询 >= 3 字符；不足走 LIKE（下方统一覆盖）
       if ([...q].length >= 3) {
         const fts = toFtsQuery(q);
         if (fts) {
@@ -39,33 +52,62 @@ export async function search(ctx: StoreContext, query: string, opts?: { personaT
                WHERE memories_fts MATCH ? AND m.invalid_at IS NULL
                ORDER BY bm25(memories_fts)
                LIMIT ?`,
-            ).all(fts, limit * 4) as Record<string, unknown>[];
-            rows = found.map(rowToMemory);
+            ).all(fts, cap) as Record<string, unknown>[];
+            for (const r of found) {
+              const row = rowToMemory(r);
+              seen.add(row.id);
+              rows.push(row);
+            }
           } catch {
-            rows = []; // MATCH 语法异常 → LIKE 兜底
+            // MATCH 语法异常 → 交给 LIKE 分支兜底（不影响并集）
           }
         }
       }
-      if (rows.length === 0) {
-        const pat = likePattern(q);
-        const found = ctx.db.prepare(
-          `SELECT * FROM memories
-           WHERE invalid_at IS NULL AND (name LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR tags_json LIKE ? ESCAPE '\\')
-           ORDER BY pinned DESC, updated_at DESC
-           LIMIT ?`,
-        ).all(pat, pat, pat, limit * 4) as Record<string, unknown>[];
-        rows = found.map(rowToMemory);
+      // LIKE 分支**独立执行**（不再受 FTS 是否命中影响）。
+      //
+      // 口径对齐（重要）：FTS 侧 `toFtsQuery` 是 **token 级 OR**
+      // （`"AI" OR "助手"`），所以 LIKE 侧也必须**按 token OR** 匹配，
+      // 否则两分支语义不一致、并集仍然召不回：
+      //   - 原口径 `%整句%`：查询「AI 助手」要求正文**连续**含「AI 助手」，
+      //     而 trigram 下 FTS 又必然召不回 2 字符 token → **两个分支都召不回**。
+      //   - 现在：按空白拆 token，任一 token 命中 name/content/tags 即召回
+      //     （单 token 查询时与原口径等价）。
+      const tokens = q.split(/\s+/).filter(Boolean);
+      const pats = tokens.map((t) => likePattern(t));
+      // 每个 token 一组三列占位符（name / content / tags_json），组间 OR。
+      // 用模板字面量避免引号转义歧义（ESCAPE '\' 里的反斜杠）。
+      const oneToken = `(name LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR tags_json LIKE ? ESCAPE '\\')`;
+      const orClauses = tokens.map(() => oneToken).join(' OR ');
+      const likeFound = ctx.db.prepare(
+        `SELECT * FROM memories
+         WHERE invalid_at IS NULL AND (${orClauses})
+         ORDER BY pinned DESC, updated_at DESC
+         LIMIT ?`,
+      ).all(...pats.flatMap((p) => [p, p, p]), cap) as Record<string, unknown>[];
+      for (const r of likeFound) {
+        const row = rowToMemory(r);
+        if (seen.has(row.id)) continue; // 已由 FTS 命中 → 去重
+        seen.add(row.id);
+        rows.push(row);
       }
     } else {
-      const needle = q.toLowerCase();
+      // 降级路径同样按 **token OR** 匹配（与 SQL 分支口径一致）。
+      const needles = q.split(/\s+/).filter(Boolean).map((t) => t.toLowerCase());
       rows = ctx.fallback!.filter(
         (m) => m.invalidAt === null &&
-          (m.name.toLowerCase().includes(needle) ||
+          needles.some((needle) =>
+            m.name.toLowerCase().includes(needle) ||
             m.content.toLowerCase().includes(needle) ||
             m.tags.some((t) => t.toLowerCase().includes(needle))),
       );
       rows.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.updatedAt - a.updatedAt);
     }
+
+    // C1 墨鉴 BUG-011：两条分支排序语义不一致（原 FTS 分支走 bm25、LIKE 分支走
+    // pinned/updated_at，且 FTS 分支**不经过 sortRows** → pinned / user 优先策略失效）。
+    // 现在：**统一过 sortRows**（pinned → user 优先 → updated_at 倒序），
+    // 标签精确命中加权放在其后，作为同等稳定的次级排序。
+    rows = sortRows(ctx, rows);
 
     // 标签精确命中加权（稳定排序：精确标签 → 置顶 → 原相关序）
     const needle = q.toLowerCase();

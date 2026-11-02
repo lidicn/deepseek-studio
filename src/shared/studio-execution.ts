@@ -224,11 +224,63 @@ function byteLength(text: string): number {
   }
 }
 
-function truncateUtf8(text: string, limit: number): string {
+/**
+ * 按 **UTF-8 字节** 上限截断，且**不在多字节字符中间切断**。
+ *
+ * C1 墨鉴 BUG-001：同一函数里混用两把尺（判定看 UTF-16 码元数、截断看字节数）
+ *   → 中文载荷上限被放大近 3 倍，且看不到 `truncated` 标记。
+ * C1 墨鉴 BUG-002：直接 `decoder.decode(bytes.slice(0, limit))` 会在多字节字符
+ *   中间切断 → TextDecoder 非 fatal 模式输出 U+FFFD → 预览尾部乱码、且乱码永久落盘。
+ *
+ * 现在：单一字节口径 + **边界回退**。
+ *   ① 先切到 limit 字节；
+ *   ② 若切点落在多字节字符中间（且该字符尚未完整），**回退到该字符的起始边界**
+ *      ——宁可少留几个字节，也绝不切半个字符。
+ *
+ * 边界回退的实现不依赖「解码后数 U+FFFD」（那会误伤正文里本来的 U+FFFD），
+ * 而是用 UTF-8 的**续字节特征**（0b10xxxxxx）向前回退：
+ *   从切点往回扫，直到落在一个**首字节**（0b11xxxxxx）或 ASCII（< 0x80）上。
+ * 这样得到的是「最后一个完整字符的结尾」。
+ *
+ * 注意：首字节的完整长度由其高 4 位决定（110xxxxx→2 字节、1110xxxx→3、
+ * 11110xxx→4），回退时按该长度再往前核对一次，避免落在**非法序列**上。
+ */
+export function truncateUtf8ByBytes(text: string, limit: number): string {
+  if (limit <= 0) return '';
   const encoder = new TextEncoder();
   const bytes = encoder.encode(text);
   if (bytes.byteLength <= limit) return text;
-  return new TextDecoder().decode(bytes.slice(0, limit));
+
+  // ① 切到 limit 字节。
+  let end = limit;
+  // ② 边界回退：若切点落在**多字节字符中间**，回退到该字符的**起始边界**。
+  //
+  //    实现：从切点往回找**最后一个完整字符的结尾**。
+  //    UTF-8 首字节的完整长度由其高 4 位决定：
+  //      0xxxxxxx → 1 字节（ASCII）
+  //      110xxxxx → 2 字节
+  //      1110xxxx → 3 字节
+  //      11110xxx → 4 字节
+  //    做法：从 `end` 往回扫，**跳过所有续字节**（0b10xxxxxx），
+  //    落到首字节上；再用首字节算出该字符总长度 `need`：
+  //      - `start + need <= end` → 该字符**完整**，保留它（end 不变）；
+  //      - `start + need > end`  → 该字符**被切断**，整个丢掉（end = start）。
+  //    ASCII 字符 need=1，天然总是完整。
+  let start = end;
+  while (start > 0 && (bytes[start] & 0xc0) === 0x80) {
+    start--;
+  }
+  if (start < end) {
+    // start 指向某个字符的首字节（若 start===end 说明切点恰好落在字符边界）。
+    const lead = bytes[start];
+    let need = 1;
+    if ((lead & 0xe0) === 0xc0) need = 2;
+    else if ((lead & 0xf0) === 0xe0) need = 3;
+    else if ((lead & 0xf8) === 0xf0) need = 4;
+    // 该字符没写完 → 整个丢掉（end 回退到 start）。
+    if (start + need > end) end = start;
+  }
+  return new TextDecoder().decode(bytes.slice(0, end));
 }
 
 /**
@@ -242,7 +294,11 @@ export function limitToolPayload(value: unknown, limit = STUDIO_TOOL_PAYLOAD_LIM
   } catch {
     serialized = String(value);
   }
-  if (serialized.length <= limit) {
+  // C1 墨鉴 BUG-001：判定与截断**统一按 UTF-8 字节**。
+  // 原实现用 `serialized.length`（UTF-16 码元数）判定，而 limit 是字节语义
+  // → 16000 个汉字（16000 码元 / 约 48000 字节）被判为「未超限」原样返回，
+  // 上限被放大近 3 倍且看不到 truncated 标记。现在只认字节数。
+  if (byteLength(serialized) <= limit) {
     return (value && typeof value === 'object' && !Array.isArray(value))
       ? value as Record<string, unknown>
       : { value };
@@ -250,7 +306,7 @@ export function limitToolPayload(value: unknown, limit = STUDIO_TOOL_PAYLOAD_LIM
   return {
     truncated: true,
     originalBytes: byteLength(serialized),
-    preview: truncateUtf8(serialized, limit),
+    preview: truncateUtf8ByBytes(serialized, limit),
   };
 }
 
@@ -261,7 +317,7 @@ export function limitFinalAnswer(text: string, limit = STUDIO_FINAL_ANSWER_LIMIT
   const bytes = byteLength(text);
   if (bytes <= limit) return { text };
   return {
-    text: truncateUtf8(text, limit),
+    text: truncateUtf8ByBytes(text, limit),
     truncationMarker: `\n\n> 回答过长，已截断（原始 ${bytes} 字节，仅保留前 ${limit} 字节预览）。`,
   };
 }

@@ -241,7 +241,17 @@ constructor(storePath?: string, opts?: { workspaceId?: string }) {
         actor?: string | null,
         note?: string | null,
       ) => self.recordLog(op, memoryId, before, after, actor, note),
+      // C1 墨鉴 BUG-012/013：事务内用的严格审计槽（失败抛错 → 整笔回滚）。
+      recordLogStrict: (
+        op: string,
+        memoryId: string | null,
+        before: MemoryRow | null,
+        after: MemoryRow | null,
+        actor?: string | null,
+        note?: string | null,
+      ) => audit.recordLogStrict(self.ctx, op, memoryId, before, after, actor, note),
       forgetAudit: (id: string) => self.forgetAudit(id),
+      forgetAuditStrict: (id: string) => audit.forgetAuditStrict(self.ctx, id),
       snapshotById: (id: string) => self.snapshotById(id),
       deleteMemoryRow: (id: string) => self.deleteMemoryRow(id),
       writeSnapshotRow: (row: MemoryRow) => self.writeSnapshotRow(row),

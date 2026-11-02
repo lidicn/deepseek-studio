@@ -47,6 +47,67 @@ export function recordLog(ctx: StoreContext, op: string, memoryId: string | null
     });
   }
 
+/**
+ * C1 墨鉴 BUG-013：**严格**版审计写入 —— 失败**抛错**，不再只 warn。
+ *
+ * 只在**事务内**使用（`storage.save` / `storage.remove`）。
+ * 原实现 `recordLog` 内部自带 try/catch 只 warn → 事务里审计写失败被吞掉，
+ * 事务照样 COMMIT → **主记录已改、审计缺失**的中间态，且无任何补偿。
+ * 现在失败直接抛 → 调用方 ROLLBACK → 整笔不成（要么全成、要么全不成）。
+ *
+ * 事务**外**的行为不变（仍走宽松版 `recordLog`），不扩大影响面。
+ */
+export function recordLogStrict(ctx: StoreContext, op: string, memoryId: string | null, before: MemoryRow | null, after: MemoryRow | null, actor?: string | null, note?: string | null): void {
+    const ts = Date.now();
+    const beforeJson = before ? ctx.audit.seal(before) : null;
+    const afterJson = after ? ctx.audit.seal(after) : null;
+    const sealedNote = note ? ctx.audit.seal(note) : null;
+    if (ctx.db) {
+      // **不吞异常**：失败即抛出，由外层事务回滚。
+      ctx.db
+        .prepare(
+          `INSERT INTO memory_log (ts, op, memory_id, actor, before_json, after_json, note)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(ts, op, memoryId, actor ?? null, beforeJson, afterJson, sealedNote);
+      return;
+    }
+    // 降级路径（内存数组）：push 不会失败，直接写。
+    ctx.fallbackLog.push({
+      id: ctx.fallbackLog.length + 1,
+      ts,
+      op,
+      memoryId,
+      actor: actor ?? null,
+      before: before ? snapshotOf(before) : null,
+      after: after ? snapshotOf(after) : null,
+      note: note ?? null,
+    });
+  }
+
+/**
+ * C1 墨鉴 BUG-013：严格版「彻底删除」—— 抹审计快照失败**抛错**。
+ *
+ * `forgetAudit`（宽松版）在事务外保持既有「非致命」语义；事务内用严格版，
+ * 保证「彻底删除」要么全成（行删了 + 快照抹了 + 审计留痕），要么全不成。
+ */
+export function forgetAuditStrict(ctx: StoreContext, memoryId: string): void {
+  if (!ctx.db) return;
+  const rows = ctx.db
+    .prepare('SELECT id, before_json, after_json FROM memory_log WHERE memory_id = ?')
+    .all(memoryId) as Array<{
+    id: number;
+    before_json: string | null;
+    after_json: string | null;
+  }>;
+  const upd = ctx.db.prepare('UPDATE memory_log SET before_json = NULL, after_json = NULL, note = ? WHERE id = ?');
+  for (const row of rows) {
+    // snapshotFingerprint 自带 "sha256:" 前缀，这里不要再补一个。
+    const fingerprint = `forgotten ${snapshotFingerprint(ctx.audit.open(row.before_json))}`;
+    upd.run(fingerprint, row.id);
+  }
+}
+
 export async function listLog(ctx: StoreContext, opts?: { limit?: number; memoryId?: string }): Promise<MemoryLogEntry[]> {
     const limit = Math.max(1, opts?.limit ?? 50);
     let entries: MemoryLogEntry[];

@@ -137,7 +137,27 @@ export type StoreContext = {
     actor?: string | null,
     note?: string | null,
   ) => void;
+  /**
+   * C1 墨鉴 BUG-012 / BUG-013：**严格**审计写入（失败**抛错**，不吞）。
+   *
+   * `recordLog` 的既有语义是「写失败只 warn、不阻断主流程」（非致命）。
+   * 但在**事务内**这正是缺陷本身：审计写失败若被吞掉，事务照样 COMMIT →
+   * 主记录已改、审计缺失 → **中间态**，且没有任何补偿。
+   *
+   * 所以事务路径改用严格版：失败 → 抛错 → 事务 ROLLBACK → 整笔不成。
+   * 事务**外**仍用宽松版 `recordLog`（保持既有非致命语义，不改行为）。
+   */
+  recordLogStrict: (
+    op: string,
+    memoryId: string | null,
+    before: MemoryRow | null,
+    after: MemoryRow | null,
+    actor?: string | null,
+    note?: string | null,
+  ) => void;
   forgetAudit: (id: string) => void;
+  /** 同上：`forgetAuditStrict` 失败**抛错**（事务内用于保证「彻底删除」真的彻底）。 */
+  forgetAuditStrict: (id: string) => void;
   snapshotById: (id: string) => MemoryRow | null;
   deleteMemoryRow: (id: string) => void;
   writeSnapshotRow: (row: MemoryRow) => void;

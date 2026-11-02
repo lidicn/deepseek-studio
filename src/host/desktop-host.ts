@@ -738,7 +738,17 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
               const exists = (await store.list()).some((m) => m.id === id);
               return { ok: false, error: exists ? 'memory-not-archived' : 'memory-not-found' };
             }
-            const removed = getMemoryStore().remove(id, { forget });
+            // C1 墨鉴 BUG-013：remove 现在在**事务内**做「删行 + 写审计」，
+            // 审计写失败会**抛错**并回滚（行还在、快照没丢）。
+            // 这里必须接住并回报 —— 否则异常会冒泡成未处理错误，用户看不到原因。
+            let removed: boolean;
+            try {
+              removed = getMemoryStore().remove(id, { forget });
+            } catch (e) {
+              const reason = e instanceof Error ? e.message : String(e);
+              console.warn('[memory] purge failed (transaction rolled back):', reason);
+              return { ok: false, error: `memory-purge-failed: ${reason}` };
+            }
             if (!removed) return { ok: false, error: 'memory-not-found' };
             // 物理压缩：secure_delete 只保证新删除的页清零，VACUUM 把旧空闲页从文件里移除。
             getMemoryStore().compact();

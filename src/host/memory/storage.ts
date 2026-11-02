@@ -12,6 +12,53 @@ import { MAX_MEMORIES } from './types';
 import { mergeUpdateGovernance } from '../memory-store';
 import { contentHash, dedupeHash, genId, isValidMemoryType, parseJsonArray, pickEviction, rowToMemory, sameStringArray, sha256Hex, snapshotFingerprint, snapshotOf } from './core';
 
+// ── 事务 helper（C1 墨鉴 BUG-012 / BUG-013） ──────────────────────────────
+
+/**
+ * 在**一个 SQLite 事务**里执行 fn；fn 抛错 → ROLLBACK → 整笔不成。
+ *
+ * C1 墨鉴 BUG-012：`save()` 的「主表 → 审计 → FTS → 淘汰」四步原先**各自独立**，
+ * 任一步失败都留下中间态（主记录在、审计缺；或容量超限）。
+ * C1 墨鉴 BUG-013：`remove()` 先 DELETE 再写审计，审计写失败 → before 快照永久丢失、
+ * rollback 无法恢复该行。
+ *
+ * 现在：**主表 + FTS + 审计**三步在同一事务内同进同退。
+ *
+ * 口径说明（有意为之）：
+ *   ① **淘汰（applyEviction）移出事务** —— 它是「软归档」，逐行独立、失败可重试，
+ *      且审计原文写明「附属失败收集为 warnings，不阻断主保存」。留在事务里会让
+ *      一次淘汰失败回滚整次保存（比原语义更严苛）。淘汰仍照旧返回 warnings。
+ *   ② 事务用 `BEGIN IMMEDIATE`（立即取写锁），避免升级锁时的 SQLITE_BUSY。
+ *   ③ **嵌套事务不支持**（node:sqlite 明确抛 "cannot start a transaction within a
+ *      transaction"）→ 这里用「自己开的事务自己关」的口径：只在本层开/关，
+ *      嵌套调用由调用方保证不重叠（save/remove 互不嵌套）。
+ *   ④ 降级路径（无 sqlite）无事务可用 —— 内存数组的写失败概率极低，
+ *      且没有「半写」的持久化风险，保持原行为。
+ */
+export function withTransaction<T>(ctx: StoreContext, fn: () => T): T {
+  const db = ctx.db;
+  if (!db) {
+    // 降级路径：无事务，直接执行。
+    return fn();
+  }
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (e) {
+    try {
+      db.exec('ROLLBACK');
+    } catch (rollbackError) {
+      console.warn(
+        '[memory] transaction rollback failed:',
+        rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+      );
+    }
+    throw e;
+  }
+}
+
 // ── 域方法 ──────────────────────────────────────────────────────────────
 
 export function save(ctx: StoreContext, params: SaveMemoryParams): SaveMemoryResult {
@@ -77,18 +124,26 @@ export function save(ctx: StoreContext, params: SaveMemoryParams): SaveMemoryRes
         if (!budget.ok) return { ok: false, error: 'memory-capacity', reason: 'resurrect-archive-at-capacity-all-pinned' };
         const rid = existing.rid as number;
         const beforeRow = rowToMemory(existing);
-        ctx.db.prepare(
-          `UPDATE memories SET content = ?, tags_json = ?, pinned = ?, source = ?, confidence = ?,
-           persona_tags_json = ?, content_hash = ?, dedupe_hash = ?, invalid_at = NULL, updated_at = ? WHERE id = ?`,
-        ).run(
-          params.content, JSON.stringify(merged.tags), merged.pinned ? 1 : 0,
-          merged.source ?? null, merged.confidence ?? null, JSON.stringify(merged.personaTags), hash, dedupe, now,
-          String(existing.id),
-        );
-        // M10-10：审计埋点（记录变更前后完整行快照，可按日志回滚）。
-        ctx.recordLog('save', String(existing.id), beforeRow, snapshotById(ctx, String(existing.id)));
-        // C1-F2：FTS 同步 + 容量淘汰（附属失败收集为 warnings，不阻断主保存）。
-        const ftsWarn = syncFts(ctx, rid, params.name, params.content, merged.tags);
+        // C1 墨鉴 BUG-012：**主表 + FTS + 审计**三步同进同退（一个事务）。
+        // 原实现三步各自独立：审计写失败只 warn（主记录已改、审计缺）→
+        // FTS 同步失败也只 warn（主记录在、索引缺）→ 检索召回不到，**且无补偿**。
+        // 现在任一步失败 → 抛错 → ROLLBACK → 主表/FTS/审计**全都没写**。
+        // 淘汰（applyEviction）**留在事务外**：它是软归档、逐行独立可重试，
+        // 且既有语义就是「附属失败只产 warning、不阻断主保存」（见审计原文修法方向）。
+        const { ftsWarn } = withTransaction(ctx, () => {
+          ctx.db!.prepare(
+            `UPDATE memories SET content = ?, tags_json = ?, pinned = ?, source = ?, confidence = ?,
+             persona_tags_json = ?, content_hash = ?, dedupe_hash = ?, invalid_at = NULL, updated_at = ? WHERE id = ?`,
+          ).run(
+            params.content, JSON.stringify(merged.tags), merged.pinned ? 1 : 0,
+            merged.source ?? null, merged.confidence ?? null, JSON.stringify(merged.personaTags), hash, dedupe, now,
+            String(existing.id),
+          );
+          // M10-10：审计埋点（记录变更前后完整行快照，可按日志回滚）。严格版：失败抛错。
+          ctx.recordLogStrict('save', String(existing.id), beforeRow, snapshotById(ctx, String(existing.id)));
+          // C1-F2：FTS 同步（事务内严格版：失败抛错 → 整笔回滚）。
+          return { ftsWarn: syncFtsStrict(ctx, rid, params.name, params.content, merged.tags) };
+        });
         const evictWarn = applyEviction(ctx, budget.evict, now);
         const warnings = [...ftsWarn, ...evictWarn];
         return warnings.length > 0
@@ -136,18 +191,21 @@ export function save(ctx: StoreContext, params: SaveMemoryParams): SaveMemoryRes
         if (!budget.ok) return { ok: false, error: 'memory-capacity', reason: 'resurrect-cross-at-capacity-all-pinned' };
         const rid = cross.rid as number;
         const crossBefore = rowToMemory(cross);
-        ctx.db.prepare(
-          `UPDATE memories SET content = ?, tags_json = ?, pinned = ?, source = ?, confidence = ?,
-           persona_tags_json = ?, content_hash = ?, dedupe_hash = ?, invalid_at = NULL, updated_at = ? WHERE id = ?`,
-        ).run(
-          params.content, JSON.stringify(merged.tags), merged.pinned ? 1 : 0,
-          merged.source ?? null, merged.confidence ?? null, JSON.stringify(merged.personaTags),
-          crossHash, dedupe, now, crossId,
-        );
-        // M10-10：审计埋点（跨名去重命中同样留痕）。
-        ctx.recordLog('save', crossId, crossBefore, snapshotById(ctx, crossId));
-        // C1-F2：name 保留原值，FTS 仍按原 name 索引；同步降级处理防 rowid 冲突。
-        const ftsWarn = syncFts(ctx, rid, crossName, params.content, merged.tags);
+        // C1 墨鉴 BUG-012：同「同名更新」分支 —— 主表 + FTS + 审计同进同退。
+        const { ftsWarn } = withTransaction(ctx, () => {
+          ctx.db!.prepare(
+            `UPDATE memories SET content = ?, tags_json = ?, pinned = ?, source = ?, confidence = ?,
+             persona_tags_json = ?, content_hash = ?, dedupe_hash = ?, invalid_at = NULL, updated_at = ? WHERE id = ?`,
+          ).run(
+            params.content, JSON.stringify(merged.tags), merged.pinned ? 1 : 0,
+            merged.source ?? null, merged.confidence ?? null, JSON.stringify(merged.personaTags),
+            crossHash, dedupe, now, crossId,
+          );
+          // M10-10：审计埋点（跨名去重命中同样留痕）。严格版：失败抛错 → 回滚。
+          ctx.recordLogStrict('save', crossId, crossBefore, snapshotById(ctx, crossId));
+          // C1-F2：name 保留原值，FTS 仍按原 name 索引；同步降级处理防 rowid 冲突。
+          return { ftsWarn: syncFtsStrict(ctx, rid, crossName, params.content, merged.tags) };
+        });
         const evictWarn = applyEviction(ctx, budget.evict, now);
         const warnings = [...ftsWarn, ...evictWarn];
         return warnings.length > 0
@@ -159,19 +217,22 @@ export function save(ctx: StoreContext, params: SaveMemoryParams): SaveMemoryRes
       const budget = prepareEviction(ctx, 1);
       if (!budget.ok) return { ok: false, error: 'memory-capacity', reason: 'valid-memories-at-capacity-and-all-pinned' };
       const id = genId();
-      ctx.db.prepare(
-        `INSERT INTO memories
-         (id, type, name, content, tags_json, pinned, source, confidence, persona_tags_json, content_hash, dedupe_hash, invalid_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        id, params.type, params.name, params.content, JSON.stringify(tags), (params.pinned ?? false) ? 1 : 0,
-        params.source ?? null, params.confidence ?? null, JSON.stringify(personaTags), hash, dedupe, null, now, now,
-      );
-      const rid = (ctx.db.prepare('SELECT last_insert_rowid() AS rid').get()?.rid as number) ?? 0;
-      // M10-10：新建（before = null）与更新区分开，rollback 据此决定「删行」还是「回写」。
-      ctx.recordLog('save', id, null, snapshotById(ctx, id));
-      // C1-F2：FTS 同步 + 容量淘汰（附属失败收集为 warnings，不阻断主保存）。
-      const ftsWarn = syncFts(ctx, rid, params.name, params.content, tags);
+      // C1 墨鉴 BUG-012：新建分支同样包事务（主表 + 审计 + FTS 同进同退）。
+      const { ftsWarn } = withTransaction(ctx, () => {
+        ctx.db!.prepare(
+          `INSERT INTO memories
+           (id, type, name, content, tags_json, pinned, source, confidence, persona_tags_json, content_hash, dedupe_hash, invalid_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          id, params.type, params.name, params.content, JSON.stringify(tags), (params.pinned ?? false) ? 1 : 0,
+          params.source ?? null, params.confidence ?? null, JSON.stringify(personaTags), hash, dedupe, null, now, now,
+        );
+        const rid = (ctx.db!.prepare('SELECT last_insert_rowid() AS rid').get()?.rid as number) ?? 0;
+        // M10-10：新建（before = null）与更新区分开，rollback 据此决定「删行」还是「回写」。
+        ctx.recordLogStrict('save', id, null, snapshotById(ctx, id));
+        // C1-F2：FTS 同步（事务内严格版：失败抛错 → 整笔回滚，行不会留在主表里）。
+        return { ftsWarn: syncFtsStrict(ctx, rid, params.name, params.content, tags) };
+      });
       const evictWarn = applyEviction(ctx, budget.evict, now);
       const warnings = [...ftsWarn, ...evictWarn];
       return warnings.length > 0
@@ -284,16 +345,26 @@ export function remove(ctx: StoreContext, id: string, opts?: { forget?: boolean 
         | undefined;
       if (!row) return false;
       const before = rowToMemory(row);
-      ctx.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(row.rid as number);
-      ctx.db.prepare('DELETE FROM memories WHERE id = ?').run(id);
-      if (opts?.forget) {
-        // 连审计快照一起抹掉：只留指纹，不可回滚。
-        ctx.forgetAudit(id);
-        ctx.recordLog('purge', id, null, null, null, `forgotten ${snapshotFingerprint(before)}`);
-      } else {
-        // M10-10：彻底删除留痕，rollback 可据快照还原该行。
-        ctx.recordLog('purge', id, before, null);
-      }
+      // C1 墨鉴 BUG-013：**同一事务**内完成「删 FTS → 删主表 → 写审计」。
+      //
+      // 原实现：先 DELETE 再 recordLog，而 recordLog 内部只 warn 不抛 →
+      // 审计写失败时**行已经删了、before 快照却没留下** →
+      // rollback 无法恢复该行（审计注释里「必须取整行」拿到的 before 也保不住）。
+      //
+      // 现在：事务内用**严格版**审计（失败抛错）→ 抛错即 ROLLBACK →
+      // **行还在、FTS 还在、审计一条都没写**（无中间态），异常向上抛给调用方。
+      withTransaction(ctx, () => {
+        ctx.db!.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(row.rid as number);
+        ctx.db!.prepare('DELETE FROM memories WHERE id = ?').run(id);
+        if (opts?.forget) {
+          // 连审计快照一起抹掉：只留指纹，不可回滚。严格版：抹失败 → 抛 → 回滚。
+          ctx.forgetAuditStrict(id);
+          ctx.recordLogStrict('purge', id, null, null, null, `forgotten ${snapshotFingerprint(before)}`);
+        } else {
+          // M10-10：彻底删除留痕，rollback 可据快照还原该行。严格版：写失败 → 抛 → 回滚。
+          ctx.recordLogStrict('purge', id, before, null);
+        }
+      });
       return true;
     }
     const idx = ctx.fallback!.findIndex((m) => m.id === id);
@@ -471,4 +542,22 @@ export function syncFts(ctx: StoreContext, rid: number, name: string, content: s
       console.warn('[memory] FTS sync failed (non-fatal, main record intact):', msg);
       return [{ code: 'fts-sync-failed', message: 'FTS 全文索引同步失败', detail: msg }];
     }
+  }
+
+/**
+ * C1 墨鉴 BUG-012：**严格**版 FTS 同步 —— 失败**抛错**（事务内使用）。
+ *
+ * 原实现 `syncFts` 失败只产 warning（主记录在、索引缺）→
+ * 记忆写进去了但**检索召回不到**，且没有任何补偿。
+ * 现在：事务内失败 → 抛错 → ROLLBACK → 主表/审计/FTS **全都没写**（无中间态）。
+ *
+ * 事务**外**的行为不变（仍走宽松版 `syncFts`），不扩大影响面。
+ */
+export function syncFtsStrict(ctx: StoreContext, rid: number, name: string, content: string, tags: string[]): MemorySaveWarning[] {
+    if (!ctx.db) return [];
+    // **不吞异常**：失败即抛出，由外层事务回滚。
+    ctx.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(rid);
+    ctx.db.prepare('INSERT INTO memories_fts(rowid, name, content, tags) VALUES (?, ?, ?, ?)')
+      .run(rid, name, content, tags.join(' '));
+    return [];
   }
