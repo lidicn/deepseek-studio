@@ -18,18 +18,79 @@ import { createHarnessMetrics } from '../../shared/harness-metrics';
 // ---------------------------------------------------------------- pure completion decision
 
 /**
+ * M1-C：读回滚开关 `STUDIO_TERM_STRICT`。
+ *
+ * 语义（缺省偏向**严格**，fail-safe）：
+ *   - 未设置 / 空串 / 任意非关闭值 → **开**（严格，会判 `interrupted`）；
+ *   - `'0'` / `'false'` / `'off'` / `'no'`（忽略大小写与首尾空白）→ **关**（回退到改动前行为）。
+ *
+ * 单独抽成模块级纯函数是为了**能单测**（环境变量是进程级的，测试里改 process.env 会串味，
+ * 所以给它留一个可注入的读取口）。
+ */
+export function readStrictTermFlag(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.STUDIO_TERM_STRICT;
+  if (typeof raw !== 'string') return true; // 未设置 → 严格
+  const v = raw.trim().toLowerCase();
+  if (v === '') return true; // 空串 → 严格
+  return !(v === '0' || v === 'false' || v === 'off' || v === 'no');
+}
+
+/**
  * S2：纯函数——根据一轮的退出原因判定完成状态。
  * 纯逻辑、无副作用，便于单测。
+ *
+ * M1-C：新增 `sawFinishSentinel`（页面侧「本轮流是否见到完成哨兵」）入参。
+ *
+ * 判据（**严格三态**，这是本函数的全部要点）：
+ *   - `sawFinishSentinel === false` **且**本轮有可见输出（`hasVisibleOutput`）
+ *     → `'interrupted'`：**页面确认流结束了、但没见到完成哨兵** → 模型自己没答完。
+ *   - `sawFinishSentinel === true` → 页面确认见到了哨兵 → 正常完成（`'complete'`）。
+ *   - `sawFinishSentinel === undefined` → 页面**没给**这个结论 → **不判 interrupted**
+ *     （老页面无此能力时不能一律打成失败）。
+ *
+ * 为什么要求「且有可见输出」：
+ *   一条**空流**（模型一个字都没吐就断了）没有「答到一半」可言，
+ *   那是「什么都没拿到」，归 `empty-response` / `read-no-data` 管，
+ *   不该由 `interrupted` 背。
+ *
+ * 优先级：`dispatchFailed`（页不可达）> `timedOut`（宿主砍）> `stopped`（用户主动停）
+ * > `interrupted`（页面被截断）> `complete`。
+ *
+ * **为什么 `stopped` 要排在 `interrupted` 前面**：用户主动 stop 时，本轮流**必然**没有
+ * 完成哨兵（哨兵是「模型自己答完了」的证据，被 stop 掐断的流不可能有）。
+ * 若 `interrupted` 优先，所有用户主动停止都会被误报成「模型没答完」——
+ * 而事实是「用户不让它答完」。用户主动停的语义（`unknown`）必须保留。
  */
 export function decideCompletion(opts: {
   timedOut: boolean;
   dispatchFailed: boolean;
   stopped: boolean;
   partial?: boolean;
+  /**
+   * M1-C：页面侧完成哨兵自证结论（三态：true / false / undefined=未知）。
+   * `undefined` 表示页面侧未提供该结论 → 不判 `interrupted`。
+   */
+  sawFinishSentinel?: boolean;
+  /** M1-C：本轮是否有可见输出（空流不算「答到一半」）。 */
+  hasVisibleOutput?: boolean;
+  /**
+   * M1-C：回滚开关。`STUDIO_TERM_STRICT=0` 时**不判 interrupted**，
+   * 回到改动前的行为（把「页面无哨兵」当成正常完成）——用于线上出问题时的快速回退。
+   */
+  strictTerm?: boolean;
 }): CompletionStatus {
   if (opts.dispatchFailed) return 'disconnected';
   if (opts.timedOut) return 'truncated';
+  // 用户主动停：哨兵必然没有，但这是「用户不让它答完」，不是「模型没答完」。
   if (opts.stopped) return 'unknown';
+  // M1-C：页面侧明确说「流结束了但没有完成哨兵」，且本轮确有可见输出 → 被截断。
+  if (
+    opts.strictTerm !== false &&
+    opts.sawFinishSentinel === false &&
+    (opts.hasVisibleOutput ?? true)
+  ) {
+    return 'interrupted';
+  }
   return 'complete';
 }
 
@@ -117,6 +178,22 @@ export interface WebEngineOptions {
    * WebEngine 收到后转发给 onDelta。真机验证前此回调不自动触发。
    */
   streamPush?: (text: string) => void;
+  /**
+   * M1-C：读取页面侧「本轮流是否见到完成哨兵」的自证结论。
+   *
+   * 三态语义（**`undefined` = 页面侧不知道**，绝不能当 `false`）：
+   *   - `true`  — 页面确认本轮流收到了完成哨兵（`response/status=FINISHED` / `event: close`）；
+   *   - `false` — 页面确认本轮流**结束但没有哨兵**（模型吐到一半断了）；
+   *   - `undefined` — 页面侧未提供该结论（老页面 / 该路径不产出）。
+   *
+   * 未注入本回调时，宿主一律按「不知道」处理 → **不判 `interrupted`**（保持改动前行为）。
+   *
+   * @param roundStartedAt 本轮起点（epoch ms）——**由引擎传入**。
+   *   实现方据此只返回「本轮之后」的结论，避免读到**上一轮**的陈旧哨兵
+   *   （上一轮正常完成=true 会被本轮读到 → 真被截断也判成 complete，漏判；
+   *    上一轮被截断=false 更糟 → 本轮正常完成被判成 interrupted，误判）。
+   */
+  readFinishSentinel?(roundStartedAt: number): boolean | undefined;
 }
 
 export interface WebEngine extends ModelEngine {
@@ -163,6 +240,24 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
 
   const BASELINE_TTL_MS = 10 * 60_000;
 
+  /**
+   * M1-C：**回滚开关** `STUDIO_TERM_STRICT`。
+   *
+   * 缺省 **开**（严格）：页面侧明确报告「流结束了但没有完成哨兵」且本轮确有可见输出
+   * → 判 `'interrupted'`（模型自己没答完）。
+   *
+   * 设 `STUDIO_TERM_STRICT=0` → **关**（宽松）：完全不判 `'interrupted'`，
+   * 回到 M1-C 改动前的行为（「页面无哨兵」一律当正常完成）。
+   *
+   * 为什么需要它：M1-C 改的是**终态语义**（下游 task-loop / API 返回体会因此不同），
+   * 一旦真机上出现误判（例如某个老页面永远报 `false`），需要有**一条命令**能立刻回退，
+   * 不必改代码重新构建。开关读**环境变量**（宿主进程级），重启即生效。
+   *
+   * 解析口径：只有**恰好** `'0'` / `'false'` / `'off'` / `'no'`（忽略大小写、去空白）才算关闭；
+   * 其它任何值（含未设置、含 `'1'`、含空串）都算**开启**（缺省偏向严格、fail-safe）。
+   */
+  const strictTerm = readStrictTermFlag();
+
   // M1-2：harness 指标。外部注入优先；否则若给了 bus 则懒创建。
   let metrics: HarnessMetrics | undefined = options.metrics;
   if (!metrics && options.toolEventBus) {
@@ -183,6 +278,30 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
       metrics.onEvent({ type: 'status', text: `纠偏（completion=${completion}）` });
     }
     metrics.onEvent({ type: 'assistant' });
+  }
+
+  /**
+   * M1-C：读页面侧完成哨兵结论（**三态**，且**永不抛错**）。
+   *
+   * - 未注入 `readFinishSentinel` → `undefined`（页面侧不知道）
+   * - 回调本身抛错 → `undefined`（读不到就当不知道，**绝不因此中断本轮**）
+   * - 回调返回非布尔 → `undefined`（脏数据当不知道）
+   *
+   * @param roundStartedAt 本轮起点 → 传给实现方挡掉上一轮的陈旧结论。
+   */
+  function readFinishSentinelSafely(roundStartedAt: number): boolean | undefined {
+    const read = options.readFinishSentinel;
+    if (!read) return undefined;
+    try {
+      const v = read(roundStartedAt);
+      return typeof v === 'boolean' ? v : undefined;
+    } catch (e) {
+      console.warn(
+        '[web-engine] readFinishSentinel failed (treated as unknown):',
+        e instanceof Error ? e.message : String(e),
+      );
+      return undefined;
+    }
   }
 
   /**
@@ -480,15 +599,29 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
 
       const toolCalls = options.toolCallCounter.current - counterStart;
       // C1-F6：连续读不到数据 → 快速失败（disconnected + read-no-data），不烧满看门狗。
-      const completion: 'complete' | 'truncated' | 'disconnected' | 'unknown' = readNoData
+      //
+      // M1-C：把**页面侧完成哨兵结论**带进判停。
+      //   哨兵是「页面侧流的完成证据」，宿主侧只能问、不能自己推断：
+      //   页面说「本轮流结束了但没有哨兵」→ 模型自己没答完 → interrupted。
+      //   页面说「有哨兵」或「不知道」（undefined）→ 不判 interrupted。
+      const sawFinishSentinel = readFinishSentinelSafely(startedAt);
+      const completion: CompletionStatus = readNoData
         ? 'disconnected'
-        : decideCompletion({ timedOut, dispatchFailed: false, stopped });
+        : decideCompletion({
+            timedOut,
+            dispatchFailed: false,
+            stopped,
+            sawFinishSentinel,
+            hasVisibleOutput: sawNewText && lastText.trim().length > 0,
+            strictTerm,
+          });
       closeRoundForMetrics(completion);
       // F1：超时且从未见到本轮新文本 → 返回空内容，**不拿上一轮答案冒充本轮**。
       const finalContent = sawNewText ? lastText : '';
       console.log(
         `[web-engine][path] send-end completion=${completion} elapsedMs=${Date.now() - startedAt} ` +
-          `contentLen=${finalContent.length} toolCalls=${toolCalls}${readNoData ? ' reason=read-no-data' : ''}`,
+          `contentLen=${finalContent.length} toolCalls=${toolCalls}${readNoData ? ' reason=read-no-data' : ''}` +
+          ` sawFinishSentinel=${String(sawFinishSentinel)}`,
       );
       logRound(Date.now() - startedAt, completion, toolCalls, finalContent);
       return {
@@ -497,6 +630,7 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
         timedOut: timedOut || undefined,
         toolCallRecords: currentRecords ?? undefined,
         completion,
+        ...(sawFinishSentinel !== undefined ? { sawFinishSentinel } : {}),
         ...(readNoData ? { reason: 'read-no-data' } : {}),
       };
     },
@@ -629,16 +763,27 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
 
       const toolCalls = options.toolCallCounter.current - counterStart;
       // C1-F6：连续读不到数据 → 快速失败（同 send()）。
-      const completion: 'complete' | 'truncated' | 'disconnected' | 'unknown' = readNoData
+      //
+      // M1-C：同样把页面侧完成哨兵结论带进判停（续跑轮也可能被页面侧截断）。
+      const sawFinishSentinel = readFinishSentinelSafely(startedAt);
+      const completion: CompletionStatus = readNoData
         ? 'disconnected'
-        : decideCompletion({ timedOut, dispatchFailed: false, stopped });
+        : decideCompletion({
+            timedOut,
+            dispatchFailed: false,
+            stopped,
+            sawFinishSentinel,
+            hasVisibleOutput: sawNewText && lastText.trim().length > 0,
+            strictTerm,
+          });
       closeRoundForMetrics(completion);
       // F1 同 send()：没见到本轮新文本就不返回旧答案。
       const finalContent = sawNewText ? lastText : '';
       // 本轮结束时的状态留作下一轮基线（多轮续跑逐轮推进，不会越比越旧）。
       roundBaseline = { mirrorCount: lastSeen.mirrorCount, mirrorText: lastSeen.mirrorText, text: lastSeen.text, at: Date.now() };
       console.log(
-        `[web-engine][path] wait-end completion=${completion} elapsedMs=${Date.now() - startedAt} contentLen=${finalContent.length}${readNoData ? ' reason=read-no-data' : ''}`,
+        `[web-engine][path] wait-end completion=${completion} elapsedMs=${Date.now() - startedAt} contentLen=${finalContent.length}` +
+          `${readNoData ? ' reason=read-no-data' : ''} sawFinishSentinel=${String(sawFinishSentinel)}`,
       );
       logRound(Date.now() - startedAt, completion, toolCalls, finalContent);
       return {
@@ -647,6 +792,7 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
         timedOut: timedOut || undefined,
         toolCallRecords: currentRecords ?? undefined,
         completion,
+        ...(sawFinishSentinel !== undefined ? { sawFinishSentinel } : {}),
         ...(readNoData ? { reason: 'read-no-data' } : {}),
       };
     },

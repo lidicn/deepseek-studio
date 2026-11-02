@@ -16,8 +16,16 @@ export interface ToolCallRecord {
   readonly error?: string;
 }
 
-/** S2：本轮完成状态自证。 */
-export type CompletionStatus = 'complete' | 'truncated' | 'disconnected' | 'unknown';
+/**
+ * S2：本轮完成状态自证。
+ *
+ * M1-C（新增 `interrupted`）：原先把「看门狗截断」与「流被截断（无完成哨兵）」混成一件事，
+ * 于是「模型答到一半网络断了」和「宿主等超时主动砍」在下游是同一个终态，
+ * 用户无法区分「回答没说完」和「等待太久被砍」。这里把两件事**拆成两个状态**：
+ *   - `truncated`    — **宿主**侧超时主动砍（看门狗 `timedOut`）；
+ *   - `interrupted` — **页面**侧流提前结束、没见到完成哨兵（模型自己没答完）。
+ */
+export type CompletionStatus = 'complete' | 'truncated' | 'interrupted' | 'disconnected' | 'unknown';
 
 export interface EngineSendResult {
   /** 本轮模型回复的可见文本（工具标签已被拦截器摘除）。 */
@@ -39,12 +47,28 @@ export interface EngineSendResult {
   readonly reason?: string;
   /**
    * S2：本轮完成状态自证。老调用方不读此字段则完全无感知。
-   *   complete     — 模型正常输出完毕
-   *   truncated    — 看门狗截断（timedOut 的语义化别名）
+   *   complete     — 模型正常输出完毕（页面侧见到了完成哨兵）
+   *   truncated    — **宿主**侧看门狗超时，主动砍掉本轮（`timedOut`）
+   *   interrupted  — **页面**侧流提前结束、**没见到完成哨兵**（模型自己没答完）
    *   disconnected — 页端不可达 / dispatch 失败
    *   unknown      — 兜底（用户主动 stop 等）
    */
-  readonly completion?: 'complete' | 'truncated' | 'disconnected' | 'unknown';
+  readonly completion?: CompletionStatus;
+
+  /**
+   * M1-C：页面侧「本轮流是否见到完成哨兵」的自证结论。
+   *
+   * 语义三态：
+   *   - `true`  — 页面侧确认本轮流收到了完成哨兵（`response/status=FINISHED` 或 `event: close`）；
+   *   - `false` — 页面侧确认本轮流**结束但没有完成哨兵**（模型吐到一半断流）；
+   *   - `undefined` — 页面侧**未提供**该结论（老页面/未接入该字段/该路径不产出）。
+   *
+   * `undefined` 绝不能当成 `false`：
+   * `false` 是「明确知道被截断」，`undefined` 是「不知道」——
+   * 混淆两者会让老页面（无此能力）一律被判成 `interrupted`，把正常回合全打成失败。
+   * 判据：`false` **且**本轮有可见输出时才是 `interrupted`（见 `decideCompletion`）。
+   */
+  readonly sawFinishSentinel?: boolean;
 }
 
 export interface ModelEngine {

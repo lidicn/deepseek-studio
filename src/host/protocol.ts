@@ -89,6 +89,21 @@ export type PageToHostMessage =
   | { type: 'assistant-reply'; text: string; loop: number }
   /** M9：页端 SSE 流式 delta 推送（逐 token）。 */
   | { type: 'stream-delta'; text: string }
+  /**
+   * M1-C：页端上报「本轮流是否见到完成哨兵」。
+   *
+   * 语义：
+   *   - `sawFinishSentinel: true`  — 本轮流收到了完成哨兵
+   *     （DeepSeek 的哨兵是 `response/status=FINISHED` 或 `event: close`，
+   *      **不是** 通用 SSE 的 `data: [DONE]` —— 实测 20 份真实抓包全部 DONE=False）。
+   *   - `sawFinishSentinel: false` — 本轮流**结束但没有哨兵** → 模型吐到一半断了。
+   *
+   * `round` 必须是**页端自己的本轮序号**（拦截器里的 `streamSeq` / round 计数），
+   * **不能用时间戳**：宿主要靠它把哨兵归属到「当前这一轮」——
+   * 并发是常态（页面自己的 completion、Studio 的重发、上一轮没跑完的流会同时存在），
+   * 归属错了就会出现「A 轮的哨兵算到 B 轮头上」（QD-R7-01 已踩过这个坑）。
+   */
+  | { type: 'finish-sentinel'; round: number; sawFinishSentinel: boolean }
   /** 调试：debug-eval 结果。 */
   | { type: 'debug-eval-result'; requestId: string; ok: boolean; result: string }
   /** QD-R7-01（F12）：每轮一行 JSONL 断流取证。页端内存环随刷新即丢，宿主侧落盘才

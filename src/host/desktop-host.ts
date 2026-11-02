@@ -1012,6 +1012,10 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         // 使工具执行路由到该 bot 自己的窗口（多窗口寻址）。
         dispatch: (tool, params) => invokeTool(tool, params, botId),
         toolCallCounter: state.toolCallCounter,
+        // M1-C：把**页面侧完成哨兵**接进引擎 —— 这是 `interrupted` 终态的**唯一数据来源**。
+        // 没有这一行，hub 收到的页端哨兵永远到不了引擎 → `interrupted` 是死代码。
+        // 引擎传入本轮起点 → hub 只返回「本轮之后」页端上报的那条（挡掉上一轮的陈旧结论）。
+        readFinishSentinel: (roundStartedAt) => hub?.readFinishSentinel(botId, roundStartedAt),
         isStopped: () => state.stopFlag.stopped,
         getAutoReply: () => state.lastAutoReply,
         consumeAutoReply: () => {

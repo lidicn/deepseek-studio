@@ -124,6 +124,14 @@ export interface PageRuntimeHubOptions {
   onAssistantReply?: (text: string, loop: number, botId?: string) => void;
   /** M9：流式 delta 回调。 */
   onStreamDelta?: (text: string, botId?: string) => void;
+  /**
+   * M1-C：页端上报「本轮流是否见到完成哨兵」。
+   *
+   * 宿主据此判 `'interrupted'`（模型吐到一半断了）——**没有这条，`interrupted` 是死代码**。
+   * `round` 是页端自己的本轮序号；宿主按 botId 存**最近一条**，
+   * WebEngine 在轮询结束那一刻读一次（见 `WebEngineOptions.readFinishSentinel`）。
+   */
+  onFinishSentinel?: (info: { round: number; sawFinishSentinel: boolean; botId?: string }) => void;
   /** v1.0：宿主推送记忆列表更新时的回调。 */
   onMemoriesUpdate?: (memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>) => void;
   onToolResult?: (info: { callId: string; tool: string; ok: boolean; error?: string; botId?: string; details?: Record<string, unknown> }) => void;
@@ -168,6 +176,16 @@ export interface PageRuntimeHub {
   broadcastMemories(memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>): void;
   /** 调试：向所有页端广播 debug-eval 请求。 */
   broadcastDebugEval(requestId: string, code: string): void;
+  /**
+   * M1-C：读某个 bot 最近一条「完成哨兵」结论。
+   *
+   * WebEngine 在轮询结束那一刻调一次 → 判 `'interrupted'`。
+   * 返回 `undefined` 表示「页端没上报过 / 不知道」——**绝不能当 `false`**。
+   *
+   * @param botId 目标 bot（缺省 main）
+   * @param sinceMs 只接受 `at >= sinceMs` 的结论（避免读到**上一轮**的陈旧哨兵）
+   */
+  readFinishSentinel(botId?: string, sinceMs?: number): boolean | undefined;
   dispose(): void;
 }
 
@@ -230,6 +248,10 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
   //   ② 页端断开时，宿主这边还在跑，结果发给一个已死的 socket（孤儿）。
   // 现在登记到 pendingToolCalls：加超时、并在 failAllPending（断连）时结算。
   const pendingToolCalls = new Map<string, { ownerId: string; timer: ReturnType<typeof setTimeout> }>();
+  // M1-C：每个 bot 最近一条「完成哨兵」结论（页端上报）。
+  // WebEngine 在轮询结束那一刻读一次 → 判 `'interrupted'`。
+  // 没有这张表，`interrupted` 终态永远不会被触发（死代码）。
+  const finishSentinels = new Map<string, { round: number; sawFinishSentinel: boolean; at: number }>();
 
   /**
    * C4 修复：页端断开时立即结算所有待决请求，不干等 30s/60s 超时。
@@ -408,6 +430,21 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
       } else if (msg.type === 'stream-delta') {
         // M9：流式 delta 推给宿主（web-engine onDelta）
         options.onStreamDelta?.(msg.text, rec.botId);
+      } else if (msg.type === 'finish-sentinel') {
+        // M1-C：页端上报「本轮流是否见到完成哨兵」。
+        // 这是 `interrupted` 终态的**唯一数据来源**——没有它，宿主无法区分
+        // 「模型答完了」与「模型吐到一半断了」。
+        // 按 botId 存最近一条（宿主侧读的时候取最新那条即可）。
+        finishSentinels.set(rec.botId ?? 'main', {
+          round: msg.round,
+          sawFinishSentinel: msg.sawFinishSentinel,
+          at: Date.now(),
+        });
+        options.onFinishSentinel?.({
+          round: msg.round,
+          sawFinishSentinel: msg.sawFinishSentinel,
+          botId: rec.botId,
+        });
       } else if (msg.type === 'kv-get') {
         const store = options.kvStore;
         if (!store) { safeSend(ws, { type: 'kv-result', requestId: msg.requestId, ok: false, error: 'no-kv-store' }); return; }
@@ -593,6 +630,19 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
     },
     get trustedPages(): ReadonlyArray<PageClient> {
       return this.connectedPages.filter((p) => !p.untrusted);
+    },
+    /**
+     * M1-C：读某个 bot 最近一条完成哨兵结论。
+     *
+     * `sinceMs` 是**本轮开始时刻**——用它挡住「上一轮的陈旧哨兵」。
+     * 不挡的话：上一轮正常完成（哨兵=true）会被本轮读到 → 本轮即使真被截断也判成 complete
+     * （漏判）；反过来更糟——上一轮被截断（false）会让本轮正常完成被判成 interrupted（误判）。
+     */
+    readFinishSentinel(botId?: string, sinceMs?: number): boolean | undefined {
+      const rec = finishSentinels.get(botId ?? MAIN_BOT_ID);
+      if (!rec) return undefined;
+      if (sinceMs !== undefined && rec.at < sinceMs) return undefined;
+      return rec.sawFinishSentinel;
     },
     dispatch(tool, params, callId, botId) {
       return new Promise<ExecuteResult>((resolve) => {

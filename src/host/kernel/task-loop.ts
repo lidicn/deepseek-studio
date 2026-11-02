@@ -15,15 +15,16 @@
  *   5. 算 stopReason
  *   6. 返回
  *
- * stopReason 优先级：timeout > completed > no-tool-calls > undefined(继续)。
+ * stopReason 优先级：timeout > interrupted > completed > no-tool-calls > undefined(继续)。
  *   - timedOut            → 'timeout'
+ *   - completion='interrupted' → 'interrupted'（M1-C：页面侧说流断了但没答完）
  *   - 含 <task_complete>   → 'completed'（复用 continuation-prompt.extractTaskCompleteSignal）
  *   - toolCalls === 0     → 'no-tool-calls'
  *   - 否则                → undefined（本轮有工具调用，需继续跑下一轮）
  * 跑满 maxRounds 仍无 stopReason → 终态 'max-rounds'。
  */
 
-import type { ModelEngine, ToolCallRecord, EngineSendResult } from '../engine/model-engine';
+import type { ModelEngine, ToolCallRecord, EngineSendResult, CompletionStatus } from '../engine/model-engine';
 import type { MessageHistory } from './message-history';
 import type { HistoryStore } from './history-store';
 import { detectPlanRequest } from '../plan-gate';
@@ -43,6 +44,17 @@ export type TaskLoopStopReason =
   | 'no-tool-calls'
   | 'timeout'
   | 'aborted'
+  /**
+   * M1-C：页面侧确认本轮流**结束但没有完成哨兵**（`completion='interrupted'`）。
+   *
+   * 与 `timeout` 的区别（这是 M1-C 的核心）：
+   *   - `timeout`      — **宿主**侧看门狗超时，宿主主动砍掉了这一轮；
+   *   - `interrupted`  — **页面**侧流提前结束（模型自己没答完），宿主根本没超时。
+   *
+   * 与 `empty-response` 的区别：`interrupted` 的**内容可能非空**（模型答了一半）。
+   * 所以它绝不能被当成成功回复返回（`requireTaskLoopReply` 把它列为失败终态）。
+   */
+  | 'interrupted'
   | 'max-rounds';
 
 export interface TaskLoopRoundResult {
@@ -77,6 +89,9 @@ export function requireTaskLoopReply(result: TaskLoopRoundResult): string {
     result.stopReason === 'read-no-data' ||
     result.stopReason === 'timeout' ||
     result.stopReason === 'aborted' ||
+    // M1-C：页面侧确认「流被截断、没有完成哨兵」→ 不得作为成功回复返回。
+    // 注意这条**不能靠 content 为空来判断**（模型可能已答了一半、内容非空）。
+    result.stopReason === 'interrupted' ||
     result.stopReason === 'max-rounds';
   if (content === '' || failedReason) {
     const detail = result.stopReason ?? 'empty-response';
@@ -193,9 +208,10 @@ function withAbort<T>(call: () => Promise<T>, signal?: AbortSignal): Promise<T> 
 }
 
 /**
- * 单轮判停（优先级写死：timeout > completed > read-no-data/empty-response > no-tool-calls）。
+ * 单轮判停（优先级写死：timeout > interrupted > completed > read-no-data/empty-response > no-tool-calls）。
  * 返回 undefined 表示本轮有工具调用、应继续。
  *   - timedOut                                  → 'timeout'
+ *   - completion === 'interrupted'              → 'interrupted'（页面侧说流断了但没答完）
  *   - 含 <task_complete>                         → 'completed'
  *   - content 为空且 toolCalls===0：
  *       · engineReason==='read-no-data'         → 'read-no-data'（页在、读不到）
@@ -205,14 +221,22 @@ function withAbort<T>(call: () => Promise<T>, signal?: AbortSignal): Promise<T> 
  *
  * C1-F6：`engineReason` 来自引擎 `EngineSendResult.reason`。原来这个字段在任务层被整个丢掉，
  * 导致「页端消失」和「页存活无消息」在 API 返回体里都是 `empty-response`，用户无法区分。
+ *
+ * M1-C：新增 `completion` 入参。
+ * 关键点：引擎判出 `'interrupted'` 时**内容可能非空**（模型答了一半），
+ * 所以它**不能**靠「content 为空」这条老规则被发现 —— 必须显式看 `completion`，
+ * 否则「回答没说完」会作为**成功回复**返回给用户（这正是 M1-C 要根治的缺陷）。
  */
 function computeStop(
   content: string,
   toolCalls: number,
   timedOut?: boolean,
   engineReason?: string,
+  completion?: CompletionStatus,
 ): TaskLoopStopReason | undefined {
   if (timedOut) return 'timeout';
+  // M1-C：页面侧确认「流被截断、没有完成哨兵」→ 独立终态，优先于 completed。
+  if (completion === 'interrupted') return 'interrupted';
   if (hasTaskComplete(content)) return 'completed';
   if (content.trim() === '' && toolCalls === 0) {
     return engineReason === 'read-no-data' ? 'read-no-data' : 'empty-response';
@@ -314,7 +338,15 @@ export function createTaskLoop(opts: TaskLoopOptions): TaskLoop {
       // 6. 判停
       // C1-F6：把引擎的 reason 一并传下去，否则 `read-no-data` 在这一层被丢掉，
       // 「页端消失」与「页存活无消息」在 API 返回体里都变成 `empty-response`。
-      const stopReason = computeStop(result.content, result.toolCalls, result.timedOut, result.reason);
+      // M1-C：把引擎的 completion 也传下去，否则 `interrupted`（页面侧说流断了没答完）
+      // 在这一层被丢掉 → 「回答没说完」会作为**成功回复**返回给用户。
+      const stopReason = computeStop(
+        result.content,
+        result.toolCalls,
+        result.timedOut,
+        result.reason,
+        result.completion,
+      );
       previousToolCalls = result.toolCalls;
       last = {
         round,
