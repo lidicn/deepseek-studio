@@ -10,7 +10,7 @@
  * - 记忆：记忆列表、删除
  */
 
-import { el, icon, Icons, injectStyles, createShadowContainer, globalEvents, globalState, callHostTool } from './studio-ui-core';
+import { el, icon, Icons, injectStyles, createShadowContainer, globalEvents, globalState, callHostTool, openWorkbench } from './studio-ui-core';
 import { escapeHtml } from './sanitizer';
 import { PANEL_POLICY_MODES, POLICY_MODE_LABELS, type PolicyMode } from '../shared/policy-contract';
 import { createStudioControlsStore, type StudioControlsStore } from './studio-controls-store';
@@ -280,8 +280,15 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   mcpTab.dataset.tabPanel = 'mcp';
   const mcpServerList = el('div', { className: 'studio-mcp-server-list' });
   const mcpError = el('p', { className: 'studio-form-hint', text: '' });
-  const mcpAddBtn = el('button', { className: 'studio-mcp-add-btn' }, [icon(Icons.plus, 16), el('span', { text: '添加 MCP 服务器' })]);
-  mcpAddBtn.addEventListener('click', () => globalEvents.emit('ui:mcp-add'));
+  // 只读口径（PM 2026-11-02，(B) 方案）：页面内**不做任何写操作** ——
+  // 添加 / 编辑 / 删除全部搬到工作台（独立 origin，模型读不到明文）。
+  const mcpReadonlyHint = el('p', {
+    className: 'studio-form-hint',
+    text: '出于安全考虑，MCP 配置的明文（命令、参数、环境变量、URL、Headers）不在聊天页面内显示或编辑。请到工作台中查看与修改。',
+  });
+  const mcpAddBtn = el('button', { className: 'studio-mcp-add-btn' }, [icon(Icons.settings, 16), el('span', { text: '去工作台编辑' })]);
+  mcpAddBtn.addEventListener('click', () => { openWorkbench(); });
+  mcpTab.appendChild(mcpReadonlyHint);
   mcpTab.appendChild(mcpServerList);
   mcpTab.appendChild(mcpError);
   mcpTab.appendChild(mcpAddBtn);
@@ -308,21 +315,14 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
         <div class="studio-mcp-server-actions"></div>
       `;
       const actions = item.querySelector('.studio-mcp-server-actions')!;
-      const editBtn = el('button', { className: 'studio-btn sm' }, [icon(Icons.edit, 12)]);
-      editBtn.addEventListener('click', () => globalEvents.emit('ui:mcp-edit', serverId));
-      const delBtn = el('button', { className: 'studio-btn sm danger' }, [icon(Icons.trash, 12)]);
-      delBtn.addEventListener('click', async () => {
-        const r = await callHostTool('mcp.remove', { serverId });
-        if (!r.ok) {
-          mcpError.textContent = `删除失败：${r.error ?? '未知错误'}`;
-          return;
-        }
-        mcpError.textContent = '';
-        globalState.mcpServers = globalState.mcpServers.filter((s) => s !== serverId);
-        renderMcpServers();
-      });
-      actions.appendChild(editBtn);
-      actions.appendChild(delBtn);
+      // 只读口径：列表项**没有编辑 / 删除**——写操作全部在工作台（PM 2026-11-02）。
+      // 「详情」只读弹窗（env / headers 键名等列表放不下的信息），仍然是**只读**。
+      const viewBtn = el('button', { className: 'studio-btn sm' }, [icon(Icons.edit, 12), el('span', { text: '详情' })]);
+      viewBtn.addEventListener('click', () => globalEvents.emit('ui:mcp-view', serverId));
+      const workbenchBtn = el('button', { className: 'studio-btn sm' }, [icon(Icons.settings, 12), el('span', { text: '去工作台编辑' })]);
+      workbenchBtn.addEventListener('click', () => { openWorkbench(); });
+      actions.appendChild(viewBtn);
+      actions.appendChild(workbenchBtn);
       mcpServerList.appendChild(item);
     }
   }

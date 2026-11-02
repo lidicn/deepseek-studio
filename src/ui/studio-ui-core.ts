@@ -95,6 +95,35 @@ export async function callHostTool(invocationName: string, params: Record<string
   return hostBridge.sendToolCall({ callId, invocationName, params });
 }
 
+declare global {
+  interface Window {
+    /**
+     * Tauri 命令桥：打开工作台窗口（独立 origin `127.0.0.1:8760` 的独立 webview）。
+     * 由 `src/desktop/entry.ts`（Core 域）注入；本模块**只调用、不修改**。
+     */
+    __studioOpenWorkbench?: () => void;
+  }
+}
+
+/**
+ * 打开工作台窗口。
+ *
+ * 用途：MCP 配置的明文**只在工作台**可见可改（页面内一律只读）。
+ * 走**已有** Tauri 命令 `open_workbench` —— **不新开任何凭据面**。
+ *
+ * 放在本模块（而不是 `studio-mcp-dialog`）是有意的：`shadow-api-migration.test.ts`
+ * 的白名单把 `studio-mcp-dialog` 的引用方**收敛**在两个文件内，
+ * 新增第三个引用方会破坏那条契约。
+ */
+export function openWorkbench(): void {
+  const fn = window.__studioOpenWorkbench;
+  if (typeof fn === 'function') {
+    fn();
+    return;
+  }
+  console.warn('[StudioUI] __studioOpenWorkbench unavailable (not running under Tauri)');
+}
+
 /**
  * 创建带 Shadow DOM 的容器元素。
  * 所有 UI 组件挂载到 Shadow DOM 内，避免样式冲突。

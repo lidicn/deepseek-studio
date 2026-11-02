@@ -84,6 +84,23 @@ export interface PolicyVerdict {
   /** 命中的风险标记 id（仅 risk-detected 时有值），用于 UI 展示与审计。 */
   readonly riskFlags?: readonly string[];
   readonly detail?: string;
+  /**
+   * C1 P1 安全批 R3-01b：**本次请求是否触及工作区外**。
+   *
+   * ── 为什么不能靠 reason 推断 ──
+   * 原实现让 `authorization.ts` 用 `policyVerdict.reason === 'outside-workspace'`
+   * 判断「是否越界」。但 reason 表达的是「**为什么**需要审批」，
+   * 而「是否越界」是**另一个维度** —— 二者混在一起必然丢信息。
+   *
+   * 真实丢信息的例子（进程类，auto 档，命令既命中风险模式又越界）：
+   *   `policy.ts` 的 auto 分支先判 `risks.length > 0` → reason = **risk-detected**，
+   *   `outside-workspace` 这个事实只留在 `detail` 里 →
+   *   → `outsideRequested` 判成 false → 对话级放行把它放行了 → **越界静默通过**。
+   *
+   * 现在：`outside` 是**独立布尔量**，由「是否越界」这一事实直接给出，
+   * 不受「为什么需要审批」影响。
+   */
+  readonly outside?: boolean;
 }
 
 export interface PolicyInput {
@@ -283,9 +300,9 @@ export function evaluatePolicy(input: PolicyInput): PolicyVerdict {
       }
     }
     // 工作区外：workspace 档硬拒绝（档位语义就是「不越界」）；ask / auto 审批；full 放行。
-    if (mode === 'workspace') return { decision: 'deny', reason: 'mode-restricted', detail: target };
-    if (mode === 'full') return { decision: 'allow', reason: 'outside-workspace' };
-    return { decision: 'require-consent', reason: 'outside-workspace', detail: target };
+    if (mode === 'workspace') return { decision: 'deny', reason: 'mode-restricted', detail: target, outside: true };
+    if (mode === 'full') return { decision: 'allow', reason: 'outside-workspace', outside: true };
+    return { decision: 'require-consent', reason: 'outside-workspace', detail: target, outside: true };
   }
 
   // —— 本地检索（TD-01）：与 file.list 同构，按工作区边界判档位 ——
@@ -314,10 +331,10 @@ export function evaluatePolicy(input: PolicyInput): PolicyVerdict {
       // 故此处 reason 用 **outside-workspace**（不是 mode-restricted）：
       // 前者说清「为什么被拒」（越界），后者只说「哪一档被拒」——
       // 而调用方与审计都要的是前者（同一越界事实，能力侧也用这个错误码）。
-      return { decision: 'deny', reason: 'outside-workspace', detail: root };
+      return { decision: 'deny', reason: 'outside-workspace', detail: root, outside: true };
     }
-    if (mode === 'full') return { decision: 'allow', reason: 'outside-workspace' };
-    return { decision: 'require-consent', reason: 'outside-workspace', detail: root };
+    if (mode === 'full') return { decision: 'allow', reason: 'outside-workspace', outside: true };
+    return { decision: 'require-consent', reason: 'outside-workspace', detail: root, outside: true };
   }
 
   // —— 进程执行类：受风险模式约束 ——
@@ -343,6 +360,7 @@ export function evaluatePolicy(input: PolicyInput): PolicyVerdict {
         reason: 'mode-restricted',
         riskFlags: risks,
         detail: outsideCwd ? cwd : undefined,
+        outside: Boolean(outsideCwd),
       };
     }
 
@@ -355,12 +373,21 @@ export function evaluatePolicy(input: PolicyInput): PolicyVerdict {
         reason,
         riskFlags: risks,
         detail: outsideCwd ? cwd : undefined,
+        // R3-01b：**越界事实独立于 reason**。
+        // 命令既命中风险模式又越界时，reason 是 risk-detected，
+        // 越界事实只留在 detail 里 —— 靠 reason 推断「是否越界」会把它丢掉
+        // → 对话级放行就会把越界请求静默放行。
+        outside: Boolean(outsideCwd),
       };
     }
 
     if (mode === 'auto') {
-      if (risks.length > 0) return { decision: 'require-consent', reason: 'risk-detected', riskFlags: risks };
-      if (outsideCwd) return { decision: 'require-consent', reason: 'outside-workspace', detail: cwd };
+      // R3-01b：风险命中的分支也必须带 outside —— 命令既命中风险模式又越界时，
+      // reason 是 risk-detected，越界事实**只在这里丢掉**（原来只有 detail 里有）。
+      if (risks.length > 0) {
+        return { decision: 'require-consent', reason: 'risk-detected', riskFlags: risks, outside: Boolean(outsideCwd) };
+      }
+      if (outsideCwd) return { decision: 'require-consent', reason: 'outside-workspace', detail: cwd, outside: true };
       return { decision: 'allow', reason: 'inside-workspace', riskFlags: [] };
     }
 
@@ -369,6 +396,7 @@ export function evaluatePolicy(input: PolicyInput): PolicyVerdict {
       decision: 'allow',
       reason: risks.length > 0 ? 'risk-detected' : outsideCwd ? 'outside-workspace' : 'inside-workspace',
       riskFlags: risks,
+      outside: Boolean(outsideCwd),
     };
   }
 

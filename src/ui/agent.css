@@ -390,3 +390,53 @@ html.is-mobile .workbench-layout.is-compact .inspector-drawer { width: min(320px
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--studio-bg-subtle); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #333a49; }
+
+/* ---------- MCP 服务器编辑器 ----------
+ * 工作台是**唯一**能看见 MCP 明文的地方（独立 origin，模型够不着）。
+ * 页面内（DeepSeek 聊天页）只读、只显示掩码值。 */
+.mcp-editor-pane { padding: 16px 18px; overflow-y: auto; height: 100%; }
+.mcp-editor-header {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap;
+}
+.mcp-editor-title { font-size: 15px; font-weight: 600; color: var(--studio-text-primary); }
+.mcp-editor-hint { font-size: 12px; color: var(--studio-text-weak); flex: 1; min-width: 160px; }
+.mcp-editor-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.mcp-editor-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; border: 1px solid var(--studio-border);
+  border-radius: var(--wb-radius); background: var(--studio-bg-panel);
+}
+.mcp-editor-item-info { min-width: 0; }
+.mcp-editor-item-name { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; }
+.mcp-editor-item-transport {
+  font-size: 11px; padding: 1px 6px; border-radius: 999px;
+  background: var(--studio-primary-soft); color: var(--studio-primary-fill);
+}
+.mcp-editor-item-target {
+  font-size: 12px; color: var(--studio-text-secondary); margin-top: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+.mcp-editor-item-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.mcp-editor-empty { padding: 18px; text-align: center; color: var(--studio-text-weak); font-size: 12px; }
+.mcp-editor-status { font-size: 12px; color: var(--studio-text-weak); min-height: 18px; margin: 6px 0; }
+.mcp-editor-status.is-ok { color: var(--studio-success); }
+.mcp-editor-status.is-err { color: var(--studio-danger); }
+.mcp-editor-form {
+  display: flex; flex-direction: column; gap: 12px; padding: 14px;
+  border: 1px solid var(--studio-border); border-radius: var(--wb-radius);
+  background: var(--studio-bg-panel);
+}
+.mcp-editor-field { display: flex; flex-direction: column; gap: 4px; }
+.mcp-editor-label { font-size: 12px; color: var(--studio-text-secondary); }
+.mcp-editor-input, .mcp-editor-textarea {
+  font-family: inherit; font-size: 13px; color: var(--studio-text-primary);
+  background: var(--studio-bg-subtle); border: 1px solid var(--studio-border);
+  border-radius: 8px; padding: 8px 10px;
+}
+.mcp-editor-textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; resize: vertical;
+}
+.mcp-editor-input:disabled, .mcp-editor-textarea:disabled { opacity: 0.5; }
+.mcp-editor-actions { display: flex; gap: 8px; justify-content: flex-end; }
+#btn-mcp.active { background: var(--studio-primary-soft); color: var(--studio-primary-fill); }

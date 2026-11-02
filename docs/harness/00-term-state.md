@@ -4,6 +4,7 @@
 - 测量脚本：`tools/metrics/term-state.ts`（只读日志，不改变行为）
 - 首份离线分布：`logs/baseline/20261102-offline-term-state.md`（数据源 trace 254 条 turn.end / CDP 抓包 24 组 / verify-exit 提及计数）
 - M1 之后将新增 `interrupted`（用户中断）；脚本对未知值自动单列为 `unknown(未收录:…)`，不崩、不吞。
+  **20261102 状态**：`interrupted` 宿主侧就绪（`da31756`），但页端发送端未实现 → **当前生产不可达**，页端（M1-D 卡）上线前不得声称该终态已生效——见 `docs/验收报告/20261102-TD-修复台账.md` R3-03。
 
 ## 七终态表
 

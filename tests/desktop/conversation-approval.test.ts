@@ -197,7 +197,7 @@ describe('resolveAuthorization · conversationApproved 的位置', () => {
     ).toBe('ask');
   });
 
-  it('R3-01：对话级放行不再隐含批准工作区外（outsideApproved 恒 false）', () => {
+  it('R3-01b：越界目标不被对话级放行放行（逐次询问），且 outsideApproved 恒 false', () => {
     const r = resolveAuthorization(
       mk('shell.exec', {
         mode: 'full',
@@ -206,9 +206,12 @@ describe('resolveAuthorization · conversationApproved 的位置', () => {
         policyVerdict: { decision: 'require-consent', reason: 'outside-workspace' },
       }),
     );
-    expect(r.decision).toBe('allow');
-    expect(r.reason).toBe('conversation-approved');
-    // 关键：越界**不**被对话级放行顺带批准。
+    // C1 P1 安全批 R3-01b：语义收紧 —— 越界目标回到档位判定 → 逐次询问
+    // （§1.4 硬规则 5「跨工作区必须逐次确认」）。
+    // 本用例的 policyVerdict **故意不带** `outside` 字段 → 走「靠 reason 兜底」的
+    // 那条判据，同时守住兜底路径没被改坏。
+    expect(r.decision).toBe('ask');
+    // 关键：越界**不**被对话级放行顺带批准（两层防线都在）。
     expect(r.outsideApproved).toBe(false);
   });
 

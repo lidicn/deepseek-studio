@@ -35,6 +35,7 @@ import { mountThemeToggle } from './workbench/theme-toggle';
 import { mountDesktopHint } from './workbench/desktop-hint';
 import { mountLayoutBreakpoints } from './workbench/layout-breakpoints';
 import { createWidthObserver } from './workbench/width-observer';
+import { mountMcpEditor, type McpEditorHandle } from './agent-mcp-editor';
 import {
   renderExecutionIndex,
   renderExecutionIndexSelect,
@@ -235,6 +236,41 @@ input.addEventListener('keydown', (e) => {
 btnStop.addEventListener('click', () => call({ type: 'stop' }));
 btnFolder.addEventListener('click', () => call({ type: 'pick-folder' }));
 sessionSelect.addEventListener('change', () => selectSession(sessionSelect.value));
+
+// ── MCP 服务器编辑器 ──
+//
+// 明文（命令 / 参数 / env / headers / url）**只在这里**可见可改：
+// 本页是独立 origin（127.0.0.1:8760）的独立 webview 窗口，DeepSeek 页面里的
+// 模型够不着这里。编辑器内部走 fetch + Bearer，**不经工具通道**。
+//
+// 降级纪律：按钮 id 用**可选**获取，不走 `$()`。
+// `$()` 缺元素会 throw（`missing #btn-mcp`）→ 整个 agent-panel.js 挂掉 →
+// 工作台全废。而 `/agent` 的 HTML 是静态资源，可能与新 JS 版本错配
+// （浏览器缓存了旧 HTML / `/agent.js?v=` 版本号没跟上）——
+// 这种错配**不该让整个工作台打不开**，所以这里只在该按钮存在时挂 MCP 入口。
+const btnMcp = document.getElementById('btn-mcp') as HTMLButtonElement | null;
+if (btnMcp) {
+  const mcpPane = document.createElement('section');
+  mcpPane.id = 'mcp-editor-pane';
+  mcpPane.className = 'mcp-editor-pane';
+  mcpPane.style.display = 'none';
+  canvas.appendChild(mcpPane);
+
+  const mcpEditor: McpEditorHandle = mountMcpEditor({
+    root: mcpPane,
+    token: window.__STUDIO_TOKEN__ ?? '',
+  });
+
+  let mcpPaneOpen = false;
+  btnMcp.addEventListener('click', () => {
+    mcpPaneOpen = !mcpPaneOpen;
+    mcpPane.style.display = mcpPaneOpen ? '' : 'none';
+    const body = canvas.querySelector<HTMLElement>('.canvas-body');
+    if (body) body.style.display = mcpPaneOpen ? 'none' : '';
+    btnMcp.classList.toggle('active', mcpPaneOpen);
+    if (mcpPaneOpen) void mcpEditor.refresh();
+  });
+}
 
 document.querySelectorAll<HTMLButtonElement>('.seg').forEach((btn) => {
   btn.addEventListener('click', () => {

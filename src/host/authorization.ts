@@ -238,7 +238,18 @@ export function resolveAuthorization(input: AuthorizationInput): AuthorizationRe
   // 1) 未登记工具 / 无定义 → fail-closed（desktop-host 已在更外层拒过，这里兜第二道）。
   if (!def) return { ...base, decision: 'deny', reason: 'unknown-capability', outsideApproved: false };
 
-  const outsideRequested = policyVerdict?.reason === 'outside-workspace';
+  // C1 P1 安全批 R3-01b：**越界事实独立判定**，不靠 reason 推断。
+  //
+  // 原实现：`policyVerdict?.reason === 'outside-workspace'`。
+  // 问题：reason 表达的是「**为什么**需要审批」，而「是否越界」是**另一个维度**。
+  // 进程类在 auto/ask 档下若命令**既命中风险模式又越界**，reason 取的是
+  // `risk-detected`，`outside-workspace` 这个事实只留在 detail 里 →
+  // → 这里判成「不越界」→ 对话级放行把它放行 → **越界静默通过**。
+  //
+  // 现在：策略层给出**独立的** `outside` 布尔量（policy.ts 的 PolicyVerdict.outside），
+  // 这里直接用它；老判据保留为兜底（策略层未给 outside 时仍能按 reason 判）。
+  const outsideRequested =
+    policyVerdict?.outside === true || policyVerdict?.reason === 'outside-workspace';
 
   // 2) hard-deny 永远先于任何 grant / 档位 / 来源。
   if (input.hardRule) {
@@ -262,7 +273,23 @@ export function resolveAuthorization(input: AuthorizationInput): AuthorizationRe
   //       越界目标必须逐次确认（§1.4 硬规则 5），对话级放行不覆盖它。
   //    ② key 侧（desktop-host）：key 已纳入 toolId + canonicalTarget，
   //       所以这里的放行只对「这个工具 + 这个目标」生效。
-  if (input.conversationApproved) {
+  //
+  //    C1 P1 安全批 R3-01b：**越界目标本身**也不吃对话级放行。
+  //
+  //    ── 为什么 key 侧（②）挡不住这一条 ──
+  //    ② 解决的是「**跨目标**泛化」：区内 A 的同意 → 放行区外 B（key 不同 → 不命中）。
+  //    但如果用户**恰恰对区外目标 B 点过一次**「本次对话始终允许」，
+  //    那个 key 里 canonicalTarget 就是 B（区外路径）→ 之后再来同一个 B → **key 命中** →
+  //    这里 return allow → **越界被静默放行，且不再问**。
+  //    表现：越界请求不弹审批，直接执行（能力层第二道闸会挡下 → 变成「静默失败」）。
+  //    这违反 §1.4 硬规则 5「跨工作区必须逐次确认」——用户永远看不到那一下问询。
+  //
+  //    ── 修法 ──
+  //    `outsideRequested` 为真时**对话级放行不适用**，继续往下走到档位判定
+  //    → 走 require-consent → **逐次问**。
+  //    语义与硬规则 5 一致：越界是「每次都要问」的事，不是「一个对话问一次」的事。
+  //    不放宽任何东西（只把越界从对话级放行的适用范围里摘出去）。
+  if (input.conversationApproved && !outsideRequested) {
     return {
       ...base,
       decision: 'allow',

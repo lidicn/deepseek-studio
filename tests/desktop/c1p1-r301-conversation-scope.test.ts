@@ -137,8 +137,11 @@ describe('R3-01 · 对话级放行不隐含批准工作区外', () => {
         policyVerdict: { decision: 'require-consent', reason: 'outside-workspace' },
       }),
     );
-    expect(r.decision).toBe('allow');
-    expect(r.reason).toBe('conversation-approved');
+    // C1 P1 安全批 R3-01b：语义收紧 —— 越界目标**不再**被对话级放行放行，
+    // 而是回到档位判定 → 逐次询问（§1.4 硬规则 5「跨工作区必须逐次确认」）。
+    // 本用例的 policyVerdict **故意不带** `outside` 字段 → 走「靠 reason 兜底」的
+    // 那条判据，同时守住兜底路径没被改坏。
+    expect(r.decision).toBe('ask');
     expect(r.outsideApproved).toBe(false);
   });
 });

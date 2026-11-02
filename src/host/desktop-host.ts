@@ -9,7 +9,7 @@
  * 这是「授权先于执行」硬不变量的落点。v0.7 起由 Rust 主进程托管，本文件逻辑上等价。
  */
 
-import { createApiServer, type ApiServer, type RateLimitOptions } from '../api/server';
+import { createApiServer, type ApiServer, type RateLimitOptions, type McpServerConfigDto } from '../api/server';
 import { createBearerAuthenticator } from '../api/auth';
 import { createFakeOfficialBackend } from '../api/official-backend';
 import { createPlatformDesktop, type PlatformDesktop } from './platform-desktop';
@@ -300,6 +300,24 @@ export interface AgentFacade {
   health(): Promise<{ ok: boolean; reason?: string }>;
   /** 原生目录选择对话框（Windows FolderBrowserDialog）；取消/失败返回 null。 */
   pickFolder(): Promise<string | null>;
+}
+
+/**
+ * MCP 配置 DTO → 宿主配置形状。
+ *
+ * 只做**形状转换**，不做取值策略（空值是否保留由调用方决定）。
+ * `command` 是必填（宿主 McpServerConfig 的类型要求），其余缺省留空。
+ */
+function mcpConfigFromDto(config: McpServerConfigDto): McpServerConfig {
+  return {
+    command: String(config.command ?? ''),
+    args: Array.isArray(config.args) ? config.args.map(String) : [],
+    env: config.env && typeof config.env === 'object' ? { ...config.env } : {},
+    transport: String(config.transport ?? 'stdio') as 'stdio' | 'http' | 'sse',
+    url: typeof config.url === 'string' ? config.url : undefined,
+    cwd: typeof config.cwd === 'string' ? config.cwd : undefined,
+    headers: config.headers && typeof config.headers === 'object' ? { ...config.headers } : undefined,
+  };
 }
 
 /**
@@ -1395,6 +1413,71 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     rateLimit: options.rateLimit,
     agentPage: options.agentPage,
     agentLanAccess: options.agentLanAccess,
+    // C1 P1 安全批（(B) 方案）：MCP 配置读写面（工作台专用）。
+    // 挂在 /v1/* 统一 Bearer 闸 + 回环 Origin 闸之后 → 页面里的模型够不到。
+    mcpServers: {
+      async list() {
+        const controller = getMcpController();
+        const serverIds = controller.listServerIds();
+        // **明文**：这条面只给工作台（独立 origin + Bearer）用，
+        // 不经工具通道、不进模型上下文。
+        // 取控制器**本实例内存态**（与 listServerIds 同一份），
+        // 不用模块级 getMcpServer（它按 defaultConfigPath() 另读一份文件，
+        // 实例用显式 configPath 构造时会读错对象）。
+        const servers = serverIds.map((id) => {
+          const cfg = controller.getServerConfig(id);
+          return {
+            id,
+            transport: (cfg?.transport ?? 'stdio') as 'stdio' | 'http' | 'sse',
+            ...(cfg?.command !== undefined ? { command: cfg.command } : {}),
+            ...(cfg?.args !== undefined ? { args: [...cfg.args] } : {}),
+            ...(cfg?.env !== undefined ? { env: { ...cfg.env } } : {}),
+            ...(cfg?.cwd !== undefined ? { cwd: cfg.cwd } : {}),
+            ...(cfg?.url !== undefined ? { url: cfg.url } : {}),
+            ...(cfg?.headers !== undefined ? { headers: { ...cfg.headers } } : {}),
+          };
+        });
+        return { ok: true, servers };
+      },
+      async create(id, config) {
+        const controller = getMcpController();
+        const next = mcpConfigFromDto(config);
+        // 新增：磁盘上还没有这台 → 不做「掩码还原」（没有可还原的基准）。
+        const merged = mergeMaskedSecrets(next, controller.getServerConfig(id));
+        const r = controller.saveServer(id, merged);
+        if (r.ok) controller.reload();
+        return r;
+      },
+      async update(id, config) {
+        const controller = getMcpController();
+        const next = mcpConfigFromDto(config);
+        // 防毁配置：用户没改的字段（表单里躺的是掩码占位 `****`）还原成磁盘原值。
+        const merged = mergeMaskedSecrets(next, controller.getServerConfig(id));
+        const r = controller.saveServer(id, merged);
+        if (r.ok) controller.reload();
+        return r;
+      },
+      async remove(id) {
+        const controller = getMcpController();
+        // 用控制器自己的配置路径（与 saveServer 同一份），
+        // 不用模块级 removeMcpServer 的默认路径推导（会读错文件）。
+        const configPath = (controller as unknown as { configPath?: string }).configPath
+          ?? (process.env.STUDIO_CONFIG_DIR
+            ? path.join(process.env.STUDIO_CONFIG_DIR, 'mcp-servers.json')
+            : path.join(os.homedir(), '.config', 'deepseek-studio', 'mcp-servers.json'));
+        const r = removeMcpServer(id, configPath);
+        if (r.ok) controller.reload();
+        return r;
+      },
+      async test(id, config) {
+        const controller = getMcpController();
+        // body 缺省 → 用已存配置（用户没改配置时测的是已存那份）。
+        const cfg = config ? mcpConfigFromDto(config) : controller.getServerConfig(id);
+        if (!cfg) return { ok: false, error: `mcp server not found: ${id}` };
+        const r = await controller.testConnection(cfg);
+        return { ok: r.ok, error: r.error, tools: r.tools ?? [] };
+      },
+    },
     agentSender,
     automationManager: automationManager as NonNullable<import('../api/server').ApiServerOptions['automationManager']>,
     debugEval: (code) => new Promise((resolve) => {
@@ -1680,7 +1763,11 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         consentMeta = {
           ...consentMeta,
           riskLabel: '特权级',
-          outside: verdict?.reason === 'outside-workspace',
+          // R3-01b：越界事实用**独立**的 verdict.outside 判定。
+          // 原实现只看 `verdict?.reason === 'outside-workspace'` → 命令既命中风险模式
+          // 又越界时 reason 是 risk-detected → 「越界」这个提示会丢 →
+          // 用户在弹窗里看不到「这个要出工作区」的提示，却要为它逐次确认。
+          outside: verdict?.outside === true || verdict?.reason === 'outside-workspace',
           riskFlagLabels: (verdict?.riskFlags ?? []).map(riskLabel),
         };
       }
@@ -1804,7 +1891,13 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     verdict: PolicyVerdict,
     workspaceHash: string,
   ): boolean {
-    if (verdict.reason === 'outside-workspace') return false; // 越界永不白名单（既有语义）
+    // R3-01b：越界事实用**独立**的 verdict.outside 判定。
+    // 原实现只看 `verdict.reason === 'outside-workspace'` → 命令既命中风险模式又越界时
+    // reason 是 risk-detected → 本层语义上会误判「没越界」。
+    const isOutside = verdict.outside === true || verdict.reason === 'outside-workspace';
+    if (isOutside) {
+      return false; // 越界永不白名单（既有语义）
+    }
     const wsRoot = mutableWorkspace.current?.root ?? null;
     const resolvedPath = typeof params.path === 'string' ? params.path : null;
     const relPath = resolvedPath && wsRoot ? path.relative(wsRoot, resolvedPath).replace(/\\/g, '/') : null;
@@ -1817,7 +1910,17 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       resolvedPath,
       realPath: hardDenyPath(params),
       relPath,
-      outside: false,
+      // R3-01b：把**真实的**越界事实传进去。
+      // 原实现硬编码 `outside: false` → routeConsent 的第 4.1 步
+      // 「越界永不白名单」在这条路径上**没被显式启用**。
+      //
+      // ── 影响面已实测（不要夸大）──
+      // 越界目标的 relPath = `path.relative(wsRoot, 区外路径)` = `../outside/...` 形态；
+      // 而白名单 pattern **禁止含 `..`**（`consent-whitelist-store` 的红线），
+      // 且 glob 转换后 `**/*.txt` 也**匹配不上** `../outside/secret.txt`
+      // （实测：`[^/]*` 吃不掉 `..`）→ **越界目标实际无法被白名单免审**。
+      // 所以这层修复是**语义加固**（让本层自己认得 `outside` 事实），不是堵正在被穿的口子。
+      outside: isOutside,
       workspaceRoot: wsRoot,
       workspaceHash,
       whitelist: whitelistStore.list(workspaceHash),

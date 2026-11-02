@@ -32,6 +32,53 @@ export type ToolExecutor = (
   ctx?: { botId?: string; conversationId?: string },
 ) => Promise<{ ok: boolean; data?: unknown; error?: string }>;
 import type { OfficialBackend } from './official-backend';
+
+/**
+ * MCP 服务器配置（**明文**形状）。
+ *
+ * 与宿主侧的 `McpServerConfig` 同形，但这里用**可选字段**表达
+ * 「用户没填这一项」——编辑弹窗回填时，空值要如实表达空，不能凭空造。
+ */
+export interface McpServerConfigDto {
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly env?: Record<string, string>;
+  readonly cwd?: string;
+  readonly transport?: 'stdio' | 'http' | 'sse';
+  readonly url?: string;
+  readonly headers?: Record<string, string>;
+}
+
+/** 一台 MCP 服务器（列表项，**明文**）。 */
+export interface McpServerDto {
+  readonly id: string;
+  readonly transport: 'stdio' | 'http' | 'sse';
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly env?: Record<string, string>;
+  readonly cwd?: string;
+  readonly url?: string;
+  readonly headers?: Record<string, string>;
+}
+
+/**
+ * MCP 配置读写面（宿主注入实现，API 层只做路由与鉴权）。
+ *
+ * 全部方法**不抛异常**：失败用 `{ ok:false, error }` 表达。
+ */
+export interface McpServersApi {
+  /** 列全部服务器（明文）。 */
+  list(): Promise<{ ok: boolean; servers?: McpServerDto[]; error?: string }>;
+  /** 新增一台（id + config）。 */
+  create(id: string, config: McpServerConfigDto): Promise<{ ok: boolean; error?: string }>;
+  /** 改一台。 */
+  update(id: string, config: McpServerConfigDto): Promise<{ ok: boolean; error?: string }>;
+  /** 删一台。 */
+  remove(id: string): Promise<{ ok: boolean; error?: string }>;
+  /** 连通性测试；config 缺省时用已存配置。 */
+  test(id: string, config?: McpServerConfigDto): Promise<{ ok: boolean; tools?: unknown[]; error?: string }>;
+}
+
 import { chunksToResponse, emptyDelta, formatSSE, isUnimplementedPath, SSE_DONE } from './compat';
 import { DEEPSEEK_ORIGIN } from '../host/tool-definitions';
 import {
@@ -93,6 +140,26 @@ export interface ApiServerOptions {
   };
   /** 调试：向网页发 JS 并等结果。 */
   debugEval?: (code: string) => Promise<{ ok: boolean; result?: string; error?: string }>;
+  /**
+   * C1 P1 安全批（(B) 方案）：MCP 服务器配置的**读写面**（工作台专用）。
+   *
+   * ── 为什么挂在 /v1/* 的统一 Bearer 校验之后 ──
+   * ① 端点**必须**在 Bearer 闸之后（`server.ts` 的统一鉴权段），
+   *    **绝不**能挂在 `/agent` 那段免鉴权路由旁边 —— 挂了整套 (B) 方案当场作废。
+   * ② Bearer 是 `config.token`（与页面侧 `__studioHostToken` **同一份**），
+   *    DeepSeek 页面**拿不到**它（页面上只有 WS 用的那份注入脚本变量，
+   *    且模型上下文里不会有它）→ 模型够不到这条面。
+   * ③ 再叠一道**回环 Origin 校验**（见下）→ 即便 token 泄漏，
+   *    公网页面（chat.deepseek.com）的 Origin 也不是回环 → 拒。
+   *
+   * 形状与 UI 的工作台编辑器对齐（PM 定的契约）：
+   *   GET    /v1/mcp/servers          → { servers:[{id,transport,command,args,env,headers,url,cwd}] }（**明文**）
+   *   POST   /v1/mcp/servers          → body { id, config }
+   *   PUT    /v1/mcp/servers/:id      → body { id, config }
+   *   DELETE /v1/mcp/servers/:id
+   *   POST   /v1/mcp/servers/:id/test → body 可选 { config }，缺省用已存配置
+   */
+  mcpServers?: McpServersApi;
   /** 限流与并发（默认串行 + 60/分钟）。 */
   rateLimit?: RateLimitOptions;
   /**
@@ -184,6 +251,145 @@ function applyCors(req: http.IncomingMessage, res: http.ServerResponse): void {
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Authorization,Content-Type');
   res.setHeader('Access-Control-Max-Age', '600');
+}
+
+/**
+ * MCP 配置读写端的路由处理（工作台专用）。
+ *
+ * 契约（PM 定，UI 的工作台编辑器按此实现）：
+ *   GET    /v1/mcp/servers          → { servers:[{id,transport,command,args,env,headers,url,cwd}] }（**明文**）
+ *   POST   /v1/mcp/servers          → body { id, config }      新增
+ *   PUT    /v1/mcp/servers/:id      → body { id, config }      改
+ *   DELETE /v1/mcp/servers/:id                                删
+ *   POST   /v1/mcp/servers/:id/test → body 可选 { config }，缺省用已存配置
+ *
+ * 鉴权：调用方**已经**过了统一 Bearer 闸与回环 Origin 闸（本函数只做路由）。
+ */
+async function handleMcpServersApi(
+  api: McpServersApi,
+  pathname: string,
+  req: http.IncomingMessage,
+  sendJson: (status: number, body: unknown) => void,
+): Promise<void> {
+  const method = req.method ?? 'GET';
+  const rest = pathname.slice('/v1/mcp/servers'.length); // '' | '/:id' | '/:id/test'
+  const segments = rest.split('/').filter(Boolean);
+
+  // GET /v1/mcp/servers（列表）与 POST /v1/mcp/servers（新增）
+  if (segments.length === 0) {
+    if (method === 'GET') {
+      const r = await api.list();
+      if (!r.ok) {
+        sendJson(500, { error: { code: 'mcp_list_failed', message: r.error ?? 'failed to list mcp servers' } });
+        return;
+      }
+      sendJson(200, { servers: r.servers ?? [] });
+      return;
+    }
+    if (method === 'POST') {
+      const body = await parseConfigBody(req);
+      if (!body.ok) {
+        sendJson(400, { error: { code: 'bad_request', message: body.error } });
+        return;
+      }
+      const r = await api.create(body.id, body.config);
+      if (!r.ok) {
+        sendJson(400, { error: { code: 'mcp_save_failed', message: r.error ?? 'failed to save mcp server' } });
+        return;
+      }
+      sendJson(200, { ok: true, id: body.id });
+      return;
+    }
+    sendJson(405, { error: { code: 'method_not_allowed', message: `${method} ${pathname}` } });
+    return;
+  }
+
+  const id = decodeURIComponent(segments[0] ?? '');
+
+  // POST /v1/mcp/servers/:id/test
+  if (segments.length === 2 && segments[1] === 'test') {
+    if (method !== 'POST') {
+      sendJson(405, { error: { code: 'method_not_allowed', message: `${method} ${pathname}` } });
+      return;
+    }
+    // body 可选：有 config 用它（用户「改了再测」），没有就用已存配置。
+    let config: McpServerConfigDto | undefined;
+    try {
+      const raw = await readBody(req);
+      if (raw.trim().length > 0) {
+        const parsed = JSON.parse(raw) as { config?: McpServerConfigDto };
+        if (parsed.config && typeof parsed.config === 'object') config = parsed.config;
+      }
+    } catch {
+      // body 解析失败 → 按「缺省用已存配置」处理（用户没改配置就不该测失败）
+      config = undefined;
+    }
+    const r = await api.test(id, config);
+    if (!r.ok) {
+      sendJson(400, { error: { code: 'mcp_test_failed', message: r.error ?? 'mcp test failed' } });
+      return;
+    }
+    sendJson(200, { ok: true, tools: r.tools ?? [] });
+    return;
+  }
+
+  if (segments.length !== 1) {
+    sendJson(404, { error: { code: 'not_found', message: `${method} ${pathname}` } });
+    return;
+  }
+
+  // PUT /v1/mcp/servers/:id（改）
+  if (method === 'PUT') {
+    const body = await parseConfigBody(req);
+    if (!body.ok) {
+      sendJson(400, { error: { code: 'bad_request', message: body.error } });
+      return;
+    }
+    const r = await api.update(id, body.config);
+    if (!r.ok) {
+      sendJson(400, { error: { code: 'mcp_save_failed', message: r.error ?? 'failed to save mcp server' } });
+      return;
+    }
+    sendJson(200, { ok: true, id });
+    return;
+  }
+
+  // DELETE /v1/mcp/servers/:id（删）
+  if (method === 'DELETE') {
+    const r = await api.remove(id);
+    if (!r.ok) {
+      sendJson(400, { error: { code: 'mcp_remove_failed', message: r.error ?? 'failed to remove mcp server' } });
+      return;
+    }
+    sendJson(200, { ok: true, id });
+    return;
+  }
+
+  sendJson(405, { error: { code: 'method_not_allowed', message: `${method} ${pathname}` } });
+}
+
+/** 解析 `{ id, config }` 请求体。 */
+async function parseConfigBody(
+  req: http.IncomingMessage,
+): Promise<{ ok: true; id: string; config: McpServerConfigDto } | { ok: false; error: string }> {
+  let raw: string;
+  try {
+    raw = await readBody(req);
+  } catch {
+    return { ok: false, error: 'failed to read body' };
+  }
+  let parsed: { id?: unknown; config?: unknown };
+  try {
+    parsed = JSON.parse(raw) as { id?: unknown; config?: unknown };
+  } catch {
+    return { ok: false, error: 'invalid json body' };
+  }
+  const id = typeof parsed.id === 'string' ? parsed.id.trim() : '';
+  if (!id) return { ok: false, error: 'missing id' };
+  if (!parsed.config || typeof parsed.config !== 'object' || Array.isArray(parsed.config)) {
+    return { ok: false, error: 'missing config' };
+  }
+  return { ok: true, id, config: parsed.config as McpServerConfigDto };
 }
 
 /** 令牌桶：每令牌（按 Bearer 值）独立限流。 */
@@ -369,6 +575,28 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       if (pathname === '/v1/models' && req.method === 'GET') {
         const models = await options.backend.models();
         sendJson(200, { object: 'list', data: models.map((id) => ({ id, object: 'model' })) });
+        return;
+      }
+
+      // —— C1 P1 安全批（(B) 方案）：MCP 配置读写面（工作台专用）——
+      //
+      // 已过统一 Bearer 闸。再叠一道**回环 Origin**：
+      // 工作台页的 Origin 是 http://127.0.0.1:8760（回环）；
+      // DeepSeek 页面（chat.deepseek.com）**不是**回环 → 即便它拿到了 token 也连不上。
+      // 这道闸堵的是「token 泄漏 + 公网页」组合。
+      if (pathname === '/v1/mcp/servers' || pathname.startsWith('/v1/mcp/servers/')) {
+        if (!options.mcpServers) {
+          sendJson(501, { error: { code: 'not_implemented', message: 'mcp servers api not configured' } });
+          return;
+        }
+        // 无 Origin（curl / 本机脚本）→ 放行（token 已校验）；
+        // 有 Origin → 必须是回环，否则拒。
+        const reqOrigin = req.headers.origin;
+        if (reqOrigin !== undefined && !isLocalOrigin(reqOrigin)) {
+          sendJson(403, { error: { code: 'origin_not_allowed', message: 'mcp config endpoints are loopback-only' } });
+          return;
+        }
+        await handleMcpServersApi(options.mcpServers, pathname, req, sendJson);
         return;
       }
 

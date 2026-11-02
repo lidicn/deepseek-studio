@@ -57,27 +57,12 @@ import {
 } from '../shared/studio-context-budget';
 import { createToolCallDedupe } from '../shared/tool-call-dedupe';
 import { formatUntrustedMemoriesBlock } from './untrusted-memory';
+// 剥原始工具标签：唯一实现在 raw-tool-text（渲染层与判定层共用）。
+// C1-F5：旧正则只认「开标签不得带属性」的精确形态，模型写出 `<search_files operation="list">`
+// 时会漏剥，于是工具调用原文被当正文渲染给用户（页面里确实出现过 `<search_files>{…}</search_files>`）。
+// 真机根因（auto-continue 的 XHR 路径把含标签的 visible 累积后直推宿主，宿主判成「未解析工具标签」
+// → 格式纠偏循环 → 永不 emit assistant）详见 src/inject/raw-tool-text.ts 头注释。
 import { continuationReasonForReply, scanRawToolText, stripRawToolText } from './raw-tool-text';
-
-/**
- * 从文本里剔除原始工具调用标签（<shell_exec>…</shell_exec> 等），返回纯散文。
- *
- * 与 streaming-tool-parser 的 clean 路径不同——这是无状态的字符串级正则，
- * 用于在把 autoReplyText 推给宿主前清除残留的原始标签文本。
- *
- * 真机根因：auto-continue 的 XHR 路径把 `visible`（SSE 提取的纯文本，**仍含工具标签**）
- * 累积到 loopState.autoReplyText；若直接 onAssistantReply(autoReplyText) 推给宿主，
- * 宿主的 AgentLoop 见到 content 里含 `<shell_exec>` 且 toolCalls=0 → 判定「未解析工具标签」
- * → 格式纠偏循环 → 永不 emit assistant → 聊天室收不到回复。
- * 这里在推送前剥标签，让 AgentLoop 只看到干净的散文。
- *
- * C1-F5：实现换成 `raw-tool-text` 的共用扫描器——旧正则只认「开标签不得带属性」的
- * 精确形态，模型写出 `<search_files operation="list">` 时会漏剥，于是工具调用原文
- * 被当正文渲染给用户（页面里确实出现过 `<search_files>{…}</search_files>`）。
- */
-function stripRawToolTags(text: string): string {
-  return stripRawToolText(text);
-}
 
 /** 页端 → 宿主 的工具调用投递请求（与 host-client.sendToolCall 入参同构）。 */
 export interface ToolCallRequest {
@@ -2661,7 +2646,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                 d(`max-loop end with unexecuted tool text: names=${maxLoopScan.names.join(',')}`);
               }
               interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'max-loop' });
-              const cleanReply = stripRawToolTags(reply).trim();
+              const cleanReply = stripRawToolText(reply).trim();
               if (!hadTools && cleanReply) {
                 try { chatUI?.finishAssistantMessage({ fallbackText: cleanReply, recordFinal: true }); } catch { /* ignore */ }
                 try { onAssistantReply?.(cleanReply, loopDepth); } catch (e) { d(`auto-continue max-round push failed: ${(e as Error).message}`); }
@@ -2734,7 +2719,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                     triggered: false,
                   });
                   interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: true, stopReason: 'completed' });
-                  const cleanReply = stripRawToolTags(reply).trim();
+                  const cleanReply = stripRawToolText(reply).trim();
                   if (cleanReply) {
                     try { chatUI?.finishAssistantMessage({ fallbackText: cleanReply, recordFinal: true }); } catch { /* ignore */ }
                     try { onAssistantReply?.(cleanReply, loopDepth); } catch (e) { d(`auto-continue push failed: ${(e as Error).message}`); }

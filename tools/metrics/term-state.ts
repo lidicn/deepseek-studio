@@ -10,6 +10,10 @@
  *   A. 页端 trace：logs/trace/trace-*.jsonl 的 turn.end 行（stopReason 原始值 → 七终态映射）
  *   B. CDP 抓包信号：logs/cdp-chat-capture/ 按请求分组（哨兵/长度/响应体存在性，只布尔探测不外泄内容）
  *   C. 引擎日志提及：logs/verify-exit/ 等 .log/.json 里的 completion= / stopReason= / API 返回体文案
+ * 另有 E. 频率口径（M3，20261102）：每任务请求数分布 / 同任务相邻间隔 / 截断重发占比。
+ *   判读铁律：**字节类只回答成本，频率类只回答请求表面积**——两件事互相独立，
+ *   本脚本不产出「所以被限流」类合成结论；retryable HTTP 重试在 interceptor 内无
+ *   trace 打点，E3 只测 trace 可见的「截断终态后任务继续」，缺口如实缺报不编数。
  *
  * 用法：
  *   npx tsx tools/metrics/term-state.ts [路径...] [--out <file.md>]
@@ -67,6 +71,8 @@ export interface TermStateReport {
   trace: TermDist;
   captures: CaptureGroup[];
   logMentions: Record<string, number>;
+  /** E. 频率口径；仅当输入含 .jsonl trace 时产出，否则 null（不占节）。 */
+  frequency: FrequencyReport | null;
   inputs: string[];
   filesScanned: number;
 }
@@ -239,6 +245,161 @@ export function aggregateLogMentions(perFile: Record<string, number>[]): Record<
   return out;
 }
 
+// ---------------------------------------------------------------- E. 频率口径（M3）
+
+/** 同任务相邻间隔超过该值视为跨时段（沿用 Verify 20261102 测量口径），不进连发统计。 */
+export const CROSS_SESSION_MS = 30 * 60 * 1000;
+/** ≤该值的相邻间隔视为「快速重发对」代理（同 Verify 口径）。 */
+export const FAST_RESEND_MS = 5000;
+/** 截断类终态：之后同任务仍有轮 → 记一次「截断重发」。 */
+const TRUNCATED_TERMS = new Set(['truncated', 'continuation-truncated', 'truncated-tool-tag']);
+
+interface TurnEndFull {
+  t?: string;
+  turnId?: string;
+  stopReason?: string;
+  ts?: number;
+}
+
+/** 从 jsonl 行里取 turn.end 事件，按有无 turnId 分流（无 turnId 单列不计任务）。 */
+export function collectTurnEvents(lines: string[]): { withId: TurnEndFull[]; withoutId: number } {
+  const withId: TurnEndFull[] = [];
+  let withoutId = 0;
+  for (const rawLine of lines) {
+    const s = rawLine.trim();
+    if (s === '') continue;
+    let obj: TurnEndFull;
+    try {
+      obj = JSON.parse(s) as TurnEndFull;
+    } catch {
+      continue; // 非 JSON 行不算证据
+    }
+    if (typeof obj !== 'object' || obj === null || obj.t !== 'turn.end') continue;
+    if (typeof obj.turnId === 'string' && obj.turnId !== '') withId.push(obj);
+    else withoutId++;
+  }
+  return { withId, withoutId };
+}
+
+/** 线性插值分位数（空集返回 0；调用前需升序）。 */
+export function quantile(sortedAsc: number[], q: number): number {
+  if (sortedAsc.length === 0) return 0;
+  if (sortedAsc.length === 1) return sortedAsc[0];
+  const pos = (sortedAsc.length - 1) * q;
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  if (lo === hi) return sortedAsc[lo];
+  return sortedAsc[lo] + (sortedAsc[hi] - sortedAsc[lo]) * (pos - lo);
+}
+
+export interface FrequencyReport {
+  /** 口径：turnId = 一次用户消息；轮数 = turn.end 数 = 请求数下界（HTTP 重试无打点）。 */
+  taskCount: number;
+  totalTurnEnds: number;
+  eventsWithoutTurnId: number;
+  turnCounts: number[];
+  p50: number;
+  p90: number;
+  max: number;
+  tasksOver10: number;
+  shareOver10: number;
+  /** 同任务相邻间隔（ms，≤30min 的会话内样本，升序）。 */
+  intervalSamples: number[];
+  crossSessionPairs: number;
+  anomalousPairs: number;
+  intervalP50: number;
+  intervalP90: number;
+  intervalMin: number;
+  intervalMax: number;
+  fastResendPairs: number;
+  fastResendShare: number;
+  /** 截断重发：截断终态轮之后同任务仍有后续轮。 */
+  tasksWithResend: number;
+  resendRounds: number;
+  resendRoundShare: number;
+}
+
+export function buildFrequencyReport(events: TurnEndFull[], withoutTurnId: number): FrequencyReport {
+  const byTask = new Map<string, TurnEndFull[]>();
+  for (const e of events) {
+    if (typeof e.turnId !== 'string' || e.turnId === '') continue; // 防御：collect 已分流
+    const list = byTask.get(e.turnId);
+    if (list) list.push(e);
+    else byTask.set(e.turnId, [e]);
+  }
+
+  const turnCounts: number[] = [];
+  const intervalSamples: number[] = [];
+  let crossSessionPairs = 0;
+  let anomalousPairs = 0;
+  let fastResendPairs = 0;
+  let tasksWithResend = 0;
+  let resendRounds = 0;
+  let totalTurns = 0;
+
+  for (const [, evs] of byTask) {
+    evs.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
+    const n = evs.length;
+    totalTurns += n;
+    turnCounts.push(n);
+
+    // E3 可测口径：截断终态轮之后同任务仍有后续轮 → 该轮记一次截断重发
+    let taskResends = 0;
+    for (let i = 0; i < n - 1; i++) {
+      const sr = typeof evs[i].stopReason === 'string' ? (evs[i].stopReason as string) : '';
+      if (TRUNCATED_TERMS.has(sr)) taskResends++;
+    }
+    if (taskResends > 0) {
+      tasksWithResend++;
+      resendRounds += taskResends;
+    }
+
+    // E2 相邻间隔
+    for (let i = 1; i < n; i++) {
+      const a = evs[i - 1].ts;
+      const b = evs[i].ts;
+      if (typeof a !== 'number' || typeof b !== 'number' || b < a) {
+        anomalousPairs++; // 缺 ts / 倒挂，单列不污染 min
+        continue;
+      }
+      const d = b - a;
+      if (d > CROSS_SESSION_MS) {
+        crossSessionPairs++;
+        continue;
+      }
+      intervalSamples.push(d);
+      if (d <= FAST_RESEND_MS) fastResendPairs++;
+    }
+  }
+
+  turnCounts.sort((a, b) => a - b);
+  intervalSamples.sort((a, b) => a - b);
+  const shareBase = totalTurns > 0 ? totalTurns : 1;
+  return {
+    taskCount: byTask.size,
+    totalTurnEnds: totalTurns + withoutTurnId,
+    eventsWithoutTurnId: withoutTurnId,
+    turnCounts,
+    p50: quantile(turnCounts, 0.5),
+    p90: quantile(turnCounts, 0.9),
+    max: turnCounts.length > 0 ? (turnCounts[turnCounts.length - 1] as number) : 0,
+    tasksOver10: turnCounts.filter((c) => c > 10).length,
+    shareOver10: turnCounts.length > 0 ? turnCounts.filter((c) => c > 10).length / turnCounts.length : 0,
+    intervalSamples,
+    crossSessionPairs,
+    anomalousPairs,
+    intervalP50: quantile(intervalSamples, 0.5),
+    intervalP90: quantile(intervalSamples, 0.9),
+    intervalMin: intervalSamples.length > 0 ? (intervalSamples[0] as number) : 0,
+    intervalMax: intervalSamples.length > 0 ? (intervalSamples[intervalSamples.length - 1] as number) : 0,
+    fastResendPairs,
+    fastResendShare: intervalSamples.length > 0 ? fastResendPairs / intervalSamples.length : 0,
+    tasksWithResend,
+    resendRounds,
+    resendRoundShare: resendRounds / shareBase,
+  };
+}
+
 function fmtDist(dist: TermDist, title: string): string[] {
   const out: string[] = [`## ${title}`, ''];
   out.push(`turn.end 事件总数：${dist.total}`);
@@ -295,6 +456,48 @@ function fmtMentions(m: Record<string, number>): string[] {
   return out;
 }
 
+function fmtFrequency(f: FrequencyReport): string[] {
+  const pctStr = (x: number): string => (x * 100).toFixed(1) + '%';
+  // 线性插值分位会带浮点尾巴（如 8200.000000000007），近整数取整、其余保留 1 位小数
+  const num = (x: number): string => (Math.abs(x - Math.round(x)) < 1e-9 ? String(Math.round(x)) : x.toFixed(1));
+  const out: string[] = ['## E. 频率口径（M3：每任务请求表面积；轮数 = turn.end 数 ≈ 请求数下界）', ''];
+  out.push('### E1. 每任务请求数分布（分组键 turnId = 一次用户消息触发的全部请求）');
+  out.push('');
+  out.push('| 指标 | 值 |');
+  out.push('|---|---|');
+  out.push(`| 任务数（distinct turnId） | ${f.taskCount} |`);
+  out.push(`| turn.end 事件总数 | ${f.totalTurnEnds}（无 turnId 单列 ${f.eventsWithoutTurnId}，不计任务） |`);
+  out.push(`| 请求数 P50 / P90 / max | ${num(f.p50)} / ${num(f.p90)} / ${num(f.max)} |`);
+  out.push(`| 请求数 >10 的任务 | ${f.tasksOver10}（占比 ${pctStr(f.shareOver10)}） |`);
+  out.push('');
+  out.push('### E2. 同任务相邻请求间隔（ms）');
+  out.push('');
+  out.push('| 指标 | 值 |');
+  out.push('|---|---|');
+  out.push(`| 会话内间隔样本数（≤30min） | ${f.intervalSamples.length} |`);
+  out.push(`| 跨时段间隔对（>30min，剔出连发统计） | ${f.crossSessionPairs} |`);
+  out.push(`| 异常对（缺 ts / 倒挂，单列） | ${f.anomalousPairs} |`);
+  out.push(`| 会话内 P50 / P90 (ms) | ${num(f.intervalP50)} / ${num(f.intervalP90)} |`);
+  out.push(`| 会话内最小 / 最大 (ms) | ${f.intervalMin} / ${f.intervalMax} |`);
+  out.push(`| ≤5000ms 的「快速重发对」（占会话内间隔） | ${f.fastResendPairs}（${pctStr(f.fastResendShare)}） |`);
+  out.push('');
+  out.push('### E3. 重试占比（可测口径：截断重发）');
+  out.push('');
+  out.push('| 指标 | 值 |');
+  out.push('|---|---|');
+  out.push(`| 含截断重发的任务数 | ${f.tasksWithResend} / ${f.taskCount} |`);
+  out.push(`| 截断重发轮数 / 有归属轮总数 | ${f.resendRounds} / ${f.totalTurnEnds - f.eventsWithoutTurnId}（${pctStr(f.resendRoundShare)}） |`);
+  out.push('| retryable HTTP 重试占比 | **数据源缺失**（interceptor 内无 trace 打点，缺报不编数） |');
+  out.push('');
+  out.push('### 判读口径（字节类与频率类分开，不互相推论）');
+  out.push('');
+  out.push('- **字节类只回答成本**：Σ bodyBytes（见 C 表）回答"花了多少流量"，与请求次数无关。');
+  out.push('- **频率类只回答请求表面积**：E1/E2/E3 回答"发了多少请求、多密、多少是重发"，与字节量无关。');
+  out.push('- 本脚本不产出「所以被限流」类合成结论：成本高≠频率高，频率高≠成本高，两件事互相独立。');
+  out.push('');
+  return out;
+}
+
 export function renderReport(r: TermStateReport): string {
   const out: string[] = [];
   out.push('# 终态分布（离线测量，只读不改）');
@@ -306,6 +509,7 @@ export function renderReport(r: TermStateReport): string {
   out.push(...fmtDist(r.trace, 'A. 页端 trace turn.end 七终态视图（映射表见 TERM_MAP）'));
   out.push(...fmtCaptures(r.captures));
   out.push(...fmtMentions(r.logMentions));
+  if (r.frequency !== null) out.push(...fmtFrequency(r.frequency));
   out.push('## 局限');
   out.push('');
   out.push('- 三类证据分开计数，不做跨类合并；同一轮在 trace 与抓包里各计一次是口径而非错误。');
@@ -393,10 +597,14 @@ function main(): void {
     trace: { buckets: {}, rawValues: {}, unmapped: {}, total: 0 },
     captures: [],
     logMentions: {},
+    frequency: null,
     inputs: inputPaths,
     filesScanned: 0,
   };
   const mentionParts: Record<string, number>[] = [];
+  const freqEvents: TurnEndFull[] = [];
+  let freqWithoutId = 0;
+  let hasTraceJsonl = false;
 
   for (const f of files) {
     report.filesScanned++;
@@ -404,11 +612,15 @@ function main(): void {
     const text = readSafe(f);
     if (text === null) continue;
     if (ext === '.jsonl') {
+      hasTraceJsonl = true;
       const d = bucketTraceLines(text.split('\n'));
       report.trace.total += d.total;
       for (const [k, v] of Object.entries(d.buckets)) report.trace.buckets[k] = (report.trace.buckets[k] ?? 0) + v;
       for (const [k, v] of Object.entries(d.rawValues)) report.trace.rawValues[k] = (report.trace.rawValues[k] ?? 0) + v;
       for (const [k, v] of Object.entries(d.unmapped)) report.trace.unmapped[k] = (report.trace.unmapped[k] ?? 0) + v;
+      const ev = collectTurnEvents(text.split('\n'));
+      freqEvents.push(...ev.withId);
+      freqWithoutId += ev.withoutId;
     } else {
       mentionParts.push(scanLogMentions(text));
       if (ext === '.json' || ext === '.txt') {
@@ -417,6 +629,7 @@ function main(): void {
     }
   }
   report.logMentions = aggregateLogMentions(mentionParts);
+  if (hasTraceJsonl) report.frequency = buildFrequencyReport(freqEvents, freqWithoutId);
 
   // capture 目录：仅当输入里显式包含 cdp-chat-capture 目录时分组扫描
   for (const p of inputPaths) {
