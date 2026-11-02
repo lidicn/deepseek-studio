@@ -14,6 +14,7 @@ import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { isWorkspaceConfigured, type WorkspaceContext } from '../host/workspace';
+import { tokenizeCommandString } from '../shared/command-tokens';
 import type { CapabilityContext, ExecutableCapability, ExecuteResult } from './types';
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -38,31 +39,7 @@ export interface ShellCapabilityOptions {
  * shell:false 下单引号不是引号（Windows cmd 也不认单引号），应视为普通字符。
  */
 export function tokenizeCommand(command: string): string[] {
-  const tokens: string[] = [];
-  let cur = '';
-  let inQuote = false;
-
-  for (const ch of command) {
-    if (inQuote) {
-      if (ch === '"') inQuote = false;
-      else cur += ch;
-      continue;
-    }
-    if (ch === '"') {
-      inQuote = true;
-      continue;
-    }
-    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
-      if (cur.length > 0) {
-        tokens.push(cur);
-        cur = '';
-      }
-      continue;
-    }
-    cur += ch;
-  }
-  if (cur.length > 0) tokens.push(cur);
-  return tokens;
+  return tokenizeCommandString(command);
 }
 
 /**

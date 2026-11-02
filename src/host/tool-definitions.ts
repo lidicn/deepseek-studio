@@ -143,7 +143,19 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
-    approvalClass: 'none',
+    // C1 P1 安全批 TD-01：`none` → `mode`。
+    //
+    // 原为 `'none'`（零审批），而 `root` 当时**直通未校验** → 模型给一个任意绝对路径
+    // 就能把工作区外的文件列出来（越界搜盘）。
+    //
+    // 现在：能力侧用 `resolveWithin` 卡住 root（越界 → `outside-workspace`），
+    // 且档位改成 `mode` → 走**正常审批闸门**（用户能看到这次检索、可以拒）。
+    // 两者是**两道独立的闸**：能力侧管「能不能读这个目录」，档位管「要不要问用户」。
+    approvalClass: 'mode',
+    // C1 P1 安全批 TD-01：目标 = 被遍历的 root。
+    // 没有它，canonicalTarget 退化成空串 → R3-01 的对话级放行不绑定「检索哪个目录」。
+    canonicalTargetKind: 'search-root',
+    grantScopes: ['once', 'session'],
   },
   // ORD-002：网页抓取。
   {
@@ -241,7 +253,19 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
-    approvalClass: 'none',
+    // C1 P1 安全批 R2-02：`none` → `always`。
+    //
+    // 原为 `'none'`（零审批），而返回值**原样包含** `env` / `headers` 明文
+    // → 模型调一次就把用户的 API Key / Authorization 头送进模型上下文。
+    //
+    // 现在：① 值在能力侧掩码为 `****`（`maskMcpServerSecrets`）；
+    // ② 档位改 `always` → 走**正常审批闸门**（用户能看到这次读取、可以拒）。
+    // 两道闸独立：掩码管「泄不泄密」，档位管「要不要问用户」。
+    approvalClass: 'always',
+    // C1 P1 安全批 R2-02：目标 = 服务器 id（`serverId`）。
+    // 没有它，换一台服务器不会被当成换目标 → 放行会跨服务器复用。
+    canonicalTargetKind: 'mcp-call',
+    grantScopes: ['once', 'temporary'],
   },
   // v1.1：删除 MCP 配置（R4-P0-1：删除配置文件，改为 privileged 级别）。
   {

@@ -98,6 +98,25 @@ export interface PolicyInput {
 
 /** 文件类工具（受工作区边界约束）。 */
 export const FILE_TOOLS: readonly string[] = ['file.read', 'file.write', 'file.edit', 'file.list', 'file.stat'];
+/**
+ * C1 P1 安全批 TD-01：本地检索工具（search_files）纳入**文件类**治理。
+ *
+ * 为什么要改：`search_files` 的 `root` 是一次递归遍历的入口，
+ * 它与 `file.list`（列目录）**同构**——同样是「读工作区里的目录树」。
+ * 原来它既不在 FILE_TOOLS 里、也没有自己的策略分支 → `evaluatePolicy` 落到
+ * `not-governed allow` → 档位对它**完全无效**。
+ *
+ * 现状（TD-01 修复后）：
+ *   - 能力侧：`resolveWithin` 卡住 root（越界 → `outside-workspace`），两道闸独立；
+ *   - 策略侧：纳入 FILE_TOOLS → 与 `file.list` 同口径按工作区边界判档位。
+ *
+ * 归入 FILE_TOOLS 的**语义后果**（与 file.list 一致，不是新语义）：
+ *   - workspace 档：越界 → deny；区内 → allow；
+ *   - auto 档：区内 → allow；区外 → require-consent（要问用户）；
+ *   - ask 档：一律 require-consent；
+ *   - full 档：放行。
+ */
+export const SEARCH_TOOLS: readonly string[] = ['search_files'];
 /** 进程执行类工具（R4-P0-1：mcp.test 会 spawn 任意命令，纳入进程类）。 */
 export const PROCESS_TOOLS: readonly string[] = ['shell.exec', 'mcp.test'];
 /**
@@ -109,6 +128,16 @@ export const EXECUTION_TOOLS: readonly string[] = ['python.exec', 'mcp.call', 'm
 
 export function isFileTool(tool: string): boolean {
   return FILE_TOOLS.includes(tool);
+}
+
+/**
+ * C1 P1 安全批 TD-01：本地检索工具（search_files）按**文件类**治理。
+ *
+ * 它是「递归遍历目录树」，与 `file.list` 同构；原来不在任何治理集合里 →
+ * `evaluatePolicy` 落到 `not-governed allow` → 档位对它完全失效。
+ */
+export function isSearchTool(tool: string): boolean {
+  return SEARCH_TOOLS.includes(tool);
 }
 
 export function isProcessTool(tool: string): boolean {
@@ -257,6 +286,38 @@ export function evaluatePolicy(input: PolicyInput): PolicyVerdict {
     if (mode === 'workspace') return { decision: 'deny', reason: 'mode-restricted', detail: target };
     if (mode === 'full') return { decision: 'allow', reason: 'outside-workspace' };
     return { decision: 'require-consent', reason: 'outside-workspace', detail: target };
+  }
+
+  // —— 本地检索（TD-01）：与 file.list 同构，按工作区边界判档位 ——
+  if (isSearchTool(tool)) {
+    if (!workspace) {
+      // fail-closed：没有可信工作区定义时，目录遍历能力整体不可用。
+      return { decision: 'deny', reason: 'workspace-unconfigured' };
+    }
+    // root 缺省时能力层回落工作区根（desktop-host.ts 的 search_files 接线），
+    // 故缺省即视为区内；给出 root 时按边界判。
+    const root = firstString(params, ['root']);
+    if (!root) return { decision: 'allow', reason: 'inside-workspace' };
+    const inside = workspace.contains(root);
+    if (inside) return { decision: 'allow', reason: 'inside-workspace' };
+    if (input.trustedDirs?.length) {
+      const resolved = pathResolve(root);
+      for (const dir of input.trustedDirs) {
+        if (resolved.startsWith(pathResolve(dir) + pathSep) || resolved === pathResolve(dir)) {
+          return { decision: 'allow', reason: 'trusted-dir', detail: dir };
+        }
+      }
+    }
+    if (mode === 'workspace') {
+      // 审计 TD-01 的验收判据原文：「workspace 档下 search_files {root:"...\\.ssh"}
+      // 返回 {ok:false, error:'outside-workspace'} 且审计记录 outcome=policy-denied」。
+      // 故此处 reason 用 **outside-workspace**（不是 mode-restricted）：
+      // 前者说清「为什么被拒」（越界），后者只说「哪一档被拒」——
+      // 而调用方与审计都要的是前者（同一越界事实，能力侧也用这个错误码）。
+      return { decision: 'deny', reason: 'outside-workspace', detail: root };
+    }
+    if (mode === 'full') return { decision: 'allow', reason: 'outside-workspace' };
+    return { decision: 'require-consent', reason: 'outside-workspace', detail: root };
   }
 
   // —— 进程执行类：受风险模式约束 ——

@@ -16,9 +16,18 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { ExecuteResult } from './types';
+import type { WorkspaceContext } from '../host/workspace';
 
 export interface ListFilesInput {
   root: string; // 调用方注入的工作区根（绝对路径）
+  /**
+   * C1 P1 安全批 TD-01：工作区上下文。
+   *
+   * **root 必须落在工作区内** —— 否则 `root` 就是任意绝对路径的入口
+   * （配合 `approvalClass:'none'` = 零审批 → 任意绝对路径递归搜盘）。
+   * 判定用现成的 `WorkspaceContext.resolveWithin`（含 realpath 二次校验）。
+   */
+  workspace?: WorkspaceContext | null;
   pattern?: string; // 文件名通配：* = 任意串，? = 单字符；缺省 = 全部
   recursive?: boolean; // 默认 true
   limit?: number; // 默认 500，超出截断并标 truncated
@@ -26,6 +35,8 @@ export interface ListFilesInput {
 
 export interface GrepFilesInput {
   root: string;
+  /** C1 P1 安全批 TD-01：同 ListFilesInput.workspace（root 必须在工作区内）。 */
+  workspace?: WorkspaceContext | null;
   query: string; // 默认按子串；regex=true 时按正则
   regex?: boolean;
   caseInsensitive?: boolean;
@@ -78,13 +89,49 @@ function globToRegExp(glob: string): RegExp {
  * - 非绝对路径 → invalid-argument
  * - 不存在/不可读 → io-error
  * - 存在但不是目录 → invalid-argument
+ * - **不在工作区内 → outside-workspace**（C1 P1 安全批 TD-01）
+ *
+ * ── C1 P1 安全批 TD-01 ──
+ *
+ * 原实现只校验「非空 / 绝对 / 存在 / 是目录」，**没有工作区约束** ——
+ * 配合工具定义里的 `approvalClass:'none'`（零审批），等于**任意绝对路径递归搜盘**：
+ * 模型只要给出 `root:"C:\\Users\\xxx"`，就能把用户主目录的文件名与内容列出来。
+ *
+ * 现在：`root` 必须落在工作区内。判定用**现成的** `WorkspaceContext.resolveWithin`
+ * （内部含 realpath 二次校验，符号链接越狱一并被拦住）—— 不新写路径判定逻辑。
+ *
+ * 「工作区未配置」与「越界」要**区分开**（`file.ts` 同款口径）：
+ *   - 未配置工作区（`workspace === null`）→ `missing-argument`（能力不可用，不是用户越界）
+ *   - 配置了但 root 在外面                  → `outside-workspace`
+ *   - **没传 workspace（`undefined`）**    → **不施加工作区约束**（见下）
+ *
+ * 为什么 `workspace` 是三态而不是「必填」：
+ *   本模块是**通用能力**（只交付模块 + 单测，不注册工具、不接线），
+ *   直接调用它的场景（如单测、未来的内部检索）不一定有工作区。
+ *   所以：**传了才约束**。真正的闸门在**工具接线层**（desktop-host）——
+ *   那里 `workspace` **必传**（`mutableWorkspace.current`），
+ *   而工具的 `approvalClass` 同时从 `none` 改成 `mode`（走正常审批闸门）。
+ *   两道闸是独立的：能力侧管「能不能读这个目录」，档位管「要不要问用户」。
  */
 async function resolveRoot(
   root: unknown,
+  workspace?: WorkspaceContext | null,
 ): Promise<{ absRoot: string } | { error: string }> {
   if (!isNonEmptyString(root)) return { error: 'missing-argument' };
   if (!path.isAbsolute(root)) return { error: 'invalid-argument' };
-  const absRoot = path.resolve(root);
+  let absRoot: string;
+  if (workspace === undefined) {
+    // 未传工作区上下文 → 不施加工作区约束（模块通用用法）。
+    absRoot = path.resolve(root);
+  } else if (workspace === null) {
+    // 工作区已启用但**未配置根** → 文件类能力不可用（不是用户越界）。
+    return { error: 'missing-argument' };
+  } else {
+    // TD-01：工作区约束。resolveWithin 返回 null = 越界。
+    const within = workspace.resolveWithin(root);
+    if (!within) return { error: 'outside-workspace' };
+    absRoot = path.resolve(within);
+  }
   let st: Awaited<ReturnType<typeof fs.stat>>;
   try {
     st = await fs.stat(absRoot);
@@ -155,7 +202,7 @@ function resolveLimit(inputLimit: unknown, fallback: number): number {
 }
 
 export async function listFiles(input: ListFilesInput): Promise<ExecuteResult> {
-  const rootCheck = await resolveRoot(input.root);
+  const rootCheck = await resolveRoot(input.root, input.workspace);
   if ('error' in rootCheck) return fail(rootCheck.error);
   const absRoot = rootCheck.absRoot;
 
@@ -194,7 +241,7 @@ export async function listFiles(input: ListFilesInput): Promise<ExecuteResult> {
 }
 
 export async function grepFiles(input: GrepFilesInput): Promise<ExecuteResult> {
-  const rootCheck = await resolveRoot(input.root);
+  const rootCheck = await resolveRoot(input.root, input.workspace);
   if ('error' in rootCheck) return fail(rootCheck.error);
   const absRoot = rootCheck.absRoot;
 

@@ -37,6 +37,9 @@ const BASELINE: Record<string, ApprovalClass> = {
   'file.stat': 'mode',
   'shell.exec': 'mode',
   'mcp.test': 'mode',
+  // C1 P1 安全批 TD-01：search_files 由 none 提为 mode ——
+  // 它的 root 是一次递归遍历入口，与 file.list 同构，原来零审批 + root 直通 = 越界搜盘。
+  search_files: 'mode',
   // always：静态分类为高风险；非 full 档要新鲜人工确认，full 档由运行时统一放行
   'policy.set': 'always',
   'workspace.set': 'always',
@@ -51,16 +54,17 @@ const BASELINE: Record<string, ApprovalClass> = {
   'mcp.call': 'always',
   'mcp.save': 'always',
   'mcp.remove': 'always',
+  // C1 P1 安全批 R2-02：mcp.get 由 none 提为 always ——
+  // 它原样返回含 env/headers 明文的配置，零审批 = 模型调一次就把密钥送进模型上下文。
+  'mcp.get': 'always',
   // none：只读/低风险，自动放行
   echo: 'none',
   'chat-read': 'none',
   'skill.list': 'none',
-  search_files: 'none',
   web_fetch: 'none',
   web_search: 'none',
   'memory.save': 'none',
   'mcp.list': 'none',
-  'mcp.get': 'none',
   'memory.list': 'none',
   'memory.listArchived': 'none',
   'memory.select': 'none',

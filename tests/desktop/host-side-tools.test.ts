@@ -1,9 +1,17 @@
-﻿/**
+/**
  * 宿主侧能力接入集成测试（v0.5）
  *
  * 覆盖的是最关键的架构不变量：**shell / file 绝不能被派发到页面**。
  * 这一条若失守，页面脚本就获得了驱动宿主本机的能力，v0.5 的所有安全设计同时作废。
  * 因此这里用「有页端连接」这一最容易出错的前置条件来验证路由。
+ *
+ * ── C1 P1 安全批 TD-03 的一处适配 ──
+ *
+ * 本文件原来用 `node -e "<代码>"` 作为「跑一段代码」的载体。TD-03 把
+ * **内联代码**（`node -e` / `python -c`）纳入硬拒绝地板（`inline-code`），
+ * 于是这些用例会被地板先拒掉 —— 它们测的是「宿主执行 vs 页面截胡」这个**不变量**，
+ * 不是「内联代码该被允许」。故改用**脚本文件**作为载体（`node <file>.js`），
+ * 不变量与断言语义完全不变，且不再与硬拒地板冲突。
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -16,6 +24,17 @@ import { createWorkspace } from '../../src/host/workspace';
 import type { HostToPageMessage } from '../../src/host/protocol';
 
 const running: DesktopHost[] = [];
+
+/**
+ * 写一个临时脚本文件，返回其路径（`node <该路径>` 执行）。
+ * 替代 `node -e`：内联代码已被 TD-03 硬拒，且脚本文件不依赖内联载荷。
+ */
+async function writeScript(body: string): Promise<string> {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'host-side-'));
+  const file = path.join(dir, 'script.js');
+  await fsp.writeFile(file, body, 'utf8');
+  return file;
+}
 
 async function startHost(options: { workspaceRoot?: string; policyMode?: 'workspace' | 'ask' | 'auto' | 'full' }): Promise<DesktopHost> {
   const workspace = options.workspaceRoot ? createWorkspace(options.workspaceRoot) : null;
@@ -81,9 +100,10 @@ describe('宿主侧能力绝不经过页面（核心不变量）', () => {
     const host = await startHost({ policyMode: 'full' });
     const seen: HostToPageMessage[] = [];
     const ws = await connectPage(host, seen);
+    const script = await writeScript('console.log("host-side-only");');
 
     const r = await host.invokeTool('shell.exec', {
-      argv: [process.execPath, '-e', 'console.log("host-side-only")'],
+      argv: [process.execPath, script],
     });
 
     expect(r.ok).toBe(true);
@@ -107,8 +127,9 @@ describe('宿主侧能力绝不经过页面（核心不变量）', () => {
         /* ignore */
       }
     });
+    const script = await writeScript('process.exit(7);');
 
-    await host.invokeTool('shell.exec', { argv: [process.execPath, '-e', 'process.exit(7)'] });
+    await host.invokeTool('shell.exec', { argv: [process.execPath, script] });
     // 若被页端截胡，结果会是 ok=true；宿主真跑则退出码 7 → ok=false
     const audit = host.audit.list().filter((r) => r.tool === 'shell.exec').at(-1);
     expect(audit?.outcome).toBe('execution-failed');
@@ -129,7 +150,8 @@ describe('三档策略在宿主链路上的行为', () => {
 
   it('full 档 + 无页端：直接执行，不阻塞在同意闸门上', async () => {
     const host = await startHost({ policyMode: 'full' });
-    const r = await host.invokeTool('shell.exec', { argv: [process.execPath, '-e', 'console.log("ok")'] });
+    const script = await writeScript('console.log("ok");');
+    const r = await host.invokeTool('shell.exec', { argv: [process.execPath, script] });
     expect(r.ok).toBe(true);
     const rec = host.audit.list().at(-1);
     expect(rec?.mode).toBe('full');

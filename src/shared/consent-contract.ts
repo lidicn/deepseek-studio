@@ -96,6 +96,7 @@ export const CANONICAL_TARGET_KINDS = [
   'mcp-call',
   'policy-mode',
   'workspace-root',
+  'search-root',
   'chat-action',
   'generic',
 ] as const;

@@ -77,6 +77,7 @@ import {
   DEFAULT_POLICY_MODE,
   evaluatePolicy,
   isFileTool,
+  isSearchTool,
   isProcessTool,
   EXECUTION_TOOLS,
   type PolicyVerdict,
@@ -111,7 +112,7 @@ import { createFileEditCapability } from '../capabilities/edit-engine';
 import { getMemoryStore } from './memory-store';
 import { normalizeMemorySaveParams } from './memory-tool-params';
 import { scanSkills, ensureSkillsDir, resolveSkillsDir } from './skill-store';
-import { getMcpController, ensureMcpConfig, getMcpServer, removeMcpServer } from './mcp-controller';
+import { getMcpController, ensureMcpConfig, getMcpServer, removeMcpServer, maskMcpServerSecrets, mergeMaskedSecrets, type McpServerConfig } from './mcp-controller';
 import { createAutomationManager, type AutomationManager } from './automation';
 import { execPythonInSandbox } from './sandbox-executor';
 import {
@@ -464,6 +465,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         ...createFileTools({ workspace: mutableWorkspace }),
         'file.edit': createFileEditCapability({ workspace: mutableWorkspace }),
         // ORD-001：本地文件检索（listFiles + grepFiles 合成一个 search_files 工具）
+        // C1 P1 安全批 TD-01：把工作区上下文传进去 —— root 必须在工作区内，
+        // 否则 params.root 直通 = 任意绝对路径递归搜盘（配合原 approvalClass:'none' 零审批）。
         'search_files': {
           id: 'search_files',
           async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
@@ -472,6 +475,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             if (operation === 'grep') {
               return grepFiles({
                 root,
+                workspace: mutableWorkspace.current,
                 query: String(params.query ?? ''),
                 regex: Boolean(params.regex),
                 caseInsensitive: Boolean(params.caseInsensitive),
@@ -482,6 +486,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             // 默认 list
             return listFiles({
               root,
+              workspace: mutableWorkspace.current,
               pattern: typeof params.pattern === 'string' ? params.pattern : undefined,
               recursive: typeof params.recursive === 'boolean' ? params.recursive : undefined,
               limit: typeof params.limit === 'number' ? params.limit : undefined,
@@ -607,6 +612,15 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           },
         },
         // v1.9：读取单台 MCP 服务器完整配置（编辑弹窗回填）。
+        // C1 P1 安全批 R2-02：**敏感值掩码** + 档位改 `always`。
+        //
+        // 原实现把 `cfg` **原样返回**（含 `env` / `headers` 的明文），
+        // 且工具是 `approvalClass:'none'`（**零审批**）→ 模型只要调一次 `mcp.get`，
+        // 用户配置里的 API Key / Authorization 头就**原样进了模型上下文**。
+        // 模型是外部服务方 → 密钥外泄。
+        //
+        // 现在：① `env` / `headers` 的**值**统一掩码为 `****`（键名保留，
+        //   否则调用方不知道该配哪些变量）；② 档位改 `always` → 走正常审批闸门。
         'mcp.get': {
           id: 'mcp.get',
           async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
@@ -614,7 +628,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             if (!serverId) return { ok: false, error: 'serverId is required' };
             const cfg = getMcpServer(serverId);
             if (!cfg) return { ok: false, error: `server not found: ${serverId}` };
-            return { ok: true, data: { id: serverId, config: cfg } };
+            return { ok: true, data: { id: serverId, config: maskMcpServerSecrets(cfg) } };
           },
         },
         // v1.0：调用 MCP 工具。
@@ -666,7 +680,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             const config = (params.config ?? {}) as Record<string, unknown>;
             if (!serverId) return { ok: false, error: 'serverId is required' };
             const controller = getMcpController();
-            const result = controller.saveServer(serverId, {
+            const next: McpServerConfig = {
               command: String(config.command ?? ''),
               args: Array.isArray(config.args) ? config.args.map(String) : [],
               env: config.env && typeof config.env === 'object' ? (config.env as Record<string, string>) : {},
@@ -674,7 +688,13 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
               url: typeof config.url === 'string' ? config.url : undefined,
               cwd: typeof config.cwd === 'string' ? config.cwd : undefined,
               headers: config.headers && typeof config.headers === 'object' ? (config.headers as Record<string, string>) : undefined,
-            });
+            };
+            // C1 P1 安全批 R2-02（防毁配置）：UI 编辑弹窗的表单里躺的是 `mcp.get`
+            // 返回的**掩码值**（`****`）。原样写回会把用户真实的 API Key / Authorization
+            // 头**永久覆盖成 `****`** —— 掩码挡住了外泄，却毁了配置。
+            // 这里把掩码占位还原成磁盘上的原值；只有用户真的改过的值才覆盖。
+            const merged = mergeMaskedSecrets(next, controller.getServerConfig(serverId));
+            const result = controller.saveServer(serverId, merged);
             if (result.ok) controller.reload();
             return { ok: result.ok, error: result.error };
           },
@@ -1558,7 +1578,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     const paramsBag = (params ?? {}) as Record<string, unknown>;
     const wsRoot = mutableWorkspace.current?.root ?? null;
     const workspaceHash = wsRoot ? createHash('sha1').update(wsRoot).digest('hex').slice(0, 12) : '';
-    const governed = isFileTool(name) || isProcessTool(name) || EXECUTION_TOOLS.includes(name);
+    const governed = isFileTool(name) || isSearchTool(name) || isProcessTool(name) || EXECUTION_TOOLS.includes(name);
     const verdict = governed
       ? evaluatePolicy({
           tool: name,
@@ -1579,12 +1599,16 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       whitelistHit(name, paramsBag, verdict, workspaceHash);
     // 对话级放行：仅当本次调用带有对话身份、且该对话已被用户点过「本次对话始终允许」时成立。
     // key 里含工作区指纹与档位，因此换工作区 / 换档位会自然换 key（旧放行不再命中）。
+    // C1 P1 安全批 R3-01：key **额外含 toolId + canonicalTarget** ——
+    // 否则在 file.read 上的一次同意会放行同对话内的 shell.exec（含工作区外）。
     const conversationKey = conversationId
       ? conversationApprovalKeyOf({
           principal: botId ?? 'main',
           workspaceHash,
           policyMode,
           conversationId,
+          toolId: name,
+          canonicalTarget: canonicalTargetOf(def ?? ({ approvalClass: 'mode' } as ToolDefinition), paramsBag).target,
         })
       : '';
     const conversationApproved = conversationKey !== '' && conversationStore.check(conversationKey);
@@ -1816,15 +1840,21 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     }
     if (decision === 'allow-conversation' && conversationId) {
       // 「本次对话始终允许」：登记对话级放行。
-      // key 含 principal / 工作区指纹 / 档位 / 对话 id → 换对话或换工作区自然失效。
+      // key 含 principal / 工作区指纹 / 档位 / 对话 id / **工具 id / 规范目标**
+      // → 换对话、换工作区、换档位、**换工具、换目标**都会自然失效。
+      // C1 P1 安全批 R3-01：工具与目标进 key 是关键 ——
+      // 否则「读个文件」的同意会被放大成「这个对话里随便干什么都行」。
       const wsRoot = mutableWorkspace.current?.root ?? null;
       const workspaceHash = wsRoot ? createHash('sha1').update(wsRoot).digest('hex').slice(0, 12) : '';
+      const def = registry.get(tool);
       conversationStore.grant(
         conversationApprovalKeyOf({
           principal: botId ?? 'main',
           workspaceHash,
           policyMode,
           conversationId,
+          toolId: tool,
+          canonicalTarget: canonicalTargetOf(def ?? ({ approvalClass: 'mode' } as ToolDefinition), (params ?? {}) as Record<string, unknown>).target,
         }),
       );
       return 'approved';

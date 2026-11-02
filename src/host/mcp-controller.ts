@@ -39,6 +39,87 @@ export interface McpTool {
   readonly inputSchema?: Record<string, unknown>;
 }
 
+/**
+ * C1 P1 安全批 R2-02：MCP 服务器配置的**敏感值掩码**。
+ *
+ * 缺陷：`mcp.get` 工具原样返回整份配置（含 `env` / `headers` 明文），
+ * 且该工具是 `approvalClass:'none'`（**零审批**）→ 模型调一次就把
+ * 用户配置里的 API Key / Authorization 头**原样送进模型上下文**
+ * （模型是外部服务方 → 密钥外泄）。
+ *
+ * 现在：`env` 与 `headers` 的**值**统一替换成 `****`，**键名保留**
+ * —— 键名是「需要配哪些变量」的信息，不是秘密；值才是。
+ *
+ * 其它字段（command / args / cwd / transport / url）**不掩码**：
+ * 它们是连接方式信息，调用方（编辑弹窗）需要它们才能正确回填。
+ * `url` 里可能自带 token —— 但那是**用户自己填的服务器地址**，
+ * 掩掉会让编辑弹窗无法显示地址；`headers` 才是标准放密钥的地方。
+ */
+export const MCP_SECRET_MASK = '****';
+
+/** 把 `env` / `headers` 的值掩码，返回新对象（不改原配置）。 */
+export function maskMcpServerSecrets(cfg: McpServerConfig): McpServerConfig {
+  const maskRecord = (rec: Record<string, string> | undefined): Record<string, string> | undefined => {
+    if (!rec) return undefined;
+    const out: Record<string, string> = {};
+    for (const key of Object.keys(rec)) {
+      out[key] = MCP_SECRET_MASK;
+    }
+    return out;
+  };
+  return {
+    ...cfg,
+    ...(cfg.env ? { env: maskRecord(cfg.env) } : {}),
+    ...(cfg.headers ? { headers: maskRecord(cfg.headers) } : {}),
+  };
+}
+
+/**
+ * R2-02 防毁配置：把「掩码占位」还原成磁盘上的**原值**。
+ *
+ * ── 为什么必须有这一步 ──
+ *
+ * `mcp.get` 现在返回掩码后的配置（`env` / `headers` 的值 = `****`）。
+ * 而 UI 的编辑弹窗用 `mcp.get` 回填表单 → 表单里躺的是 `****` →
+ * 用户点「保存」→ `mcp.save` 收到 `****` → **原样写回磁盘** →
+ * **用户真实的 API Key / Authorization 头被永久覆盖成 `****`**。
+ *
+ * 这就是「掩码引入的新缺陷」——挡住了外泄，却毁了配置。
+ * 本函数让「掩码占位」在写回时**还原成原值**：只有**用户真的改过的值**才覆盖。
+ *
+ * 口径：
+ *   - 入参值 === `****` 且磁盘上该 key 有原值 → **保留原值**（不改）；
+ *   - 入参值 === `****` 且磁盘上该 key 不存在 → 保留 `****`（无处可还原，如实记录）；
+ *   - 入参值是别的值（含空串 = 用户主动清空）→ **用入参值**（用户确实改了）。
+ */
+export function mergeMaskedSecrets(
+  incoming: McpServerConfig,
+  existing: McpServerConfig | null | undefined,
+): McpServerConfig {
+  if (!existing) return incoming;
+  const restore = (
+    next: Record<string, string> | undefined,
+    prev: Record<string, string> | undefined,
+  ): Record<string, string> | undefined => {
+    if (!next) return next;
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(next)) {
+      if (v === MCP_SECRET_MASK && prev && Object.prototype.hasOwnProperty.call(prev, k)) {
+        // 掩码占位 → 还原成磁盘上的原值（不覆盖用户真实密钥）。
+        out[k] = prev[k] as string;
+      } else {
+        out[k] = v;
+      }
+    }
+    return out;
+  };
+  return {
+    ...incoming,
+    ...(incoming.env ? { env: restore(incoming.env, existing.env) } : {}),
+    ...(incoming.headers ? { headers: restore(incoming.headers, existing.headers) } : {}),
+  };
+}
+
 export interface McpCallResult {
   readonly ok: boolean;
   readonly data?: unknown;
@@ -265,6 +346,20 @@ export class McpController {
   listServerIds(): string[] {
     this.refreshConfigIfChanged();
     return Object.keys(this.servers);
+  }
+
+  /**
+   * 取本实例**当前内存态**里某台服务器的完整配置（含 env / headers 明文）。
+   *
+   * 与模块级 `getMcpServer(id)` 的区别：后者按 `defaultConfigPath()` 另读一份文件，
+   * 若本实例是用**显式 configPath** 构造的，两者会指向不同文件。
+   * C1 P1 安全批 R2-02 的「写回时还原掩码」必须读**同一份**配置，
+   * 否则还原会拿错基准 → 真实密钥仍被覆盖。故此处用实例自己的状态。
+   */
+  getServerConfig(serverId: string): McpServerConfig | null {
+    this.refreshConfigIfChanged();
+    const cfg = this.servers[serverId];
+    return cfg ? { ...cfg } : null;
   }
 
   /**

@@ -147,7 +147,11 @@ export function canonicalTargetOf(
     case 'memory-id':
       return { kind, target: str(['id', 'memoryId']) };
     case 'mcp-call': {
-      const server = str(['server', 'serverName', 'name']);
+      // C1 P1 安全批 R2-02：MCP 目标的 id 键是 `serverId`（见 tool-contract 的
+      // 'mcp.get' 适配与 desktop-host 的 mcp.get handler），**不是** `server`/`name`。
+      // 原实现只认 server/serverName/name → `mcp.get { serverId }` 取不到 id →
+      // 目标退化成空串 → 「换一台服务器」不会被当成换目标（放行会跨服务器复用）。
+      const server = str(['serverId', 'server', 'serverName', 'name']);
       const toolName = str(['tool', 'toolName']);
       const nestedCmd = nestedCommand(params);
       return { kind, target: [server, toolName, nestedCmd].filter(Boolean).join('::') };
@@ -156,6 +160,12 @@ export function canonicalTargetOf(
       return { kind, target: str(['mode']) };
     case 'workspace-root':
       return { kind, target: normalizePath(str(['root', 'path'])) };
+    case 'search-root':
+      // C1 P1 安全批 TD-01：search_files 的目标 = 被遍历的 root。
+      // 没有它，search_files 的 canonicalTarget 会退化成空串 →
+      // R3-01 的对话级放行 key 就不绑定「检索哪个目录」，
+      // 同意过一次 A 目录的检索 → 同对话内检索 B 目录也不再问。
+      return { kind, target: normalizePath(str(['root'])) };
     case 'chat-action':
       // 页侧动作没有"目标实体"，按动作本身收敛；正文绝不进 grant key。
       return { kind, target: def?.id ?? '' };
@@ -245,12 +255,20 @@ export function resolveAuthorization(input: AuthorizationInput): AuthorizationRe
   // 5) 对话级放行：「一个对话审批一次」。必须在 hard-deny / policy deny / unknown
   //    之后（红线永不被对话放行覆盖），且在 always / mode 判定之前
   //    （否则永远走不到 ask 分支，用户根本没有点按钮的机会）。
+  //
+  //    C1 P1 安全批 R3-01：两处收紧 ——
+  //    ① `outsideApproved` **恒为 false**：原实现把 `outsideRequested` 直接透传出去，
+  //       等于「对话级同意」顺带批准了**工作区外**的操作。
+  //       越界目标必须逐次确认（§1.4 硬规则 5），对话级放行不覆盖它。
+  //    ② key 侧（desktop-host）：key 已纳入 toolId + canonicalTarget，
+  //       所以这里的放行只对「这个工具 + 这个目标」生效。
   if (input.conversationApproved) {
     return {
       ...base,
       decision: 'allow',
       reason: 'conversation-approved',
-      outsideApproved: outsideRequested,
+      // R3-01：恒 false —— 越界不被对话级放行覆盖。
+      outsideApproved: false,
     };
   }
 
