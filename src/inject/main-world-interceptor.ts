@@ -652,6 +652,54 @@ function byteLengthOf(text: string): number {
 }
 
 /**
+ * M1.5 观测事件（契约 §7）：`m15.head_duplicated` / `m15.continuation_prompt`。
+ *
+ * 只加观测、**不改任何字节**。
+ *
+ * 注意：trace 的事件类型是 `src/shared/studio-trace.ts` 里的**封闭 union**，
+ * 新增 `m15.*` 需要 Core 在 shared 里加类型（不在本卡域内）。本卡用一个窄 cast
+ * 记进既有 `interceptorTrace` 通道：事件会进内存环（`interceptorTraceSnapshot()`
+ * 可读，护栏断言就靠它），但**不会**进宿主 JSONL 落盘（那条通道只写 turn.end）。
+ */
+type M15TraceEvent =
+  | { readonly t: 'm15.head_duplicated'; readonly turnId: string; readonly bytes: number }
+  | {
+      readonly t: 'm15.continuation_prompt';
+      readonly turnId: string;
+      readonly bytes: number;
+      readonly hasCatalog: boolean;
+    };
+
+function recordM15Trace(event: M15TraceEvent): void {
+  interceptorTrace.record(
+    event as unknown as Parameters<typeof interceptorTrace.record>[0],
+  );
+}
+
+/**
+ * M1.5 回滚开关（契约 §8，键名由 PM 2026-11-02 定为 `studio.m15.continuationCatalog`）。
+ *
+ * 读法照 `resolveCatalogBudgetBytes()`（catalog-selection.ts）同域约定：
+ *   - `localStorage` 读到 `'0'` ⇒ 恢复 S3（两个续跑调用点重新传 `TOOL_CATALOG_TEXT`）；
+ *   - 未设置 / 其它值 ⇒ 维持新形态（已删 S3，目录由二次注入唯一提供）。
+ *
+ * 只动 tail（续跑 prompt），不动 head（能力块），不涉及断链，下一轮请求即生效。
+ */
+export const M15_CONTINUATION_CATALOG_STORAGE_KEY = 'studio.m15.continuationCatalog';
+
+export function shouldRestoreContinuationCatalog(): boolean {
+  try {
+    const raw = globalThis.localStorage?.getItem(
+      M15_CONTINUATION_CATALOG_STORAGE_KEY,
+    );
+    return typeof raw === 'string' && raw.trim() === '0';
+  } catch {
+    // 读不到（隐私模式等）⇒ 维持新形态
+    return false;
+  }
+}
+
+/**
  * QD-R4-01：续跑重试的标志位。
  *
  * 根因：`autoContinueWithPow` 首行守卫要求 `pending.length > 0`，而续跑请求发出前
@@ -1169,7 +1217,7 @@ export function capabilityPromptText(): string {
 }
 
 export function buildCapabilityPrompt(taskText = ''): string {
-  const blocks = [TOOL_CAPABILITY_PROMPT];
+  const blocks = [capabilityPromptOverride ?? TOOL_CAPABILITY_PROMPT];
   const mcpBlock = formatMcpToolsBlock(taskText);
   if (mcpBlock) blocks.push(mcpBlock);
   const skillsBlock = formatSkillsBlock(taskText);
@@ -1194,6 +1242,34 @@ export function setMcpToolsForTesting(
 /** 当前注入的 MCP 工具清单（只读副本）。 */
 export function mcpToolsForTesting(): ReadonlyArray<{ serverId: string; name: string; description: string }> {
   return currentMcpTools.map((t) => ({ ...t }));
+}
+
+/**
+ * M1.5 负控钩子用：临时替换能力块正文（模拟「二次注入那一段被摘掉」）。
+ *
+ * 默认 null = 用常量 `TOOL_CAPABILITY_PROMPT`，**生产行为一个字节都不变**。
+ * `capabilityPromptText()`（eval-golden 的取数口）也照旧返回常量，不受覆盖影响。
+ */
+let capabilityPromptOverride: string | null = null;
+
+/** 测试用：设置/恢复能力块正文覆盖（负控用；传 null 恢复默认）。 */
+export function __setCapabilityPromptForTesting(text: string | null): void {
+  capabilityPromptOverride = text;
+}
+
+/**
+ * M1.5 测试钩子：打**真实组装入口**。
+ *
+ * `prepareOutgoingBody` 是模块私有的，护栏必须打在**最终 body 的 prompt** 上
+ * （不是 `buildCapabilityPrompt`）——工具名是靠二次注入补回来的，
+ * 哪条路径没走注入，名字就没了（契约 §5：断言打真实入口）。
+ */
+export function __prepareOutgoingBodyForTesting(
+  rawBody: string,
+  pending: PendingResult[] = [],
+  taskText = '',
+): string | null {
+  return prepareOutgoingBody(rawBody, pending, taskText);
 }
 
 function isCapabilitySystemMessage(message: unknown): boolean {
@@ -1335,6 +1411,16 @@ function prepareOutgoingBody(rawBody: string, pending: PendingResult[], taskText
     parsed.messages = msgs;
   } else if (typeof parsed.prompt === 'string') {
     let prompt: string = parsed.prompt;
+    // M1.5 护栏（契约 §3 改动 3 / §7）：在 strip **之前**看一眼入参 prompt 是否已经
+    // 含能力块标记 —— 含了说明 head 被拼了两份（有人把二次注入改掉、或续跑轮自带 head）。
+    // 只记观测，**不改任何字节**（下面照旧 strip）。
+    if (prompt.includes(TOOL_CAPABILITY_MARKER)) {
+      recordM15Trace({
+        t: 'm15.head_duplicated',
+        turnId: traceTurnId,
+        bytes: byteLengthOf(prompt),
+      });
+    }
     // 旧请求体可能已经带过能力提示；先剔除带结束标记的旧块，再按当前任务重建。
     const cleanPrompt = stripCapabilityPromptFromText(prompt);
     prompt = `${buildCapabilityPrompt(taskText)}${memoriesBlock}\n\n${cleanPrompt}`;
@@ -2696,9 +2782,36 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
           droppedNames: dropped.map((d) => d.invocationName),
         });
       }
+      // M1.5（裁定 A 删）：续跑 prompt **不再**带静态工具目录 ——
+      // 那 10 行与能力块「## 可用工具」段逐字节相同（各 1,021 B），纯重复；
+      // 目录由二次注入（能力块）唯一提供，最终 body 的工具名一个不少
+      // （护栏 tests/desktop/m15-tool-name-set.test.ts 打真实路径）。
+      // 每轮省 1,177 B（1,155 目录原文 + 22 B 分隔行），恒定，与轮次/结果条数无关。
+      //
+      // 回滚开关（契约 §8，键名 PM 定）：shouldRestoreContinuationCatalog() 读到
+      // localStorage `studio.m15.continuationCatalog === '0'` ⇒ 两个调用点重新传
+      // TOOL_CATALOG_TEXT 恢复 S3；未设置/其它值 ⇒ 维持新形态（删 S3）。
+      // 只动 tail 不动 head，下一轮请求即生效。
+      const restoreContinuationCatalog = shouldRestoreContinuationCatalog();
       const continuationPrompt = isProtocolRepair
-        ? buildProtocolRepairPrompt(loopState.originalTask, execForThisTurn, TOOL_CATALOG_TEXT)
-        : buildContinuationPrompt(loopState.originalTask, execForThisTurn, TOOL_CATALOG_TEXT);
+        ? buildProtocolRepairPrompt(
+            loopState.originalTask,
+            execForThisTurn,
+            ...(restoreContinuationCatalog ? [TOOL_CATALOG_TEXT] : []),
+          )
+        : buildContinuationPrompt(
+            loopState.originalTask,
+            execForThisTurn,
+            ...(restoreContinuationCatalog ? [TOOL_CATALOG_TEXT] : []),
+          );
+      // M1.5 观测（契约 §3 改动 4 / §7）：记录续跑 prompt 的字节与是否带目录，
+      // 便于真机对齐字节账（删目录后每轮 -1,177 B）。只加观测，不改字节。
+      recordM15Trace({
+        t: 'm15.continuation_prompt',
+        turnId: traceTurnId,
+        bytes: byteLengthOf(continuationPrompt),
+        hasCatalog: continuationPrompt.includes(TOOL_CATALOG_TEXT),
+      });
 
       // F8 修复：清空 pending，避免 XHR hook 的 prepareOutgoingBody 再追加一份工具结果。
       // collectedExecutions 不清，续跑 prompt 要用完整历史。

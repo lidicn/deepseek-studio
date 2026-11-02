@@ -10,7 +10,8 @@ import type { MemoryRow } from './types';
 import type { StoreContext } from './types';
 import type { Memory } from '../bot/types';
 import { MEMORY_INJECT_LIMIT, formatMemoryLine, selectMemoryInjectRows } from '../../inject/untrusted-memory';
-import { likePattern, rowToMemory, toFtsQuery } from './core';
+import { likePattern, rowToMemory, toFtsQueryFromTokens } from './core';
+import { tokenizeRetrievalQuery } from './retrieval-tokens';
 
 // ── 域方法 ──────────────────────────────────────────────────────────────
 
@@ -26,6 +27,11 @@ export async function search(ctx: StoreContext, query: string, opts?: { personaT
     }
 
     let rows: MemoryRow[];
+    // F5：查询分词口径。中文长句按空白切会粘成整段 → trigram 短语与 LIKE 都失配；
+    // 现在统一走 retrieval-tokens 的口径（CJK bigram + 拉丁整段 + 引号点名短语），
+    // FTS / LIKE / 无库降级三条分支**同源**（既有纪律：两分支必须同口径）。
+    // 回退：`STUDIO_MEMORY_TOKENIZER=legacy` → 旧的空白切分口径。
+    const tokens = tokenizeRetrievalQuery(q);
     if (ctx.db) {
       rows = [];
       // C1 墨鉴 BUG-011：FTS 与 LIKE 做**并集**，不再「FTS 有命中就跳过 LIKE」。
@@ -43,7 +49,7 @@ export async function search(ctx: StoreContext, query: string, opts?: { personaT
       const seen = new Set<string>();
       // trigram 要求查询 >= 3 字符；不足走 LIKE（下方统一覆盖）
       if ([...q].length >= 3) {
-        const fts = toFtsQuery(q);
+        const fts = toFtsQueryFromTokens(tokens.fts);
         if (fts) {
           try {
             const found = ctx.db.prepare(
@@ -72,27 +78,31 @@ export async function search(ctx: StoreContext, query: string, opts?: { personaT
       //     而 trigram 下 FTS 又必然召不回 2 字符 token → **两个分支都召不回**。
       //   - 现在：按空白拆 token，任一 token 命中 name/content/tags 即召回
       //     （单 token 查询时与原口径等价）。
-      const tokens = q.split(/\s+/).filter(Boolean);
-      const pats = tokens.map((t) => likePattern(t));
-      // 每个 token 一组三列占位符（name / content / tags_json），组间 OR。
-      // 用模板字面量避免引号转义歧义（ESCAPE '\' 里的反斜杠）。
-      const oneToken = `(name LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR tags_json LIKE ? ESCAPE '\\')`;
-      const orClauses = tokens.map(() => oneToken).join(' OR ');
-      const likeFound = ctx.db.prepare(
-        `SELECT * FROM memories
+      // F5：token 来源改为检索分词器（CJK bigram / 拉丁整段 / 引号点名短语），
+      // 与 FTS 侧同源；口径说明见 src/host/memory/retrieval-tokens.ts。
+      const likeTokens = tokens.like;
+      if (likeTokens.length > 0) {
+        const pats = likeTokens.map((t) => likePattern(t));
+        // 每个 token 一组三列占位符（name / content / tags_json），组间 OR。
+        // 用模板字面量避免引号转义歧义（ESCAPE '\' 里的反斜杠）。
+        const oneToken = `(name LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR tags_json LIKE ? ESCAPE '\\')`;
+        const orClauses = likeTokens.map(() => oneToken).join(' OR ');
+        const likeFound = ctx.db.prepare(
+          `SELECT * FROM memories
          WHERE invalid_at IS NULL AND (${orClauses})
          ORDER BY pinned DESC, updated_at DESC
          LIMIT ?`,
-      ).all(...pats.flatMap((p) => [p, p, p]), cap) as Record<string, unknown>[];
-      for (const r of likeFound) {
-        const row = rowToMemory(r);
-        if (seen.has(row.id)) continue; // 已由 FTS 命中 → 去重
-        seen.add(row.id);
-        rows.push(row);
+        ).all(...pats.flatMap((p) => [p, p, p]), cap) as Record<string, unknown>[];
+        for (const r of likeFound) {
+          const row = rowToMemory(r);
+          if (seen.has(row.id)) continue; // 已由 FTS 命中 → 去重
+          seen.add(row.id);
+          rows.push(row);
+        }
       }
     } else {
-      // 降级路径同样按 **token OR** 匹配（与 SQL 分支口径一致）。
-      const needles = q.split(/\s+/).filter(Boolean).map((t) => t.toLowerCase());
+      // 降级路径同样按 **token OR** 匹配（与 SQL 分支口径一致，F5：同一份分词结果）。
+      const needles = tokens.like.map((t) => t.toLowerCase());
       rows = ctx.fallback!.filter(
         (m) => m.invalidAt === null &&
           needles.some((needle) =>
@@ -117,6 +127,27 @@ export async function search(ctx: StoreContext, query: string, opts?: { personaT
         ...rows.filter((m) => tagged.has(m.id)),
         ...rows.filter((m) => !tagged.has(m.id)),
       ];
+    }
+    // F5：显式点名片段（「…」等）命中的行，在**非置顶组内**排到最前。
+    //
+    // 为什么需要这一步：用户显式点名了某条记忆，它必须真的进到注入窗口
+    // （memory.select 只取 related 的前 12 条，见 desktop-host.ts:821 的 limit: 12）。
+    // 只靠"能被 LIKE/FTS 命中"不够——命中之后还要经过 sortRows（pinned→user→updated_at），
+    // 一条较老的点名记忆可能被挤出窗口（这正是真机读数里"点名了却没被注入"的另一半原因）。
+    //
+    // 边界：**置顶组不动**（pinned 契约不改），组内其余顺序也不改；
+    // 没有引号片段时本段完全不执行 → 既有排序断言零影响。
+    if (tokens.quoted.length > 0) {
+      const phrases = tokens.quoted.map((p) => p.toLowerCase());
+      const isNamed = (m: MemoryRow): boolean =>
+        phrases.some((p) =>
+          m.name.toLowerCase().includes(p) ||
+          m.content.toLowerCase().includes(p) ||
+          m.tags.some((t) => t.toLowerCase().includes(p)),
+        );
+      const pinnedRows = rows.filter((m) => m.pinned);
+      const rest = rows.filter((m) => !m.pinned);
+      rows = [...pinnedRows, ...rest.filter(isNamed), ...rest.filter((m) => !isNamed(m))];
     }
     return applyPersonaFilter(ctx, rows, opts?.personaTag).slice(0, limit);
   }

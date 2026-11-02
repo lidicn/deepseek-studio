@@ -78,6 +78,21 @@ export function toFtsQuery(query: string): string | null {
   return toks.map((t) => `"${t}"`).join(' OR ');
 }
 
+/**
+ * FTS 分支专用：由**检索 token 集合**拼 MATCH 表达式（F5）。
+ *
+ * 与 `toFtsQuery` 的区别：后者按空白切分（中文长句会粘成整段 → trigram 失配），
+ * 前者接收已经切好的 token（见 src/host/memory/retrieval-tokens.ts）。
+ * 只有 ≥3 字符的 token 放进 FTS —— `memories_fts` 用 `tokenize='trigram'`，
+ * 2 字符 token 在该索引下必然失配（既有注释见 retrieval.ts 的 LIKE 口径说明）。
+ * 仍然剥掉 token 内的双引号 → FTS5 语法注入无效（沿用既有做法）。
+ */
+export function toFtsQueryFromTokens(tokens: readonly string[]): string | null {
+  const toks = tokens.map((t) => t.replace(/"/g, '')).filter(Boolean);
+  if (toks.length === 0) return null;
+  return toks.map((t) => `"${t}"`).join(' OR ');
+}
+
 export function likePattern(q: string): string {
   const esc = q.replace(/[\\%_]/g, (ch) => `\\${ch}`);
   return `%${esc}%`;

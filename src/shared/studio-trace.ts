@@ -29,6 +29,8 @@ export type StudioTraceEventType =
   | 'continuation.decision'
   | 'continuation.stream'
   | 'pending.cross-session'
+  | 'm15.head_duplicated'
+  | 'm15.continuation_prompt'
   | 'turn.end';
 
 /** SSE 帧分类：文本 / 思考 / 工具。 */
@@ -116,6 +118,43 @@ export interface StudioPendingCrossSessionEvent extends BaseTraceEvent {
   readonly droppedNames: readonly string[];
 }
 
+/**
+ * M1.5 护栏（契约 §3 改动 3 / §7）：入参 prompt 在 strip 之前**已经含能力块标记**
+ * → head 被拼了两份（有人把二次注入改掉，或续跑轮自带 head）。
+ *
+ * 这是护栏事件，不是故障事件：正常态**不该出现**。它由页端在
+ * `prepareOutgoingBody` 里 strip **之前**观测一次，不改任何字节。
+ *
+ * 字段口径（Studio-PM 定）：
+ * - `markerCount`：能力块标记出现次数（≥1 即重复），必填 —— 护栏要能数清拼了几份。
+ * - `phase`：观测发生在哪一段（如 'prepare-outgoing-body'），必填 —— 定位是谁拼的。
+ * - `bytes`：可选，观测到的 prompt 的 UTF-8 字节数。页端当前实现发的正是这个字段，
+ *   保留为可选是为了摘掉窄 cast 时不必同时改发点；不影响上面两个必填字段的强制力。
+ */
+export interface StudioM15HeadDuplicatedEvent extends BaseTraceEvent {
+  readonly t: 'm15.head_duplicated';
+  /** 能力块标记出现次数（≥1 即重复）。 */
+  readonly markerCount: number;
+  /** 观测发生在哪一段（如 'prepare-outgoing-body'）。 */
+  readonly phase: string;
+  /** 观测到的 prompt 字节数（页端当前发点用它；可选）。 */
+  readonly bytes?: number;
+}
+
+/**
+ * M1.5 字节账（契约 §3 改动 4 / §7）：续跑 prompt 的字节与是否仍带工具目录。
+ *
+ * 用于真机对齐字节账：删掉 S3 后每轮应比基线少 1,177 B，且 `hasCatalog` 应为 false
+ * （目录只由二次注入那份提供）。纯观测，不改字节。
+ */
+export interface StudioM15ContinuationPromptEvent extends BaseTraceEvent {
+  readonly t: 'm15.continuation_prompt';
+  /** 续跑 prompt 的 UTF-8 字节数。 */
+  readonly bytes: number;
+  /** true = 这份续跑 prompt 里仍含 `TOOL_CATALOG_TEXT`（旧形态 / 回滚态）。 */
+  readonly hasCatalog: boolean;
+}
+
 export type StudioTraceEvent =
   | StudioTurnStartEvent
   | StudioRequestSentEvent
@@ -125,6 +164,8 @@ export type StudioTraceEvent =
   | StudioContinuationDecisionEvent
   | StudioContinuationStreamEvent
   | StudioPendingCrossSessionEvent
+  | StudioM15HeadDuplicatedEvent
+  | StudioM15ContinuationPromptEvent
   | StudioTurnEndEvent;
 
 /**
