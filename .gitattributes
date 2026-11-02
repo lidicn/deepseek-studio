@@ -1,0 +1,22 @@
+# 行尾统一（2026-11-02 门禁债，Gate 域）：仓库内一律 LF；Windows 专用脚本 CRLF。
+# 目的：终结 core.autocrlf=true 造成的「内容未变却显示 M」的行尾伪影——
+# eol=lf 显式声明后，git 对「工作树 LF / 索引 LF」不再视为差异。
+* text=auto eol=lf
+
+# Windows 专用脚本保持 CRLF（若未来入库）
+*.ps1  text eol=crlf
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# 二进制显式声明（防误判 text）
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.woff  binary
+*.woff2 binary
+*.zip  binary
+*.exe  binary
+*.dll  binary
+*.node binary
