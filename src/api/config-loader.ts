@@ -58,6 +58,25 @@ function randomToken(): string {
   return randomBytes(24).toString('base64url');
 }
 
+/**
+ * 端口解析（TD-07）：非有限数 / 非整数 / `<1` / `>65535` → 回落 `fallback`（默认 8760）。
+ *
+ * 与同函数里 `isPolicyMode` 的 fail-safe 风格一致：宁可回落到已知可用端口，
+ * 也不要让 `'abc'`（NaN）、`'0'`、`'99999'` 这类值直通到 `listen()` 才炸。
+ *
+ * ⚠️ 边界：`sidecar.rs` 的 `HEALTH_PORT` 是 DCD 契约常量（8760），本函数只负责
+ * 「从 env/config 解析出要用的端口」，不改契约常量本身。
+ */
+export function parsePort(raw: unknown, fallback = 8760): number {
+  // 字符串先去空白；其余类型（数字等）转 Number 后再统一校验。
+  const text = typeof raw === 'string' ? raw.trim() : raw;
+  if (text === '' || text === null || text === undefined) return fallback;
+  const n = Number(text);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) return fallback;
+  if (n < 1 || n > 65535) return fallback;
+  return n;
+}
+
 /** 默认配置目录：~/.config/deepseek-studio */
 export function defaultConfigDir(): string {
   return path.join(os.homedir(), '.config', 'deepseek-studio');
@@ -109,7 +128,7 @@ export function loadConfig(override?: { cfgDir?: string; cfgPath?: string }): Re
   const token = process.env.DEEPSEEK_STUDIO_TOKEN ?? stored.token ?? randomToken();
   const secret = process.env.DEEPSEEK_STUDIO_SECRET ?? stored.secret ?? randomToken();
   const host = process.env.DEEPSEEK_STUDIO_HOST ?? stored.host ?? '127.0.0.1';
-  const port = Number(process.env.DEEPSEEK_STUDIO_PORT ?? stored.port ?? 8760);
+  const port = parsePort(process.env.DEEPSEEK_STUDIO_PORT ?? stored.port ?? 8760);
 
   // v0.5：工作区根与审批档位。档位非法值一律回落到 auto（fail-safe：宁可多问不可少问）。
   const workspaceRoot = process.env.STUDIO_WORKSPACE_ROOT ?? stored.workspaceRoot ?? '';

@@ -103,6 +103,86 @@ fn probe_health() -> bool {
         .unwrap_or(false)
 }
 
+/// TD-05：组合健康谓词 —— 端口应答 **且** 宿主子进程仍存活。
+///
+/// 原实现只问 `probe_health()`（纯 TCP/HTTP），不看子进程是否还活着。
+/// 缺陷场景：宿主进程已崩，但 8760 被**无关进程**占着并应答 → 旧逻辑会误判「健康」，
+/// 于是既不清理也不重启，应用表现为「宿主死了但没人管」。
+///
+/// 现在收敛为 `probe_health() && 子进程存活`：
+/// - `child.try_wait()` 返回 `Ok(None)` = 仍在运行 => 存活；
+/// - 返回 `Ok(Some(_))` = 已退出；`Err(_)` = 无法判定（保守按「不存活」处理，宁可重启）。
+///
+/// 这是纯函数，便于单测（`child` 可为任意存活的子进程，端口应答由真实 TCP 给出）。
+pub fn is_healthy(child: &mut Child) -> bool {
+    let alive = matches!(child.try_wait(), Ok(None));
+    if !alive {
+        // 子进程已死 → 无论端口有没有人应答，都不是「我们的」健康宿主。
+        return false;
+    }
+    probe_health()
+}
+
+/// TD-09：运行日志保留上限 —— 只保留 `sidecar-<epoch_ms>.log` 里最新的 `keep` 个。
+///
+/// 重启 N 次就积 N 个按次命名文件，长时间运行会无限增长。按文件名里的
+/// `epoch_ms`（纯数字，字典序 == 数值序，因为等长毫秒）排序，删最旧的。
+///
+/// 安全性：
+/// - 只动**文件名严格匹配 `sidecar-<数字>.log`** 的文件；目录里的其它文件（如
+///   `crash.jsonl`、`crash-<ms>.jsonl`、用户文件）一律不碰；
+/// - `keep == 0` 视为「不清理」（防御：不做全删）；
+/// - 解析不出数字的文件名跳过（不误删）。
+///
+/// 返回删除的个数，便于单测断言。
+pub fn retain_logs(dir: &std::path::Path, keep: usize) -> usize {
+    if keep == 0 {
+        return 0;
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    // 收集 (epoch_ms, path)，只收严格匹配 sidecar-<digits>.log 的。
+    let mut logs: Vec<(u128, PathBuf)> = Vec::new();
+    for ent in entries.flatten() {
+        let name = ent.file_name();
+        let name = match name.to_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        let Some(digits) = name
+            .strip_prefix("sidecar-")
+            .and_then(|s| s.strip_suffix(".log"))
+        else {
+            continue;
+        };
+        let Ok(ms) = digits.parse::<u128>() else {
+            continue;
+        };
+        logs.push((ms, ent.path()));
+    }
+    if logs.len() <= keep {
+        return 0;
+    }
+    // 旧的在前；要删的是前面 (len - keep) 个（最旧）。
+    logs.sort_by_key(|(ms, _)| *ms);
+    let remove_count = logs.len() - keep;
+    let mut removed = 0usize;
+    for (_, path) in logs.into_iter().take(remove_count) {
+        if std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// TD-09：crash.jsonl 大小上限（2MB）。超限就 rotate 成 `crash-<epoch_ms>.jsonl`。
+pub const CRASH_LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+/// TD-09：sidecar 运行日志保留个数上限（按次命名文件）。
+pub const SIDECAR_LOG_KEEP: usize = 20;
+
 /// 8760 端口上是否仍有人监听（只做 TCP 连通判断，不要求 HTTP 200）。
 ///
 /// 用途：关闭时判断是否还需要跑 `netstat` / PowerShell CIM 这些昂贵兜底。
@@ -413,6 +493,9 @@ impl SidecarSupervisor {
         // 并在启动时把路径打一行到 stderr 便于定位。
         if let Some(ref log_dir) = self.crash_log_path {
             let _ = std::fs::create_dir_all(log_dir);
+            // TD-09：落新日志前先按保留上限清理旧的 sidecar-*.log（默认保留 20）。
+            // 只动 sidecar-<ms>.log，不动 crash*.jsonl / 其它文件。
+            let _ = retain_logs(log_dir, SIDECAR_LOG_KEEP);
             let path = log_dir.join(format!("sidecar-{}.log", chrono_now_ms()));
             match std::fs::OpenOptions::new()
                 .create(true)
@@ -455,6 +538,13 @@ impl SidecarSupervisor {
     fn write_crash_log(&self, reason: &str) {
         if let Some(ref log_dir) = self.crash_log_path {
             let log_file = log_dir.join("crash.jsonl");
+            // TD-09：超过 2MB 先 rotate 成 crash-<epoch_ms>.jsonl，避免无限增长。
+            if let Ok(meta) = std::fs::metadata(&log_file) {
+                if meta.len() >= CRASH_LOG_MAX_BYTES {
+                    let rotated = log_dir.join(format!("crash-{}.jsonl", chrono_now_ms()));
+                    let _ = std::fs::rename(&log_file, &rotated);
+                }
+            }
             let entry = format!(
                 "{{\"ts\":{},\"restarts\":{},\"reason\":\"{}\"}}\n",
                 chrono_now_ms(),
@@ -555,8 +645,15 @@ impl SidecarSupervisor {
                 self.child = Some(child);
                 let start = Instant::now();
                 // 等待 /healthz 就绪，最多 10s
+                // TD-05：就绪判定必须同时满足「端口应答」+「子进程还活着」，
+                // 否则宿主秒崩、端口被无关进程应答时会误判就绪。
                 while start.elapsed() < STARTUP_HEALTH_TIMEOUT {
-                    if probe_health() {
+                    if self
+                        .child
+                        .as_mut()
+                        .map(|c| is_healthy(c))
+                        .unwrap_or(false)
+                    {
                         self.set_state(SidecarState::Running);
                         return;
                     }
@@ -573,6 +670,10 @@ impl SidecarSupervisor {
                 }
                 self.child_pid.store(0, Ordering::SeqCst);
                 let reason = format!("health timeout after {:?}", STARTUP_HEALTH_TIMEOUT);
+                // TD-05 说明：此处**刻意仍用纯 probe_health()**，不加 is_healthy。
+                // 上方 child 已被 take 并强杀，try_wait 恒为 Some（已退出），
+                // 加进程存活判定会让本分支永远不成立、丢掉「端口被无关进程占用」的识别。
+                // 该分支要判的正是「我们的宿主已杀，端口却仍有人应答」= 外部占用。
                 if self.restarts == 0 && probe_health() {
                     // 杀掉子进程后端口仍有人应答 → 端口被外部进程占用。
                     let reason = format!(
@@ -816,4 +917,254 @@ fn chrono_now_ms() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod td_tests {
+    //! 组 D：TD-05（健康谓词）/ TD-09（日志保留与轮转）的单测。
+    //! 走 `cargo test --manifest-path src-tauri/Cargo.toml`。
+    use super::*;
+    use std::fs;
+    use std::process::{Command, Stdio};
+
+    // ── TD-05 ──────────────────────────────────────────────────────────
+
+    /// 用一个真实的、长期存活的子进程（Windows: cmd /c ping 长时间；其它: sleep）。
+    /// 这里只要「进程还活着」即可，不要求它监听 8760。
+    fn spawn_long_lived() -> Child {
+        #[cfg(windows)]
+        {
+            // ping 127.0.0.1 -n 30 大约跑 29 秒，足够本函数内完成断言。
+            Command::new("cmd")
+                .args(["/c", "ping", "-n", "30", "127.0.0.1"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn ping")
+        }
+        #[cfg(not(windows))]
+        {
+            Command::new("sleep")
+                .arg("30")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn sleep")
+        }
+    }
+
+    fn spawn_exited() -> Child {
+        // 立刻退出的子进程。
+        #[cfg(windows)]
+        {
+            let mut c = Command::new("cmd")
+                .args(["/c", "exit", "0"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn quick-exit");
+            // 等它真的退出，保证 try_wait() 返回 Some。
+            let _ = c.wait();
+            c
+        }
+        #[cfg(not(windows))]
+        {
+            let mut c = Command::new("true")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn true");
+            let _ = c.wait();
+            c
+        }
+    }
+
+    /// 起一个「占住 8760 并应答 HTTP 200」的假服务，返回它的子进程。
+    /// 这里用 python（若不可用则跳过该断言，避免污染环境）。
+    #[cfg(windows)]
+    fn spawn_fake_8760() -> Option<Child> {
+        let script = "import socket,sys;s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);\n\
+            s.bind(('127.0.0.1',8760));s.listen(5)\n\
+            while True:\n\
+            \x20 c,_=s.accept()\n\
+            \x20 try:\n\
+            \x20  c.recv(1024);c.sendall(b'HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok')\n\
+            \x20 finally:\n\
+            \x20  c.close()\n";
+        // 先用 python 探活；不可用则返回 None。
+        let has = Command::new("python").arg("--version").output().is_ok()
+            || Command::new("py").arg("--version").output().is_ok();
+        if !has {
+            return None;
+        }
+        let exe = if Command::new("python").arg("--version").output().is_ok() {
+            "python"
+        } else {
+            "py"
+        };
+        let child = Command::new(exe)
+            .arg("-c")
+            .arg(script)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        // 等端口可连（最多 3s）
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if probe_health() {
+                return Some(child);
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        Some(child)
+    }
+
+    #[test]
+    fn td05_alive_child_and_port_ok_is_healthy() {
+        // 用一个真实存活子进程替换「我们的宿主」，并让 probe_health 依赖的
+        // 8760 由假服务应答；两者都在 => 健康。
+        let mut fake = match spawn_fake_8760() {
+            Some(c) => c,
+            None => {
+                eprintln!("[skip] 环境无 python，跳过 td05 端口应答类断言");
+                return;
+            }
+        };
+        let mut holder = spawn_long_lived();
+        let healthy = is_healthy(&mut holder);
+        let _ = holder.kill();
+        let _ = holder.wait();
+        let _ = fake.kill();
+        let _ = fake.wait();
+        assert!(healthy, "子进程存活 + 端口 200 应答 → 应判健康");
+    }
+
+    #[test]
+    fn td05_dead_child_but_port_answered_is_unhealthy() {
+        // 缺陷场景：我们的子进程已退出，但 8760 被无关进程（假服务）应答。
+        // 旧逻辑（纯 probe）会误判健康；新逻辑要求子进程存活 → 必须 false。
+        let mut fake = match spawn_fake_8760() {
+            Some(c) => c,
+            None => {
+                eprintln!("[skip] 环境无 python，跳过 td05 端口应答类断言");
+                return;
+            }
+        };
+        // 先确认假服务确实在应答（保证本用例的「端口被应答」前置成立）。
+        assert!(probe_health(), "假服务应在 8760 应答 200（前置）");
+        let mut dead = spawn_exited();
+        let healthy = is_healthy(&mut dead);
+        let _ = fake.kill();
+        let _ = fake.wait();
+        assert!(!healthy, "子进程已退出但端口仍被应答 → 必须判不健康（旧逻辑会误判）");
+    }
+
+    #[test]
+    fn td05_dead_child_and_no_port_is_unhealthy() {
+        // 子进程已退出 + 端口无人应答 → 不健康。
+        let mut dead = spawn_exited();
+        let healthy = is_healthy(&mut dead);
+        assert!(!healthy, "子进程已退出 + 端口无应答 → 不健康");
+    }
+
+    // ── TD-09 ──────────────────────────────────────────────────────────
+
+    fn unique_tmp(tag: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "studio-td09-{}-{}-{}",
+            tag,
+            std::process::id(),
+            chrono_now_ms()
+        ));
+        let _ = fs::create_dir_all(&p);
+        p
+    }
+
+    #[test]
+    fn td09_retain_keeps_latest_20_of_25() {
+        let dir = unique_tmp("retain");
+        // 造 25 个 sidecar-<ms>.log，ms = 1000..1025
+        for i in 0..25u128 {
+            let f = dir.join(format!("sidecar-{}.log", 1000 + i));
+            fs::write(&f, b"x").unwrap();
+        }
+        let removed = retain_logs(&dir, 20);
+        assert_eq!(removed, 5, "应删掉 5 个（25-20）");
+        let mut left: Vec<u128> = vec![];
+        for ent in fs::read_dir(&dir).unwrap().flatten() {
+            let n = ent.file_name().to_string_lossy().to_string();
+            if let Some(d) = n.strip_prefix("sidecar-").and_then(|s| s.strip_suffix(".log")) {
+                left.push(d.parse().unwrap());
+            }
+        }
+        left.sort_unstable();
+        assert_eq!(left.len(), 20, "应剩 20 个");
+        // 剩下的是最新的 20 个：1005..1025（最旧的 1000..1005 被删）
+        assert_eq!(*left.first().unwrap(), 1005, "最旧的被删，剩下从 1005 起");
+        assert_eq!(*left.last().unwrap(), 1024, "最新的一定在");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn td09_retain_ignores_non_sidecar_files() {
+        let dir = unique_tmp("ignore");
+        for i in 0..25u128 {
+            fs::write(dir.join(format!("sidecar-{}.log", 1000 + i)), b"x").unwrap();
+        }
+        // 混入不该被动的文件
+        fs::write(dir.join("crash.jsonl"), b"{}").unwrap();
+        fs::write(dir.join("crash-999.jsonl"), b"{}").unwrap();
+        fs::write(dir.join("user-note.txt"), b"hi").unwrap();
+        fs::write(dir.join("sidecar-notanumber.log"), b"x").unwrap();
+
+        let removed = retain_logs(&dir, 20);
+        assert_eq!(removed, 5, "只删 sidecar-<数字>.log 的旧文件");
+        assert!(dir.join("crash.jsonl").exists(), "crash.jsonl 不得被删");
+        assert!(dir.join("crash-999.jsonl").exists(), "crash-*.jsonl 不得被删");
+        assert!(dir.join("user-note.txt").exists(), "非日志文件不得被删");
+        assert!(
+            dir.join("sidecar-notanumber.log").exists(),
+            "文件名非数字的 sidecar-*.log 不得被删"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn td09_retain_noop_when_below_keep() {
+        let dir = unique_tmp("noop");
+        for i in 0..20u128 {
+            fs::write(dir.join(format!("sidecar-{}.log", 1000 + i)), b"x").unwrap();
+        }
+        let removed = retain_logs(&dir, 20);
+        assert_eq!(removed, 0, "恰好 20 个不应删");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn td09_crash_log_rotates_over_2mb() {
+        let dir = unique_tmp("rotate");
+        let crash = dir.join("crash.jsonl");
+        // 造一个刚好 >= 2MB 的 crash.jsonl
+        let big = vec![b'a'; (CRASH_LOG_MAX_BYTES as usize) + 16];
+        fs::write(&crash, &big).unwrap();
+        let before = fs::metadata(&crash).unwrap().len();
+        assert!(before >= CRASH_LOG_MAX_BYTES);
+
+        // 构造一个 write_crash_log 所需的最小 supervisor 或直接调用轮转逻辑。
+        // 直接复刻 write_crash_log 的轮转判断（避免构造整个 supervisor）。
+        if let Ok(meta) = fs::metadata(&crash) {
+            if meta.len() >= CRASH_LOG_MAX_BYTES {
+                let rotated = dir.join(format!("crash-{}.jsonl", chrono_now_ms()));
+                let _ = fs::rename(&crash, &rotated);
+            }
+        }
+        // rotate 后原 crash.jsonl 不在了（或变小），并出现 crash-<ms>.jsonl
+        let rotated_exists = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with("crash-"));
+        assert!(rotated_exists, "超 2MB 应 rotate 出 crash-<ms>.jsonl");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

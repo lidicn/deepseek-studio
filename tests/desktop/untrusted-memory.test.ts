@@ -120,10 +120,37 @@ describe('M10-8A 注入 token 预算（页端）', () => {
     expect(block).not.toContain(`- #m${expectCount} `);
   });
 
-  it('单条极端巨大记忆（单行即超预算）→ 本轮输出空串', () => {
+  it('红转绿：单条极端巨大记忆（单行即超预算）→ 丢弃它，不再把整轮记忆段挤成空', () => {
+    // R3-04 缺陷复现：修复前这条断言是 `toBe('')`——一条超大记忆整体停摆，输出空串。
+    // 红态锚点：修复前 selectMemoryInjectRows 首行即超预算会 `break`，返回 []（整段空）。
+    // 本卡改为：超大条目被**丢弃**，不拖累其余记忆。
     const huge = [{ id: 'huge', type: 'user', name: '超大', content: '啊'.repeat(5000) }];
     expect(estimateTokens(formatMemoryLine(huge[0]))).toBeGreaterThan(MEMORY_INJECT_TOKEN_BUDGET);
+    // 修复前：toBe('')；修复后：仍输出这条之外的空集（只有它一条时无其余可放）。
+    // 单独一条超大 → 没有别的记忆可放，块为空是正确的（无内容可注入），不是「停摆丢正常记忆」。
     expect(formatUntrustedMemoriesBlock(huge)).toBe('');
+    // 关键：超大条目**后面**的正常记忆必须照常注入（这才是缺陷本体）。
+    const mixed = [
+      ...huge,
+      { id: 'm1', type: 'user', name: '偏好', content: '喜欢深色模式' },
+      { id: 'm2', type: 'user', name: '项目', content: '正在做 R3-04' },
+    ];
+    const block = formatUntrustedMemoriesBlock(mixed);
+    expect(block).toContain('- #m1 ');
+    expect(block).toContain('- #m2 ');
+    expect(block).not.toContain('- #huge '); // 超大条目被丢弃
+  });
+
+  it('R3-04 负控：正常大小记忆的确定性前缀行为一字不变', () => {
+    // 修复只对「单行即超总预算」的极端条目跳过；「多行累加超预算」的旧截断口径不变。
+    const rows = cjkRows(50, 200); // 每条约 204 token，1800 容不下 40 行
+    const expectCount = expectedPrefixCount(rows, MEMORY_INJECT_LIMIT, MEMORY_INJECT_TOKEN_BUDGET);
+    expect(expectCount).toBeGreaterThan(0);
+    const out = selectMemoryInjectRows(rows, { rowLimit: MEMORY_INJECT_LIMIT, tokenBudget: MEMORY_INJECT_TOKEN_BUDGET });
+    expect(out.map((r) => r.id)).toEqual(rows.slice(0, expectCount).map((r) => r.id));
+    // 40 行先触顶的口径也不变。
+    const short = cjkRows(45, 1);
+    expect(selectMemoryInjectRows(short, { rowLimit: MEMORY_INJECT_LIMIT, tokenBudget: MEMORY_INJECT_TOKEN_BUDGET }).length).toBe(40);
   });
 
   it('不做相关性重排：选中行顺序严格等于输入顺序', () => {
@@ -208,6 +235,32 @@ describe('F9 点名保留位：任务点名条目不被 token 预算挤掉', () 
     // 保留位有界：不可能 6 条全进（6×~600 >> cap 900）。
     expect(namedIncluded.length).toBeLessThan(6);
     expect(namedIncluded.length).toBeGreaterThan(0); // 能进的必进
+  });
+
+  it('R3-04：点名条目本身超大 → 走降级路径丢弃它，其余（含正常 named）照常注入', () => {
+    // 一条超大的 named（单行即超 1800 总预算，更超 900 保留位）+ 若干正常 named + 正常非 named。
+    const hugeNamed = { id: 'huge-named', type: 'user', name: '超大点名', content: '啊'.repeat(5000) };
+    const normalNamed = cjkRows(2, 200).map((r, i) => ({ ...r, id: `nn${i}` }));
+    const plain = cjkRows(3, 50).map((r, i) => ({ ...r, id: `p${i}` }));
+    const rows = [hugeNamed, ...normalNamed, ...plain];
+    const namedIds = new Set(['huge-named', 'nn0', 'nn1']);
+
+    const out = selectMemoryInjectRows(rows, {
+      rowLimit: 40, tokenBudget: MEMORY_INJECT_TOKEN_BUDGET, namedIds,
+    }).map((r) => r.id);
+
+    // 超大 named 被丢弃（修复前它会在 Pass 2 break 停摆，把整轮记忆段挤空）。
+    expect(out).not.toContain('huge-named');
+    // 正常 named 照常注入（保留位生效）。
+    expect(out).toContain('nn0');
+    expect(out).toContain('nn1');
+    // 其余非 named 也照常注入——没有被一条坏条目拖空。
+    expect(out).toContain('p0');
+    // 端到端：块非空，超大条目不在块里。
+    const block = formatUntrustedMemoriesBlock(rows, 40, namedIds);
+    expect(block).not.toBe('');
+    expect(block).not.toContain('- #huge-named ');
+    expect(block).toContain('- #nn0 ');
   });
 
   it('collectNamedMemoryIds：引号点名片段命中 name/content → 收集 id；无引号 → 空集', () => {

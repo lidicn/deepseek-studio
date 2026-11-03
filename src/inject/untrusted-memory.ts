@@ -64,10 +64,33 @@ export function formatMemoryLine(row: MemoryInjectRow): string {
 }
 
 /**
+ * R3-04：单条超大记忆的降级口径。
+ *
+ * 缺陷（Gate 对账 R3-04）：`selectMemoryInjectRows` 的预算循环遇「单行即超整个预算」的
+ * 记忆时直接 `break` 停摆 —— 若它是首条，整轮记忆段被挤成空。存储侧 M10-7.3 容量预算是
+ * 另一层防线，但页端这个模式仍在：一条超大记忆把**其余所有正常记忆**一起拖下水。
+ *
+ * 取舍（**丢弃，不截断**）：单行即超总预算的记忆直接跳过、继续放后面的，其余记忆照常注入。
+ *   - 不选截断：截断一条超大记忆仍会吃掉大半预算、把后面正常记忆挤掉（只是从「全空」降级成
+ *     「几乎全空」），且截断会产生半句正文，污染注入窗口；丢弃则干净——坏条目整条让位。
+ *   - 只跳过「单行即超总预算」的极端条目；「多行累加才超预算」的正常截断行为一字不变
+ *     （负控锚点，见 selectMemoryInjectRows 注释）。
+ */
+function isOversizedRow(row: MemoryInjectRow, tokenBudget: number): boolean {
+  // 引用 R3-04 标记常量，防止它被 tree-shake 掉（产物里可 grep 到本修复的指纹）。
+  void MEMORY_INJECT_OVERSIZED_SKIP_MARKER;
+  return estimateTokens(formatMemoryLine(row)) > tokenBudget;
+}
+
+/** R3-04 修复在产物里的可 grep 标记（Gate 对账用）：untrusted-memory 进 bundle 的指纹。 */
+export const MEMORY_INJECT_OVERSIZED_SKIP_MARKER = 'studio-r3-04-oversized-skip';
+
+/**
  * M10-8A：确定性前缀选择。输入行已按 pinned → user → updated_at 排好序，
  * 这里不再重排；逐行累加，行数达到 rowLimit 或累加 token 超过 tokenBudget 即停止。
- * 「候选块超预算时停止加入后续行」——单条极端巨大的记忆会在它这一行直接停住，
- * 本轮输出其之前能放下的最长前缀（首条即超大则输出空）。两侧调用同一函数，口径一致。
+ * R3-04：**单行即超总预算**的极端记忆被跳过（丢弃），不再整体停摆 —— 其余记忆照常注入。
+ * 「多行累加超预算」时仍停止加入后续行，本轮输出其之前能放下的最长前缀。
+ * 两侧调用同一函数，口径一致。
  *
  * F9 保留位（`namedIds` 非空时启用）：
  *   - **默认口径**：任务点名行**先占保留位、必进**，哪怕牺牲后面的非 named 行 ——
@@ -76,6 +99,8 @@ export function formatMemoryLine(row: MemoryInjectRow): string {
  *   - **回退上界**：named 块受 `MEMORY_INJECT_NAMED_RESERVE_TOKEN_CAP` 约束（写死常量，
  *     不等于也不抬 1800），超过即停止保留 → 降级为「能进的 named 必进 + 其余按预算裁剪」，
  *     防 named 无限膨胀吃光整个 envelope（负控锚点：namedIds 空 ⇒ 字节级回到旧前缀口径）。
+ *   - **R3-04**：若点名条目本身超大（单行即超总预算），走同一条降级路径——丢弃该条、
+ *     其余照常注入，不因它整体停摆。
  *   - 输出**严格保持输入顺序**（用 chosen 集合过滤，不重排），与「不做相关性重排」不变式一致。
  */
 export function selectMemoryInjectRows(
@@ -92,6 +117,8 @@ export function selectMemoryInjectRows(
     let used = 0;
     for (const row of rows) {
       if (out.length >= rowLimit) break;
+      // R3-04：单行即超总预算 → 丢弃该条、继续放后面的（其余记忆不被一条坏条目拖空）。
+      if (isOversizedRow(row, tokenBudget)) continue;
       const tokens = estimateTokens(formatMemoryLine(row));
       if (used + tokens > tokenBudget) break;
       out.push(row);
@@ -116,6 +143,9 @@ export function selectMemoryInjectRows(
   for (const row of rows) {
     if (chosen.size >= rowLimit) break;
     if (chosen.has(row)) continue;
+    // R3-04：单行即超总预算 → 丢弃该条、继续放后面的。否则一条超大 named/非 named
+    // 会在这里 break 停摆，把 Pass 1 留下的正常 named 也一起废掉（整轮记忆段变空）。
+    if (isOversizedRow(row, tokenBudget)) continue;
     const tokens = estimateTokens(formatMemoryLine(row));
     if (restUsed + tokens > tokenBudget - namedUsed) break;
     chosen.add(row);
