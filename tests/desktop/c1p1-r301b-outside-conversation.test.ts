@@ -263,18 +263,23 @@ describe('R3-01b · 端到端：打在真实写入入口（对话级放行的真
     const outsideCwd = path.join(path.dirname(wsRoot), 'r301b-outside');
     fs.mkdirSync(outsideCwd, { recursive: true });
 
+    // R2-01：越界 = 高风险 → 决议走宿主原生框（页面无决议通道）。
+    // 测试注入 nativeConsent 桩模拟用户点「本次对话始终允许」，计数替代原页端回执计数。
+    let consentCount = 0;
     const host = createDesktopHost({
       config: { host: '127.0.0.1', port: 0, token: 't' },
       secret: 's',
       workspace: createWorkspace(wsRoot),
       policyMode: 'auto',
+      nativeConsent: async () => {
+        consentCount += 1;
+        return 'allow-conversation';
+      },
     });
     await host.start();
     const port = Number(new URL(host.url).port);
 
-    // 假页：第一次同意时回 allow-conversation（写进真实放行表）；
-    // 第二次若宿主**又**来问 → 说明没有静默放行（这正是要断言的行为）。
-    let consentCount = 0;
+    // 假页：仅用于建立「人类在场」的连接；R2-01 后高风险决议不再经过页面。
     const ws = new WebSocket(`ws://127.0.0.1:${port}/studio?token=t`);
     await new Promise<void>((resolve) => {
       ws.on('open', () => {
@@ -284,15 +289,17 @@ describe('R3-01b · 端到端：打在真实写入入口（对话级放行的真
     });
     ws.on('message', (raw) => {
       try {
-        const msg = JSON.parse(raw.toString()) as { type: string; callId?: string };
+        const msg = JSON.parse(raw.toString()) as { type: string; callId?: string; nonce?: string };
         if (msg.type === 'consent-required' && msg.callId) {
+          // R2-01：本流程（越界=高风险）决议走原生框，页面不应收到 consent-required；
+          // 万一收到也原样带回 nonce 以免挂起。
           consentCount += 1;
           ws.send(
             JSON.stringify({
               type: 'consent-decision',
               callId: msg.callId,
-              // 两次都回 allow-conversation：第二次若不再问，说明越界被静默放行（FAIL）
               decision: 'allow-conversation',
+              nonce: msg.nonce,
             }),
           );
         }

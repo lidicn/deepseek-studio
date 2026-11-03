@@ -26,7 +26,7 @@ export type HostToPageMessage =
   | { type: 'account-duplicate-block'; reason: string; duplicateOf?: string }
   // v0.24：botId 全程可选，缺省='main'（单窗口/旧注入脚本行为不变）。
   | { type: 'dispatch'; callId: string; tool: string; params: unknown; botId?: string }
-  | { type: 'consent-required'; callId: string; tool: string; params: unknown; meta?: ConsentMeta; botId?: string }
+  | { type: 'consent-required'; callId: string; tool: string; params: unknown; meta?: ConsentMeta; botId?: string; nonce?: string }
   /**
    * C1 墨鉴 R3-6：同意请求**作废**通知（宿主 → 页端）。
    *
@@ -71,7 +71,7 @@ export type PageToHostMessage =
   // 宿主据此做同账号双窗口去重——两窗口登同一 DeepSeek 账号 → 同指纹 → 第二个 fail-closed。
   | { type: 'hello'; origin: string; sessionId: string; botId?: string; accountFingerprint?: string }
   | { type: 'result'; callId: string; ok: boolean; data?: unknown; error?: string }
-  | { type: 'consent-decision'; callId: string; decision: ConsentDecision }
+  | { type: 'consent-decision'; callId: string; decision: ConsentDecision; nonce?: string }
   /** v0.5 5.4：页端自检发现宿主注入对象被篡改，上报宿主以便降级。 */
   | { type: 'integrity-alert'; reason: string; detail?: string }
   /** v0.6：页端 MAIN-world 拦截器解析出模型发起的工具调用，反向投递给宿主真实执行。

@@ -22,9 +22,30 @@ export interface ConsentRequest {
   timeoutMs?: number;
   /** 风险呈现信息（由宿主翻译成展示字符串后下发，本模块不做枚举翻译）。 */
   meta?: ConsentMeta;
+  /**
+   * R2-01：本次同意请求的一次性 nonce（宿主生成、常数时间比对、消费即失效）。
+   * 页端回执必须原样带回，宿主据此把决议绑到「这一次真实手势」上——防伪造回执。
+   *
+   * **缺失即不渲染**：R2-01 把工具分两档——低风险走页端模态（带 nonce），
+   * 高风险（outside/hardRule/allowConversation/allow-session）走宿主**原生框**，
+   * 原生档**不会把 consent-required 发给页面**。因此页端若收到一个没有 nonce 的
+   * consent-required，说明它本不该由页端处理（或宿主已改走原生），此时**不渲染模态、
+   * 也不回执**，把决定权完全交回宿主——避免页内脚本抢在原生框之前伪造决议。
+   */
+  nonce?: string;
 }
 
-export type ConsentCallback = (decision: ConsentDecision) => void;
+/**
+ * R2-01：决议回执。`nonce` 是本次手势的一次性凭据（从 ConsentRequest 原样带回），
+ * 宿主侧常数时间比对 + 一次性消费；无 nonce 的回执会被宿主忽略（保持 pending → 超时 deny）。
+ */
+export interface ConsentReceipt {
+  decision: ConsentDecision;
+  nonce?: string;
+}
+
+/** 决议回调：收到回执后由宿主客户端发 consent-decision（带 nonce）给宿主。 */
+export type ConsentCallback = (receipt: ConsentReceipt) => void;
 
 export interface ConsentHandle {
   decide(decision: ConsentDecision): void;
@@ -123,6 +144,15 @@ function ensureStyles(): void {
 
 /** 把审批请求排入队列；只有队首会渲染。fail-closed 由超时与遮罩/Esc 兜底。 */
 export function showConsent(request: ConsentRequest, onDecision: ConsentCallback): ConsentHandle {
+  // R2-01：无 nonce 的 consent-required 说明宿主已把该请求改走原生框（高风险档），
+  // 或请求本不该由页端处理。此时**不渲染、不回执**，把决定权完全交回宿主，
+  // 防止页内脚本抢在原生框之前伪造决议。返回的句柄是 no-op（不占队列、不触发回调）。
+  if (!request.nonce) {
+    return {
+      decide() { /* no-op：页端不处理，宿主原生框已接管 */ },
+      dispose() { /* no-op */ },
+    };
+  }
   const entry: QueuedConsent = { request, onDecision, settled: false, shown: false };
   pendingConsents.push(entry);
   presentNextConsent();
@@ -172,7 +202,7 @@ function settleConsent(entry: QueuedConsent, decision: ConsentDecision): void {
     activeConsent = undefined;
   }
   try {
-    entry.onDecision(decision);
+    entry.onDecision({ decision, nonce: entry.request.nonce });
   } catch (error) {
     // 单个回调异常不能卡死队列；错误仍留给控制台便于定位。
     console.error('[consent] decision callback failed', error);
@@ -302,10 +332,25 @@ function renderConsent(entry: QueuedConsent): void {
     else if (e.key === 'Enter') settle('deny');
   }
 
-  btnAllowOnce.addEventListener('click', () => settle('allow-once'));
-  btnDeny.addEventListener('click', () => settle('deny'));
-  btnAllowSession.addEventListener('click', () => settle('allow-session'));
-  btnAllowConversation?.addEventListener('click', () => settle('allow-conversation'));
+  /**
+   * R2-01：决议必须来自真实用户手势。
+   *
+   * 合成事件（`dispatchEvent` / 脚本 `.click()`）的 `isTrusted === false`——页内脚本
+   * 若能在用户不知情时伪造「允许一次」，等于绕过同意闸门。因此四个动作按钮的回调都
+   * 校验 `e.isTrusted === true`，非真实手势**不产生回执**（保持 pending，宿主超时 deny）。
+   *
+   * 键盘（Enter/Esc）与遮罩点击保持原逻辑：它们只通向 **deny**（安全侧默认），
+   * 不产生 allow 回执，无伪造放行风险。
+   */
+  function trustedGesture(e: Event, decision: ConsentDecision): void {
+    if (e.isTrusted !== true) return;
+    settle(decision);
+  }
+
+  btnAllowOnce.addEventListener('click', (e) => trustedGesture(e, 'allow-once'));
+  btnDeny.addEventListener('click', (e) => trustedGesture(e, 'deny'));
+  btnAllowSession.addEventListener('click', (e) => trustedGesture(e, 'allow-session'));
+  btnAllowConversation?.addEventListener('click', (e) => trustedGesture(e, 'allow-conversation'));
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) settle('deny');
   });

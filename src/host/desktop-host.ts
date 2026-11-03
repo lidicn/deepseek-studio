@@ -29,6 +29,7 @@ import {
 } from './tool-registry';
 import { DEFAULT_TOOL_DEFINITIONS, HOST_INTERNAL_ORIGIN } from './tool-definitions';
 import { createPageRuntimeHub, type PageRuntimeHub } from './page-runtime';
+import { showNativeConsent } from './native-consent';
 import { appendTraceLine } from './trace-log';
 import { AGENT_SENTINEL, type AgentLoopEvent } from './agent-loop';
 import { createAgentChannel, type AgentChannel } from './agent-channel';
@@ -69,6 +70,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { ConsentMeta } from './protocol';
+import type { ConsentDecision } from '../shared/consent-contract';
 
 // 一次 engine.send() 内含 WebEngine auto-continue 的整条工具链；
 // 真机多轮工具任务实测约 162s，TaskLoop 默认 120s 会把成功回合误判为 timeout。
@@ -211,6 +213,35 @@ export interface DesktopHostOptions {
   chatRoomMaxDepth?: number;
   /** v0.27：人设注册表。缺省用 FilePersonaRegistry（~/.config/deepseek-studio/personas/）。 */
   personas?: PersonaRegistry;
+  /**
+   * R2-01：高风险授权的**宿主原生确认框**接口（由 tauri 侧经 IPC 实现后注入）。
+   *
+   * 提供后：`ensureConsent` 判定为高风险（allow-session / allow-conversation / 越界 / 硬拒邻近）
+   * 时，**不走页面模态**（`hub.requestConsent`），改调此回调弹原生确认框——
+   * 决议来自页面之外的权威源，页面无渠道伪造（结构上消除「被约束方自答」）。
+   *
+   * 未提供（dev 无 tauri / 测试）→ 高风险也回退页端模态（nonce 绑定），并在审计里标注 degraded。
+   * 回调返回 null 表示用户关闭/取消（按 deny 处理）。
+   */
+  nativeConsent?: (req: NativeConsentRequest) => Promise<ConsentDecision | null>;
+  /** R2-01：consent 超时（默认 hub 的 60s）。测试可缩短。 */
+  consentTimeoutMs?: number;
+}
+
+/**
+ * R2-01：原生确认框请求体。字段是「已翻译好的展示串」或原始枚举，tauri 侧直接渲染。
+ * 硬要求（Studio-PM 裁决）：工具名 + 一句关键参数摘要（截断一行）+ 风险原因 + 决策按钮。
+ */
+export interface NativeConsentRequest {
+  readonly callId: string;
+  readonly tool: string;
+  /** 一句关键参数摘要（命令行 / 目标路径，已截断到一行）。 */
+  readonly summary: string;
+  /** 风险原因（中文，简短）。 */
+  readonly riskReason: string;
+  /** 可选的决策项（低风险不含 allow-session/allow-conversation）。 */
+  readonly allowedDecisions: readonly ConsentDecision[];
+  readonly botId?: string;
 }
 
 export interface ToolExecutionResult {
@@ -1932,6 +1963,66 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     return result.verdict === 'safe' && (result.reason === 'whitelist-hit' || result.reason === 'policy-allow');
   }
 
+  // ── R2-01：高风险授权判据 + 原生确认框摘要 ─────────────────────────
+  /**
+   * 判定一次 consent 是否属「高风险」（必须走宿主原生框，页面不得参与决议）。
+   * 判据（Studio-PM 裁决 §1）：allow-session / allow-conversation 可用（长时效）、
+   * 越界（outside）、命中硬拒邻近（hardRule）。
+   */
+  function isHighRiskConsent(meta?: ConsentMeta): boolean {
+    if (!meta) return false;
+    if (meta.outside === true) return true;
+    if (typeof meta.hardRule === 'string' && meta.hardRule.length > 0) return true;
+    if (meta.allowConversation === true) return true;
+    // 允许 long-lived grant（session）→ 高风险
+    if (Array.isArray(meta.allowedGrantScopes) && meta.allowedGrantScopes.includes('allow-session')) return true;
+    if (meta.hideAllowSession === false) return true;
+    return false;
+  }
+
+  /** 从工具名 + params 生成一句关键参数摘要（命令行 / 目标路径，截断一行）。 */
+  function consentSummary(_tool: string, params: unknown): string {
+    const bag = (params ?? {}) as Record<string, unknown>;
+    const flat = (v: unknown): string => (typeof v === 'string' ? v : JSON.stringify(v));
+    let raw = '';
+    if (typeof bag.command === 'string') raw = bag.command;
+    else if (Array.isArray(bag.argv)) raw = bag.argv.map((x) => flat(x)).join(' ');
+    else if (typeof bag.root === 'string') raw = `root: ${bag.root}`;
+    else if (typeof bag.path === 'string') raw = bag.path;
+    else if (typeof bag.url === 'string') raw = bag.url;
+    else {
+      // 退化：取第一个字符串字段
+      const k = Object.keys(bag).find((kk) => typeof bag[kk] === 'string');
+      raw = k ? `${k}: ${flat(bag[k])}` : '';
+    }
+    const oneLine = raw.replace(/[\r\n]+/g, ' ').trim();
+    if (oneLine.length <= 100) return oneLine;
+    return oneLine.slice(0, 100) + '…';
+  }
+
+  /** 原生框可用的决策项：高风险仍允许「允许一次 / 拒绝」，长时效授权按 meta 是否允许。 */
+  function highRiskAllowedDecisions(meta?: ConsentMeta): ConsentDecision[] {
+    const out: ConsentDecision[] = ['allow-once', 'deny'];
+    if (meta) {
+      const allowed = Array.isArray(meta.allowedGrantScopes) ? meta.allowedGrantScopes : [];
+      if (allowed.includes('allow-session')) out.push('allow-session');
+      if (meta.allowConversation === true) out.push('allow-conversation');
+    }
+    return out;
+  }
+
+  /** 风险原因（中文短语，给原生框展示）。 */
+  function consentRiskReason(meta?: ConsentMeta): string {
+    if (!meta) return '需要确认';
+    const parts: string[] = [];
+    if (meta.outside === true) parts.push('越出工作区');
+    if (typeof meta.hardRule === 'string' && meta.hardRule) parts.push(`命中硬拒规则(${meta.hardRule})`);
+    if (meta.riskLabel) parts.push(meta.riskLabel);
+    if (meta.allowConversation === true) parts.push('可授予「本次对话始终允许」');
+    if (parts.length === 0) parts.push('高风险操作');
+    return parts.join(' · ');
+  }
+
   async function ensureConsent(
     tool: string,
     params: unknown,
@@ -1955,7 +2046,46 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     // 世代号：等待用户决策期间若发生了换档位 / 换工作区 / 页端断开 / 宿主停止，
     // 迟到的"允许"回调必须作废（否则等于用旧语境下的同意去放行新语境下的操作）。
     const generation = conversationStore.currentGeneration();
-    const decision = await hub.requestConsent(callId, tool, params, meta, botId);
+    // R2-01：高风险 → 宿主原生确认框（页面不参与决议）；否则 → 页端模态（nonce 绑定）。
+    // 原生框实现：优先 options.nativeConsent 注入（tauri 可接管）；
+    // 否则用 node 侧默认（showNativeConsent：Windows MessageBox）。
+    // 环境弹不出框（非 Windows / spawn 失败）→ 回退页端模态并记 degraded（fail-closed 仍靠 nonce）。
+    let decision: ConsentDecision;
+    if (isHighRiskConsent(meta)) {
+      const allowed = highRiskAllowedDecisions(meta);
+      const req: NativeConsentRequest = {
+        callId,
+        tool,
+        summary: consentSummary(tool, params),
+        riskReason: consentRiskReason(meta),
+        allowedDecisions: allowed,
+        botId,
+      };
+      const native = options.nativeConsent
+        ? await options.nativeConsent(req)
+        : await (async () => {
+            const r = await showNativeConsent({
+              tool: req.tool,
+              summary: req.summary,
+              riskReason: req.riskReason,
+              allowedDecisions: req.allowedDecisions,
+            });
+            if (!r.shown) {
+              console.warn(`[consent] native box unavailable (${r.reason ?? 'unknown'}) → degraded to page nonce`);
+              return undefined; // 触发下面的回退
+            }
+            return r.decision ?? 'deny';
+          })();
+      if (native === undefined) {
+        // 原生框弹不出 → 回退页端 nonce 模态（B），不是放行。
+        decision = await hub.requestConsent(callId, tool, params, meta, botId);
+      } else {
+        decision = native ?? 'deny';
+        console.warn(`[consent] native risk=high tool=${tool} decision=${decision} callId=${callId}`);
+      }
+    } else {
+      decision = await hub.requestConsent(callId, tool, params, meta, botId);
+    }
     if (conversationStore.currentGeneration() !== generation) {
       return 'consent-unavailable';
     }
@@ -2204,6 +2334,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         server: server.rawServer,
         // QD-R2-12：WS 接轮换环，不再传冻结字面量。
         token: () => apiTokenRing.accepted,
+        consentTimeoutMs: options.consentTimeoutMs,
         // TD-02：bootstrap grant 校验（页面通道）。grant 由 tauri 侧用同一 config.secret 自签，
         // 这里无状态验签 + 一次性消费（jti 已用集合）+ aud 绑定。
         // 兼容回退：grant 验不过 → 走旧 verifyWsQueryToken（本机 UI / 测试仍持有 config.token）。

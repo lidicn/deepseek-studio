@@ -23,9 +23,28 @@ import { mapUpstreamToolInvocation } from '../shared/tool-contract';
 import { DEEPSEEK_ORIGIN } from './tool-definitions';
 import { verifyWsQueryToken, type WSQueryTokenSource } from './host-token';
 import { fetchImageAsDataUrl } from './image-proxy';
+import { randomBytes } from 'node:crypto';
 
 /** QD-R7-01（F12）：单行 JSONL 的上限。超长只丢取证细节，不影响落盘本身。 */
 const TRACE_LINE_MAX_CHARS = 16_000;
+
+/** R2-01：consent nonce —— 16 字节随机，base64url（无填充）。每次 consent 一个。 */
+function randomConsentNonce(): string {
+  return randomBytes(16).toString('base64url');
+}
+
+/**
+ * R2-01：常数时间字符串比较（避免 nonce 校验的时序侧信道）。
+ * 长度不同直接 false（长度本身不是秘密）。
+ */
+function timingSafeEqualStr(a: string, b: string): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 
 /**
  * PNA 白名单：公网页（chat.deepseek.com）需要连本机 ws 通道，Chromium 在「实际握手
@@ -269,7 +288,7 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
   // 伪造 result / consent-decision，把宿主正在等的工具结果/同意决定直接 resolve 掉。
   // ownerId 绑死连接后，跨连接的回执一律忽略。
   const pendingDispatch = new Map<string, { ownerId: string; resolve: (r: ExecuteResult) => void; timer: ReturnType<typeof setTimeout> }>();
-  const pendingConsent = new Map<string, { ownerId: string; resolve: (d: ConsentDecision) => void; timer: ReturnType<typeof setTimeout> }>();
+  const pendingConsent = new Map<string, { ownerId: string; nonce: string; consumed: boolean; resolve: (d: ConsentDecision) => void; timer: ReturnType<typeof setTimeout> }>();
   // C1 墨鉴 R3-8：页端发来的 tool-call（反向投递的工具调用）在宿主侧是**在途请求**，
   // 原实现没有登记、没有超时、也不受 failAllPending 管辖 →
   //   ① 执行永不返回时，页端的 pending 永久悬挂；
@@ -310,13 +329,11 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
   function safeSend(ws: WebSocket, msg: HostToPageMessage): void {
     try {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
-    } catch (err) {
-      options.onError?.(`page-runtime send failed: ${msg.type}`, err);
+    } catch (err) {      options.onError?.(`page-runtime send failed: ${msg.type}`, err);
     }
   }
 
-  function pickClient(botId?: string): { id: string; ws: WebSocket } | null {
-    // v0.24：调用方给了 botId 才按 botId 路由到对应窗口的页（每窗口一个独立登录态）。
+  function pickClient(botId?: string): { id: string; ws: WebSocket } | null {    // v0.24：调用方给了 botId 才按 botId 路由到对应窗口的页（每窗口一个独立登录态）。
     // 兼容规则：调用方不传 botId → 完全沿用改造前的「任一可信页」行为，不做 botId 过滤。
     // 这样单窗口 / 旧脚本 / 遗留调用路径行为不变；而多 bot 引擎各自带 botId 调用即精确寻址。
     // 关键：被自检判定为篡改的页必须被跳过，否则工具就派发给了敌意页面。
@@ -540,6 +557,12 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         if (!rec.ready || rec.untrusted) return;
         const p = pendingConsent.get(msg.callId);
         if (p && p.ownerId === id) {
+          // R2-01：回执必须带回与本次 consent 绑定的 nonce（常数时间相等）+ 一次性消费。
+          // 缺 nonce / nonce 不符 / 已 consumed → 忽略该回执（保持 pending，最终超时 deny）。
+          // 这是「页面伪造决议被拒」的核心：伪造方即便知道 callId，也拿不出已消费的 nonce。
+          if (p.consumed) return;
+          if (typeof msg.nonce !== 'string' || !timingSafeEqualStr(msg.nonce, p.nonce)) return;
+          p.consumed = true;
           clearTimeout(p.timer);
           pendingConsent.delete(msg.callId);
           p.resolve(msg.decision);
@@ -700,6 +723,9 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           resolve('deny');
           return;
         }
+        // R2-01：每次 consent 生成一次性 nonce，随 consent-required 下发；回执必须带回同一 nonce。
+        // 页面可读到 nonce，但回执还须 ownerId 绑定 + consumed 一次性（配合 UI 的 isTrusted 点击证明）。
+        const nonce = randomConsentNonce();
         const timer = setTimeout(() => {
           pendingConsent.delete(callId);
           // C1 墨鉴 R3-6/R3-7：同意超时必须**作废页端那个弹窗**。
@@ -708,8 +734,8 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           safeSend(picked.ws, { type: 'consent-abort', callId, reason: 'consent-timeout' });
           resolve('deny');
         }, consentTimeoutMs);
-        pendingConsent.set(callId, { ownerId: picked.id, resolve, timer });
-        safeSend(picked.ws, { type: 'consent-required', callId, tool, params, meta, botId });
+        pendingConsent.set(callId, { ownerId: picked.id, nonce, consumed: false, resolve, timer });
+        safeSend(picked.ws, { type: 'consent-required', callId, tool, params, meta, botId, nonce });
       });
     },
     broadcastMemories(memories) {

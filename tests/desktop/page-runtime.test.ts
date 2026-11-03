@@ -48,7 +48,7 @@ describe('page-runtime + 宿主路由', () => {
     const port = Number(new URL(host.url).port);
     const ws = await connectFakePage(port, (msg) => {
       if (msg.type === 'consent-required') {
-        ws.send(JSON.stringify({ type: 'consent-decision', callId: msg.callId, decision: 'allow-once' }));
+        ws.send(JSON.stringify({ type: 'consent-decision', callId: msg.callId, decision: 'allow-once', nonce: (msg as { nonce?: string }).nonce }));
       } else if (msg.type === 'dispatch' && msg.tool === 'chat-send') {
         ws.send(JSON.stringify({ type: 'result', callId: msg.callId, ok: true }));
       }
@@ -65,7 +65,7 @@ describe('page-runtime + 宿主路由', () => {
     const port = Number(new URL(host.url).port);
     const ws = await connectFakePage(port, (msg) => {
       if (msg.type === 'consent-required') {
-        ws.send(JSON.stringify({ type: 'consent-decision', callId: msg.callId, decision: 'deny' }));
+        ws.send(JSON.stringify({ type: 'consent-decision', callId: msg.callId, decision: 'deny', nonce: (msg as { nonce?: string }).nonce }));
       }
     });
     const res = await host.invokeTool('chat-send', {});

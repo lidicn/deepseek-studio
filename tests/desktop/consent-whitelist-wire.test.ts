@@ -71,9 +71,9 @@ beforeEach(async () => {
     // auto-respond to consent-required for privileged tools
     ws!.on('message', (raw) => {
       try {
-        const m = JSON.parse(raw.toString()) as { type: string; callId?: string };
+        const m = JSON.parse(raw.toString()) as { type: string; callId?: string; nonce?: string };
         if (m.type === 'consent-required' && m.callId) {
-          ws!.send(JSON.stringify({ type: 'consent-decision', callId: m.callId, decision: 'allow' }));
+          ws!.send(JSON.stringify({ type: 'consent-decision', callId: m.callId, decision: 'allow-once', nonce: m.nonce }));
         }
       } catch { /* ignore */ }
     });

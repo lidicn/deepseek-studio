@@ -1,4 +1,4 @@
-﻿/**
+/**
  * v0.5 安全石化验收测试
  * 对应路线图 5.1~5.5 与审计闭环：429 限流、CORS fail-closed、
  * 令牌轮换宽限期、审计经 HTTP 可读、页面篡改后宿主降级。
@@ -229,9 +229,10 @@ describe('5.4 完整性探测与宿主降级', () => {
     // 假页：同意 + 对派发回 result（缺了 result 宿主会等满 30s 派发超时）
     ws.on('message', (raw) => {
       try {
-        const m = JSON.parse(raw.toString()) as { type: string; callId?: string };
+        const m = JSON.parse(raw.toString()) as { type: string; callId?: string; nonce?: string };
         if (m.type === 'consent-required') {
-          try { ws.send(JSON.stringify({ type: 'consent-decision', callId: m.callId, decision: 'allow-once' })); } catch { /* socket closed */ }
+          // R2-01：宿主校验回执 nonce，必须把 consent-required 里的 nonce 原样带回
+          try { ws.send(JSON.stringify({ type: 'consent-decision', callId: m.callId, decision: 'allow-once', nonce: m.nonce })); } catch { /* socket closed */ }
         } else if (m.type === 'dispatch') {
           try { ws.send(JSON.stringify({ type: 'result', callId: m.callId, ok: true })); } catch { /* socket closed */ }
         }

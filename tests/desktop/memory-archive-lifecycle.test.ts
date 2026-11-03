@@ -31,7 +31,7 @@ function connectPage(target: DesktopHost, seen: HostToPageMessage[]): Promise<We
         seen.push(message);
         // 同意闸门：本文件所有用例都按「用户点了允许」处理。
         if (message.type === 'consent-required') {
-          ws.send(JSON.stringify({ type: 'consent-decision', callId: message.callId, decision: 'allow' }));
+          ws.send(JSON.stringify({ type: 'consent-decision', callId: message.callId, decision: 'allow-once', nonce: (message as { nonce?: string }).nonce }));
         }
       } catch {
         /* ignore malformed test frames */

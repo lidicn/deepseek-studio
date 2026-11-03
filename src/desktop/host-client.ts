@@ -9,7 +9,7 @@
  */
 
 import type { ExecutableCapability, ExecuteResult } from '../capabilities/types';
-import type { ConsentDecision, HostToPageMessage, PageToHostMessage } from '../host/protocol';
+import type { HostToPageMessage, PageToHostMessage } from '../host/protocol';
 import { showConsent } from '../ui/consent';
 import { showAccountBlockOverlay } from '../ui/account-block';
 
@@ -219,11 +219,20 @@ export function createHostClient(options: HostClientOptions): HostClient {
           send({ type: 'result', callId: msg.callId, ok: false, error: e instanceof Error ? e.message : String(e) }),
         );
     } else if (msg.type === 'consent-required') {
-      const handle = showConsent({ tool: msg.tool, params: msg.params, meta: msg.meta }, (decision: ConsentDecision) => {
-        // 已决策 → 从作废表里摘掉（避免 abort 晚到时误关别的弹窗）。
-        consentHandles.delete(msg.callId);
-        send({ type: 'consent-decision', callId: msg.callId, decision });
-      });
+      // TD-02/R2-01：无 nonce = 高风险走宿主原生框（页端不该处理）→ fail-closed 直接 deny，
+      // 不渲染模态（防页内脚本在无 nonce 保护下伪造回执）。deny 也不带 nonce（宿主忽略无 nonce 回执）。
+      if (!msg.nonce) {
+        send({ type: 'consent-decision', callId: msg.callId, decision: 'deny' });
+        return;
+      }
+      const handle = showConsent(
+        { tool: msg.tool, params: msg.params, meta: msg.meta, nonce: msg.nonce },
+        (receipt) => {
+          // 已决策 → 从作废表里摘掉（避免 abort 晚到时误关别的弹窗）。
+          consentHandles.delete(msg.callId);
+          send({ type: 'consent-decision', callId: msg.callId, decision: receipt.decision, nonce: receipt.nonce });
+        },
+      );
       // C1 墨鉴 R3-6：登记同意弹窗的句柄 —— 宿主超时/断连时会发 consent-abort，
       // 页面据此**关掉那个弹窗**（否则用户对着一个已作废的弹窗点「同意」，点了没反应）。
       consentHandles.set(msg.callId, handle);

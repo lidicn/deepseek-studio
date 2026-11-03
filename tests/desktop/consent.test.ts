@@ -12,6 +12,9 @@ import {
   describeConsentRequest,
   showConsent,
   toolDisplayName,
+  type ConsentCallback,
+  type ConsentHandle,
+  type ConsentRequest,
 } from '../../src/ui/consent';
 
 /** T8-2：全局统一清理 overlay + 重置 body，任何失败都不污染后续用例。 */
@@ -25,28 +28,80 @@ afterEach(() => {
   expect(document.querySelector('.ds-consent-overlay')).toBeNull();
 });
 
-function mkHandle(...args: Parameters<typeof showConsent>) {
-  return showConsent(...args);
+/**
+ * R2-01：页端 consent 模态必须带 nonce（无 nonce = 高风险走宿主原生框，页端不渲染）。
+ * 旧用例的调用点统一由本包装注入测试 nonce，断言口径不变（只换触发事件的手势可信度）。
+ */
+function mkHandle(
+  request: Omit<ConsentRequest, 'nonce'> & { nonce?: string },
+  onDecision: ConsentCallback,
+): ConsentHandle {
+  return showConsent({ nonce: 'n-test', ...request }, onDecision);
+}
+
+/**
+ * R2-01 测试辅助：jsdom 造不出 isTrusted=true 的事件（真实用户手势才 trusted），
+ * 且 jsdom 的 isTrusted 是 WebIDL 只读非可配置属性，无法 shadow。
+ * 模拟「真点击」的做法：渲染前在 HTMLButtonElement.prototype.addEventListener 上挂 spy，
+ * 捕获 R2-01 守卫挂在按钮上的**真实 click 监听器**，再用一个 isTrusted=true 的最小
+ * 事件对象直接调用它（守卫只读 e.isTrusted）。实现侧守卫读错字段/漏挂 → 阳性用例转红。
+ * 「负控」侧则用 jsdom 原生 `.click()`（isTrusted 恒 false）证明合成事件不产生回执。
+ */
+interface ClickCaptures {
+  /** className → 当前模态该按钮挂着的真实 click 监听器（后渲染的模态会覆盖同名键）。 */
+  handlers: Map<string, (e: Event) => void>;
+  /** 造一个「真实手势」事件对象（isTrusted=true）。 */
+  trustedEvent(): Event;
+  stop(): void;
+}
+
+function captureButtonClicks(): ClickCaptures {
+  const handlers = new Map<string, (e: Event) => void>();
+  const nativeAdd = EventTarget.prototype.addEventListener;
+  const spy = vi.spyOn(HTMLButtonElement.prototype, 'addEventListener').mockImplementation(
+    function (this: EventTarget, type: string, listener: EventListenerOrEventListenerObject, options?: AddEventListenerOptions | boolean) {
+      if (type === 'click' && typeof listener === 'function') {
+        handlers.set(((this as HTMLButtonElement).className ?? ''), listener as (e: Event) => void);
+      }
+      return nativeAdd.call(this, type, listener, options);
+    },
+  );
+  return {
+    handlers,
+    // jsdom 无法构造 trusted 事件；守卫只读 isTrusted，用最小事件对象顶替（走真实监听器代码）。
+    trustedEvent: () => ({ isTrusted: true } as unknown as Event),
+    stop: () => spy.mockRestore(),
+  };
 }
 
 describe('同意模态（基础交互）', () => {
-  it('允许一次回调', () => {
+  it('允许一次回调（R2-01：回执必须来自真实手势，jsdom 用捕获监听器 + trusted 事件模拟）', () => {
     let decision = '';
-    mkHandle({ tool: 'chat-send' }, (d) => { decision = d; });
-    (document.querySelector('.ds-consent-allow-once') as HTMLButtonElement).click();
+    const cap = captureButtonClicks();
+    try {
+      mkHandle({ tool: 'chat-send' }, (r) => { decision = r.decision; });
+      cap.handlers.get('ds-consent-allow-once')!(cap.trustedEvent());
+    } finally {
+      cap.stop();
+    }
     expect(decision).toBe('allow-once');
   });
 
-  it('拒绝回调', () => {
+  it('拒绝回调（真实手势）', () => {
     let decision = '';
-    mkHandle({ tool: 'chat-send' }, (d) => { decision = d; });
-    (document.querySelector('.ds-consent-deny') as HTMLButtonElement).click();
+    const cap = captureButtonClicks();
+    try {
+      mkHandle({ tool: 'chat-send' }, (r) => { decision = r.decision; });
+      cap.handlers.get('ds-consent-deny')!(cap.trustedEvent());
+    } finally {
+      cap.stop();
+    }
     expect(decision).toBe('deny');
   });
 
   it('点遮罩外 → 拒绝', () => {
     let decision = '';
-    mkHandle({ tool: 'chat-send' }, (d) => { decision = d; });
+    mkHandle({ tool: 'chat-send' }, (r) => { decision = r.decision; });
     const overlay = document.querySelector('.ds-consent-overlay') as HTMLElement;
     overlay.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(decision).toBe('deny');
@@ -54,9 +109,61 @@ describe('同意模态（基础交互）', () => {
 
   it('超时默认拒绝（fail-closed）', async () => {
     let decision = '';
-    mkHandle({ tool: 'chat-send', timeoutMs: 30 }, (d) => { decision = d; });
+    mkHandle({ tool: 'chat-send', timeoutMs: 30 }, (r) => { decision = r.decision; });
     await new Promise((r) => setTimeout(r, 80));
     expect(decision).toBe('deny');
+  });
+});
+
+/**
+ * R2-01：consent 决议必须绑定真实用户手势 + 一次性 nonce（页端半张）。
+ *
+ * 负控（主）：合成事件（jsdom `.click()`，isTrusted=false）**不产生回执**——
+ * 页内脚本伪造「允许」被拒绝，宿主保持 pending → 超时 deny。
+ * 无 nonce 的 consent-required = 高风险走宿主原生框，页端**不渲染、不回执**。
+ */
+describe('R2-01：真实手势校验 + nonce 回执（页端）', () => {
+  it('主负控：合成点击（isTrusted=false）不产生任何回执（不批准不拒绝）', () => {
+    let decision = '';
+    const receipts: unknown[] = [];
+    const h = mkHandle({ tool: 'shell.exec' }, (r) => { decision = r.decision; receipts.push(r); });
+    // jsdom 的 .click() 生成的事件 isTrusted 恒为 false → 被手势守卫拦下。
+    (document.querySelector('.ds-consent-allow-once') as HTMLButtonElement).click();
+    (document.querySelector('.ds-consent-deny') as HTMLButtonElement).click();
+    expect(decision).toBe('');
+    expect(receipts.length).toBe(0);
+    // 模态仍在（未被合成事件结算）
+    expect(document.querySelector('.ds-consent-overlay')).not.toBeNull();
+    h.dispose();
+  });
+
+  it('真实手势（isTrusted=true）→ 产生回执且回执携带 nonce', () => {
+    let receipt: { decision: string; nonce?: string } | null = null;
+    const cap = captureButtonClicks();
+    try {
+      const h = mkHandle({ tool: 'shell.exec' }, (r) => { receipt = r; });
+      cap.handlers.get('ds-consent-allow-once')!(cap.trustedEvent());
+      expect(receipt).not.toBeNull();
+      expect(receipt!.decision).toBe('allow-once');
+      // nonce 从 consent-required（ConsentRequest）原样带回
+      expect(receipt!.nonce).toBe('n-test');
+      h.dispose();
+    } finally {
+      cap.stop();
+    }
+  });
+
+  it('无 nonce 的 consent-required（= 高风险走宿主原生框）→ 页端不渲染、不回调', () => {
+    let called = 0;
+    const h = showConsent({ tool: 'file.write', params: { path: 'x' } }, () => { called++; });
+    // 不渲染：没有任何 overlay 进 DOM
+    expect(document.querySelector('.ds-consent-overlay')).toBeNull();
+    // 不回调、不产生决议
+    expect(called).toBe(0);
+    // 句柄是 no-op：decide/dispose 都不抛错、不触发副作用
+    expect(() => h.decide('allow-once')).not.toThrow();
+    expect(() => h.dispose()).not.toThrow();
+    expect(called).toBe(0);
   });
 });
 
@@ -75,7 +182,7 @@ describe('同意模态（键盘处理：IME 守卫 + Enter 绑 deny）', () => {
 
   it('isComposing=true 的 Enter → 不产生任何决策（不批准也不拒绝）', () => {
     let decision = '';
-    mkHandle({ tool: 'chat-send' }, (d) => { decision = d; });
+    mkHandle({ tool: 'chat-send' }, (r) => { decision = r.decision; });
     pressKey({ key: 'Enter', isComposing: true });
     // 关键：绝不能是 allow-once
     expect(decision).not.toBe('allow-once');
@@ -85,7 +192,7 @@ describe('同意模态（键盘处理：IME 守卫 + Enter 绑 deny）', () => {
 
   it('keyCode=229 的 Enter（旧 IME 兼容路径）→ 同样不产生任何决策', () => {
     let decision = '';
-    mkHandle({ tool: 'chat-send' }, (d) => { decision = d; });
+    mkHandle({ tool: 'chat-send' }, (r) => { decision = r.decision; });
     pressKey({ key: 'Enter', keyCode: 229 });
     expect(decision).not.toBe('allow-once');
     expect(decision).toBe('');
@@ -93,7 +200,7 @@ describe('同意模态（键盘处理：IME 守卫 + Enter 绑 deny）', () => {
 
   it('isComposing=false 的 Enter → 拒绝（不是允许一次）', () => {
     let decision = '';
-    mkHandle({ tool: 'chat-send' }, (d) => { decision = d; });
+    mkHandle({ tool: 'chat-send' }, (r) => { decision = r.decision; });
     pressKey({ key: 'Enter', isComposing: false });
     expect(decision).toBe('deny');
     expect(decision).not.toBe('allow-once');
@@ -101,15 +208,20 @@ describe('同意模态（键盘处理：IME 守卫 + Enter 绑 deny）', () => {
 
   it('Escape → 拒绝（行为不变）', () => {
     let decision = '';
-    mkHandle({ tool: 'chat-send' }, (d) => { decision = d; });
+    mkHandle({ tool: 'chat-send' }, (r) => { decision = r.decision; });
     pressKey({ key: 'Escape' });
     expect(decision).toBe('deny');
   });
 
-  it('「允许一次」仍可显式点击获得（键盘改绑不影响鼠标路径）', () => {
+  it('「允许一次」仍可显式真实手势获得（键盘改绑不影响鼠标路径）', () => {
     let decision = '';
-    mkHandle({ tool: 'chat-send' }, (d) => { decision = d; });
-    (document.querySelector('.ds-consent-allow-once') as HTMLButtonElement).click();
+    const cap = captureButtonClicks();
+    try {
+      mkHandle({ tool: 'chat-send' }, (r) => { decision = r.decision; });
+      cap.handlers.get('ds-consent-allow-once')!(cap.trustedEvent());
+    } finally {
+      cap.stop();
+    }
     expect(decision).toBe('allow-once');
   });
 });
@@ -206,36 +318,41 @@ describe('T8-2：overlay 清理反控', () => {
 
   it('新 consent 到来时排队而非拒绝，当前模态结束后再展示', () => {
     let firstDecision = '';
-    const first = mkHandle({ tool: 'shell.exec' }, (decision) => { firstDecision = decision; });
-    expect(document.querySelectorAll('.ds-consent-overlay').length).toBe(1);
-    expect(document.querySelector('.ds-consent-card')?.textContent).toContain('执行终端命令');
+    const cap = captureButtonClicks(); // spy 跨两个模态保持：第二条渲染时会覆盖 handlers 同名键
+    try {
+      const first = mkHandle({ tool: 'shell.exec' }, (r) => { firstDecision = r.decision; });
+      expect(document.querySelectorAll('.ds-consent-overlay').length).toBe(1);
+      expect(document.querySelector('.ds-consent-card')?.textContent).toContain('执行终端命令');
 
-    let secondDecision = '';
-    const second = mkHandle({ tool: 'memory.save' }, (decision) => { secondDecision = decision; });
+      let secondDecision = '';
+      const second = mkHandle({ tool: 'memory.save' }, (r) => { secondDecision = r.decision; });
 
-    // 新请求排队，不取消正在等待的旧请求。
-    expect(firstDecision).toBe('');
-    expect(document.querySelectorAll('.ds-consent-overlay').length).toBe(1);
-    expect(document.querySelector('.ds-consent-card')?.textContent).toContain('执行终端命令');
+      // 新请求排队，不取消正在等待的旧请求。
+      expect(firstDecision).toBe('');
+      expect(document.querySelectorAll('.ds-consent-overlay').length).toBe(1);
+      expect(document.querySelector('.ds-consent-card')?.textContent).toContain('执行终端命令');
 
-    // 第一条结算后，第二条自动展示。
-    (document.querySelector('.ds-consent-allow-once') as HTMLButtonElement).click();
-    expect(firstDecision).toBe('allow-once');
-    expect(document.querySelector('.ds-consent-card')?.textContent).toContain('保存记忆');
+      // 第一条结算后，第二条自动展示（R2-01：真实手势 trustedClick）。
+      cap.handlers.get('ds-consent-allow-once')!(cap.trustedEvent());
+      expect(firstDecision).toBe('allow-once');
+      expect(document.querySelector('.ds-consent-card')?.textContent).toContain('保存记忆');
 
-    (document.querySelector('.ds-consent-allow-once') as HTMLButtonElement).click();
-    expect(secondDecision).toBe('allow-once');
-    second.dispose();
-    first.dispose();
+      cap.handlers.get('ds-consent-allow-once')!(cap.trustedEvent());
+      expect(secondDecision).toBe('allow-once');
+      second.dispose();
+      first.dispose();
+    } finally {
+      cap.stop();
+    }
   });
 });
 
 describe('T9-2：单一活动模态并发边界（PM T8-2 rework 覆盖）', () => {
   it('三条连续 showConsent → 逐条展示、逐条决策，不互相取消', () => {
     const decisions: string[] = [];
-    const h1 = mkHandle({ tool: 'shell.exec' }, (d) => decisions.push('h1:' + d));
-    const h2 = mkHandle({ tool: 'memory.save' }, (d) => decisions.push('h2:' + d));
-    const h3 = mkHandle({ tool: 'chat-send' }, (d) => decisions.push('h3:' + d));
+    const h1 = mkHandle({ tool: 'shell.exec' }, (d) => decisions.push('h1:' + d.decision));
+    const h2 = mkHandle({ tool: 'memory.save' }, (d) => decisions.push('h2:' + d.decision));
+    const h3 = mkHandle({ tool: 'chat-send' }, (d) => decisions.push('h3:' + d.decision));
 
     // 只有第一条展示，后两条排队。
     expect(decisions).toEqual([]);
@@ -258,8 +375,8 @@ describe('T9-2：单一活动模态并发边界（PM T8-2 rework 覆盖）', () 
 
   it('排队请求 dispose() 不回调，也不影响当前模态', () => {
     const decisions: string[] = [];
-    const h1 = mkHandle({ tool: 'shell.exec' }, (d) => decisions.push('h1:' + d));
-    const h2 = mkHandle({ tool: 'memory.save' }, (d) => decisions.push('h2:' + d));
+    const h1 = mkHandle({ tool: 'shell.exec' }, (d) => decisions.push('h1:' + d.decision));
+    const h2 = mkHandle({ tool: 'memory.save' }, (d) => decisions.push('h2:' + d.decision));
 
     h2.dispose();
     expect(decisions).toEqual([]);
@@ -274,8 +391,8 @@ describe('T9-2：单一活动模态并发边界（PM T8-2 rework 覆盖）', () 
     vi.useFakeTimers();
     try {
       const decisions: string[] = [];
-      const h1 = mkHandle({ tool: 'shell.exec', timeoutMs: 1000 }, (d) => decisions.push('h1:' + d));
-      mkHandle({ tool: 'memory.save', timeoutMs: 1000 }, (d) => decisions.push('h2:' + d));
+      const h1 = mkHandle({ tool: 'shell.exec', timeoutMs: 1000 }, (d) => decisions.push('h1:' + d.decision));
+      mkHandle({ tool: 'memory.save', timeoutMs: 1000 }, (d) => decisions.push('h2:' + d.decision));
 
       vi.advanceTimersByTime(800);
       expect(decisions).toEqual([]);
@@ -299,7 +416,7 @@ describe('T9-2：单一活动模态并发边界（PM T8-2 rework 覆盖）', () 
     try {
       const decisions: string[] = [];
       const h1 = mkHandle({ tool: 'shell.exec' }, () => { throw new Error('boom'); });
-      const h2 = mkHandle({ tool: 'memory.save' }, (d) => decisions.push('h2:' + d));
+      const h2 = mkHandle({ tool: 'memory.save' }, (d) => decisions.push('h2:' + d.decision));
 
       expect(() => h1.decide('allow-once')).not.toThrow();
       expect(document.querySelector('.ds-consent-card')?.textContent).toContain('保存记忆');
@@ -331,7 +448,7 @@ describe('T9-2：单一活动模态并发边界（PM T8-2 rework 覆盖）', () 
     let received: string | null = null;
     const h = mkHandle({ tool: 'shell.exec' }, (d) => {
       callbackCount++;
-      received = d;
+      received = d.decision;
     });
 
     h.decide('allow-once');
@@ -348,7 +465,7 @@ describe('T9-2：单一活动模态并发边界（PM T8-2 rework 覆盖）', () 
     vi.useFakeTimers();
     try {
       let h1Decision = '';
-      const h1 = mkHandle({ tool: 'shell.exec', timeoutMs: 1000 }, (d) => { h1Decision = d; });
+      const h1 = mkHandle({ tool: 'shell.exec', timeoutMs: 1000 }, (r) => { h1Decision = r.decision; });
       void h1; // side-effect 即触发 setTimeout
       expect(document.querySelectorAll('.ds-consent-overlay').length).toBe(1);
 
@@ -360,7 +477,7 @@ describe('T9-2：单一活动模态并发边界（PM T8-2 rework 覆盖）', () 
 
       // 之后新请求能正常展示（证明旧 timer 没残留、不误杀新请求）
       let h2Decision = '';
-      const h2 = mkHandle({ tool: 'memory.save', timeoutMs: 5000 }, (d) => { h2Decision = d; });
+      const h2 = mkHandle({ tool: 'memory.save', timeoutMs: 5000 }, (r) => { h2Decision = r.decision; });
       void h2;
       expect(document.querySelectorAll('.ds-consent-overlay').length).toBe(1);
 

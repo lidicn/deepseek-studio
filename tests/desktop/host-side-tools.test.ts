@@ -19,7 +19,12 @@ import { WebSocket } from 'ws';
 import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createDesktopHost, type DesktopHost } from '../../src/host/desktop-host';
+import {
+  createDesktopHost,
+  type DesktopHost,
+  type NativeConsentRequest,
+} from '../../src/host/desktop-host';
+import type { ConsentDecision } from '../../src/host/protocol';
 import { createWorkspace } from '../../src/host/workspace';
 import type { HostToPageMessage } from '../../src/host/protocol';
 
@@ -36,7 +41,11 @@ async function writeScript(body: string): Promise<string> {
   return file;
 }
 
-async function startHost(options: { workspaceRoot?: string; policyMode?: 'workspace' | 'ask' | 'auto' | 'full' }): Promise<DesktopHost> {
+async function startHost(options: {
+  workspaceRoot?: string;
+  policyMode?: 'workspace' | 'ask' | 'auto' | 'full';
+  nativeConsent?: (req: NativeConsentRequest) => Promise<ConsentDecision | null>;
+}): Promise<DesktopHost> {
   const workspace = options.workspaceRoot ? createWorkspace(options.workspaceRoot) : null;
   const host = createDesktopHost({
     config: { host: '127.0.0.1', port: 0, token: 't' },
@@ -44,6 +53,7 @@ async function startHost(options: { workspaceRoot?: string; policyMode?: 'worksp
     // 显式传入（而非让宿主自动解析），保证测试不依赖开发者本机配置
     workspace,
     policyMode: options.policyMode ?? 'ask',
+    nativeConsent: options.nativeConsent,
   });
   await host.start();
   running.push(host);
@@ -200,33 +210,33 @@ describe('文件能力受工作区约束', () => {
     }
   }, 20_000);
 
-  it('ask 档越界访问需审批，且页端收到越界徽标', async () => {
+  it('ask 档越界访问需审批，且决议走宿主原生框（R2-01 高风险分流）', async () => {
     const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'studio-host-ws-'));
     try {
-      const host = await startHost({ workspaceRoot: tmp, policyMode: 'ask' });
+      // R2-01：越界（meta.outside）= 高风险 → 决议走宿主原生框，页面不参与。
+      // 测试注入 nativeConsent 桩模拟用户「拒绝」，并记录收到的风险摘要。
+      const nativeCalls: { tool: string; riskReason: string }[] = [];
+      const host = await startHost({
+        workspaceRoot: tmp,
+        policyMode: 'ask',
+        nativeConsent: async (req) => {
+          nativeCalls.push({ tool: req.tool, riskReason: req.riskReason });
+          return 'deny';
+        },
+      });
       const seen: HostToPageMessage[] = [];
       const ws = await connectPage(host, seen);
-      // 假页一律拒绝
-      ws.on('message', (raw) => {
-        try {
-          const m = JSON.parse(raw.toString()) as HostToPageMessage;
-          if (m.type === 'consent-required') {
-            ws.send(JSON.stringify({ type: 'consent-decision', callId: m.callId, decision: 'deny' }));
-          }
-        } catch {
-          /* ignore */
-        }
-      });
 
       const r = await host.invokeTool('file.read', { path: path.dirname(tmp) });
       expect(r.ok).toBe(false);
       expect(r.reason).toBe('consent-denied');
 
-      const consentMsg = seen.find((m) => m.type === 'consent-required') as
-        | (HostToPageMessage & { meta?: { outside?: boolean; riskLabel?: string } })
-        | undefined;
-      expect(consentMsg?.meta?.outside).toBe(true);
-      expect(consentMsg?.meta?.riskLabel).toBe('特权级');
+      // 越界徽标改由原生框承载：桩必须收到「越出工作区 + 特权级」的风险摘要，页面收不到 consent-required
+      expect(nativeCalls).toHaveLength(1);
+      expect(nativeCalls[0]?.tool).toBe('file.read');
+      expect(nativeCalls[0]?.riskReason).toContain('越出工作区');
+      expect(nativeCalls[0]?.riskReason).toContain('特权级');
+      expect(seen.some((m) => m.type === 'consent-required')).toBe(false);
       ws.close();
     } finally {
       await fsp.rm(tmp, { recursive: true, force: true });

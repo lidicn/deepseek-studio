@@ -16,7 +16,7 @@ import { describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 import { createDesktopHost } from '../../src/host/desktop-host';
 
-type Incoming = { type: 'dispatch' | 'consent-required' | 'hello-ack' | string; callId?: string; tool?: string };
+type Incoming = { type: 'dispatch' | 'consent-required' | 'hello-ack' | string; callId?: string; tool?: string; nonce?: string };
 
 /**
  * 连一个假注入页并自报 botId。
@@ -133,7 +133,7 @@ describe('page-runtime —— v0.24 多 bot 寻址', () => {
     const make = (who: string) => ({
       onConsent: (m: Incoming, ws: WebSocket) => {
         consentedBy.add(who);
-        ws.send(JSON.stringify({ type: 'consent-decision', callId: m.callId, decision: 'allow-once' }));
+        ws.send(JSON.stringify({ type: 'consent-decision', callId: m.callId, decision: 'allow-once', nonce: m.nonce }));
       },
       onDispatch: (m: Incoming, ws: WebSocket) => {
         ws.send(JSON.stringify({ type: 'result', callId: m.callId, ok: true }));
@@ -163,7 +163,7 @@ describe('page-runtime —— v0.24 多 bot 寻址', () => {
       port,
       botId: 'bot-a',
       onConsent: (m, ws) => {
-        ws.send(JSON.stringify({ type: 'consent-decision', callId: m.callId, decision: 'allow-once' }));
+        ws.send(JSON.stringify({ type: 'consent-decision', callId: m.callId, decision: 'allow-once', nonce: m.nonce }));
       },
     });
 

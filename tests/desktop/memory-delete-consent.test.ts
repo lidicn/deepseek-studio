@@ -104,10 +104,12 @@ describe('M10-3 memory.delete broadcast', () => {
       try {
         const message = JSON.parse(raw.toString()) as HostToPageMessage;
         if (message.type === 'consent-required') {
+          // R2-01：回执 decision 必须是合法枚举，且 nonce 原样带回
           ws.send(JSON.stringify({
             type: 'consent-decision',
             callId: message.callId,
-            decision: 'allow',
+            decision: 'allow-once',
+            nonce: message.nonce,
           }));
         }
       } catch {
