@@ -13,7 +13,7 @@ import { createApiServer, type ApiServer, type RateLimitOptions, type McpServerC
 import { createBearerAuthenticator } from '../api/auth';
 import { createFakeOfficialBackend } from '../api/official-backend';
 import { createPlatformDesktop, type PlatformDesktop } from './platform-desktop';
-import { createSecretRing, type SecretRing } from './host-token';
+import { createSecretRing, verifyBootstrapGrant, verifyWsQueryToken, type SecretRing } from './host-token';
 import { createEchoCapability } from '../capabilities/echo';
 import { createChatReadCapability } from '../capabilities/chat-read';
 import { createChatInsertCapability } from '../capabilities/chat-insert';
@@ -424,6 +424,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     tokenTtlMs: options.tokenTtlMs,
     grantTtlMs: options.grantTtlMs,
   });
+
+  // TD-02：bootstrap grant 一次性消费键（jti）。host 进程级内存，重启清空（grant 60s 过期兜底）。
+  const usedBootstrapJtis = new Set<string>();
 
   const capabilities = new Map<string, ContentCapabilityController>();
   capabilities.set('echo', createEchoCapability());
@@ -2107,6 +2110,14 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           server: server.rawServer,
           // QD-R2-12：WS 接轮换环，不再传冻结字面量。
           token: () => apiTokenRing.accepted,
+          // TD-02：面板控制面同样支持 bootstrap grant（与 page-runtime 同口径）。
+          // 兼容回退：grant 验不过 → 旧 verifyWsQueryToken（本机 UI / 测试持有 config.token；
+          // 页面侧已不再注入 config.token，外部页面无法命中本回退）。
+          grantVerifier: async (presented, aud) => {
+            const g = await verifyBootstrapGrant(authority.authority.hostToken, presented, usedBootstrapJtis, aud);
+            if (g.ok) return g;
+            return { ok: verifyWsQueryToken(presented, () => apiTokenRing.accepted) };
+          },
           // 手机 PWA 与页面同源；只有显式开启 LAN 且配对成功后才可能拿到页面令牌。
           allowLanOrigins: options.agentLanAccess?.lanEnabled === true,
           host: {
@@ -2193,6 +2204,15 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         server: server.rawServer,
         // QD-R2-12：WS 接轮换环，不再传冻结字面量。
         token: () => apiTokenRing.accepted,
+        // TD-02：bootstrap grant 校验（页面通道）。grant 由 tauri 侧用同一 config.secret 自签，
+        // 这里无状态验签 + 一次性消费（jti 已用集合）+ aud 绑定。
+        // 兼容回退：grant 验不过 → 走旧 verifyWsQueryToken（本机 UI / 测试仍持有 config.token）。
+        // 安全性：config.token 已不再注入任何页面（main.rs 改注 grant），外部页面无法命中本回退。
+        grantVerifier: async (presented, aud) => {
+          const g = await verifyBootstrapGrant(authority.authority.hostToken, presented, usedBootstrapJtis, aud);
+          if (g.ok) return g;
+          return { ok: verifyWsQueryToken(presented, () => apiTokenRing.accepted) };
+        },
         onError: (m, e) => console.warn(`[page-runtime] ${m}`, e),
         // v0.6：页端 tool-call 的真实执行入口（走完整授权链 + 同意闸门 + 宿主侧能力）。
         // v0.24：botId 透传，工具按发起 bot 的窗口路由 + 其授权/白名单执行。

@@ -40,6 +40,26 @@ import type { ExecutableCapability } from '../capabilities/types';
 const DEFAULT_HOST_URL = 'ws://127.0.0.1:8760/studio';
 
 /**
+ * TD-02：由 bootstrap grant 构造宿主 WS URL。
+ *
+ * - 有 grant：`?token=<grant>&aud=<aud>`——`?token=` 键名沿用（host 按值类型走 verifyGrant），
+ *   `aud` 与 Rust 注入侧逐字对齐（主窗 `main`，bot 窗 `bot:<id>`，见 main.rs:load_host_grant_script）；
+ * - 无 grant：裸 URL 回退——**仅 dev** 允许（生产无 grant 即拒，设计稿 §6 fail-closed）。
+ *
+ * 导出纯函数以便单测锁定 aud 对齐（别让页端/宿主两处 aud 口径漂移）。
+ */
+export function resolveHostUrl(
+  bootstrapGrant: string | undefined,
+  botId: string,
+  fallback: string = DEFAULT_HOST_URL,
+): string {
+  const aud = botId === 'main' ? 'main' : `bot:${botId}`;
+  return bootstrapGrant
+    ? `${fallback}?token=${encodeURIComponent(bootstrapGrant)}&aud=${encodeURIComponent(aud)}`
+    : fallback;
+}
+
+/**
  * W2（20261023 用户定调的窗口设计）：主窗口 = 主 bot。
  * bot 窗口**不在启动时建**，只在主 bot 真正进入聊天室时按成员按需拉起。
  *
@@ -134,13 +154,13 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
   // 不装 chromeShims——DeepSeek 反爬会检测 window.chrome 判定扩展环境拒登（见 v0.29 修复）。
   const capabilities = dedupeById([...defaultCapabilities(), ...(options.capabilities ?? [])]);
   const executable = capabilities as unknown as ExecutableCapability[];
-  // QD-R2-01 / H-2b：注入页连 /studio 必须带 host token。
-  // Rust 侧把 config.json 的 token 注入 window.__studioHostToken（main.rs:load_host_token_script）。
-  // 读不到时保持旧 URL（开发/测试环境允许无 token 起宿主）；生产有 token 就必须拼上 query。
-  const hostToken = (globalThis as { __studioHostToken?: string }).__studioHostToken;
-  const hostUrl = options.hostUrl ?? (hostToken
-    ? `${DEFAULT_HOST_URL}?token=${encodeURIComponent(hostToken)}`
-    : DEFAULT_HOST_URL);
+  // TD-02：注入页连 /studio 不再带宿主全权 token（config.token 永不进页面）。
+  // Rust 侧注入 window.__studioGrant（60s/一次性/仅 ws-connect/绑 audience，main.rs:load_host_grant_script），
+  // 页面连接时带 ?token=<grant>&aud=<同值>（主窗 aud=main，bot 窗 aud=bot:<id>）；
+  // host 侧 verifyGrant+consumeGrant 一次性消费。读不到 grant 时保持旧 URL——仅 dev 允许无凭据
+  // 起宿主（生产无 grant 即拒，设计稿 §6 fail-closed）。
+  const bootstrapGrant = (globalThis as { __studioGrant?: string }).__studioGrant;
+  const hostUrl = options.hostUrl ?? resolveHostUrl(bootstrapGrant, botId);
   const host = createHostClient({
     url: hostUrl,
     capabilities: executable,

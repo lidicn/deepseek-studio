@@ -205,3 +205,90 @@ export function verifyWsQueryToken(
   }
   return false;
 }
+
+// ── TD-02：bootstrap grant（页面连 WS 的短期一次性凭据，替代明文 host token）──
+//
+// 背景：原实现把 config.token 注入外部页面（window.__studioHostToken），
+// 页面（含第三方站点脚本）拿到即等于拿到宿主全权凭据。本模块改为：注入的是
+// **60s、一次性、仅 ws-connect 权、绑 audience** 的 bootstrap grant，不再注入 token。
+//
+// 格式与 host-token 的 signRaw 一致：base64url(JSON(claims)) + "." + base64url(HMAC-SHA256(secret,payload))。
+// tauri 侧（main.rs:issue_bootstrap_grant_rs）用同一 secret + 同算法签，host 侧无状态验签。
+// 一次性消费靠 jti + host 进程内存已用集合；grant 本身 60s 过期兜底。
+
+export interface BootstrapGrantClaims {
+  readonly iss: 'deepseek-studio-host';
+  readonly jti: string;
+  readonly aud: string;
+  readonly scope: 'ws-connect';
+  readonly iat: number;
+  readonly exp: number;
+}
+
+export const BOOTSTRAP_GRANT_SCOPE = 'ws-connect' as const;
+export const DEFAULT_BOOTSTRAP_TTL_MS = 60_000;
+
+export async function issueBootstrapGrant(
+  authority: HostTokenAuthority,
+  params: { aud: string; ttlMs?: number; now?: () => number; jti?: string },
+): Promise<string> {
+  const now = params.now ?? (() => Date.now());
+  const ttl = params.ttlMs ?? DEFAULT_BOOTSTRAP_TTL_MS;
+  const iat = now();
+  const claims: BootstrapGrantClaims = {
+    iss: 'deepseek-studio-host',
+    jti: params.jti ?? randomJti(),
+    aud: params.aud,
+    scope: BOOTSTRAP_GRANT_SCOPE,
+    iat,
+    exp: iat + Math.max(0, ttl),
+  };
+  const payload = bufToB64url(toArrayBuffer(enc(JSON.stringify(claims))));
+  const sig = await authority.signRaw(payload);
+  return `${payload}.${sig}`;
+}
+
+function randomJti(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+export interface VerifyBootstrapResult {
+  readonly ok: boolean;
+  readonly claims?: BootstrapGrantClaims;
+  readonly reason?: 'malformed' | 'bad-signature' | 'expired' | 'consumed' | 'scope-mismatch' | 'aud-mismatch';
+}
+
+export async function verifyBootstrapGrant(
+  authority: HostTokenAuthority,
+  presented: string | null,
+  usedJtis: Set<string>,
+  expectedAud: string,
+  now: () => number = () => Date.now(),
+): Promise<VerifyBootstrapResult> {
+  if (!presented) return { ok: false, reason: 'malformed' };
+  const dot = presented.indexOf('.');
+  if (dot <= 0) return { ok: false, reason: 'malformed' };
+  const payload = presented.slice(0, dot);
+  const sig = presented.slice(dot + 1);
+  const okSig = await authority.verifyRaw(payload, sig);
+  if (!okSig) return { ok: false, reason: 'bad-signature' };
+  let claims: BootstrapGrantClaims;
+  try {
+    claims = JSON.parse(new TextDecoder().decode(b64urlToBuf(payload))) as BootstrapGrantClaims;
+  } catch {
+    return { ok: false, reason: 'malformed' };
+  }
+  if (claims.iss !== 'deepseek-studio-host' || typeof claims.jti !== 'string') {
+    return { ok: false, reason: 'malformed' };
+  }
+  if (claims.scope !== BOOTSTRAP_GRANT_SCOPE) return { ok: false, reason: 'scope-mismatch' };
+  if (typeof claims.exp === 'number' && now() > claims.exp) return { ok: false, reason: 'expired' };
+  if (claims.aud !== expectedAud) return { ok: false, reason: 'aud-mismatch' };
+  if (usedJtis.has(claims.jti)) return { ok: false, reason: 'consumed' };
+  usedJtis.add(claims.jti);
+  return { ok: true, claims };
+}

@@ -88,6 +88,15 @@ export interface PageRuntimeHubOptions {
    * 空 token / 取到空集合 → fail-closed（拒绝所有连接），不再等于「不校验」。
    */
   token?: WSQueryTokenSource;
+  /**
+   * TD-02：bootstrap grant 校验器。提供后，upgrade 优先按 grant（?token= 里承载的是
+   * grant 串）验签 + 一次性消费 + audience 绑定；不再要求明文 config.token。
+   *
+   * `?token=` 键名沿用（页端最小改动）：值可能是旧明文 token（兼容期）或新 grant 串。
+   *
+   * 缺省不提供 → 走旧 verifyWsQueryToken（向后兼容 UI 尚未改造的过渡期）。
+   */
+  grantVerifier?: (presented: string | null, botId: string) => Promise<{ ok: boolean; reason?: string }>;
   dispatchTimeoutMs?: number;
   consentTimeoutMs?: number;
   /**
@@ -213,13 +222,32 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
       headers.push('Vary: Origin');
     }
   });
-  options.server.on('upgrade', (req, socket, head) => {
+  options.server.on('upgrade', async (req, socket, head) => {
     const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
     if (pathname !== path) return;
     // P0-2 修复：WS 连接必须校验 query token，零鉴权时任意本地进程可连工具通道。
     // QD-R2-12：接轮换环（TokenSource 函数形式）；candidates 为空 = fail-closed 拒绝。
     const url = new URL(req.url ?? '/', 'http://localhost');
-    if (!verifyWsQueryToken(url.searchParams.get('token'), options.token)) {
+    // TD-02：优先按 bootstrap grant 校验（?token= 里承载 grant 串）。
+    // - grantVerifier 存在 → 验签 + 一次性消费 + aud 绑定（aud 从 ?aud= 读，UI 连接时带；
+    //   缺省空串 → 跳过 aud 校验，过渡期兼容，UI 未改造时不阻断连接）；
+    // - grantVerifier 缺省 → 走旧 verifyWsQueryToken（向后兼容）。
+    if (options.grantVerifier) {
+      const presented = url.searchParams.get('token');
+      const aud = url.searchParams.get('aud') ?? '';
+      let verdict: { ok: boolean; reason?: string };
+      try {
+        verdict = await options.grantVerifier(presented, aud);
+      } catch (e) {
+        verdict = { ok: false, reason: `verifier-threw: ${(e as Error).message}` };
+      }
+      if (!verdict.ok) {
+        options.onError?.(`ws upgrade rejected: invalid bootstrap grant (${verdict.reason ?? 'unknown'}) (fail-closed)`);
+        socket.destroy();
+        return;
+      }
+      options.onError?.(`ws upgrade accepted by bootstrap grant${aud ? ` (aud=${aud})` : ' (aud unchecked)'}`);
+    } else if (!verifyWsQueryToken(url.searchParams.get('token'), options.token)) {
       options.onError?.('ws upgrade rejected: invalid or missing token (fail-closed)');
       socket.destroy();
       return;

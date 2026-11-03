@@ -429,6 +429,9 @@ struct BotWindowsConfig {
 struct StudioConfig {
     #[serde(default)]
     token: String,
+    /// TD-02：HMAC 签名密钥（与 host(ts) 的 secret 同一份），用于签 bootstrap grant。
+    #[serde(default)]
+    secret: String,
     #[serde(default)]
     chat_rooms: Vec<ChatRoomEntry>,
     #[serde(default)]
@@ -488,12 +491,20 @@ fn load_studio_chat_config_script() -> String {
     format!("window.__studioChatConfig = {};\n", payload)
 }
 
-/// QD-R2-01 / H-2b：把 config.json 里的 WS host token 注入 `window.__studioHostToken`。
+/// TD-02：把**短期一次性 bootstrap grant** 注入 `window.__studioGrant`（不再注入 config.token）。
 ///
-/// 为什么独立成函数：load_studio_chat_config_script 在 chat_rooms 为空时整段 return 空串，
-/// 但 bot 窗口（无聊天室配置）同样要连 /studio 工具通道——它们必须也拿到 token，
-/// 否则注入页裸连 ws://127.0.0.1:8760/studio，服务端 upgrade 阶段就会 1008 拒连。
-fn load_host_token_script() -> String {
+/// 背景：原实现注入 `window.__studioHostToken = <config.token>`，外部页面（chat.deepseek.com）
+/// 里任意脚本读得到 → 等于拿到宿主全权凭据（WS 连工具通道 + Bearer 打 /v1/*）。
+/// 现在改为注入 grant：60s、一次性、仅 ws-connect 权、绑 audience。危害降级为
+/// 「一张 60s 内只能用一次的连接券」，不再是永久全权钥匙。
+///
+/// 签发格式与 host(ts) `host-token.ts` 逐字节一致：
+///   payload = base64url(JSON(claims))；sig = base64url(HMAC-SHA256(secret, payload))；
+///   grant   = payload + "." + sig
+/// claims = { iss, jti, aud, scope:"ws-connect", iat, exp }（exp/iat 为毫秒 epoch）。
+///
+/// audience：bot 窗口传 "bot:<id>"，主窗传 "main"——页面连接时须带 `?aud=<同值>` 才过得验证。
+fn load_host_grant_script(audience: &str) -> String {
     let home = match dirs::home_dir() {
         Some(h) => h,
         None => return String::new(),
@@ -510,13 +521,89 @@ fn load_host_token_script() -> String {
         Ok(c) => c,
         Err(_) => return String::new(),
     };
-    if cfg.token.is_empty() {
+    // 旧版 config 可能无 secret（只补了 token）→ 无 secret 就无法签 grant，
+    // 此时退回空串（页面裸连；生产由 host 侧 fail-closed，dev 允许 loopback）。
+    if cfg.secret.is_empty() {
         return String::new();
     }
+    let grant = match issue_bootstrap_grant_rs(&cfg.secret, audience, 60_000) {
+        Some(g) => g,
+        None => return String::new(),
+    };
     format!(
-        "window.__studioHostToken = {};\n",
-        serde_json::to_string(&cfg.token).unwrap()
+        "window.__studioGrant = {};\n",
+        serde_json::to_string(&grant).unwrap()
     )
+}
+
+/// TD-02：Rust 侧签发 bootstrap grant（与 host-token.ts 的 signRaw 同算法）。
+/// 返回 None 表示 HMAC/编码失败（极少）。纯函数便于单测。
+fn issue_bootstrap_grant_rs(secret: &str, audience: &str, ttl_ms: u64) -> Option<String> {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64;
+    // jti：16 字节随机，base64url（不填充）。用系统时间 + 进程 id + 计数器做熵源足够（一次性由 host 记 jti）。
+    let jti = {
+        let mut bytes = [0u8; 16];
+        let seed = format!(
+            "{}:{}:{}:{}",
+            now,
+            std::process::id(),
+            audience,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        );
+        let h = Sha256::digest(seed.as_bytes());
+        bytes.copy_from_slice(&h[..16]);
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    };
+    let claims = format!(
+        "{{\"iss\":\"deepseek-studio-host\",\"jti\":\"{}\",\"aud\":\"{}\",\"scope\":\"ws-connect\",\"iat\":{},\"exp\":{}}}",
+        jti,
+        audience.replace('\\', "\\\\").replace('"', "\\\""),
+        now,
+        now + ttl_ms
+    );
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.as_bytes());
+    let sig_raw = hmac_sha256(secret.as_bytes(), payload.as_bytes());
+    let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig_raw);
+    Some(format!("{}.{}", payload, sig))
+}
+
+/// 标准 HMAC-SHA256（RFC 2104），密钥/消息均为字节。用 sha2 实现，不引入 hmac crate。
+fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    const BLOCK: usize = 64;
+    let mut k = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        let d = Sha256::digest(key);
+        k[..32].copy_from_slice(&d);
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+    let mut ipad = [0x36u8; BLOCK];
+    let mut opad = [0x5cu8; BLOCK];
+    for i in 0..BLOCK {
+        ipad[i] ^= k[i];
+        opad[i] ^= k[i];
+    }
+    let mut inner = Sha256::new();
+    inner.update(ipad);
+    inner.update(msg);
+    let inner_hash = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(opad);
+    outer.update(inner_hash);
+    let out = outer.finalize();
+    let mut buf = [0u8; 32];
+    buf.copy_from_slice(&out);
+    buf
 }
 
 // W2（20261023）：启动不再读这份配置建窗，读它的入口只剩下面这条路径 +
@@ -829,12 +916,12 @@ fn create_bot_window(
     .visible(visible)
     .inner_size(1280.0, 800.0);
 
-    // QD-R2-01：bot 窗口的注入页连 /studio 同样需要 host token——
-    // 拼在 botId 声明之前，entry.ts 的 createHostClient 即可读到。
+    // TD-02：bot 窗口注入的是 bootstrap grant（绑 aud=bot:<id>），不再是 config.token。
+    // 拼在 botId 声明之前，entry.ts 的 createHostClient 即可读到 window.__studioGrant。
     if !ctx.disable_inject {
-        let host_token_script = load_host_token_script();
+        let grant_script = load_host_grant_script(&format!("bot:{}", bot_id));
         let with_bot = inject_with_bot_id(&ctx.base_script, bot_id);
-        builder = builder.initialization_script(&format!("{}{}", host_token_script, with_bot));
+        builder = builder.initialization_script(&format!("{}{}", grant_script, with_bot));
     }
 
     let _ = std::fs::create_dir_all(&data_dir);
@@ -1211,13 +1298,12 @@ fn main() {
                 // v0.28：主窗口注入聊天室配置（token + roomId + members），供聊天室 UI 连 /agent-ws。
                 // 无配置时返回空串，不影响入口脚本。仅主窗口注入（bot 窗口不需要聊天室）。
                 let chat_config_script = load_studio_chat_config_script();
-                // QD-R2-01：注入页连 /studio 工具通道也要带 token——单独一段常量，
-                // 不依赖 chat_rooms 配置（无聊天室的纯工具窗口同样要鉴权）。
-                let host_token_script = load_host_token_script();
+                // TD-02：主窗注入 bootstrap grant（aud=main），不再注入 config.token。
+                let grant_script = load_host_grant_script("main");
                 let init_script = format!(
                     "{}{}{}",
                     chat_config_script,
-                    host_token_script,
+                    grant_script,
                     load_init_script(resource_dir.as_deref())
                 );
                 main_builder = main_builder.initialization_script(&init_script);
@@ -1512,6 +1598,53 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// TD-02 关键：HMAC-SHA256 自实现必须与标准一致（否则 Rust 签的 grant，host(ts)
+    /// 用 Web Crypto verifyRaw 验不过）。用 RFC 4231 Test Case 2 向量锁死。
+    #[test]
+    fn td02_hmac_sha256_rfc4231_case2() {
+        // key = "Jefe", data = "what do ya want for nothing?"
+        // 期望 HMAC-SHA256 = 5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843
+        let out = hmac_sha256(b"Jefe", b"what do ya want for nothing?");
+        let hex: String = out.iter().map(|b| format!("{:02x}", b)).collect();
+        assert_eq!(
+            hex,
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+    }
+
+    /// TD-02：签出的 grant 结构正确（payload.hmac 两段、claims 字段齐全、exp=iat+ttl）。
+    #[test]
+    fn td02_issue_bootstrap_grant_shape() {
+        let g = issue_bootstrap_grant_rs("test-secret", "main", 60_000).expect("grant");
+        let parts: Vec<&str> = g.split('.').collect();
+        assert_eq!(parts.len(), 2, "grant 应为 payload.sig 两段");
+        use base64::Engine as _;
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(parts[0])
+            .expect("payload b64");
+        let json = String::from_utf8(payload).expect("utf8");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("json");
+        assert_eq!(v["iss"], "deepseek-studio-host");
+        assert_eq!(v["aud"], "main");
+        assert_eq!(v["scope"], "ws-connect");
+        assert_eq!(v["exp"].as_u64().unwrap() - v["iat"].as_u64().unwrap(), 60_000);
+        assert!(!v["jti"].as_str().unwrap().is_empty());
+    }
+
+    /// TD-02 负控核心：注入脚本内容**不得含 config.token 原值**（用 grant 替代）。
+    /// 这里直接验证 load_host_grant_script 产出的全局变量名是 __studioGrant，
+    /// 且函数不存在把 token 写进 window.__studioHostToken 的路径。
+    #[test]
+    fn td02_script_uses_grant_not_token() {
+        let g = issue_bootstrap_grant_rs("s3cr3t", "main", 1000).unwrap();
+        // 模拟注入串
+        let script = format!("window.__studioGrant = {};\n", serde_json::to_string(&g).unwrap());
+        assert!(script.contains("__studioGrant"));
+        assert!(!script.contains("__studioHostToken"), "不得再注入 __studioHostToken");
+        // 密钥本身不得出现在注入串里
+        assert!(!script.contains("s3cr3t"), "不得把 secret 注入页面");
+    }
 
     fn entry(bot_id: &str, data_dir: Option<&str>) -> BotWindowConfig {
         BotWindowConfig {

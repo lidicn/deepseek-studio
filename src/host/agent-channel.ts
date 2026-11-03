@@ -78,6 +78,11 @@ export interface AgentChannelOptions {
    * QD-R2-12：支持每连接求值的 TokenSource（轮换环），与 page-runtime 共用 helper。
    */
   token: WSQueryTokenSource;
+  /**
+   * TD-02：bootstrap grant 校验器（与 page-runtime 同口径）。提供后 `?token=` 承载 grant 串，
+   * 走验签 + 一次性消费 + aud 绑定；缺省则走旧 `verifyWsQueryToken`（向后兼容 UI 未改造期）。
+   */
+  grantVerifier?: (presented: string | null, aud: string) => Promise<{ ok: boolean; reason?: string }>;
   /** LAN 显式开启时，允许与请求 Host 同源的手机 PWA 连接；token 仍是硬门槛。 */
   allowLanOrigins?: boolean;
   path?: string;
@@ -213,10 +218,24 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
   const unsubscribeExecutionIndex = options.host.onExecutionIndex?.(broadcastExecutionIndex);
   const unsubscribeExecutionCleared = options.host.onExecutionCleared?.(broadcastExecutionCleared);
 
-  wss.on('connection', (ws: WebSocket, req) => {
+  wss.on('connection', async (ws: WebSocket, req) => {
     // 鉴权：query token 必须与当前 accepted 集合之一匹配（QD-R2-12：接轮换环 + 常数时间比较）。
     const url = new URL(req.url ?? '/', 'http://localhost');
-    if (!verifyWsQueryToken(url.searchParams.get('token'), options.token)) {
+    // TD-02：优先按 bootstrap grant（?token= 承载 grant），缺省走旧 token（向后兼容）。
+    if (options.grantVerifier) {
+      const aud = url.searchParams.get('aud') ?? '';
+      let verdict: { ok: boolean; reason?: string };
+      try {
+        verdict = await options.grantVerifier(url.searchParams.get('token'), aud);
+      } catch (e) {
+        verdict = { ok: false, reason: `verifier-threw: ${(e as Error).message}` };
+      }
+      if (!verdict.ok) {
+        options.onError?.(`agent-ws rejected: invalid bootstrap grant (${verdict.reason ?? 'unknown'})`);
+        try { ws.close(1008, 'unauthorized'); } catch { /* ignore */ }
+        return;
+      }
+    } else if (!verifyWsQueryToken(url.searchParams.get('token'), options.token)) {
       try { ws.close(1008, 'unauthorized'); } catch { /* ignore */ }
       return;
     }
