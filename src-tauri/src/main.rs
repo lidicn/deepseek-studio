@@ -1479,14 +1479,24 @@ fn main() {
                         std::process::exit(0);
                     });
                     // P0 打点 4/4：run_on_main_thread 返回调度结果。
-                    // 根因（20261103）：长会话后主事件循环可能已停（窗口全隐藏 + WebView 回收完成），
-                    // run_on_main_thread 会返回 Err（queued ok=false）→ teardown 闭包永远不执行
-                    // → process::exit(0) 永不发生 → 进程 90s+ 不死（真机实测铁证）。
-                    // 修法：调度失败就 force exit，不依赖主线程。
+                    //
+                    // 现场事实（20261103 长会话，13:31 未修版 release，logs/verify-exit/longsess-release-p0.log）：
+                    //   ① 关窗后 `run_on_main_thread queued ok=false`；
+                    //   ② teardown 闭包没执行 → `process::exit(0)` 打不出来 → 进程 90s+ 不死（必须强杀）。
+                    //
+                    // **原先这里写的「长会话后主事件循环已停」是推测，已被同一份现场推翻**：
+                    //   关窗后 +300s，`ThreadId(1)` 仍正常处理了第二次 `CloseRequested` → 主事件循环没停。
+                    //   因此 `Err` 的真因**仍未证实**；候选：`do_shutdown` 在 ThreadId(4) 上耗时 4.87s
+                    //   （同段日志 `do_shutdown total=4.87s`），与主线程那侧的排队时机重叠。
+                    //
+                    // 修法刻意**不依赖根因**：调度失败就自己 force exit —— 「进程一定死」这条
+                    // 不能建立在尚未证实的因果推断上。
                     let queued_ok = queued.is_ok();
                     p0_log(format!("run_on_main_thread queued ok={}", queued_ok));
                     if !queued_ok {
-                        p0_log("run_on_main_thread queue FAILED (main loop gone/rejected) → force exit(0)");
+                        // 与 watchdog 分支保持**同一行为**：先回收本 app 归属的 WebView2，再退出。
+                        // 否则「进程一定死」会以留下孤儿 WebView2 为代价，把 T-1 的三项归零判据打掉。
+                        p0_log("run_on_main_thread queue FAILED (rejected/lost; 主循环是否停未证实) → force exit(0)");
                         let killed = terminate_app_webviews();
                         p0_log(format!("force-exit: terminated app webviews = {}", killed));
                         std::process::exit(0);
