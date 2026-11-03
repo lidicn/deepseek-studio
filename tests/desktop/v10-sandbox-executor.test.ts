@@ -117,9 +117,23 @@ for i in range(3):
     if (!await hasPython()) return;
     const before = new Set(fs.readdirSync(os.tmpdir()).filter((d) => d.startsWith('studio-sandbox-')));
     await execPythonInSandbox({ code: 'print("cleanup test")' });
-    const after = new Set(fs.readdirSync(os.tmpdir()).filter((d) => d.startsWith('studio-sandbox-')));
-    // 不应有新增的残留目录
-    const leaked = [...after].filter((d) => !before.has(d));
+    // 抗负载加固（20261103）：执行器的 `rm()` 已 await，但 Windows 上 python.exe
+    // 退出 / NTFS 删除 / 杀软扫描都可能让目录在 rm resolve 之后还短暂存在
+    // （gate #26 在负载下就抓到 `studio-sandbox-V8CODw` 残留、单独复跑却干净）。
+    // 语义不变（执行后不应有残留），只把「何时检查」从立即改为轮询等待落地：
+    // 250ms × 20 次（上限 ~5s），等到没有新增残留才断过；到上限仍有残留 → 失败。
+    const leakedNow = (): string[] => {
+      const after = new Set(
+        fs.readdirSync(os.tmpdir()).filter((d) => d.startsWith('studio-sandbox-')),
+      );
+      return [...after].filter((d) => !before.has(d));
+    };
+    let leaked = leakedNow();
+    for (let i = 0; i < 20 && leaked.length > 0; i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      leaked = leakedNow();
+    }
+    // 断言语义不变：执行后不应有新增残留目录。
     expect(leaked).toHaveLength(0);
   });
 
