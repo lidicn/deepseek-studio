@@ -19,6 +19,13 @@ use url::Url;
 /// 避免多个窗口的 CloseRequested 并发触发多次 sidecar 关闭 / 窗口销毁。
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
+/// 退出硬兜底预算：teardown 闭包排队成功后，若这么久还没把进程带走，watchdog 自己走。
+///
+/// 取值理由：正常路径（窗口数 1~3、WebView 回收 <1s）实测 1.9–3.7s 完成；
+/// 5s 给出 1.3~2.6 倍余量，又不至于让用户觉得「点了关闭没反应」。
+/// 用户点了关闭，进程必须在可预期的时间内消失——这是不可妥协的那一条。
+const EXIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// P0 定位打点（多窗退出挂死）：带毫秒时间戳与线程 id，用于区分三种挂起位置——
 /// 后台收尾线程没起来、`sidecar.shutdown()` 阻塞、`run_on_main_thread` 未调度，
 /// 以及逐个 `destroy()` 卡住。定位完成后整块删除。
@@ -1399,6 +1406,25 @@ fn main() {
                 std::thread::spawn(move || {
                     // P0 打点 1/3：后台收尾线程是否真的起来（没起来 = spawn 之前就卡）。
                     p0_log("exit-closure entered");
+
+                    // 退出硬兜底 watchdog：从**用户点关闭这一刻**开始计时（不是从排队之后）。
+                    // 根因（20261103）：长会话后 run_on_main_thread 可能返回 Err → teardown 闭包
+                    // 永不执行 → process::exit(0) 永不发生 → 进程 90s+ 不死。
+                    // 而 do_shutdown 在长会话下自身就要 ~4.9s，所以预算必须覆盖「整条收尾」，
+                    // 从关窗起算，超时即退——用户点了关闭，进程必须在可预期时间内消失。
+                    // 取舍：正常路径 <2s 走完，watchdog 不触发；真挂住时牺牲 WebView 优雅回收，
+                    //       退出前再回收一次本 app 的 WebView2，尽量不给下一次启动留残留。
+                    std::thread::spawn(|| {
+                        std::thread::sleep(EXIT_DEADLINE);
+                        p0_log(format!(
+                            "WATCHDOG: still alive {:?} after close → force exit",
+                            EXIT_DEADLINE
+                        ));
+                        let killed = terminate_app_webviews();
+                        p0_log(format!("WATCHDOG: terminated app webviews = {}", killed));
+                        std::process::exit(0);
+                    });
+
                     if let Some(handle) = app_handle.try_state::<sidecar::SidecarHandle>() {
                         p0_log("sidecar shutdown begin");
                         handle.shutdown();
@@ -1452,7 +1478,20 @@ fn main() {
                         p0_log("calling std::process::exit(0)");
                         std::process::exit(0);
                     });
-                    p0_log(format!("run_on_main_thread queued ok={:?}", queued.is_ok()));
+                    // P0 打点 4/4：run_on_main_thread 返回调度结果。
+                    // 根因（20261103）：长会话后主事件循环可能已停（窗口全隐藏 + WebView 回收完成），
+                    // run_on_main_thread 会返回 Err（queued ok=false）→ teardown 闭包永远不执行
+                    // → process::exit(0) 永不发生 → 进程 90s+ 不死（真机实测铁证）。
+                    // 修法：调度失败就 force exit，不依赖主线程。
+                    let queued_ok = queued.is_ok();
+                    p0_log(format!("run_on_main_thread queued ok={}", queued_ok));
+                    if !queued_ok {
+                        p0_log("run_on_main_thread queue FAILED (main loop gone/rejected) → force exit(0)");
+                        let killed = terminate_app_webviews();
+                        p0_log(format!("force-exit: terminated app webviews = {}", killed));
+                        std::process::exit(0);
+                    }
+                    // 排队成功时由线程开头那条 watchdog 兜底（它覆盖「排上了但永不执行」）。
                 });
             }
         })
