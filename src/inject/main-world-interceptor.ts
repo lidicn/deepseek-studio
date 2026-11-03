@@ -94,6 +94,14 @@ export interface MainWorldInterceptorOptions {
   chatUI?: StudioChatUIHandle;
   /** M9：流式 delta 推送——每收到一段可见文本就推给宿主（用于 web-engine onDelta）。 */
   onStreamDelta?: (text: string) => void;
+  /**
+   * R3-03：每轮收尾时把 finish-sentinel 推给宿主。
+   * 契约形状见 `src/host/protocol.ts`（`{ type:'finish-sentinel', round, sawFinishSentinel }`），
+   * 消费见 `src/host/page-runtime.ts`（按 botId 记 `finishSentinels`），
+   * 判停见 `src/host/engine/web-engine.ts`（`sawFinishSentinel===false` + 有可见输出 ⇒ interrupted）。
+   * 宿主侧接收分支早已就绪，页端此前缺发送端导致 `interrupted` 是死代码。
+   */
+  onFinishSentinel?: (info: { round: number; sawFinishSentinel: boolean }) => void;
 }
 
 /** 断流取证入口：把当前缓冲的轨迹渲染成纯文本报告（空缓冲返回空串）。 */
@@ -645,11 +653,50 @@ const interceptorTrace: StudioTraceCollector = {
         // 取证落盘失败不影响主链路。
       }
     }
+    // R3-03：`turn.end` 是所有退出路径的公共汇聚点，正好在这里按轮发一次 finish-sentinel。
+    if (event.t === 'turn.end') emitFinishSentinelOnTurnEnd();
   },
   snapshot: () => traceCollector.snapshot(),
   clear: () => traceCollector.clear(),
   size: () => traceCollector.size(),
 };
+
+/**
+ * R3-03：页端 finish-sentinel 发送端（宿主接收分支早已就绪，此前页端缺发送端
+ * 导致 `interrupted` 终态不可达）。
+ *
+ * 契约逐字对齐 `src/host/protocol.ts`：`{ type:'finish-sentinel', round, sawFinishSentinel }`。
+ * - `round`：页端**本轮序号**（每条新用户消息 +1 的单调计数），不是时间戳——宿主靠它把哨兵
+ *   归属到当前轮（并发是常态，归属错会出现「A 轮哨兵算到 B 轮」，QD-R7-01 踩过）。
+ * - `sawFinishSentinel`：本轮流是否真见到完成哨兵（DeepSeek 是 `response/status=FINISHED`
+ *   或 `event: close`，不是 `data:[DONE]`），读 `loopState.streamSawDone`（W0 观测点）。
+ *
+ * 发送时机：所有退出路径的公共汇聚点 `turn.end`（与 trace 落盘同一个 if）。每轮只发一次
+ * （`sentForRound` 守卫）；空流（0 字节、无哨兵，即 `no-stream`）不发——那是「这一轮根本没有流」，
+ * 不是截断，发了只会给宿主制造噪音。
+ */
+let finishSentinelRound = 0;
+let finishSentinelSentForRound = -1;
+let finishSentinelLoopState: LoopState | null = null;
+let finishSentinelEmit: ((info: { round: number; sawFinishSentinel: boolean }) => void) | null = null;
+
+/** 记一条 turn.end 时按轮发一次 finish-sentinel；空流不发。 */
+function emitFinishSentinelOnTurnEnd(): void {
+  if (!finishSentinelEmit) return;
+  if (finishSentinelSentForRound === finishSentinelRound) return;
+  const ls = finishSentinelLoopState;
+  if (!ls) return;
+  // 空流：既无哨兵又 0 字节 = 这一轮根本没有流（非对话 XHR、被 abort 的空请求），
+  // 不属于「有可见输出但断流」，不发，避免宿主侧噪音。
+  if (!ls.streamSawDone && (ls.streamBytes ?? 0) === 0) return;
+  finishSentinelSentForRound = finishSentinelRound;
+  try {
+    finishSentinelEmit({ round: finishSentinelRound, sawFinishSentinel: ls.streamSawDone === true });
+  } catch (err) {
+    // 发送失败不能影响主链路收尾。
+    void err;
+  }
+}
 // UTF-8 字节数，不是 .length（中文请求体两者差 3 倍，直接影响「prompt 多大」的读数）。
 function byteLengthOf(text: string): number {
   try {
@@ -1534,6 +1581,9 @@ function captureChatRequest(body: string, loopState: LoopState, diag: Intercepto
       // 新用户消息 = 新一轮 trace。id 与 execution turnId 同源同值。
       traceTurnId = `t${Date.now().toString(36)}`;
       idleContinueCount = 0;
+      // R3-03：页端本轮序号 +1（单调计数，非时间戳）。finish-sentinel 的 `round` 用它，
+      // 宿主据此把哨兵归属到当前轮；sentForRound 守卫保证每轮只发一次。
+      finishSentinelRound += 1;
       interceptorTrace.record({ t: 'turn.start', turnId: traceTurnId });
       // M10-8B（B1）：feature flag 开时，按任务文本预取记忆候选。
       kickMemorySelect(userText);
@@ -2208,6 +2258,10 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   }
   // v0.8：自动工具循环——记住最近一次 chat 请求的 body 模板 + 当前流是否结束。
   const loopState: LoopState = { lastChatBody: null as string | null, streamActive: false, lastResponseMsgId: null as number | null, autoReplyText: '', inAutoContinue: false, autoReplyHadTools: false, streamHadTools: false, originalTask: '', chatUI };
+  // R3-03：把本实例的 loopState 与 finish-sentinel 发送回调登记到模块级发射器，
+  // 供 turn.end 公共汇聚点（emitFinishSentinelOnTurnEnd）读取 `streamSawDone` 并按轮发一次。
+  finishSentinelLoopState = loopState;
+  finishSentinelEmit = options.onFinishSentinel ?? null;
   let autoContinueTimer: ReturnType<typeof setTimeout> | null = null;
   let loopDepth = 0;
   // v1.6：跨整个循环累积的工具执行结果（对标 deepseek-pp collectedExecutions）。

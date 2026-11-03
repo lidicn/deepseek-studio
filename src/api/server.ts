@@ -111,6 +111,11 @@ export interface RateLimitOptions {
   refillPerMinute?: number;
   /** 最大并发执行数，默认 1（串行，防上游风控）。 */
   maxConcurrent?: number;
+  /**
+   * 限流桶的**键数上限**（TD-12）：桶表只增不删会让长跑进程的内存无限增长。
+   * 超过上限时回收最久未用的桶（LRU）。默认 10000。
+   */
+  maxKeys?: number;
 }
 
 export interface ApiServerOptions {
@@ -393,10 +398,26 @@ async function parseConfigBody(
 }
 
 /** 令牌桶：每令牌（按 Bearer 值）独立限流。 */
-function createRateLimiter(opts: RateLimitOptions = {}) {
+/** 限流桶键数上限的默认值（TD-12）。 */
+const RATE_LIMIT_MAX_KEYS = 10_000;
+
+export function createRateLimiter(opts: RateLimitOptions = {}) {
   const capacity = opts.capacity ?? 60;
   const refillPerMinute = opts.refillPerMinute ?? 60;
+  const maxKeys = Math.max(1, opts.maxKeys ?? RATE_LIMIT_MAX_KEYS);
   const buckets = new Map<string, { tokens: number; last: number }>();
+
+  /**
+   * 回收最久未用的桶，直到桶数回到上限内（TD-12）。
+   * Map 的插入顺序即 LRU 顺序（每次取令牌都 delete+set 移到队尾）。
+   */
+  const evictOldest = (): void => {
+    while (buckets.size > maxKeys) {
+      const oldest = buckets.keys().next();
+      if (oldest.done) break;
+      buckets.delete(oldest.value);
+    }
+  };
 
   return {
     /** 取一个令牌；不足时返回需要等待的毫秒数。 */
@@ -406,18 +427,45 @@ function createRateLimiter(opts: RateLimitOptions = {}) {
       const refill = ((now - b.last) / 60_000) * refillPerMinute;
       const tokens = Math.min(capacity, b.tokens + refill);
       if (tokens < 1) {
+        buckets.delete(key);
         buckets.set(key, { tokens, last: now });
+        evictOldest();
         const need = (1 - tokens) / refillPerMinute;
         return { ok: false, retryAfterMs: Math.max(50, Math.ceil(need * 60_000)) };
       }
+      buckets.delete(key);
       buckets.set(key, { tokens: tokens - 1, last: now });
+      evictOldest();
       return { ok: true, retryAfterMs: 0 };
+    },
+    /** test-only：当前桶数（TD-12 的「size 有界」断言用）。 */
+    size(): number {
+      return buckets.size;
     },
   };
 }
 
 /** 最近执行记录，用于 /v1/queue/status 的可观测性（v0.5 5.3）。 */
 const RECENT_LIMIT = 20;
+
+/**
+ * 统一的 limit 解析（TD-13 / =BUG-025）。
+ *
+ * 口径：`null` / 空串 / 纯空白 / 非有限数 → 缺省 `fallback`；其余取整并 clamp 到 [min, max]。
+ *
+ * 为什么必须统一：旧实现两处口径不同 ——
+ *   audit：`Number('')` = 0 → 被 clamp 成 **1**（空串本意是"要缺省 50"）；
+ *   automation：`Number('0') || 50` → **50**（而 0 按 [min,max] 应当是 1）。
+ * 同一套参数在两个端点上含义不同 → 口径必须收到一个 helper 里。
+ */
+export function parseLimit(raw: string | null, fallback: number, min: number, max: number): number {
+  if (raw === null) return fallback;
+  const trimmed = raw.trim();
+  if (trimmed === '') return fallback;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(parsed)));
+}
 
 export function createApiServer(options: ApiServerOptions): ApiServer {
   const auth = options.authenticator ?? createBearerAuthenticator(options.config.token);
@@ -622,9 +670,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
           sendJson(501, { error: { code: 'not_implemented', message: 'audit reader not configured' } });
           return;
         }
-        const raw = url.searchParams.get('limit');
-        const parsed = raw === null ? 50 : Number(raw);
-        const limit = Number.isFinite(parsed) ? Math.max(1, Math.min(500, Math.floor(parsed))) : 50;
+        const limit = parseLimit(url.searchParams.get('limit'), 50, 1, 500);
         sendJson(200, { object: 'list', data: options.auditReader(limit) });
         return;
       }
@@ -670,6 +716,37 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         if (body.conversationId !== undefined && typeof body.conversationId !== 'string') {
           sendJson(400, { error: { code: 'bad_request', message: 'invalid conversationId' } });
           return;
+        }
+        // TD-10（=BUG-023）：params 形态校验。
+        // 口径（最小收口，逐工具 schema 另立卡）：
+        //   ① params 必须是 plain object —— null / 数组 / 字符串 / 数字一律 400；
+        //   ② params 序列化体积上限 1MB（独立于 body 的 10MB 上限）→ 400。
+        // 校验前**不**进 toolExecutor（不能把畸形参数递给执行器）。
+        if (body.params !== undefined) {
+          const p = body.params;
+          const isPlainObject = typeof p === 'object' && p !== null && !Array.isArray(p);
+          if (!isPlainObject) {
+            sendJson(400, {
+              error: { code: 'bad_request', message: 'invalid params: expected a plain object' },
+            });
+            return;
+          }
+          let paramsBytes: number;
+          try {
+            paramsBytes = Buffer.byteLength(JSON.stringify(p), 'utf8');
+          } catch {
+            // 序列化不了（循环引用等）→ 按超限处理。
+            paramsBytes = MAX_EXECUTE_PARAMS_BYTES + 1;
+          }
+          if (paramsBytes > MAX_EXECUTE_PARAMS_BYTES) {
+            sendJson(400, {
+              error: {
+                code: 'bad_request',
+                message: `params too large (max ${MAX_EXECUTE_PARAMS_BYTES} bytes)`,
+              },
+            });
+            return;
+          }
         }
         const ctx: { botId?: string; conversationId?: string } = {};
         if (typeof body.botId === 'string' && body.botId !== '') ctx.botId = body.botId;
@@ -823,8 +900,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
           return;
         }
         const taskId = url.searchParams.get('taskId') ?? undefined;
-        const rawLimit = url.searchParams.get('limit');
-        const limit = rawLimit === null ? 50 : Math.max(1, Math.min(500, Number(rawLimit) || 50));
+        const limit = parseLimit(url.searchParams.get('limit'), 50, 1, 500);
         sendJson(200, { object: 'list', data: options.automationManager.logs(taskId, limit) });
         return;
       }
@@ -940,7 +1016,13 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       sendJson(404, { error: { code: 'not_found', message: `${req.method} ${pathname}` } });
     } catch (err) {
       // 计数由各端点自己的 finally/release 负责，这里不再递减（避免重复扣减）
-      sendJson(500, { error: { code: 'internal', message: err instanceof Error ? err.message : String(err) } });
+      //
+      // BUG-024：body 超限/超时分支已经 req.destroy() 把连接断了，
+      // 这里再补发 500 会和 destroy 抢同一个 socket —— 客户端反而能收到一个"正常"响应，
+      // 挂起问题原样保留（而且响应还是错的语义）。连接已断 → 不再补发。
+      if (!req.destroyed && !res.destroyed && !res.writableEnded) {
+        sendJson(500, { error: { code: 'internal', message: err instanceof Error ? err.message : String(err) } });
+      }
     }
   });
 
@@ -995,6 +1077,8 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
 }
 
 const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10MB
+/** /v1/tools/execute 的 params 序列化体积上限（TD-10）：1MB。 */
+const MAX_EXECUTE_PARAMS_BYTES = 1024 * 1024;
 const READ_BODY_TIMEOUT_MS = 30_000;
 
 function readBody(req: http.IncomingMessage): Promise<string> {
@@ -1006,6 +1090,8 @@ function readBody(req: http.IncomingMessage): Promise<string> {
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      // BUG-024：超时同样要断连接（否则客户端继续写、连接悬挂）。
+      req.destroy();
       reject(new Error('read body timeout'));
     }, READ_BODY_TIMEOUT_MS);
 
@@ -1015,6 +1101,9 @@ function readBody(req: http.IncomingMessage): Promise<string> {
       if (size > MAX_BODY_BYTES) {
         settled = true;
         clearTimeout(timer);
+        // BUG-024：超限时必须 destroy 连接 —— 原来只是 reject，
+        // 服务端继续收、客户端继续写，连接一直悬挂（客户端要写完 10MB+ 才断）。
+        req.destroy();
         reject(new Error('request body too large'));
         return;
       }

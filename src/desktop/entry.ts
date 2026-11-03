@@ -332,6 +332,9 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
         diag: (msg) => host.log(`[interceptor] ${msg}`),
         onAssistantReply: (text, loop) => host.assistantReply(text, loop),
         onStreamDelta: (text) => host.streamDelta(text),
+        // R3-03：页端每轮收尾把 finish-sentinel 发给宿主（契约 {round, sawFinishSentinel}），
+        // 宿主据此判停（web-engine：false + 有可见输出 ⇒ interrupted）。此前缺发送端 → 死代码。
+        onFinishSentinel: (info) => host.finishSentinel(info.round, info.sawFinishSentinel),
         onMemoriesUpdate: (memories) => {
           (globalThis as { __studioMemories?: unknown }).__studioMemories = memories;
           // M10-5：设置面板的记忆页从 globalState 取数，广播到了要同步进去，

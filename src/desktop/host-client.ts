@@ -80,6 +80,8 @@ export interface HostClient {
   assistantReply(text: string, loop: number): void;
   /** M9：流式 delta 推送——页端每收到一段模型输出就推给宿主。 */
   streamDelta(text: string): void;
+  /** R3-03：每轮收尾上报 finish-sentinel（契约形状见 src/host/protocol.ts）。 */
+  finishSentinel(round: number, sawFinishSentinel: boolean): void;
   /** v1.0：宿主推送记忆列表更新时的回调。 */
   onMemoriesUpdate?: (memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>) => void;
   /** v0.7：KV 读写（宿主侧落盘 backend）。 */
@@ -409,6 +411,9 @@ export function createHostClient(options: HostClientOptions): HostClient {
     },
     streamDelta(text: string) {
       send({ type: 'stream-delta', text });
+    },
+    finishSentinel(round: number, sawFinishSentinel: boolean) {
+      send({ type: 'finish-sentinel', round, sawFinishSentinel });
     },
     kvGet(key) {
       return new Promise((resolve, reject) => {

@@ -521,8 +521,26 @@ export async function readSseJsonRpcResponse(
   return Promise.race([readLoop, deadline]);
 }
 
+/**
+ * testConnection 的**单步**超时（毫秒）：initialize 与 tools/list 各一步的上限。
+ * 测试可注入更小值（opts.stepTimeoutMs）以确定性地走超时分支。
+ */
+export const TEST_STEP_TIMEOUT_MS = 5000;
+
+/**
+ * stdio 请求超时（毫秒）。
+ *
+ * 可变（test-only 缝）：测试把 `ms` 临时改小即可走超时分支，不必真的等 30s。
+ * 生产路径不修改它。
+ */
+export const MCP_REQUEST_TIMEOUT = { ms: 30_000 };
+
+
+
 export class McpController {
   private connections = new Map<string, McpServerConnection>();
+  /** BUG-027：并发 connect 去重 —— 同一 serverId 同时只允许一个连接在飞。 */
+  private connecting = new Map<string, Promise<McpServerConnection | null>>();
   private servers: Record<string, McpServerConfig> = {};
   /** 本实例读写同一条配置路径，避免 load/save 各认一套环境变量。 */
   private readonly configPath: string;
@@ -633,16 +651,28 @@ export class McpController {
 
     const transport = config.transport ?? 'stdio';
 
-    try {
-      if (transport === 'http' || transport === 'sse') {
-        return this.connectHttp(serverId, config);
+    // BUG-027：并发 connect 同一 serverId 只能 spawn 一份 MCP server 进程。
+    // 原实现每次调用都走一遍 connectStdio → 并发两次就留下两个孤儿进程。
+    const inflight = this.connecting.get(serverId);
+    if (inflight) return inflight;
+
+    const pending = (async (): Promise<McpServerConnection | null> => {
+      try {
+        if (transport === 'http' || transport === 'sse') {
+          return await this.connectHttp(serverId, config);
+        }
+        return await this.connectStdio(serverId, config);
+      } catch (e) {
+        console.error(`[mcp ${serverId}] connect failed:`, e instanceof Error ? e.message : String(e));
+        this.connections.delete(serverId);
+        return null;
+      } finally {
+        // 无论成败都从去重表移除（失败后允许重试）。
+        this.connecting.delete(serverId);
       }
-      return this.connectStdio(serverId, config);
-    } catch (e) {
-      console.error(`[mcp ${serverId}] connect failed:`, e instanceof Error ? e.message : String(e));
-      this.connections.delete(serverId);
-      return null;
-    }
+    })();
+    this.connecting.set(serverId, pending);
+    return pending;
   }
 
   /** stdio 传输连接 */
@@ -701,6 +731,9 @@ export class McpController {
         proc.stdout?.removeAllListeners();
         proc.stderr?.removeAllListeners();
       } catch { /* ignore */ }
+      // BUG-036：连接失败后 MCP server 子进程泄漏 —— cleanup 必须收尸。
+      // 进程已退出时 kill 无害；这是 exit / error / 初始化失败三条腿的公共出口。
+      try { proc.kill(); } catch { /* 已退出 */ }
       this.connections.delete(serverId);
     };
 
@@ -746,7 +779,14 @@ export class McpController {
     proc.stdin?.on('error', () => { /* EPIPE / ECONNRESET 已在 cleanup 里 reject pending */ });
 
     this.connections.set(serverId, conn);
-    await this.initializeConnection(conn);
+    try {
+      await this.initializeConnection(conn);
+    } catch (e) {
+      // 初始化失败（超时 / 协议错）→ 走统一清理（含 kill），
+      // 否则 MCP server 进程会留在后台泄漏（BUG-036）。
+      cleanup('initialize failed', e instanceof Error ? e : new Error(String(e)));
+      throw e;
+    }
     return conn;
   }
 
@@ -806,7 +846,7 @@ export class McpController {
           conn.pendingRequests.delete(id);
           reject(new Error(`MCP request ${method} timed out`));
         }
-      }, 30000);
+      }, MCP_REQUEST_TIMEOUT.ms);
       conn.pendingRequests.set(id, { resolve, reject, timer });
       try {
         conn.process.stdin.write(JSON.stringify(msg) + '\n');
@@ -1002,14 +1042,21 @@ export class McpController {
    * 测试 MCP 服务器连接（不保存到配置，临时连接测试）。
    * 支持 stdio 和 HTTP/SSE 传输。
    */
-  async testConnection(config: McpServerConfig): Promise<{ ok: boolean; error?: string; tools?: string[] }> {
+  async testConnection(
+    config: McpServerConfig,
+    opts?: { stepTimeoutMs?: number },
+  ): Promise<{ ok: boolean; error?: string; tools?: string[] }> {
     const transport = config.transport ?? 'stdio';
+    // 单步超时可注入（测试注入 100ms 走超时分支；生产仍是 TEST_STEP_TIMEOUT_MS）。
+    const stepTimeoutMs = opts?.stepTimeoutMs ?? TEST_STEP_TIMEOUT_MS;
     if (transport === 'http' || transport === 'sse') {
       return this.testHttpConnection(config);
     }
     if (!config.command) {
       return { ok: false, error: 'command is required for stdio transport' };
     }
+    // R2-04：把 spawn 出来的进程挂到 try 外面，finally 才能收尸。
+    let spawnedProc: ChildProcess | null = null;
     try {
       const isWin = process.platform === 'win32';
       const isCmdBatch = isWin && /\.(cmd|bat)$/i.test(config.command);
@@ -1034,6 +1081,7 @@ export class McpController {
         shell: isCmdBatch,
       });
 
+      spawnedProc = proc;
       const conn: McpServerConnection = {
         process: proc,
         id: '__test__',
@@ -1047,7 +1095,10 @@ export class McpController {
       // P0-3 修复：testConnection 的 spawn 也要 error 监听，否则命令不存在直接杀宿主
       proc.on('error', (err) => {
         console.error(`[mcp] testConnection spawn error: ${err.message}`);
-        for (const [, req] of conn.pendingRequests) req.reject(err);
+        for (const [, req] of conn.pendingRequests) {
+          if (req.timer) clearTimeout(req.timer);
+          req.reject(err);
+        }
         conn.pendingRequests.clear();
       });
 
@@ -1062,8 +1113,11 @@ export class McpController {
           try {
             const msg = JSON.parse(trimmed);
             if (msg.id && conn.pendingRequests.has(msg.id)) {
-              conn.pendingRequests.get(msg.id)?.resolve(msg);
+              const pending = conn.pendingRequests.get(msg.id);
               conn.pendingRequests.delete(msg.id);
+              // BUG-038：响应到了就必须清掉那 5000ms 超时句柄，否则它一直挂着。
+              if (pending?.timer) clearTimeout(pending.timer);
+              pending?.resolve(msg);
             }
           } catch { /* ignore */ }
         }
@@ -1078,14 +1132,17 @@ export class McpController {
       // 发送 initialize
       const initResult = await new Promise<any>((resolve, reject) => {
         const id = ++conn.requestId;
-        conn.pendingRequests.set(id, { resolve, reject });
+        const timer = setTimeout(() => {
+          conn.pendingRequests.delete(id);
+          reject(new Error('initialize timeout'));
+        }, stepTimeoutMs);
+        conn.pendingRequests.set(id, { resolve, reject, timer });
         proc.stdin?.write(JSON.stringify({
           jsonrpc: '2.0',
           id,
           method: 'initialize',
           params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'studio-test', version: '1.0' } },
         }) + '\n');
-        setTimeout(() => reject(new Error('initialize timeout')), 5000);
       });
 
       if (!initResult.result) {
@@ -1099,16 +1156,25 @@ export class McpController {
       // 发送 tools/list
       const toolsResult = await new Promise<any>((resolve, reject) => {
         const id = ++conn.requestId;
-        conn.pendingRequests.set(id, { resolve, reject });
+        const timer = setTimeout(() => {
+          conn.pendingRequests.delete(id);
+          reject(new Error('tools/list timeout'));
+        }, stepTimeoutMs);
+        conn.pendingRequests.set(id, { resolve, reject, timer });
         proc.stdin?.write(JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/list' }) + '\n');
-        setTimeout(() => reject(new Error('tools/list timeout')), 5000);
       });
 
-      proc.kill();
       const toolNames = (toolsResult.result?.tools ?? []).map((t: any) => t.name);
       return { ok: true, tools: toolNames };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    } finally {
+      // R2-04：无论成功/失败/超时/异常，子进程都必须收掉 ——
+      // 原实现只有两条显式 kill 路径（initialize 失败 / 正常结束），
+      // 超时与异常分支会把 MCP server 进程留在后台泄漏。
+      if (spawnedProc) {
+        try { spawnedProc.kill(); } catch { /* 已退出 */ }
+      }
     }
   }
 
@@ -1146,7 +1212,11 @@ export class McpController {
         body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
         signal: AbortSignal.timeout(15000),
       });
+      // BUG-039：tools/list 也要查 res.ok（此前直接 json() → 500 的响应体被当成结果，
+      // 报成"成功但工具列表为空"）。与上面 initialize 的检查同型。
+      if (!toolsRes.ok) return { ok: false, error: `HTTP ${toolsRes.status}: ${toolsRes.statusText}` };
       const toolsData = await toolsRes.json();
+      if (toolsData.error) return { ok: false, error: toolsData.error.message ?? 'tools/list failed' };
       const toolNames = (toolsData.result?.tools ?? []).map((t: any) => t.name);
       return { ok: true, tools: toolNames };
     } catch (e) {
