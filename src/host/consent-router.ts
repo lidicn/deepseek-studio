@@ -6,12 +6,7 @@
  */
 
 import type { PolicyDecision, PolicyMode, PolicyReason } from './policy';
-import {
-  inlineCodeOf,
-  resolveArgvFromParams,
-  stripCmdWrapper,
-  tokenizeCommandString,
-} from '../shared/command-tokens';
+import { inlineCodeOf, resolveArgvFromParams, stripCmdWrapper, tokenizeCommandString, isShellWrapper, splitShellConnectors, stripExecPrefixes } from '../shared/command-tokens';
 
 export type ConsentVerdict = 'safe' | 'ask' | 'deny';
 
@@ -234,10 +229,26 @@ function hardDenyFromArgvDepth(
   // 深度上限：内联载荷里再套内联载荷最多展开 3 层，防止构造出无限递归。
   if (depth > 3) return 'inline-code';
 
-  const stripped = stripCmdWrapper(argv);
+  // 透明前缀：sudo / env [VAR=val …] —— 剥掉后再判（否则 argv[0] 是 sudo/env 就漏了）。
+  const unPrefixed = stripExecPrefixes(argv);
+  if (unPrefixed.length === 0) return null;
+  const stripped = stripCmdWrapper(unPrefixed);
   if (stripped.length === 0) return null;
 
   const name = commandNameOf(stripped[0]);
+
+  // 壳程序后面的整段会被二次解释，但切词时引号已丢 → 连接符会黏在一个 token 里
+  // （`cmd /c "echo hi & shutdown /s"`、mcp 的 args ['/c','shutdown /s']）。
+  // 这里重切成多段逐段判；与当前段完全相同则跳过，避免自递归。
+  if (isShellWrapper(unPrefixed[0])) {
+    for (const segment of splitShellConnectors(stripped)) {
+      const identical =
+        segment.length === stripped.length && segment.every((tok, i) => tok === stripped[i]);
+      if (identical) continue;
+      const rule = hardDenyFromArgvDepth(segment, depth + 1, allowInlineCode);
+      if (rule) return rule;
+    }
+  }
 
   // 磁盘级破坏
   if (DISK_COMMANDS.has(name)) return 'dangerous-disk';
@@ -264,7 +275,12 @@ function hardDenyFromArgvDepth(
   }
 
   // node -e / python -c / powershell -EncodedCommand → 一律硬拒
-  if (name !== 'powershell' && name !== 'pwsh') return 'inline-code';
+  // powershell / pwsh / POSIX shell 的 -c 载荷：**展开后再判**（与 -Command 同法）。
+  // node/python 的内联代码仍一律拒（任意代码，无可判结构）。
+  const expandableShell =
+    name === 'powershell' || name === 'pwsh' ||
+    name === 'bash' || name === 'sh' || name === 'zsh' || name === 'dash';
+  if (!expandableShell) return 'inline-code';
   if (stripped.some((a) => /^-encodedcommand$/i.test(a))) return 'inline-code';
 
   // powershell -Command <载荷>：展开载荷后再判（载荷本身仍是内联代码 → 拒）

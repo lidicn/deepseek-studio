@@ -141,6 +141,11 @@ export function inlineCodeOf(argv: readonly string[]): string | null {
     python: ['-c'],
     python3: ['-c'],
     py: ['-c'],
+    // POSIX shell 的 -c 与 node -e 同构：载荷是任意代码（Gate 对账挖出的同类绕过）。
+    bash: ['-c'],
+    sh: ['-c'],
+    zsh: ['-c'],
+    dash: ['-c'],
     powershell: ['-command', '-encodedcommand'],
     pwsh: ['-command', '-encodedcommand'],
   };
@@ -154,4 +159,91 @@ export function inlineCodeOf(argv: readonly string[]): string | null {
     return code;
   }
   return null;
+}
+
+/** argv[0] 的「命令名」：去目录、去 .exe/.cmd/.bat 后缀、转小写。 */
+export function commandBaseName(argv0: string): string {
+  return argv0.toLowerCase().replace(/^.*[\\/]/, '').replace(/\.(exe|cmd|bat)$/, '');
+}
+
+/**
+ * 是否「壳」程序：它后面的整段会被二次解释 / 转交。
+ *
+ * 这类壳让 argv[0] 看起来无害，真正执行的是后面那段 —— 硬拒地板必须穿过它
+ * （D1 / F2s / bash -c / sudo / env 全是这个形状）。
+ */
+export function isShellWrapper(argv0: string): boolean {
+  const base = commandBaseName(argv0);
+  return (
+    base === 'cmd' ||
+    base === 'powershell' ||
+    base === 'pwsh' ||
+    base === 'bash' ||
+    base === 'sh' ||
+    base === 'zsh' ||
+    base === 'dash'
+  );
+}
+
+/**
+ * 剥掉「透明前缀」：`sudo` / `doas` / `env [VAR=val …]`。
+ *
+ * 这些前缀不改变真正执行的命令，但会让 argv[0] 变成 sudo/env → 地板漏判（Gate 对账挖出）。
+ * 只剥开头的 `NAME=value` 与 `-` 开关；剥完没有命令（如光一个 `env`）返回空数组。
+ */
+/**
+ * 透明前缀里**带值**的选项：跳选项时必须连它的值一起跳，
+ * 否则值会被当成命令头（`sudo -u root shutdown /s` → 把 root 当命令 → 漏判）。
+ */
+const PREFIX_VALUE_OPTIONS = new Set([
+  '-u', '--user', '-g', '--group', '-p', '--prompt', '-c', '--close-from',
+  '-h', '--host', '-r', '--role', '-t', '--type', '-C', '--chdir',
+  '--unset', '-S', '--split-string', '--argv0',
+]);
+
+export function stripExecPrefixes(argv: readonly string[]): string[] {
+  let cur = [...argv];
+  for (let guard = 0; guard < 8 && cur.length > 0; guard += 1) {
+    const base = commandBaseName(cur[0]);
+    if (base === 'sudo' || base === 'doas') {
+      cur = cur.slice(1);
+      // sudo/doas 有一批**带值**的选项（-u user / -g group / -p prompt …）：
+      // 只跳选项会把它的值（root）当成命令头 → 漏判（20261103 实测 G9）。
+      while (cur.length > 0 && cur[0].startsWith('-')) {
+        const opt = cur[0].toLowerCase();
+        cur = cur.slice(1);
+        if (PREFIX_VALUE_OPTIONS.has(opt) && cur.length > 0) cur = cur.slice(1);
+      }
+      continue;
+    }
+    if (base === 'env') {
+      let i = 1;
+      while (i < cur.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(cur[i])) i += 1;
+      while (i < cur.length && cur[i].startsWith('-')) {
+        const opt = cur[i].toLowerCase();
+        i += 1;
+        if (PREFIX_VALUE_OPTIONS.has(opt) && i < cur.length) i += 1;
+      }
+      if (i >= cur.length) return [];
+      cur = cur.slice(i);
+      continue;
+    }
+    break;
+  }
+  return cur;
+}
+
+/**
+ * 按 shell 连接符把 argv 重切成多段。
+ *
+ * 为什么必须有：`cmd /c "echo hi & shutdown /s"` 在切词时引号信息已丢失，整段成了一个
+ * token（`echo hi & shutdown /s`）→ argv[0] 是 echo → 地板漏判；而 cmd 会执行 `&` 后面那段。
+ * 这里把 argv 拼回命令行、按 `&& || & | ;` 切段、再各自切词，供调用方逐段判。
+ */
+export function splitShellConnectors(argv: readonly string[]): string[][] {
+  return argv
+    .join(' ')
+    .split(/&&|\|\||&|\||;/)
+    .map((segment) => tokenizeCommandString(segment.trim()))
+    .filter((segment) => segment.length > 0);
 }

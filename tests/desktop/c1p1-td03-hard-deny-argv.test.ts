@@ -25,6 +25,9 @@
 
 import { describe, it, expect } from 'vitest';
 import { checkHardDeny, hardDenyFromArgv, hardDenyFromInlineText } from '../../src/host/consent-router';
+// TD-03：用例体内的动态 import 会把「首次转译整棵依赖图」的耗时算进 5s 单例超时里，
+// 机器一有负载就假红（同一条调用在 tsx 下只要 94–326ms）。提到顶层 → 转译在收集阶段完成。
+import { createDesktopHost } from '../../src/host/desktop-host';
 import {
   inlineCodeOf,
   resolveArgvFromParams,
@@ -214,7 +217,6 @@ describe('TD-03 · 硬拒地板不可被绕过', () => {
     const os = await import('node:os');
     const fs = await import('node:fs');
     const path = await import('node:path');
-    const { createDesktopHost } = await import('../../src/host/desktop-host');
 
     const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'td03-host-'));
     const host = createDesktopHost({
@@ -244,7 +246,6 @@ describe('TD-03 · 硬拒地板不可被绕过', () => {
   });
 
   it('宿主真实调用：argv:["echo","hi"] 仍正常执行（不误伤）', async () => {
-    const { createDesktopHost } = await import('../../src/host/desktop-host');
     const host = createDesktopHost({
       config: { host: '127.0.0.1', port: 0, token: 't' },
       secret: 's',
@@ -330,5 +331,59 @@ describe('TD-03 · hardDenyFromArgv 单元口径', () => {
   it('Stop-Computer / Restart-Computer 算电源控制', () => {
     expect(hardDenyFromArgv(['Stop-Computer'])).toBe('power-control');
     expect(hardDenyFromArgv(['Restart-Computer', '-Force'])).toBe('power-control');
+  });
+});
+
+// ── 补丁：shell 连接符重切（D1）+ 解释器/前缀展开（bash -c / sudo / env）─────
+// 背景：Gate 对账挖出同类洞 —— 地板按 argv[0] 判，但 argv[0] 可能只是「壳」：
+//   D1   `cmd /c "echo hi & shutdown /s"` 的 `&` 在引号里（执行侧 hasShellSyntax 放行），
+//        切词后整段成一个 token → argv[0] 是 echo → 漏。
+//   F2s  mcp 配置 `args: ['/c', 'shutdown /s']` 剥壳后同样整段一个 token → 漏。
+//   bash -c / sh -c / sudo / env 都是「argv[0] 无害但真正执行的是后面那段」。
+describe('TD-03 补丁：连接符重切 + 解释器/前缀剥离', () => {
+  it('D1：cmd /c 引号内 & 串联 → 命中外层地板', () => {
+    expect(checkHardDeny('shell.exec', { command: 'cmd /c "echo hi & shutdown /s"' }, null)).toBe('power-control');
+    expect(checkHardDeny('shell.exec', { argv: ['cmd', '/c', 'echo hi & shutdown /s'] }, null)).toBe('power-control');
+  });
+
+  it('D1b：| 与 ; 串联同样命中（含磁盘命令）', () => {
+    expect(checkHardDeny('shell.exec', { command: 'cmd /c "echo hi | shutdown /s"' }, null)).toBe('power-control');
+    expect(checkHardDeny('shell.exec', { command: 'cmd /c "echo hi ; format D: /q"' }, null)).toBe('dangerous-disk');
+  });
+
+  it('F2s：mcp 配置里命令与参数挤在一个元素，剥壳后仍要命中', () => {
+    expect(checkHardDeny('mcp.test', { config: { command: 'cmd', args: ['/c', 'shutdown /s'] } }, null)).toBe('power-control');
+  });
+
+  it('bash -c / sh -c：载荷展开后判（危险载荷 → 拒）', () => {
+    expect(checkHardDeny('shell.exec', { command: 'bash -c "shutdown /s"' }, null)).toBe('power-control');
+    expect(checkHardDeny('shell.exec', { command: 'sh -c "shutdown /s"' }, null)).toBe('power-control');
+  });
+
+  it('sudo / env 前缀剥离后按剩余 argv 判', () => {
+    expect(checkHardDeny('shell.exec', { command: 'sudo shutdown /s' }, null)).toBe('power-control');
+    expect(checkHardDeny('shell.exec', { command: 'sudo cmd /c "echo hi & shutdown /s"' }, null)).toBe('power-control');
+    expect(checkHardDeny('shell.exec', { command: 'env shutdown /s' }, null)).toBe('power-control');
+    expect(checkHardDeny('shell.exec', { command: 'env FOO=bar shutdown /s' }, null)).toBe('power-control');
+    expect(checkHardDeny('shell.exec', { command: 'env FOO=bar bash -c "shutdown /s"' }, null)).toBe('power-control');
+    // sudo / env 的**带值选项**（-u root / -u FOO）：值不能被当成命令头。
+    expect(checkHardDeny('shell.exec', { command: 'sudo -u root shutdown /s' }, null)).toBe('power-control');
+    expect(checkHardDeny('shell.exec', { command: 'env -u FOO shutdown /s' }, null)).toBe('power-control');
+  });
+
+  // 负控：前缀/解释器的**正常用法**不许被误杀（这条是给上面那些断言定区分力的）。
+  it('负控：sudo/env/bash -c 的正常用法一律放行', () => {
+    for (const cmd of [
+      'sudo ls',
+      'env npm run build',
+      'env FOO=bar npm run build',
+      'bash script.sh',
+      'bash -c "echo hi"',
+      'sh -c "ls -la"',
+      'env',
+      'cmd /c "echo hi"',
+    ]) {
+      expect(checkHardDeny('shell.exec', { command: cmd }, null), `命令：${cmd}`).toBeNull();
+    }
   });
 });

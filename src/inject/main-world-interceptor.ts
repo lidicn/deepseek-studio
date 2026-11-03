@@ -57,7 +57,11 @@ import {
   evaluateStudioBudgetForMessages,
 } from '../shared/studio-context-budget';
 import { createToolCallDedupe } from '../shared/tool-call-dedupe';
-import { formatUntrustedMemoriesBlock } from './untrusted-memory';
+import {
+  collectNamedMemoryIds,
+  formatUntrustedMemoriesBlock,
+  MEMORY_INJECT_LIMIT,
+} from './untrusted-memory';
 // 剥原始工具标签：唯一实现在 raw-tool-text（渲染层与判定层共用）。
 // C1-F5：旧正则只认「开标签不得带属性」的精确形态，模型写出 `<search_files operation="list">`
 // 时会漏剥，于是工具调用原文被当正文渲染给用户（页面里确实出现过 `<search_files>{…}</search_files>`）。
@@ -1340,9 +1344,11 @@ function appendResultsToMessages(messages: unknown[], block: string): unknown[] 
 let lastMemorySegmentBytes = 0;
 let lastMemorySegmentRows = 0;
 
-function formatMemoriesBlock(): string {
+function formatMemoriesBlock(taskText = ''): string {
   // STUDIO_UNTRUSTED_MEMORY_* markers are neutralized by the formatter wrapper.
-  return formatUntrustedMemoriesBlock(currentMemories);
+  // F9：按任务点名（quoted 片段）算出保留位 id，保证「点名条目」不被 token 预算挤掉。
+  const namedIds = collectNamedMemoryIds(taskText, currentMemories);
+  return formatUntrustedMemoriesBlock(currentMemories, MEMORY_INJECT_LIMIT, namedIds);
 }
 
 /**
@@ -1402,7 +1408,7 @@ function prepareOutgoingBody(rawBody: string, pending: PendingResult[], taskText
   // hasToolIntent 仅用于避免重复注入（已注入则跳过），不再用于决定「是否注入」。
   const hasResults = effectivePending.length > 0;
   const block = hasResults ? formatToolResultBlock(effectivePending.slice()) : '';
-  const memoriesBlock = formatMemoriesBlock();
+  const memoriesBlock = formatMemoriesBlock(taskText);
   // P1 可观测点：本轮记忆段的字节数（Verify 真机抓包用「记忆段字节」判定是否注入成功）。
   // 之前没有这个读数，真机只能看到「记忆段恒 0 B」却说不清是没选出记忆还是没注入。
   lastMemorySegmentBytes = byteLengthOf(memoriesBlock);
@@ -3125,7 +3131,17 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
         return { ok: true, stdout: text || '(无输出)' };
       }
       const ext = language === 'typescript' ? 'ts' : 'mjs';
-      const tmp = `C:/Users/lidicn/AppData/Local/Temp/studio-run-${Date.now()}.${ext}`;
+      // R2-08：不再硬编码本机用户路径（换机器必失败、且把用户名泄进产物）。
+      // 改用工作区内专用临时目录 `.studio-tmp/`，走 workspace 相对路径：
+      //   - local_file_write 的相对路径由宿主以工作区根解析（capabilities/file.ts:48），
+      //     未配置工作区时 fail-closed 报 workspace-unconfigured；
+      //   - shell_exec 的 cwd 默认就是工作区根（capabilities/shell.ts:197），
+      //     所以同一条相对路径在 node 里可直接执行。
+      // 结果：任何机器都成立，且完整保留既有「写临时文件 + node 跑」的稳健形态
+      //（对 node 版本无要求，TS 靠 --experimental-strip-types 走文件而非 stdin/-e）。
+      // 文件名带 Date.now() + uuid 后缀，防同一毫秒内并发运行互相覆盖。
+      const unique = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+      const tmp = `.studio-tmp/studio-run-${unique}.${ext}`;
       const w = await sender({ callId: crypto.randomUUID(), invocationName: 'local_file_write', params: { path: tmp, content: code } });
       if (!w.ok) return { ok: false, error: w.error };
       const nodeCmd = language === 'typescript'

@@ -248,7 +248,15 @@ fn wait_pid_gone(_pid: u32, _budget: Duration) {}
 /// tsx 只在**开发构建**且宿主编译产物缺失时回退，且必须打 WARN。
 pub enum HostEntry {
     /// 打包版：`node <script>`，并把 STUDIO_RESOURCE_ROOT 指到 resource_root。
-    Bundled { script: PathBuf, resource_root: PathBuf },
+    ///
+    /// `work_dir` = 子进程的工作目录（**可写**）：宿主把 `logs/trace` 写到 `process.cwd()`，
+    /// 所以它必须指向数据目录（release = app_data_dir），**不能是安装目录**
+    /// （装到 Program Files 下写不进去 → 安装版 trace 落盘失效）。
+    Bundled {
+        script: PathBuf,
+        resource_root: PathBuf,
+        work_dir: PathBuf,
+    },
     /// 开发回退：`node <project_root>/node_modules/tsx/dist/cli.mjs <project_root>/src/api/main.ts`。
     Tsx { project_root: PathBuf },
 }
@@ -350,13 +358,14 @@ impl SidecarSupervisor {
         // node 解析：STUDIO_NODE → PATH；不可用时 main.rs 已用专用退出码拦下。
         let node = node_executable();
         let mut cmd = match &self.host_entry {
-            HostEntry::Bundled { script, resource_root } => {
+            HostEntry::Bundled { script, resource_root, work_dir } => {
                 let mut c = Command::new(&node);
                 c.arg(script);
                 // 宿主据此找静态资源：<res>/src/ui/agent.html、<res>/dist/agent-panel.js。
                 // 安装版 resource_dir() 与开发树仓库根**目录结构同构**，宿主无须区分两种形态。
                 c.env("STUDIO_RESOURCE_ROOT", resource_root);
-                c.current_dir(resource_root);
+                // 工作目录（可写）≠ 资源根（可能只读）：logs/trace 走 process.cwd()。
+                c.current_dir(work_dir);
                 c
             }
             HostEntry::Tsx { project_root } => {

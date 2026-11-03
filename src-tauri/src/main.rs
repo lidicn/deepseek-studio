@@ -298,13 +298,22 @@ pub(crate) fn terminate_tree(_root: u32) -> usize {
 
 /// 运行时读取注入脚本（而非 include_str! 编译时嵌入）。
 /// 搜索顺序：当前工作目录 → 相对于 exe 目录（向上找项目根）→ exe 同级。
-fn load_init_script() -> String {
+fn load_init_script(resource_dir: Option<&std::path::Path>) -> String {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    // 打包版（TD-04 补缺）：注入脚本随包分发在 `<resource_dir>/inject/entry.js`。
+    //
+    // **必须排在候选最前**：否则安装版若 CWD 恰好在仓库根，会先命中相对路径
+    // `src-tauri/inject/entry.js` —— 借到的是**开发树的产物**，
+    // 于是「安装版自带注入」这条根本没被证明（20261103 实测：安装版 CWD=仓库根时正是如此）。
+    // 排最前之后：安装版永远用包内那份，CWD 在哪都借不到开发树。
+    if let Some(dir) = resource_dir {
+        candidates.push(dir.join("inject/entry.js"));
+    }
     candidates.push(std::path::PathBuf::from("inject/entry.js"));
     candidates.push(std::path::PathBuf::from("src-tauri/inject/entry.js"));
 
@@ -912,20 +921,54 @@ fn open_bot_window(
 
 // ── TD-04：资源根与宿主入口解析 ──────────────────────────────────────────
 
-/// 项目根（开发树）：从 `start` 向上找含 `package.json` 的目录。
+/// 仓库根判定（TD-04 补缺）：必须**同时**有 `package.json` 与 `src-tauri/`。
 ///
-/// 旧实现是 `exe_dir.parent()^3` + 硬编码的绝对路径兜底 —— 装到别人
-/// 机器上必然指向一个不存在的目录（发版阻断）。现在找不到就返回 `None`（安装版正常情况），
-/// 由调用方退到 `app_data_dir()`。
+/// 只看 `package.json` 是不够的：安装版在 `C:\Users\<user>\AppData\Local\...`
+/// 向上找时，会在 **用户 home** 撞到一份不相干的 `package.json`，于是把 home
+/// 当成项目根（20261103 实测：`project_root` 落到 `C:\Users\lidicn`，
+/// `logs/`、`trace` 会写进用户 home）。两个标记缺一不可。
+fn looks_like_repo_root(dir: &std::path::Path) -> bool {
+    dir.join("package.json").is_file() && dir.join("src-tauri").is_dir()
+}
+
+/// 项目根（开发树）：从 `start` 向上找**同时**命中 `package.json` + `src-tauri/` 的目录。
 fn find_project_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
+    find_project_root_with(start, looks_like_repo_root)
+}
+
+/// `find_project_root` 的可注入版本（单测用假判定，不碰真实文件系统）。
+fn find_project_root_with(
+    start: &std::path::Path,
+    looks_repo: impl Fn(&std::path::Path) -> bool,
+) -> Option<std::path::PathBuf> {
     let mut cur = Some(start);
     while let Some(dir) = cur {
-        if dir.join("package.json").is_file() {
+        if looks_repo(dir) {
             return Some(dir.to_path_buf());
         }
         cur = dir.parent();
     }
     None
+}
+
+/// 项目根决策（TD-04 补缺）：
+/// - **release（打包）**：**完全不信任向上搜索**，直接用 `app_data_dir()`。
+///   安装版向上找必然穿过用户 home 这类无关目录，任何一次误命中都是错根
+///   （错根 = logs/trace 写进用户 home、安装版行为依赖开发机布局）。
+/// - **debug（开发树）**：允许向上搜索，但必须同时命中 `package.json` + `src-tauri/`。
+///
+/// `allow_repo_search` 由调用方传 `cfg!(debug_assertions)`，单测可显式控制两条分支。
+fn resolve_project_root(
+    exe_dir: &std::path::Path,
+    app_data_dir: Option<std::path::PathBuf>,
+    allow_repo_search: bool,
+) -> Option<std::path::PathBuf> {
+    if allow_repo_search {
+        if let Some(root) = find_project_root(exe_dir) {
+            return Some(root);
+        }
+    }
+    app_data_dir
 }
 
 /// 宿主入口（TD-04）。
@@ -973,6 +1016,8 @@ fn resolve_host_entry(
                 return sidecar::HostEntry::Bundled {
                     script: strip_verbatim(&script),
                     resource_root: strip_verbatim(root),
+                    // dev：工作目录 = 仓库根（logs/trace 落仓库 logs/trace，与开发态一致）
+                    work_dir: strip_verbatim(root),
                 };
             }
         }
@@ -992,6 +1037,11 @@ fn resolve_host_entry(
             return sidecar::HostEntry::Bundled {
                 script: strip_verbatim(&script),
                 resource_root: strip_verbatim(res),
+                // release：工作目录 = 数据目录（app_data_dir），**不是安装目录**
+                // （安装目录可能只读 → logs/trace 写不进去）。
+                work_dir: project_root
+                    .map(strip_verbatim)
+                    .unwrap_or_else(|| strip_verbatim(res)),
             };
         }
         if script.is_file() {
@@ -1002,6 +1052,11 @@ fn resolve_host_entry(
             return sidecar::HostEntry::Bundled {
                 script: strip_verbatim(&script),
                 resource_root: strip_verbatim(res),
+                // release：工作目录 = 数据目录（app_data_dir），**不是安装目录**
+                // （安装目录可能只读 → logs/trace 写不进去）。
+                work_dir: project_root
+                    .map(strip_verbatim)
+                    .unwrap_or_else(|| strip_verbatim(res)),
             };
         }
     }
@@ -1069,6 +1124,10 @@ fn main() {
         // v0.12 Phase 3：自动更新插件
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            // TD-04 补缺：注入脚本的打包版来源（Tauri 资源目录）。
+            // 提到块外：主窗口与 bot 窗口（base_script）都要用它找
+            // `<resource_dir>/inject/entry.js`，否则安装版会借到开发树的产物。
+            let resource_dir = app.path().resource_dir().ok();
             // v0.12：受监管 sidecar 启动
             if std::env::var("STUDIO_DISABLE_HOST").is_err() {
                 // TD-04：node 必须先有 —— 打包版跑随包单文件、dev 回退 tsx，两者都要 node。
@@ -1085,9 +1144,15 @@ fn main() {
                     .and_then(|p| p.parent().map(|p| p.to_path_buf()))
                     .unwrap_or_else(|| std::path::PathBuf::from("."));
                 // TD-04：不再有硬编码兜底。开发树向上找 package.json；安装版退回 app_data_dir。
-                let project_root = find_project_root(&exe_dir)
-                    .or_else(|| app.path().app_data_dir().ok());
-                let resource_dir = app.path().resource_dir().ok();
+                // TD-04 补缺：**release（打包）不走上向搜索**，直接用 app_data_dir；
+                // 只有 debug（开发树）才允许向上找，且必须同时命中 package.json + src-tauri/。
+                // 20261103 实测：安装版向上找会撞到用户 home 里的杂散 package.json，
+                // 把 home 当项目根 → logs/trace 写进用户 home。
+                let project_root = resolve_project_root(
+                    &exe_dir,
+                    app.path().app_data_dir().ok(),
+                    cfg!(debug_assertions),
+                );
                 eprintln!(
                     "[studio] project_root: {:?} resource_dir: {:?}",
                     project_root, resource_dir
@@ -1095,9 +1160,11 @@ fn main() {
                 let host_entry =
                     resolve_host_entry(resource_dir.as_deref(), project_root.as_deref());
                 match &host_entry {
-                    sidecar::HostEntry::Bundled { script, resource_root } => {
+                    sidecar::HostEntry::Bundled { script, resource_root, work_dir } => {
                         eprintln!("[studio] host entry: bundled {:?}", script);
                         eprintln!("[studio] STUDIO_RESOURCE_ROOT: {:?}", resource_root);
+                        // 工作目录（可写）：宿主把 logs/trace 写在这里 → 必须是数据目录，不是安装目录
+                        eprintln!("[studio] host work_dir: {:?}", work_dir);
                     }
                     sidecar::HostEntry::Tsx { project_root } => {
                         eprintln!("[studio] host entry: tsx (dev fallback) {:?}", project_root);
@@ -1144,7 +1211,7 @@ fn main() {
                     "{}{}{}",
                     chat_config_script,
                     host_token_script,
-                    load_init_script()
+                    load_init_script(resource_dir.as_deref())
                 );
                 main_builder = main_builder.initialization_script(&init_script);
             }
@@ -1174,7 +1241,7 @@ fn main() {
             // plan_bot_windows 及其单测保留 —— 按需建窗那条路径仍要走同一套
             // 「1 槽位 : 1 账号 : 1 窗口」判定。
             let base_script = if !disable_inject {
-                load_init_script()
+                load_init_script(resource_dir.as_deref())
             } else {
                 String::new()
             };
@@ -1506,5 +1573,74 @@ mod tests {
         );
         assert_eq!(created(&plans).len(), 1);
         assert_eq!(skip_reasons(&plans).len(), 2);
+    }
+
+    // ── TD-04 补缺：项目根判定（package.json + src-tauri/ 缺一不可）────────
+
+    fn tmp_base(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "dsh-project-root-{}-{}",
+            std::process::id(),
+            tag
+        ))
+    }
+
+    /// PM 规格：exe 在 home 下、祖先有**杂散** package.json 时，**release** 必须取 app_data_dir。
+    #[test]
+    fn release_uses_app_data_even_when_home_has_stray_package_json() {
+        let base = tmp_base("stray");
+        let home = base.join("home");
+        let exe_dir = home.join("AppData").join("Local").join("DeepSeek++ Studio");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        // home 下有一份**不相干**的 package.json（真实文件），且没有 src-tauri/
+        std::fs::write(home.join("package.json"), "{}").unwrap();
+        let app_data = base.join("appdata");
+
+        // release：禁用向上搜索 → 必须拿 app_data_dir
+        assert_eq!(
+            resolve_project_root(&exe_dir, Some(app_data.clone()), false),
+            Some(app_data.clone())
+        );
+        // debug：允许向上搜索，但缺 src-tauri/ → 仍不能把 home 当仓库根
+        assert_eq!(
+            resolve_project_root(&exe_dir, Some(app_data.clone()), true),
+            Some(app_data.clone())
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// debug 构建：真正的仓库根（package.json + src-tauri/）要能认出来；
+    /// release 构建对同一个 exe 位置**不许**认仓库根。
+    #[test]
+    fn debug_accepts_real_repo_root_but_release_does_not() {
+        let base = tmp_base("repo");
+        let repo = base.join("dev");
+        let exe_dir = repo.join("src-tauri").join("target").join("debug");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        std::fs::write(repo.join("package.json"), "{}").unwrap();
+        let app_data = base.join("appdata");
+
+        assert_eq!(
+            resolve_project_root(&exe_dir, Some(app_data.clone()), true),
+            Some(repo.clone())
+        );
+        assert_eq!(
+            resolve_project_root(&exe_dir, Some(app_data.clone()), false),
+            Some(app_data)
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// 负控：**只看 package.json 的旧判定**会把 home 认成仓库根 —— 这就是 20261103
+    /// 那条 `project_root = C:\Users\lidicn` 的成因；严格判定不会。
+    #[test]
+    fn naive_package_json_only_would_misjudge_home_as_repo_root() {
+        let home = std::path::Path::new("C:/Users/lidicn");
+        let naive = find_project_root_with(home, |d| d.join("package.json").is_file());
+        assert_eq!(naive, Some(home.to_path_buf()));
+        let strict = find_project_root_with(home, |d| {
+            d.join("package.json").is_file() && d.join("src-tauri").is_dir()
+        });
+        assert_eq!(strict, None);
     }
 }

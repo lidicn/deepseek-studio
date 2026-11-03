@@ -425,6 +425,102 @@ export function ensureMcpConfig(configPath?: string): string {
 /**
  * MCP 控制器：管理多个 MCP 服务器连接，动态注册工具，转发工具调用。
  */
+// ── BUG-037：MCP SSE 传输必须按流读，不能 `await res.text()` ──────────────
+
+/** SSE 整段读取上限（与 fetch 的 AbortSignal 同量级）。 */
+export const SSE_READ_TIMEOUT_MS = 30000;
+
+export interface ReadSseOptions {
+  /** 整段读取上限（毫秒），单测可注入更小值。 */
+  timeoutMs?: number;
+}
+
+/** 从 SSE 文本里取第一条带 `id` 的 JSON-RPC 响应；没有就返回 undefined（半行会被下次重试）。 */
+function takeJsonRpcFromSseBuffer(buffer: string): unknown | undefined {
+  for (const rawLine of buffer.split('\n')) {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:')) continue;
+    const data = line.slice(5).trim();
+    if (!data || data === '[DONE]') continue;
+    try {
+      const parsed = JSON.parse(data) as { id?: unknown; result?: unknown };
+      if (parsed && typeof parsed === 'object' && parsed.id != null) return parsed.result ?? parsed;
+    } catch {
+      // 半行（块边界切断）：留着，下一块拼完再解析。
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 从 SSE 响应读**第一条** JSON-RPC 响应（BUG-037）。
+ *
+ * 为什么不能 `await res.text()`：SSE 是长连接 —— 服务端发完一条 `data:` 后**不关闭**流，
+ * `text()` 只有 EOF 才 resolve → 永远拿不到，最后被 30s 超时打断，每个 SSE 工具调用都要
+ * 干等 30 秒再失败（真机表现为「MCP over SSE 可用但每次调用必超时」）。
+ *
+ * 收尾语义（每条都有用例守着）：
+ *   - 解出带 `id` 的 JSON-RPC 对象 → **立即返回**，并 cancel reader（不 cancel 会吊着连接）；
+ *   - 遇到 `data: [DONE]` → 停止读取；此前没响应则抛错；
+ *   - 流 EOF → 返回已解析到的响应，没有则抛 `No JSON-RPC response in SSE stream`；
+ *   - 超时 → cancel reader 并抛 `MCP SSE response timed out after Nms`（**不许永久挂住**）。
+ */
+export async function readSseJsonRpcResponse(
+  res: Response,
+  opts: ReadSseOptions = {},
+): Promise<unknown> {
+  const timeoutMs = opts.timeoutMs ?? SSE_READ_TIMEOUT_MS;
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error('SSE response has no body');
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const readLoop = (async (): Promise<unknown> => {
+    try {
+      for (;;) {
+        let chunk: ReadableStreamReadResult<Uint8Array>;
+        try {
+          chunk = await reader.read();
+        } catch (e) {
+          if (timedOut) throw new Error(`MCP SSE response timed out after ${timeoutMs}ms`);
+          throw e;
+        }
+        if (chunk.value) buffer += decoder.decode(chunk.value, { stream: true });
+        const found = takeJsonRpcFromSseBuffer(buffer);
+        if (found !== undefined) return found;
+        if (chunk.done) {
+          buffer += decoder.decode();
+          const atEof = takeJsonRpcFromSseBuffer(buffer);
+          if (atEof !== undefined) return atEof;
+          throw new Error('No JSON-RPC response in SSE stream');
+        }
+        if (buffer.includes('[DONE]')) {
+          throw new Error('SSE stream finished without a JSON-RPC response');
+        }
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+      try { await reader.cancel(); } catch { /* 已关闭或已取消 */ }
+    }
+  })();
+
+  // 超时后 readLoop 自己也会 reject（reader 被 cancel）；这里吞掉避免 unhandled rejection。
+  readLoop.catch(() => { /* 见上方注释 */ });
+
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      void reader.cancel().catch(() => { /* 已取消 */ });
+      reject(new Error(`MCP SSE response timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  return Promise.race([readLoop, deadline]);
+}
+
 export class McpController {
   private connections = new Map<string, McpServerConnection>();
   private servers: Record<string, McpServerConfig> = {};
@@ -741,20 +837,9 @@ export class McpController {
     }
     const contentType = res.headers.get('content-type') ?? '';
     if (contentType.includes('text/event-stream')) {
-      // SSE 响应：解析第一个 JSON-RPC 响应
-      const text = await res.text();
-      for (const line of text.split('\n')) {
-        if (line.startsWith('data:')) {
-          const data = line.slice(5).trim();
-          if (data) {
-            try {
-              const parsed = JSON.parse(data);
-              if (parsed.id != null) return parsed.result ?? parsed;
-            } catch { /* ignore */ }
-          }
-        }
-      }
-      throw new Error('No JSON-RPC response in SSE stream');
+      // BUG-037：SSE 是长连接，`res.text()` 只有 EOF 才 resolve → 必超时。
+      // 改成按流增量读取，拿到第一条响应即返回（收尾语义见 readSseJsonRpcResponse）。
+      return readSseJsonRpcResponse(res);
     }
     const data = await res.json() as { result?: unknown; error?: { message?: string } };
     if (data.error) throw new Error(data.error.message ?? 'MCP error');

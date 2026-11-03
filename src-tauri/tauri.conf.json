@@ -29,6 +29,7 @@
     "targets": "all",
     "resources": {
       "host/main.mjs": "host/main.mjs",
+      "inject/entry.js": "inject/entry.js",
       "../dist/agent-panel.js": "dist/agent-panel.js",
       "../src/ui/agent.html": "src/ui/agent.html",
       "../src/ui/agent.css": "src/ui/agent.css",

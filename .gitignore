@@ -24,6 +24,8 @@ scripts/*.txt
 src/inject/pow-wasm-base64.txt
 tauri*.log
 vitest.config.ts.timestamp-*.mjs
+# 代码块运行器的临时目录（R2-08：工作区内相对路径，跨机器；勿入库）
+.studio-tmp/
 
 # 一次性调试日志与临时脚本（本地保留，勿提交）
 *-log.txt

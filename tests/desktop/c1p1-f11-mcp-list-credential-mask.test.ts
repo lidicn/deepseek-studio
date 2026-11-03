@@ -25,7 +25,7 @@
  * 5. 负控：模型面调 `mcp.list` 后，返回值里**不得出现任何凭据形态子串**。
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -221,6 +221,15 @@ describe('F11 · 端到端：宿主 mcp.list 真实路径的返回值不含任�
     // 所以在 import 宿主模块**之前**设好环境变量即可把它指向临时目录。
     const prev = process.env.STUDIO_MCP_CONFIG;
     process.env.STUDIO_MCP_CONFIG = cfgPath;
+    // 传输层 stub：这条用例断言的是**凭据掩码**，不是网络可达性。
+    // 原版真的去连 `https://alice:…@example.com/mcp` —— 单测里连外网，网络一抖就 5s 超时，
+    // 把 gate 弄成假红（20261103 实测：HEAD 版本同样超时，与业务代码无关）。
+    // 这里让 fetch 立刻失败：连接失败路径与原版一致（该服务器 toolCount 仍为 0），
+    // **断言一条没改**（凭据掩码语义、保留字段、负控全部保持原样）。
+    const fetchStub = vi.fn(async () => {
+      throw new Error('ECONNREFUSED (stubbed transport: 单测不连外网)');
+    });
+    vi.stubGlobal('fetch', fetchStub);
     try {
       const { createDesktopHost } = await import('../../src/host/desktop-host');
       const host = createDesktopHost({ config: { host: '127.0.0.1', port: 0, token: 't' }, secret: 's' });
@@ -241,6 +250,7 @@ describe('F11 · 端到端：宿主 mcp.list 真实路径的返回值不含任�
       // toolCount 保留（PM 裁定要保留的字段）。
       expect(payload).toContain('toolCount');
     } finally {
+      vi.unstubAllGlobals();
       if (prev === undefined) delete process.env.STUDIO_MCP_CONFIG;
       else process.env.STUDIO_MCP_CONFIG = prev;
     }

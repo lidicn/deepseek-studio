@@ -3,7 +3,9 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   MEMORY_INJECT_LIMIT,
+  MEMORY_INJECT_NAMED_RESERVE_TOKEN_CAP,
   MEMORY_INJECT_TOKEN_BUDGET,
+  collectNamedMemoryIds,
   formatMemoryLine,
   formatUntrustedMemoriesBlock,
   neutralizeUntrustedMemoryMarkers,
@@ -141,5 +143,95 @@ describe('M10-8A 注入 token 预算（页端）', () => {
     const block = formatUntrustedMemoriesBlock(rows);
     expect(block.split(UNTRUSTED_MEMORY_OPEN)).toHaveLength(2);
     expect(block).toContain('[[redacted-memory-marker]]');
+  });
+});
+
+describe('F9 点名保留位：任务点名条目不被 token 预算挤掉', () => {
+  /** n 条同长 CJK 记忆，每条约 contentLen token。 */
+  function cjkRows(n: number, contentLen: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      id: `m${i}`, type: 'user', name: `n${i}`, content: '啊'.repeat(contentLen),
+    }));
+  }
+
+  it('常量上界存在且刻意不等于 1800（不靠调大预算解决）', () => {
+    expect(MEMORY_INJECT_TOKEN_BUDGET).toBe(1800);
+    expect(MEMORY_INJECT_NAMED_RESERVE_TOKEN_CAP).toBeGreaterThan(0);
+    expect(MEMORY_INJECT_NAMED_RESERVE_TOKEN_CAP).toBeLessThan(MEMORY_INJECT_TOKEN_BUDGET);
+  });
+
+  it('红转绿：点名条目排在第 6 位（预算只容 5 条）→ 保留位后必进', () => {
+    // 12 条同长（每条约 205 token），预算 1100 容 5 条；点名条目是 m6（第 7 条）。
+    const rows = cjkRows(12, 200);
+    const namedIds = new Set(['m6']);
+
+    // 红态锚点：无保留位（namedIds 空）⇒ 走确定性前缀，m6 被挤掉。
+    const before = selectMemoryInjectRows(rows, { rowLimit: 40, tokenBudget: 1100 }).map((r) => r.id);
+    expect(before).not.toContain('m6');
+
+    // 修后：保留位让 m6 必进，牺牲后面的非 named 行。
+    const after = selectMemoryInjectRows(rows, { rowLimit: 40, tokenBudget: 1100, namedIds }).map((r) => r.id);
+    expect(after).toContain('m6');
+    // m6 排在第 7 位（index 6）——后面 5 条非 named 被挤掉，前面 5 条仍在前缀里。
+    expect(after).toContain('m0');
+  });
+
+  it('保留位保持输入顺序输出（不重排，与 M10-8A 不变式一致）', () => {
+    const rows = cjkRows(8, 200);
+    const namedIds = new Set(['m5']);
+    const out = selectMemoryInjectRows(rows, { rowLimit: 40, tokenBudget: 10000, namedIds }).map((r) => r.id);
+    // 顺序 = 输入顺序（named 不被挪到队首）。
+    expect(out).toEqual(rows.map((r) => r.id));
+  });
+
+  it('负控：不点名（namedIds 空）⇒ 字节级回到旧前缀口径，预算照旧生效不膨胀', () => {
+    const rows = cjkRows(50, 200); // 每条约 204 token，1800 容不下 40 行
+    const empty = new Set<string>();
+    const out = selectMemoryInjectRows(rows, { rowLimit: 40, tokenBudget: MEMORY_INJECT_TOKEN_BUDGET, namedIds: empty });
+    // 与「不传 namedIds」完全一致（确定性前缀，无保留位膨胀）。
+    const legacy = selectMemoryInjectRows(rows, { rowLimit: 40, tokenBudget: MEMORY_INJECT_TOKEN_BUDGET });
+    expect(out.map((r) => r.id)).toEqual(legacy.map((r) => r.id));
+    expect(out.length).toBeLessThan(40); // token 预算仍先触顶
+  });
+
+  it('回退上界：named 块超过 NAMED_RESERVE_TOKEN_CAP → 超出部分不再强塞（防膨胀）', () => {
+    // 造一堆点名条目，总量远超保留位上界。
+    const big = '啊'.repeat(600); // 单条约 600+ token
+    const rows = Array.from({ length: 6 }, (_, i) => ({
+      id: `n${i}`, type: 'user', name: `n${i}`, content: big,
+    }));
+    const namedIds = new Set(rows.map((r) => r.id));
+    const out = selectMemoryInjectRows(rows, {
+      rowLimit: 40, tokenBudget: MEMORY_INJECT_TOKEN_BUDGET, namedIds,
+    });
+    const namedIncluded = out.filter((r) => namedIds.has(r.id));
+    // 保留位有界：不可能 6 条全进（6×~600 >> cap 900）。
+    expect(namedIncluded.length).toBeLessThan(6);
+    expect(namedIncluded.length).toBeGreaterThan(0); // 能进的必进
+  });
+
+  it('collectNamedMemoryIds：引号点名片段命中 name/content → 收集 id；无引号 → 空集', () => {
+    const rows = [
+      { id: 'a', type: 'user', name: '深色模式偏好', content: '用户喜欢深色主题' },
+      { id: 'b', type: 'user', name: '工作项目', content: '正在做 F9 记忆注入' },
+    ];
+    // 点名「深色模式偏好」→ 命中 a（name 含该片段）。
+    expect(collectNamedMemoryIds('帮我处理「深色模式偏好」这个问题', rows)).toEqual(new Set(['a']));
+    // 点名片段落在 content 里 → 同样命中。
+    expect(collectNamedMemoryIds('关于「F9 记忆注入」的进度', rows)).toEqual(new Set(['b']));
+    // 无引号片段 → 空集（走原前缀口径）。
+    expect(collectNamedMemoryIds('帮我处理深色模式偏好这个问题', rows)).toEqual(new Set([]));
+    // 空任务 → 空集。
+    expect(collectNamedMemoryIds('', rows)).toEqual(new Set([]));
+  });
+
+  it('端到端：formatUntrustedMemoriesBlock 带 namedIds → 点名条目出现在记忆块里', () => {
+    const rows = cjkRows(12, 200);
+    const namedIds = new Set(['m6']);
+    const block = formatUntrustedMemoriesBlock(rows, 40, namedIds);
+    expect(block).toContain('- #m6 '); // 点名条目进了记忆块
+    // 信封完好（不回归）：恰好一层数据信封，正文无裸标记。
+    expect(block.split(UNTRUSTED_MEMORY_OPEN)).toHaveLength(2);
+    expect(block.split(UNTRUSTED_MEMORY_CLOSE)).toHaveLength(2);
   });
 });
