@@ -265,6 +265,8 @@ pub enum HostEntry {
 pub const EXIT_NODE_MISSING: i32 = 21;
 /// 打包版找不到宿主单文件时的专用退出码（TD-04）。
 pub const EXIT_HOST_MISSING: i32 = 22;
+/// 宿主工作目录不可用（路径非法/建不出来）时的专用退出码（20261103 真机实测）。
+pub const EXIT_WORKDIR_UNUSABLE: i32 = 23;
 
 /// node 可执行文件：`STUDIO_NODE` 优先，否则 PATH 里的 `node`。
 pub fn node_executable() -> String {
@@ -365,6 +367,27 @@ impl SidecarSupervisor {
                 // 安装版 resource_dir() 与开发树仓库根**目录结构同构**，宿主无须区分两种形态。
                 c.env("STUDIO_RESOURCE_ROOT", resource_root);
                 // 工作目录（可写）≠ 资源根（可能只读）：logs/trace 走 process.cwd()。
+                //
+                // 目录必须**先建出来**：安装版首次运行时 app_data_dir 还不存在，
+                // current_dir 会直接失败（Windows os error 267 ERROR_DIRECTORY）
+                // → sidecar spawn 失败 → 宿主从未启动 → 8760 永不监听
+                // → 安装版没有后端（20261103 真机实测：/healthz 永不 200，
+                //   crash.jsonl 记 "spawn failed: 目录名称无效。(os error 267)"）。
+                // 建不出来/路径非法 → 明确日志 + 专用退出码，不静默吞掉。
+                if work_dir.as_os_str().is_empty() || !work_dir.is_absolute() {
+                    eprintln!(
+                        "[studio] host work_dir 非法（需非空绝对路径）: {:?}",
+                        work_dir
+                    );
+                    std::process::exit(EXIT_WORKDIR_UNUSABLE);
+                }
+                if let Err(e) = std::fs::create_dir_all(work_dir) {
+                    eprintln!(
+                        "[studio] 无法创建宿主工作目录 {:?}: {}",
+                        work_dir, e
+                    );
+                    std::process::exit(EXIT_WORKDIR_UNUSABLE);
+                }
                 c.current_dir(work_dir);
                 c
             }
