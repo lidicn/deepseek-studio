@@ -79,35 +79,52 @@ try {
 
   let lastErr = '';
   let zipOk = false;
-  for (const url of MIRRORS) {
-    try {
-      console.log(`[fetch-node] 下载 ${url}`);
-      const res = await fetch(url, { signal: AbortSignal.timeout(180_000) });
-      if (!res.ok || !res.body) {
-        let bodyHead = '';
-        try { bodyHead = (await res.text()).slice(0, 200); } catch { /* ignore */ }
-        lastErr = `HTTP ${res.status} ${res.statusText} from ${new URL(url).host} body="${bodyHead}"`;
+  // 两轮 × 三镜像：nodejs.org 在 Actions 上偶发「连接提前关闭导致 zip 截断」
+  // （run#6：26,951,320 B 就正常 EOF，解压时 unexpected end of file），
+  // 所以逐源校验 Content-Length，整轮失败再来一轮。
+  const ROUNDS = 2;
+  for (let round = 1; round <= ROUNDS && !zipOk; round++) {
+    if (round > 1) {
+      console.log(`[fetch-node] 第 ${round} 轮重试`);
+      await new Promise((r) => setTimeout(r, 5_000));
+    }
+    for (const url of MIRRORS) {
+      try {
+        console.log(`[fetch-node] 下载 ${url}`);
+        const res = await fetch(url, { signal: AbortSignal.timeout(180_000) });
+        if (!res.ok || !res.body) {
+          let bodyHead = '';
+          try { bodyHead = (await res.text()).slice(0, 200); } catch { /* ignore */ }
+          lastErr = `HTTP ${res.status} ${res.statusText} from ${new URL(url).host} body="${bodyHead}"`;
+          console.error(`[fetch-node] ${lastErr}`);
+          continue; // 换下一个镜像
+        }
+        const contentLength = Number(res.headers.get('content-length') ?? 0);
+        await new Promise((resolve, reject) => {
+          const ws = createWriteStream(zipPath);
+          res.body.pipeTo(new WritableStream({
+            write(chunk) { ws.write(Buffer.from(chunk)); },
+            close() { ws.end(); resolve(); },
+            abort(e) { ws.destroy(); reject(e); },
+          })).catch(reject);
+        });
+        const size = statSync(zipPath).size;
+        // 完整性校验：流可能「正常关闭」但其实被截断（run#6 根因）
+        if (contentLength > 0 && size !== contentLength) {
+          lastErr = `zip 截断：${new URL(url).host} 收到 ${size} B，Content-Length=${contentLength}`;
+          console.error(`[fetch-node] ${lastErr}`);
+          continue; // 换下一个镜像
+        }
+        diag(`downloaded ${size} B from ${new URL(url).host}`);
+        zipOk = true;
+        break;
+      } catch (e) {
+        lastErr = `download error from ${url}: ${e instanceof Error ? e.message : String(e)}`;
         console.error(`[fetch-node] ${lastErr}`);
-        continue; // 换下一个镜像
       }
-      await new Promise((resolve, reject) => {
-        const ws = createWriteStream(zipPath);
-        res.body.pipeTo(new WritableStream({
-          write(chunk) { ws.write(Buffer.from(chunk)); },
-          close() { ws.end(); resolve(); },
-          abort(e) { ws.destroy(); reject(e); },
-        })).catch(reject);
-      });
-      const size = statSync(zipPath).size;
-      diag(`downloaded ${size} B from ${new URL(url).host}`);
-      zipOk = true;
-      break;
-    } catch (e) {
-      lastErr = `download error from ${url}: ${e instanceof Error ? e.message : String(e)}`;
-      console.error(`[fetch-node] ${lastErr}`);
     }
   }
-  if (!zipOk) fail(`全部镜像失败：${lastErr}`);
+  if (!zipOk) fail(`全部镜像失败（含 ${ROUNDS} 轮重试）：${lastErr}`);
 
   // 从 zip 里精确取 `node-<version>-win-x64/node.exe`（不整体解压，避免路径匹配坑）
   const zipBuf = readFileSync(zipPath);
