@@ -52,6 +52,10 @@ jobs:
       - name: Install deps
         run: npm ci
 
+      # bundled node.exe 被 .gitignore 排除，CI 全新环境必须先取——tauri CLI 校验 bundle.resources 早于 beforeBuildCommand
+      - name: Fetch bundled node
+        run: node src-tauri/fetch-node.mjs
+
       # 构建 + 签名（createUpdaterArtifacts=true 会产出 .sig）
       - name: Build & sign
         shell: pwsh
