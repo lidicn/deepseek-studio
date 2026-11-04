@@ -1,0 +1,102 @@
+# 自动更新发版流（Tauri v2 updater + GitHub Releases）
+#
+# 触发面**刻意收窄**：只有推 `v*` tag 才跑（Gate 判据 1）。
+# push main / PR 一律不触发 —— 防止未签名产物覆盖 `latest.json`。
+#
+# 秘密卫生（Gate 判据 2）：
+#   - 私钥与密码**只从 GitHub Secrets 读**：TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+#   - 本文件不得出现任何私钥路径或内容。
+#
+# fail-safe 顺序（Gate 判据 4）：先建 **draft** Release 并上传安装包+签名+latest.json，
+#   由人工点「Publish」后才生效 —— 失败只留 draft，不会留下半成品的公开更新源。
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# 同一 tag 重复推只跑一次，不并发覆盖
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 版本一致性：tag 必须等于 package.json / tauri.conf.json 的 version（Gate 判据 3：版本号不许手写）
+      - name: Verify tag matches version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $conf = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          Write-Host "tag=$tag package=$pkg tauri=$conf"
+          if ($tag -ne $pkg -or $tag -ne $conf) {
+            Write-Error "tag/version mismatch: tag=$tag package.json=$pkg tauri.conf.json=$conf"
+            exit 1
+          }
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      # 构建 + 签名（createUpdaterArtifacts=true 会产出 .sig）
+      - name: Build & sign
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build
+
+      # 由产物生成 latest.json（Gate 判据 3：不手写版本号/签名，全部从 tauri 产物读取）
+      - name: Compose latest.json
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $conf = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $version = $conf.version
+          $nsis = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
+          $sig = "$($nsis.FullName).sig"
+          if (-not (Test-Path $sig)) { Write-Error "missing signature: $sig"; exit 1 }
+          $platform = @{
+            "windows-x86_64" = @{
+              signature = (Get-Content $sig -Raw).Trim()
+              url = "${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/$($nsis.Name)"
+            }
+          }
+          $latest = @{ version = $version; notes = "Release ${{ github.ref_name }}"; pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"); platforms = $platform }
+          ($latest | ConvertTo-Json -Depth 6) | Set-Content -Path "src-tauri/target/release/latest.json" -Encoding UTF8
+          Get-Content "src-tauri/target/release/latest.json"
+
+      # fail-safe：先建 **draft** Release（Gate 判据 4）
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: true
+          prerelease: false
+          files: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.exe.sig
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/msi/*.msi.sig
+            src-tauri/target/release/latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
