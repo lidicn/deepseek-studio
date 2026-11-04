@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "https://chat.deepseek.com",
     "beforeDevCommand": "npm run build:inject && npm run start",
-    "beforeBuildCommand": "npm run build:inject && npm run build:host"
+    "beforeBuildCommand": "node src-tauri/fetch-node.mjs && npm run build:inject && npm run build:host"
   },
   "app": {
     "windows": [],
@@ -30,6 +30,7 @@
     "resources": {
       "host/main.mjs": "host/main.mjs",
       "inject/entry.js": "inject/entry.js",
+      "node/node.exe": "node/node.exe",
       "../dist/agent-panel.js": "dist/agent-panel.js",
       "../src/ui/agent.html": "src/ui/agent.html",
       "../src/ui/agent.css": "src/ui/agent.css",

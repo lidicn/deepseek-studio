@@ -1112,6 +1112,8 @@ fn resolve_host_entry(
                     resource_root: strip_verbatim(root),
                     // dev：工作目录 = 仓库根（logs/trace 落仓库 logs/trace，与开发态一致）
                     work_dir: strip_verbatim(root),
+                    // dev 不吃 bundled node（仓库里没有 node/node.exe；就算有也不用，避免掩盖 PATH 问题）
+                    node: None,
                 };
             }
         }
@@ -1136,6 +1138,11 @@ fn resolve_host_entry(
                 work_dir: project_root
                     .map(strip_verbatim)
                     .unwrap_or_else(|| strip_verbatim(res)),
+                // TD-04(a)：包内 node.exe（存在才用；不存在 → 回退 STUDIO_NODE → PATH）
+                node: {
+                    let p = res.join("node").join("node.exe");
+                    if p.is_file() { Some(strip_verbatim(&p)) } else { None }
+                },
             };
         }
         if script.is_file() {
@@ -1151,6 +1158,10 @@ fn resolve_host_entry(
                 work_dir: project_root
                     .map(strip_verbatim)
                     .unwrap_or_else(|| strip_verbatim(res)),
+                node: {
+                    let p = res.join("node").join("node.exe");
+                    if p.is_file() { Some(strip_verbatim(&p)) } else { None }
+                },
             };
         }
     }
@@ -1222,21 +1233,25 @@ fn main() {
             // 提到块外：主窗口与 bot 窗口（base_script）都要用它找
             // `<resource_dir>/inject/entry.js`，否则安装版会借到开发树的产物。
             let resource_dir = app.path().resource_dir().ok();
-            // v0.12：受监管 sidecar 启动
+                // v0.12：受监管 sidecar 启动
             if std::env::var("STUDIO_DISABLE_HOST").is_err() {
-                // TD-04：node 必须先有 —— 打包版跑随包单文件、dev 回退 tsx，两者都要 node。
-                // 找不到就用专用退出码，不进取监管线程的重试循环（那只会无限刷屏）。
-                if let Err(why) = sidecar::probe_node() {
+                // TD-04(a)：包内 bundled node.exe 优先。先算出候选，再决定是否探活。
+                // 干净机器上没有 PATH node 时，probe 也必须看 bundled —— 否则会误判 EXIT_NODE_MISSING。
+                let exe_dir = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                    .unwrap_or_else(|| std::path::PathBuf::from("."));
+                let bundled_node = resource_dir
+                    .as_ref()
+                    .map(|r| r.join("node").join("node.exe"))
+                    .filter(|p| p.is_file());
+                if let Err(why) = sidecar::probe_node_choice(bundled_node.as_deref()) {
                     eprintln!("[studio] 宿主启动失败：找不到可用的 Node.js（{why}）");
                     eprintln!(
                         "[studio] 请安装 Node.js ≥24（https://nodejs.org/），或用 STUDIO_NODE 指定 node 可执行文件路径。"
                     );
                     std::process::exit(sidecar::EXIT_NODE_MISSING);
                 }
-                let exe_dir = std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-                    .unwrap_or_else(|| std::path::PathBuf::from("."));
                 // TD-04：不再有硬编码兜底。开发树向上找 package.json；安装版退回 app_data_dir。
                 // TD-04 补缺：**release（打包）不走上向搜索**，直接用 app_data_dir；
                 // 只有 debug（开发树）才允许向上找，且必须同时命中 package.json + src-tauri/。
@@ -1254,11 +1269,12 @@ fn main() {
                 let host_entry =
                     resolve_host_entry(resource_dir.as_deref(), project_root.as_deref());
                 match &host_entry {
-                    sidecar::HostEntry::Bundled { script, resource_root, work_dir } => {
+                    sidecar::HostEntry::Bundled { script, resource_root, work_dir, node } => {
                         eprintln!("[studio] host entry: bundled {:?}", script);
                         eprintln!("[studio] STUDIO_RESOURCE_ROOT: {:?}", resource_root);
                         // 工作目录（可写）：宿主把 logs/trace 写在这里 → 必须是数据目录，不是安装目录
                         eprintln!("[studio] host work_dir: {:?}", work_dir);
+                        eprintln!("[studio] bundled node: {:?}", node);
                     }
                     sidecar::HostEntry::Tsx { project_root } => {
                         eprintln!("[studio] host entry: tsx (dev fallback) {:?}", project_root);

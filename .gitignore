@@ -51,3 +51,6 @@ yuanbao-audit/src-tauri/target/
 logs/
 .screenshots/
 _memdb-audit.cjs
+
+# TD-04(a)：内置 node.exe（由 src-tauri/fetch-node.mjs 拉取，不入库）
+src-tauri/node/

@@ -336,6 +336,9 @@ pub enum HostEntry {
         script: PathBuf,
         resource_root: PathBuf,
         work_dir: PathBuf,
+        /// TD-04(a)：随包分发的 node.exe（`<resource_dir>/node/node.exe`）。
+        /// `Some` 且文件存在 → **首选它**；`None`/不存在 → 回退 `STUDIO_NODE` → PATH。
+        node: Option<PathBuf>,
     },
     /// 开发回退：`node <project_root>/node_modules/tsx/dist/cli.mjs <project_root>/src/api/main.ts`。
     Tsx { project_root: PathBuf },
@@ -348,21 +351,78 @@ pub const EXIT_HOST_MISSING: i32 = 22;
 /// 宿主工作目录不可用（路径非法/建不出来）时的专用退出码（20261103 真机实测）。
 pub const EXIT_WORKDIR_UNUSABLE: i32 = 23;
 
+/// node 可执行文件解析结果（TD-04(a)）。
+///
+/// `label` 用于启动日志：`bundled <path>` / `STUDIO_NODE <path>` / `PATH <path>`，
+/// 便于真机一眼看出「到底用的是包内 node 还是机器上碰巧装的 node」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeChoice {
+    pub path: String,
+    pub label: String,
+}
+
+/// node 选择：**包内 bundled node.exe → `STUDIO_NODE` → PATH**（TD-04(a) 三级优先）。
+///
+/// 为什么 bundled 排第一：用户拍板「安装版必须自包含」，干净机器上没有 node 也要能起。
+/// `bundled` 传的是候选路径；只有**文件确实存在**才采用，否则逐级回退（不静默声称已内置）。
+pub fn resolve_node(
+    bundled: Option<&std::path::Path>,
+    env_studio_node: Option<&str>,
+    path_fallback: &str,
+) -> NodeChoice {
+    if let Some(p) = bundled {
+        if p.is_file() {
+            return NodeChoice {
+                path: p.to_string_lossy().into_owned(),
+                label: format!("bundled {}", p.display()),
+            };
+        }
+    }
+    if let Some(s) = env_studio_node {
+        let t = s.trim();
+        if !t.is_empty() {
+            return NodeChoice {
+                path: t.to_string(),
+                label: format!("STUDIO_NODE {t}"),
+            };
+        }
+    }
+    NodeChoice {
+        path: path_fallback.to_string(),
+        label: format!("PATH {path_fallback}"),
+    }
+}
+
 /// node 可执行文件：`STUDIO_NODE` 优先，否则 PATH 里的 `node`。
+///
+/// TD-04(a) 起，打包版走 `resolve_node`（bundled 优先）；此函数保留给 Tsx 回退与单测。
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn node_executable() -> String {
-    std::env::var("STUDIO_NODE")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "node".to_string())
+    resolve_node(
+        None,
+        std::env::var("STUDIO_NODE").ok().as_deref(),
+        "node",
+    )
+    .path
 }
 
 /// 启动前探活：`<node> --version` 跑通才算可用。
 ///
 /// 不可用时**不重试**：监管线程的重启逻辑对「没有 node」只会无限刷屏，
 /// 由调用方给专用退出码（EXIT_NODE_MISSING）并提示安装 Node.js ≥24。
+/// 启动前探活（无 bundled，等价 `probe_node_choice(None)`）；保留给单测/兼容。
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn probe_node() -> Result<(), String> {
-    let node = node_executable();
+    probe_node_choice(None)
+}
+
+/// 按三级优先（bundled → STUDIO_NODE → PATH）探活（TD-04(a)）。
+///
+/// 干净机器上没有 PATH node 时，必须能靠 bundled 通过 —— 否则会误判 EXIT_NODE_MISSING。
+pub fn probe_node_choice(bundled: Option<&std::path::Path>) -> Result<(), String> {
+    let env_node = std::env::var("STUDIO_NODE").ok();
+    let choice = resolve_node(bundled, env_node.as_deref(), "node");
+    let node = choice.path;
     let mut cmd = Command::new(&node);
     cmd.arg("--version").stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
@@ -437,10 +497,18 @@ impl SidecarSupervisor {
         // 附带好处：子进程直接是 node.exe，`taskkill /T /F` 能覆盖 tsx 派生链，
         // 修掉「杀树不干净 → 残留 node 占 8760 → 下一轮 EADDRINUSE」。
         // TD-04：入口由 main.rs 解析后传入（打包版 Bundled，dev 回退 Tsx）。
-        // node 解析：STUDIO_NODE → PATH；不可用时 main.rs 已用专用退出码拦下。
-        let node = node_executable();
+        // TD-04(a)：node 三级优先 bundled → STUDIO_NODE → PATH，日志打出实际用的哪个。
+        let env_node = std::env::var("STUDIO_NODE").ok();
+        let node_choice = match &self.host_entry {
+            HostEntry::Bundled { node, .. } => {
+                resolve_node(node.as_deref(), env_node.as_deref(), "node")
+            }
+            HostEntry::Tsx { .. } => resolve_node(None, env_node.as_deref(), "node"),
+        };
+        let node = node_choice.path.clone();
+        eprintln!("[studio] node: {}", node_choice.label);
         let mut cmd = match &self.host_entry {
-            HostEntry::Bundled { script, resource_root, work_dir } => {
+            HostEntry::Bundled { script, resource_root, work_dir, .. } => {
                 let mut c = Command::new(&node);
                 c.arg(script);
                 // 宿主据此找静态资源：<res>/src/ui/agent.html、<res>/dist/agent-panel.js。
@@ -1166,5 +1234,39 @@ mod td_tests {
             .any(|e| e.file_name().to_string_lossy().starts_with("crash-"));
         assert!(rotated_exists, "超 2MB 应 rotate 出 crash-<ms>.jsonl");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ── TD-04(a)：node 三级优先（bundled → STUDIO_NODE → PATH）──────────
+
+    #[test]
+    fn node_choice_prefers_bundled_when_file_exists() {
+        let dir = std::env::temp_dir().join(format!("dsh-node-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let bundled = dir.join("node.exe");
+        fs::write(&bundled, b"stub").unwrap();
+
+        let c = resolve_node(Some(&bundled), Some("C:/some/other/node.exe"), "node");
+        assert!(c.label.starts_with("bundled "), "label={}", c.label);
+        assert_eq!(std::path::Path::new(&c.path), bundled.as_path());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn node_choice_falls_back_when_bundled_missing() {
+        // bundled 指定了但文件不存在 → 必须回退 STUDIO_NODE（不能假装用了 bundled）
+        let missing = std::env::temp_dir().join("dsh-node-does-not-exist-xyz.exe");
+        let c = resolve_node(Some(&missing), Some("D:/custom/node.exe"), "node");
+        assert!(c.label.starts_with("STUDIO_NODE "), "label={}", c.label);
+        assert_eq!(c.path, "D:/custom/node.exe");
+    }
+
+    #[test]
+    fn node_choice_falls_back_to_path_when_no_bundled_and_no_env() {
+        let c = resolve_node(None, None, "node");
+        assert_eq!(c.label, "PATH node");
+        assert_eq!(c.path, "node");
+        // 空白 STUDIO_NODE 等同未设置
+        let c2 = resolve_node(None, Some("   "), "node");
+        assert_eq!(c2.label, "PATH node");
     }
 }
