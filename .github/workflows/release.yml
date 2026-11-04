@@ -174,7 +174,11 @@ jobs:
             'X-GitHub-Api-Version' = '2022-11-28'
             'User-Agent' = 'studio-release-gate'
           }
-          $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/tags/$tag"
+          # 注意：GET /releases/tags/{tag} 不返回 draft（GitHub 已知行为，run#12 的 404 根因），
+          # draft 必须走全量列表按 tag 过滤。
+          $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases?per_page=100" |
+            Where-Object { $_.tag_name -eq $tag -and $_.draft } | Select-Object -First 1
+          if (-not $rel) { throw "draft release for tag $tag not found" }
           Write-Host "release id=$($rel.id) draft=$($rel.draft) assets=$($rel.assets.Count)"
 
           $latest = Get-Content 'src-tauri/target/release/latest.json' -Raw | ConvertFrom-Json
