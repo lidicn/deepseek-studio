@@ -161,6 +161,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
+          # 诊断通道：闸的任何失败都写 ::error:: 注解（公开 API 可读；job logs 需管理员令牌）
+          trap {
+            Write-Host "::error::[preflight-gate] $($_.Exception.Message)"
+            break
+          }
           $tag = '${{ github.ref_name }}'
           $repo = '${{ github.repository }}'
           $headers = @{
