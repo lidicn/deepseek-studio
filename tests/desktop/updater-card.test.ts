@@ -112,6 +112,22 @@ describe('update-card：卡片渲染与按钮行为', () => {
     document.body.innerHTML = '';
   });
 
+  it('P3-1 切换期负控：旧 Rust 的 snake_case 载荷（current_version）→ 卡不崩、版本标题无「当前」后缀', () => {
+    // 真机 v0.14.3 实测：Rust 侧更新前序列化 snake_case（`current_version`），UI 读 `currentVersion`
+    // → 后缀「（当前 0.14.3）」不渲染（Verify 收官卡 P3-1 记的正是这条）。
+    // Core 的 `#[serde(rename_all="camelCase")]` 落地后，载荷变 camelCase，
+    // 「渲染版本标题」用例（`toContain('当前 0.14.0')`）即恢复通过；本用例锁住
+    // 切换期 UI 侧的防御行为（读到 camelCase 没有就不渲染后缀，不崩、不显示 undefined）。
+    const internals = makeInternals({
+      updater_check_result: { version: '0.14.5', current_version: '0.14.3' },
+    } as never);
+    const handle = showUpdateCard({ version: '0.14.5' } as never, internals);
+    expect(handle.root.textContent).toContain('发现新版本 v0.14.5');
+    expect(handle.root.textContent).not.toContain('（当前');
+    expect(handle.root.textContent).not.toContain('undefined');
+    handle.close();
+  });
+
   it('渲染版本标题（当前版本）+ 两个按钮', () => {
     const internals = makeInternals();
     const handle = showUpdateCard(

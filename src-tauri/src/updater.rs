@@ -19,7 +19,13 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
 /// 更新信息（给页端卡片的载荷）。
+///
+/// `rename_all = "camelCase"`：页端（`src/ui/update-card.ts`）读的是 `currentVersion`。
+/// P3-1（Verify 0.14.4 真机确证）：此前默认 snake_case 输出 `current_version`，页端拿不到，
+/// 卡片标题的「（当前 x.y.z）」后缀**永不渲染**。改由 Rust 侧对齐（UI 代码零改动），
+/// 并有 `update_info_serializes_camel_case` 单测锁死，防止有人改回蛇形。
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateInfo {
     /// 新版本号（如 "0.14.1"）。
     pub version: String,
@@ -218,4 +224,55 @@ async fn tokio_sleep(d: Duration) {
 /// 在 app 上注册 updater 状态（`manage`）。
 pub fn init_state(app: &AppHandle) {
     app.manage(UpdaterState::default());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{UpdateInfo, UpdateProgress};
+
+    /// P3-1 回归：页端读 `currentVersion`。若有人去掉 `rename_all = "camelCase"`，
+    /// 载荷会变回 `current_version`，卡片「（当前 x.y.z）」后缀又会静默消失 —— 本用例必红。
+    #[test]
+    fn update_info_serializes_camel_case() {
+        let info = UpdateInfo {
+            version: "0.14.5".into(),
+            current_version: "0.14.4".into(),
+            notes: "notes".into(),
+        };
+        let v = serde_json::to_value(&info).expect("serialize UpdateInfo");
+        assert_eq!(v["version"], "0.14.5");
+        assert_eq!(v["currentVersion"], "0.14.4", "页端读的是 currentVersion");
+        assert!(
+            v.get("current_version").is_none(),
+            "snake_case 字段会让卡片「当前版本」后缀永不渲染（P3-1）"
+        );
+        assert_eq!(v["notes"], "notes");
+    }
+
+    /// 进度载荷的形状是页端状态机（idle/downloading/done/error）的契约。
+    #[test]
+    fn progress_states_keep_their_wire_shape() {
+        assert_eq!(
+            serde_json::to_value(UpdateProgress::Idle).unwrap()["state"],
+            "idle"
+        );
+        let downloading = serde_json::to_value(UpdateProgress::Downloading {
+            downloaded: 10,
+            total: Some(100),
+        })
+        .unwrap();
+        assert_eq!(downloading["state"], "downloading");
+        assert_eq!(downloading["downloaded"], 10);
+        assert_eq!(downloading["total"], 100);
+        assert_eq!(
+            serde_json::to_value(UpdateProgress::Done).unwrap()["state"],
+            "done"
+        );
+        let err = serde_json::to_value(UpdateProgress::Error {
+            error: "boom".into(),
+        })
+        .unwrap();
+        assert_eq!(err["state"], "error");
+        assert_eq!(err["error"], "boom");
+    }
 }

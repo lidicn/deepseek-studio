@@ -9,6 +9,17 @@
 #
 # fail-safe 顺序（Gate 判据 4）：先建 **draft** Release 并上传安装包+签名+latest.json，
 #   由人工点「Publish」后才生效 —— 失败只留 draft，不会留下半成品的公开更新源。
+#
+# ── P1-2 修复（Verify 0.14.4 真机确证：latest.json 的 url 自 0.14.0 起就是死链）────────────
+# 根因：本地 NSIS/MSI 产物名带空格（`productName "DeepSeek++ Studio"`），上传后 GitHub 把
+#       资产名的空格规范成点，compose 却用本地文件名拼 url → 客户端下载 404。
+# 修法（选「改名」而不是「productName 去空格」，因为后者会动安装目录/快捷方式/卸载键谱系）：
+#   ① 构建后把 nsis/msi 两个目录的产物（含 .sig）空格改点，**本地名 = GitHub 名 = url 三者一字不差**；
+#   ② url 从**最终产物名**回填，且断言产物名里没有空格；
+#   ③ 新增 G 闸（Gate 增补判据 G1-G6，见各步注释）：draft 建好后按 **GitHub 实际资产名**核对、
+#      用**已上传的资产字节**校验签名与 pubkey 配对，签名不通过就删 draft（fail-closed）。
+#   注：`.sig` 签的是**安装包字节**，不是 latest.json（tauri-plugin-updater-2.13.3/src/updater.rs:837-843），
+#       所以改 url 不需要重签；但上传的字节必须与 signature 配对 —— 这正是 G2 拦的事故类。
 name: Release
 
 on:
@@ -64,18 +75,50 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri:build
 
-      # 由产物生成 latest.json（Gate 判据 3：不手写版本号/签名，全部从 tauri 产物读取）
+      # ① P1-2：产物名归一化 —— 空格改点，使「本地名 = GitHub 资产名 = latest.json url」一字不差。
+      #    GitHub 对上传资产名的空格做规范化（空格→点），这是 0.14.0~0.14.4 下载 404 的根因。
+      #    .sig 与产物同改（签名签的是字节，改名不影响配对）。
+      - name: Normalize updater artifact names
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundle = 'src-tauri/target/release/bundle'
+          $candidates = @()
+          foreach ($pattern in @("$bundle/nsis/*.exe", "$bundle/nsis/*.exe.sig", "$bundle/msi/*.msi", "$bundle/msi/*.msi.sig")) {
+            $candidates += @(Get-ChildItem $pattern -File -ErrorAction SilentlyContinue)
+          }
+          if ($candidates.Count -lt 4) {
+            throw "expected >=4 bundle artifacts (nsis exe+sig, msi+sig), found $($candidates.Count)"
+          }
+          foreach ($f in $candidates) {
+            if ($f.Name -match ' ') {
+              $newName = $f.Name -replace ' ', '.'
+              $target = Join-Path $f.DirectoryName $newName
+              if (Test-Path $target) { throw "rename target already exists: $newName" }
+              Rename-Item -LiteralPath $f.FullName -NewName $newName
+              Write-Host "renamed: $($f.Name) -> $newName"
+            }
+          }
+          # G5：两个 bundle 都必须无空格残留（否则 GitHub 会再次改名，url 又错位）
+          $left = @(Get-ChildItem $bundle -Recurse -File | Where-Object { $_.Name -match ' ' })
+          if ($left.Count -gt 0) {
+            throw "space-containing artifact names remain: $($left.Name -join ', ')"
+          }
+          Get-ChildItem $bundle -Recurse -File | Select-Object FullName, Length | Format-Table -AutoSize
+
+      # ② 由**最终产物名**生成 latest.json（Gate 判据 3：不手写版本号/签名，全部从 tauri 产物读取）
+      #    签名取安装包的 .sig（签的是安装包字节）；url 的 basename 必须与上传后的资产名一字不差。
       - name: Compose latest.json
         shell: pwsh
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
+          $ErrorActionPreference = 'Stop'
           $conf = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
           $version = $conf.version
-          $nsis = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
+          $nsis = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" -File | Select-Object -First 1
+          if (-not $nsis) { throw 'nsis setup.exe not found' }
+          if ($nsis.Name -match ' ') { throw "artifact name still has a space: $($nsis.Name)" }
           $sig = "$($nsis.FullName).sig"
-          if (-not (Test-Path $sig)) { Write-Error "missing signature: $sig"; exit 1 }
+          if (-not (Test-Path $sig)) { throw "missing signature: $sig" }
           $platform = @{
             "windows-x86_64" = @{
               signature = (Get-Content $sig -Raw).Trim()
@@ -88,6 +131,7 @@ jobs:
 
       # fail-safe：先建 **draft** Release（Gate 判据 4）
       - name: Create draft release
+        id: create_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
@@ -102,3 +146,95 @@ jobs:
             src-tauri/target/release/latest.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ③ G 闸（Gate 增补判据 G1/G2/G5）：**draft 建好之后**跑，只认 GitHub 上的实际结果。
+      #    G1：资产名取自 Release assets API（实际上传名），不许用本地文件名自证；
+      #        latest.json 的 url basename 解码后必须等于该资产名。
+      #    G2：下载**已上传的资产字节**，用 latest.json 的 signature + tauri.conf.json 的 pubkey 校验
+      #        —— 复刻客户端 verify_signature 的判定，拦「Secret 私钥与仓库 pubkey 不配对」这类
+      #        「发版绿、用户必挂」的事故。签名对象是安装包字节（不是 latest.json）。
+      #    G5：NSIS（latest.json 引用的那个）与 MSI 的「本地名=远端名」都要核。
+      #    （G4 的公开 url 可达性要在 publish 之后才能真 HEAD，见 release-published.yml）
+      - name: Preflight gate (G1/G2/G5)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ github.ref_name }}'
+          $repo = '${{ github.repository }}'
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+            'User-Agent' = 'studio-release-gate'
+          }
+          $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/tags/$tag"
+          Write-Host "release id=$($rel.id) draft=$($rel.draft) assets=$($rel.assets.Count)"
+
+          $latest = Get-Content 'src-tauri/target/release/latest.json' -Raw | ConvertFrom-Json
+          $plat = $latest.platforms.'windows-x86_64'
+          if (-not $plat.url -or -not $plat.signature) { throw 'latest.json missing url/signature for windows-x86_64' }
+
+          # G1：url 的 basename（解码后）必须等于实际资产名
+          $urlName = [uri]::UnescapeDataString(($plat.url -split '/')[-1])
+          $names = @($rel.assets | ForEach-Object { $_.name })
+          Write-Host "url basename=$urlName"
+          Write-Host "remote assets: $($names -join ', ')"
+
+          $nsis = (Get-ChildItem 'src-tauri/target/release/bundle/nsis/*.exe' -File | Select-Object -First 1).Name
+          $msi = (Get-ChildItem 'src-tauri/target/release/bundle/msi/*.msi' -File | Select-Object -First 1).Name
+          if ($urlName -ne $nsis) { throw "latest.json url basename '$urlName' != uploaded nsis asset '$nsis'" }
+          foreach ($expected in @($nsis, "$nsis.sig", $msi, "$msi.sig", 'latest.json')) {
+            if ($names -notcontains $expected) { throw "release is missing uploaded asset: $expected" }
+          }
+          foreach ($n in $names) {
+            if ($n -match ' ') { throw "uploaded asset name contains a space: '$n'" }
+          }
+          if ($latest.version -ne $tag.TrimStart('v')) { throw "latest.json version $($latest.version) != tag $tag" }
+
+          # G2：下载**上传后的**资产字节，校验签名（draft 只能走 API，公开 download URL 对 draft 不生效）
+          $asset = $rel.assets | Where-Object { $_.name -eq $urlName } | Select-Object -First 1
+          $tmp = Join-Path $env:RUNNER_TEMP 'uploaded-setup.exe'
+          Invoke-WebRequest -Headers @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/octet-stream'
+            'User-Agent' = 'studio-release-gate'
+          } -Uri $asset.url -OutFile $tmp
+          $uploadedSize = (Get-Item $tmp).Length
+          $localSize = (Get-Item (Join-Path 'src-tauri/target/release/bundle/nsis' $nsis)).Length
+          Write-Host "uploaded=$uploadedSize local=$localSize"
+          if ($uploadedSize -ne $localSize) { throw "uploaded asset size $uploadedSize != local $localSize" }
+
+          $conf = Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
+          node src-tauri/verify-sig.mjs --pubkey $conf.plugins.updater.pubkey --signature $plat.signature --file $tmp
+          if ($LASTEXITCODE -ne 0) { throw "signature verification failed (exit $LASTEXITCODE)" }
+          Write-Host 'preflight gate PASS'
+
+      # G3：闸失败必须删掉 draft（fail-closed），不留半成品；已公开的 Release 绝不删。
+      - name: Delete draft on failure (fail-closed)
+        if: failure()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $repo = '${{ github.repository }}'
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+            'User-Agent' = 'studio-release-gate'
+          }
+          try {
+            $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/tags/$tag"
+          } catch {
+            Write-Host "no release for $tag, nothing to clean"
+            exit 0
+          }
+          if (-not $rel.draft) {
+            Write-Host "release $tag is already published — refusing to delete it"
+            exit 0
+          }
+          Invoke-RestMethod -Method Delete -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$($rel.id)"
+          Write-Host "deleted draft release $($rel.id) for $tag"
