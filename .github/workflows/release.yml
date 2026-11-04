@@ -43,16 +43,14 @@ jobs:
             exit 1
           }
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-          cache: 'pnpm'
+          cache: 'npm'
 
+      # 本仓用 npm（package-lock.json），不是 pnpm —— 首跑失败根因即 pnpm 无锁文件
       - name: Install deps
-        run: pnpm install --frozen-lockfile
+        run: npm ci
 
       # 构建 + 签名（createUpdaterArtifacts=true 会产出 .sig）
       - name: Build & sign
@@ -60,7 +58,7 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm tauri build
+        run: npm run tauri:build
 
       # 由产物生成 latest.json（Gate 判据 3：不手写版本号/签名，全部从 tauri 产物读取）
       - name: Compose latest.json
