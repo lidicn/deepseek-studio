@@ -100,13 +100,20 @@ try {
           continue; // 换下一个镜像
         }
         const contentLength = Number(res.headers.get('content-length') ?? 0);
+        // 关键：close 只代表「上游流读完」，fs WriteStream 的 end() 是异步的——
+        // 必须等 ws 的 finish 事件（全部数据刷盘）才能 stat，否则读到截断文件（run#7 根因）。
         await new Promise((resolve, reject) => {
           const ws = createWriteStream(zipPath);
+          let settled = false;
+          const done = () => { if (!settled) { settled = true; resolve(); } };
+          const boom = (e) => { if (!settled) { settled = true; ws.destroy(); reject(e); } };
           res.body.pipeTo(new WritableStream({
             write(chunk) { ws.write(Buffer.from(chunk)); },
-            close() { ws.end(); resolve(); },
-            abort(e) { ws.destroy(); reject(e); },
-          })).catch(reject);
+            close() { ws.end(); },
+            abort(e) { boom(e); },
+          })).catch(boom);
+          ws.on('finish', done);
+          ws.on('error', boom);
         });
         const size = statSync(zipPath).size;
         // 完整性校验：流可能「正常关闭」但其实被截断（run#6 根因）
