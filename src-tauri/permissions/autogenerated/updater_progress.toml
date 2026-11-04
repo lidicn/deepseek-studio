@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-updater-progress"
+description = "Enables the updater_progress command without any pre-configured scope."
+commands.allow = ["updater_progress"]
+
+[[permission]]
+identifier = "deny-updater-progress"
+description = "Denies the updater_progress command without any pre-configured scope."
+commands.deny = ["updater_progress"]

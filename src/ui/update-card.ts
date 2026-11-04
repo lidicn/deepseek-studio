@@ -60,7 +60,14 @@ export function checkUpdate(internals: TauriInternals): Promise<UpdateInfo | nul
       const v = (r as UpdateInfo).version;
       return typeof v === 'string' && v.length > 0 ? (r as UpdateInfo) : null;
     })
-    .catch(() => null);
+    .catch((e: unknown) => {
+      // fail-safe 不变（仍返回 null、不弹错给用户），但拒绝值留痕（P1 缺陷卡③：
+      // 此前 `.catch(() => null)` 把「Command … not allowed by ACL」这类错误静默吞掉，
+      // 真机上零线索——Verify v0.14.2 验收正是被这个静默坑住的）。
+      if (typeof e === 'string' && e.length > 0) console.debug('[StudioUI] updater_check rejected:', e);
+      else if (e instanceof Error && e.message) console.debug('[StudioUI] updater_check rejected:', e.message);
+      return null;
+    });
 }
 
 /**
@@ -193,7 +200,11 @@ export function showUpdateCard(info: UpdateInfo, internals: TauriInternals): Upd
               // idle：install 还没真正开始，继续轮询。
           }
         })
-        .catch(() => {});
+        .catch((e: unknown) => {
+          // 卡③ 扩展（P1 缺陷卡）：progress 拒绝值（如 ACL 拒绝串）同样留痕，不静默。
+          if (typeof e === 'string' && e.length > 0) console.debug('[StudioUI] updater_progress rejected:', e);
+          else if (e instanceof Error && e.message) console.debug('[StudioUI] updater_progress rejected:', e.message);
+        });
     }, 500);
   };
 
@@ -205,8 +216,11 @@ export function showUpdateCard(info: UpdateInfo, internals: TauriInternals): Upd
         // `{ started: false }` = 已有安装进行中（幂等门）→ 继续轮询即可。
         pollProgress();
       })
-      .catch(() => {
+      .catch((e: unknown) => {
         if (disposed) return;
+        // 卡③ 扩展：拒绝原因（如 ACL 拒绝串）留痕，可见文案不变。
+        if (typeof e === 'string' && e.length > 0) console.debug('[StudioUI] updater_install rejected:', e);
+        else if (e instanceof Error && e.message) console.debug('[StudioUI] updater_install rejected:', e.message);
         status.textContent = '启动更新失败';
       });
   });

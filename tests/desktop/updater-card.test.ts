@@ -66,6 +66,25 @@ describe('update-card：checkUpdate', () => {
     expect(info).toBeNull();
   });
 
+  it('ACL 拒绝串 → 仍 fail-safe 返回 null，但 console.debug 留痕（不得静默吞）', async () => {
+    const spy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    try {
+      const internals: TauriInternals = {
+        invoke: (cmd) =>
+          cmd === 'updater_check'
+            ? Promise.reject('Command updater_check not allowed by ACL')
+            : undefined,
+      };
+      expect(await checkUpdate(internals)).toBeNull();
+      expect(spy).toHaveBeenCalledWith(
+        '[StudioUI] updater_check rejected:',
+        'Command updater_check not allowed by ACL',
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('返回值缺 version（坏形状）→ 按 null 处理', async () => {
     const internals = makeInternals({ updater_check_result: { notes: 'x' } });
     expect(await checkUpdate(internals)).toBeNull();
