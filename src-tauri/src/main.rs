@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod sidecar;
+mod updater;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -1203,7 +1204,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             open_workbench,
             focus_main_window,
-            open_bot_window
+            open_bot_window,
+            updater::updater_check,
+            updater::updater_install,
+            updater::updater_progress
         ])
         // v0.30 单实例锁：第二个 deepseek-studio.exe 进程不再创建窗口，
         // 而是聚焦到已有主窗口（根治多实例 × N bot 窗口 = 窗口爆炸）。
@@ -1233,6 +1237,9 @@ fn main() {
             // 提到块外：主窗口与 bot 窗口（base_script）都要用它找
             // `<resource_dir>/inject/entry.js`，否则安装版会借到开发树的产物。
             let resource_dir = app.path().resource_dir().ok();
+            // 自动更新：注册状态 + 启动后 60s 一次性检查（失败静默，见 updater.rs）
+            updater::init_state(app.handle());
+            updater::spawn_startup_check(app.handle().clone());
                 // v0.12：受监管 sidecar 启动
             if std::env::var("STUDIO_DISABLE_HOST").is_err() {
                 // TD-04(a)：包内 bundled node.exe 优先。先算出候选，再决定是否探活。
@@ -1842,3 +1849,5 @@ mod tests {
         assert_eq!(strict, None);
     }
 }
+
+

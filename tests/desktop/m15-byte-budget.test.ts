@@ -1,11 +1,10 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   __prepareOutgoingBodyForTesting,
   catalogText,
   capabilityPromptText,
-  M15_CONTINUATION_CATALOG_STORAGE_KEY,
-  shouldRestoreContinuationCatalog,
 } from '../../src/inject/main-world-interceptor';
 import { buildContinuationPrompt } from '../../src/shared/continuation-prompt';
 
@@ -84,31 +83,16 @@ describe('M1.5 字节账：删重复目录的收益与 head-A 不动', () => {
     expect(extra).toBeGreaterThan(0);
   });
 
-  it('回滚开关 studio.m15.continuationCatalog：置 0 恢复目录（+1,177 B / 含段），清掉则删目录', () => {
-    const catalog = catalogText();
-    const exec = [] as never;
-
-    // 开关置 '0' ⇒ shouldRestore true ⇒ 调用点重新传 TOOL_CATALOG_TEXT（恢复 S3）
-    window.localStorage.setItem(M15_CONTINUATION_CATALOG_STORAGE_KEY, '0');
-    expect(shouldRestoreContinuationCatalog()).toBe(true);
-    const restored = buildContinuationPrompt('原始任务', exec, catalog);
-    expect(restored).toContain('### Available Tools');
-    expect(restored).toContain(catalog);
-
-    // 其它值 ⇒ 维持新形态（删 S3）
-    window.localStorage.setItem(M15_CONTINUATION_CATALOG_STORAGE_KEY, '1');
-    expect(shouldRestoreContinuationCatalog()).toBe(false);
-
-    // 清掉开关 ⇒ 维持新形态，且比恢复形态少 1,177 B
-    window.localStorage.removeItem(M15_CONTINUATION_CATALOG_STORAGE_KEY);
-    expect(shouldRestoreContinuationCatalog()).toBe(false);
-    const removed = buildContinuationPrompt('原始任务', exec);
-    expect(removed).not.toContain('### Available Tools');
-    expect(byteLength(restored) - byteLength(removed)).toBe(EXPECTED_SAVING_BYTES);
-
-    // 读法对齐 resolveCatalogBudgetBytes：带空白仍算 '0'
-    window.localStorage.setItem(M15_CONTINUATION_CATALOG_STORAGE_KEY, ' 0 ');
-    expect(shouldRestoreContinuationCatalog()).toBe(true);
-    window.localStorage.removeItem(M15_CONTINUATION_CATALOG_STORAGE_KEY);
+  it('tail 无运行时回滚开关（契约 §8，2026-11-03 裁定）：源码不残留开关键/函数，回滚=重新加回实参', () => {
+    // 删开关的**真回归**防线（负控）：若有人把 `M15_CONTINUATION_CATALOG_STORAGE_KEY` /
+    // `shouldRestoreContinuationCatalog()`（或调用点的 `restoreContinuationCatalog` 读法）
+    // 加回 main-world-interceptor.ts ⇒ 本用例转红。
+    // 回滚口径现在是「git 层面在两个调用点重新加回 [TOOL_CATALOG_TEXT] 实参」，
+    // 任何绕过该口径的运行时开关都不允许再出现。
+    // 路径相对仓库根（vitest 从仓库根启动；先例 tests/desktop/desktop-entry.test.ts）。
+    const src = readFileSync('src/inject/main-world-interceptor.ts', 'utf8');
+    expect(src).not.toContain('M15_CONTINUATION_CATALOG_STORAGE_KEY');
+    expect(src).not.toContain('shouldRestoreContinuationCatalog');
+    expect(src).not.toContain('restoreContinuationCatalog');
   });
 });

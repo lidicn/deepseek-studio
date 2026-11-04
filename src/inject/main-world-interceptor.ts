@@ -739,29 +739,6 @@ function recordM15Trace(event: StudioTraceEventInput): void {
 }
 
 /**
- * M1.5 回滚开关（契约 §8，键名由 PM 2026-11-02 定为 `studio.m15.continuationCatalog`）。
- *
- * 读法照 `resolveCatalogBudgetBytes()`（catalog-selection.ts）同域约定：
- *   - `localStorage` 读到 `'0'` ⇒ 恢复 S3（两个续跑调用点重新传 `TOOL_CATALOG_TEXT`）；
- *   - 未设置 / 其它值 ⇒ 维持新形态（已删 S3，目录由二次注入唯一提供）。
- *
- * 只动 tail（续跑 prompt），不动 head（能力块），不涉及断链，下一轮请求即生效。
- */
-export const M15_CONTINUATION_CATALOG_STORAGE_KEY = 'studio.m15.continuationCatalog';
-
-export function shouldRestoreContinuationCatalog(): boolean {
-  try {
-    const raw = globalThis.localStorage?.getItem(
-      M15_CONTINUATION_CATALOG_STORAGE_KEY,
-    );
-    return typeof raw === 'string' && raw.trim() === '0';
-  } catch {
-    // 读不到（隐私模式等）⇒ 维持新形态
-    return false;
-  }
-}
-
-/**
  * QD-R4-01：续跑重试的标志位。
  *
  * 根因：`autoContinueWithPow` 首行守卫要求 `pending.length > 0`，而续跑请求发出前
@@ -1153,7 +1130,6 @@ export function catalogText(): string {
  * 注入瘦身第 1 条：目录受**字节预算**约束 —— top-k 给 name+description，
  * 其余只给名字（名字索引），保证「62 个工具名全部在 prompt 里」
  * （`mcp_call` 按 serverId+tool 名字解析，名字缺了就调不到）。
- * 回滚：`localStorage.setItem('studio.catalogBudget', '0')` ⇒ 全量，字节级一致。
  *
  * 注意：只压 **description**；工具名一个都不丢。
  */
@@ -2861,21 +2837,17 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       // （护栏 tests/desktop/m15-tool-name-set.test.ts 打真实路径）。
       // 每轮省 1,177 B（1,155 目录原文 + 22 B 分隔行），恒定，与轮次/结果条数无关。
       //
-      // 回滚开关（契约 §8，键名 PM 定）：shouldRestoreContinuationCatalog() 读到
-      // localStorage `studio.m15.continuationCatalog === '0'` ⇒ 两个调用点重新传
-      // TOOL_CATALOG_TEXT 恢复 S3；未设置/其它值 ⇒ 维持新形态（删 S3）。
-      // 只动 tail 不动 head，下一轮请求即生效。
-      const restoreContinuationCatalog = shouldRestoreContinuationCatalog();
+      // 回滚（契约 §8，2026-11-03 裁定）：tail **没有运行时开关** ——
+      // 回滚 = 在下方两个调用点重新加回 `[TOOL_CATALOG_TEXT]` 实参（经 git 改代码），
+      // 恢复 S3 全量形态（字节级一致）。
       const continuationPrompt = isProtocolRepair
         ? buildProtocolRepairPrompt(
             loopState.originalTask,
             execForThisTurn,
-            ...(restoreContinuationCatalog ? [TOOL_CATALOG_TEXT] : []),
           )
         : buildContinuationPrompt(
             loopState.originalTask,
             execForThisTurn,
-            ...(restoreContinuationCatalog ? [TOOL_CATALOG_TEXT] : []),
           );
       // M1.5 观测（契约 §3 改动 4 / §7）：记录续跑 prompt 的字节与是否带目录，
       // 便于真机对齐字节账（删目录后每轮 -1,177 B）。只加观测，不改字节。

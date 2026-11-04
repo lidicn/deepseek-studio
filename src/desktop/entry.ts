@@ -36,6 +36,7 @@ import { normalizeSessionKeyFromPathname } from '../shared/studio-execution';
 import { createNavigationObserver } from '../inject/navigation';
 import { freezeStudioObject, startIntegrityProbe } from './integrity';
 import type { ExecutableCapability } from '../capabilities/types';
+import { checkUpdate, isUpdateSkipped, showUpdateCard, type TauriInternals } from '../ui/update-card';
 
 const DEFAULT_HOST_URL = 'ws://127.0.0.1:8760/studio';
 
@@ -215,6 +216,38 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
           console.warn('[StudioUI] focus_main_window unavailable (not running under Tauri)');
         }
       };
+      // TD-updater（UI 接线）：页端在启动 +60s 后触发 updater_check。
+      // 与 Rust 侧 spawn_startup_check 共用**进程内一次性缓存**（updater.rs）：
+      //   - 首次调用才真正打 GitHub API；之后（含本处 60s 那次）全部走缓存，零额外 API；
+      //   - null = 无更新 / 检查失败 / 网络错误（fail-safe）→ 不弹任何提示；
+      //   - check 进行中的窗口期可能读到 null → 5s 间隔再试至多 5 次（全缓存命中），仍 null 就静默收工。
+      // 「下次再说」过同版本（localStorage studio.update.skipVersion）→ 不弹。
+      const scheduleUpdateCheck = (): void => {
+        const g2 = globalThis as { __studioUpdateCheckScheduled?: boolean };
+        if (g2.__studioUpdateCheckScheduled) return;
+        g2.__studioUpdateCheckScheduled = true;
+        const attempt = (n: number): void => {
+          try {
+            const internals = (globalThis as {
+              __TAURI_INTERNALS__?: TauriInternals;
+            }).__TAURI_INTERNALS__;
+            if (!internals?.invoke) return; // 非 Tauri 环境：静默跳过
+            void checkUpdate(internals).then((info) => {
+              if (!info) {
+                if (n < 5) setTimeout(() => attempt(n + 1), 5_000);
+                return; // fail-safe：把网络错误当更新提示弹给用户的禁令
+              }
+              if (isUpdateSkipped(info.version)) return;
+              if (!document.body) return;
+              showUpdateCard(info, internals);
+            });
+          } catch (e) {
+            console.warn('[StudioUI] update check failed (fail-safe, no prompt)', e);
+          }
+        };
+        setTimeout(() => attempt(0), 60_000);
+      };
+      scheduleUpdateCheck();
     }
     const isLoginPage = location.pathname.includes('/login') || location.pathname.includes('/signin');
     if (!isBotWindow && !isLoginPage) {
