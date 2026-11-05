@@ -1,6 +1,6 @@
 # deepseek-studio 工程审计汇总（2026-11-05）
 
-deepseek-pp-audit 流水线三工具审计，目标仓库 `E:\NAS\deepseek-studio`（v0.14.6，master @ 410 commits）。
+deepseek-pp-audit 流水线三工具审计，目标仓库 `<repo-root>`（v0.14.6，master @ 410 commits）。
 本报告目录承载阶段 3/4 产物；图谱与深潜工件另列如下，**互不混存**。
 
 ## 产物索引
@@ -8,7 +8,7 @@ deepseek-pp-audit 流水线三工具审计，目标仓库 `E:\NAS\deepseek-studi
 ### 1. 代码图谱（codegraph 1.6.2，阶段 1）
 - 索引：`.codegraph/`（codegraph.db，75.78 MB；本次 **sync** 增量刷新——索引已存在，未重复 init）
 - 状态：`[OK] Index is up to date` — 601 files / 10,442 nodes / 33,023 edges（本次同步 1,301 变更文件：+389 / ~107 / -805）
-- 影响面查询：`codegraph callers <符号> -p E:/NAS/deepseek-studio`；区域理解：`codegraph explore "<关键词>" -p E:/NAS/deepseek-studio`
+- 影响面查询：`codegraph callers <符号> -p <repo-root>`；区域理解：`codegraph explore "<关键词>" -p <repo-root>`
 - 生成物，**勿提交 git**（.codegraph/.gitignore 已自罩）
 
 ### 2. 深潜工件（forensic-deepdive 0.10.0，阶段 2）
@@ -34,6 +34,11 @@ deepseek-pp-audit 流水线三工具审计，目标仓库 `E:\NAS\deepseek-studi
 ### 4. 本汇总（阶段 4）
 本文件。
 
+## R1.5 代码级缺陷深潜（同日追加，11-05 23:00）
+- 报告：[R1.5-代码级缺陷深潜-20261105.md](R1.5-代码级缺陷深潜-20261105.md) — 0 可利用缺陷（5 PASS · 1 缺口加固 · 3 观察）
+- 缺口加固①（G5 强化）：entry.js 新鲜度无机械闸 → 可入库参考实现 [gate-check-entry-freshness.cjs](gate-check-entry-freshness.cjs)（IN-SYNC 实测字节级复现为证）
+- CVE 暴露面确认：7 漏洞全部 dev/test 工具链（undici←jsdom、tinypool←vitest），运行时零暴露
+- 后续轮次计划：[docs/Audit/后续审计计划-20261105.md](../Audit/后续审计计划-20261105.md)（R2 ~11-25 全量复审为质变点）
 ## Top 5 待办（= 30 天计划，与 index.html 勾选清单同序）
 1. **依赖面（G1，Red 6.1）**：npm audit（官方 registry）命中 **2 critical + 2 high**（tinypool 原型污染→RCE gadget；undici 含 TLS 证书校验旁路/DoS/SRI 绕过；均 dev/test 工具链，运行时依赖未命中）。动作：vitest 升 5.x（breaking，核对 40 条 golden 断言）+ undici ≥7.31；复跑 audit 清零；加自动 SCA。
 2. **质量闸（G3+G4，Amber 4.1/3.5）**：自研 SAST `tools/audit/security.ts` 现挂**信息级**（红灯不挡合并）→ 升阻塞级（或引入 ESLint）；.gitignore 补 `.env*`。
