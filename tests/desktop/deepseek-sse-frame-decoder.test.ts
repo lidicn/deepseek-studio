@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { DeepSeekSseFrameDecoder } from '../../src/inject/deepseek-sse-frame-decoder';
+import { readFileSync } from 'node:fs';
+import {
+  DeepSeekSseFrameDecoder,
+  framesSignalStreamCompletion,
+} from '../../src/inject/deepseek-sse-frame-decoder';
 import { StreamingToolCallParser } from '../../src/inject/streaming-tool-parser';
 
 describe('DeepSeekSseFrameDecoder', () => {
@@ -57,5 +61,59 @@ data: {"v":[{"type":"RESPONSE","content":"hello"}]}\n\n`;
     expect(calls[0].params.__invalid_json).toBeFalsy();
     expect(typeof calls[0].params.command).toBe('string');
     expect(calls[0].params.command).toContain('Get-ChildItem');
+  });
+});
+
+/**
+ * SSE 收尾帧判定修正（PM 卡 2026-11-05）：「只有 event: 行、没有 data: 行」的帧
+ * （如裸 `event: close`）必须让 event 对象存在 —— 旧实现按 `data ?` 判定会让
+ * event 变 null，`framesSignalStreamCompletion` 拿不到 `event: close` 的 type。
+ * 真实流量里 `event: close` 全部带 data（16/16），所以这是**防御性修正**；
+ * 负控 = 退回 `data ? ... : null` ⇒ 本组用例转红。
+ */
+describe('DeepSeekSseFrameDecoder：event 行无 data 帧（收尾帧判定修正）', () => {
+  it('裸 `event: close`（无 data）→ framesSignalStreamCompletion 返回 true', () => {
+    const dec = new DeepSeekSseFrameDecoder();
+    const frames = dec.push('event: close\n\n');
+    expect(frames.length).toBe(1);
+    expect(frames[0].event).toEqual({ type: 'close', data: '' });
+    expect(framesSignalStreamCompletion(frames)).toBe(true);
+  });
+
+  it('跨 chunk 的裸 close 帧（event 行与空行分片）同样判 true', () => {
+    const dec = new DeepSeekSseFrameDecoder();
+    expect(dec.push('event: close\n').length).toBe(0); // 未遇空行边界
+    const frames = dec.push('\n');
+    expect(frames.length).toBe(1);
+    expect(framesSignalStreamCompletion(frames)).toBe(true);
+  });
+
+  it('语义对齐：无 event 行但有 data → event 对象仍非 null（type 默认 message，原行为不变）', () => {
+    const dec = new DeepSeekSseFrameDecoder();
+    const frames = dec.push('data: {"v":"x"}\n\n');
+    expect(frames[0].event).not.toBeNull();
+    expect(frames[0].event!.type).toBe('message');
+  });
+
+  it('语义对齐：既无 event 行也无 data → event 为 null（原行为不变）', () => {
+    const dec = new DeepSeekSseFrameDecoder();
+    const frames = dec.push('retry: 3\n\n');
+    expect(frames.length).toBe(1);
+    expect(frames[0].event).toBeNull();
+  });
+
+  it('真实形态：`event: close` 带 data（16/16 抓包形态）→ 仍判 true', () => {
+    const dec = new DeepSeekSseFrameDecoder();
+    const frames = dec.push('event: close\ndata: {"click_behavior":"none","auto_resume":false}\n\n');
+    expect(framesSignalStreamCompletion(frames)).toBe(true);
+  });
+
+  it('源码锁：event 存在性判据是 hasEventLine（改回 data ? … ⇒ 红）', () => {
+    // 负控（PM 卡要求）：若有人把 createFrame 退回 `const event = data ? … : null`
+    // （丢掉 hasEventLine 判据），上面「裸 close」两条用例必红。
+    // 源码级锁死判据，防悄悄回退。路径相对仓库根（vitest 从仓库根启动）。
+    const src = readFileSync('src/inject/deepseek-sse-frame-decoder.ts', 'utf8');
+    expect(src).toMatch(/hasEventLine/);
+    expect(src).toMatch(/hasEventLine \|\| data/);
   });
 });

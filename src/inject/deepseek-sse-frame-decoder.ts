@@ -58,17 +58,28 @@ export class DeepSeekSseFrameDecoder {
   private createFrame(block: string, _separator: string): DeepSeekSseFrame {
     // 解析 SSE event：每行 "key: value"
     let eventType = 'message';
+    // SSE 收尾帧修正（PM 卡 2026-11-05）：「一帧只有 event: 行没有 data: 行」时
+    // 旧实现按 `data ?` 判定让 event 变 null，导致 `event: close` 裸帧（无 data）在
+    // framesSignalStreamCompletion 里拿不到 type —— 注释承诺的「另有 event: close 帧
+    // 作为流的收尾」不成立。改为记录**是否真的出现过 event 行**（hasEventLine），
+    // eventType 默认仍为 'message'（默认语义不变）：
+    //   - 有 event 行（不论 data）→ event 对象存在，type = 真实 event 名（data 可为 ''）；
+    //   - 无 event 行但有 data   → 保持原行为（event 非 null，type='message'）；
+    //   - 两者都没有             → event = null（原行为不变）。
+    let hasEventLine = false;
     let dataLines: string[] = [];
     for (const line of block.split('\n')) {
       const colon = line.indexOf(':');
       if (colon === -1) continue;
       const key = line.slice(0, colon).trim();
       const value = line.slice(colon + 1).trimStart();
-      if (key === 'event') eventType = value;
-      else if (key === 'data') dataLines.push(value);
+      if (key === 'event') {
+        eventType = value;
+        hasEventLine = true;
+      } else if (key === 'data') dataLines.push(value);
     }
     const data = dataLines.join('\n');
-    const event = data ? { type: eventType, data } : null;
+    const event = hasEventLine || data ? { type: eventType, data } : null;
     let parsed: unknown = null;
     if (data) {
       try {
