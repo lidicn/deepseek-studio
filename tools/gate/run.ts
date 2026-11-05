@@ -40,6 +40,14 @@ const blockingSteps: Step[] = [
   // 门禁接线（20261031）：原 CI 独有的两步并入 gate（CI 自此只跑 npm run gate）
   { name: 'doc-drift', cmd: 'npx tsx tools/audit/doc-drift.ts' },
   { name: 'e2e-replay', cmd: 'npx tsx tools/e2e/runner.ts tools/e2e/fixtures/simple-task.json' },
+  // UI 展示值真实性门禁（20261105）：发行版 UI 展示的静态值必须为真——
+  // 写死开发机路径 / 假版本号 / 不存在目录 / 硬编码默认项目条目 → 阻塞（用户肉眼发现过三次）。
+  // 精确字符串清单零误报，见 tools/audit/ui-display-truth.ts 头注释。
+  { name: 'ui-display-truth', cmd: 'npx tsx tools/audit/ui-display-truth.ts' },
+  // entry.js 新鲜度机械闸（20261105 PM 派卡）：产物落后于源码今天人工发现过三次——
+  // 重建到临时文件 → sha256 比对跟踪的 src-tauri/inject/entry.js → 不一致就 exit 1。
+  // esbuild 构建确定性（锁版本 + 同参数 → 字节级复现）是前提，已实测为证。
+  { name: 'entry-freshness', cmd: 'node tools/audit/entry-freshness.cjs' },
 ];
 
 /** 信息级：红了照常合，输出进 logs/gate-info.log。 */
@@ -51,6 +59,9 @@ const infoSteps: Step[] = [
   // 先以信息级接入（移植文件与上游有意分叉，红是真实待办而非噪音）；待 7 个移植文件
   // 与上游对齐后再升阻塞级。需能读到 E:\NAS\deepseek-pp，缺失时脚本自行 exit 1 不崩闸门。
   { name: 'upstream-drift', cmd: 'node scripts/check-upstream-drift.mjs' },
+  // docs 脱敏信息级闸（20261105 PM 裁定）：只报新增/改动 docs 文件的四条口径违规，
+  // 历史 190 处审计记录不进红灯（watermark 圈范围）；豁免 github.com/lidicn/…（§19.7 保留项）。
+  { name: 'docs-sanitize', cmd: 'npx tsx tools/audit/ui-display-truth.ts --docs' },
   // 原文入库守卫（20261102）：抓包/postData 类会话原文不得进仓库（20261031 net-memsel 事件教训）。
   // 信息级：红了不阻塞，点名文件与规则进 logs/gate-info.log，提交前人工处置（移 logs/** 或脱敏）。
   { name: 'private-leak', cmd: 'npx tsx tools/audit/private-leak.ts' },
