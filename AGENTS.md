@@ -1,9 +1,9 @@
 # 项目协作规则
 
-- 沟通：PM 是唯一与用户沟通的入口。所有 bot 之间的沟通在 `deepseek-studio` 群聊中进行，禁止 bot 私聊用户或私聊 PM 外其他 bot。用户已明确只与当前直连的 PM 会话沟通，不再看群里的 PM；PM 不回复用户自己发起的直连会话，也不要让用户同时向两处下指令。
+- 沟通：存在两个 Studio-PM 实例——**私聊 PM**（与用户直连，管 git 写操作/发版编排/用户拍板转达）和**群 PM**（群聊中席位 @ 的那个，管日常派卡/交卷/域内裁决）。席位一律 @ 群 PM 回报，不 @ 私聊 PM（群里 @ 不到私聊 PM）。需用户拍板的事项由私聊 PM 转达，席位不直接找用户。所有 bot 之间沟通在群聊中进行，禁止 bot 私聊用户或私聊 PM。
 - 派单：PM 在群聊中 @ 对应 bot 派单，一轮尽量只派一个席位，一张卡写全后续步骤，减少 bot 互呼次数。
 - 回报：每张派单卡带 `report_back`；席位做完必须在群聊里 `@Studio-PM` 开头交一行摘要+路径，没做完不许静默结束，交接必须 @ 下一个席位。群里非 @ 发言不会唤醒任何人——漏 @ 就会让链条卡死。
-- 提交：提交前必须跑全量 gate（`npm run gate`），但全量 gate 由 PM 统一执行；其他 bot 在等待期间不要并行跑全量 gate / `npm test`，避免 OOM。中间态允许红，但每次改完需自行跑 `npx tsc --noEmit` 确认无红色。
+- 提交：提交前必须跑全量 gate（`npm run gate`），但全量 gate 由私聊 PM 统一执行；其他 bot 在等待期间不要并行跑全量 gate / `npm test`，避免 OOM。两 PM 防撞车通过 `PM-LOG.md`（已 gitignore）协调：派卡前先查日志 + `git status`（同一写域不重复派）；日志有 RUNNING 无收口行时另一方不开跑 gate；commit/push/tag 由私聊 PM 统一执行。中间态允许红，但每次改完需自行跑 `npx tsc --noEmit` 确认无红色。
 - 发版：Publish 是用户的网页操作，须等 CI 全绿、资产齐全后再叫用户点；用 API 建的草稿发布时默认不带 Latest 标记，必须让用户在编辑页勾「Set as the latest release」，否则 `releases/latest` 指针不推进（已两次踩坑）。发版前还需确认 tag = package.json = tauri.conf.json 三向版本一致，否则 workflow 校验直接挡下。
 - 开发规范：遵循 `E:\NAS\开发规范.md` 及 `docs/` 下文档。
 - 验收口径：改断言/改验收标准等于动验收口径，一律先报 Studio-PM 批准，不许顺手改；删过时断言必须同时补一条能抓真回归的新断言，不许只删不补。
