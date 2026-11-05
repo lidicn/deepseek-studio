@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { checkDocDrift } from '../../tools/audit/doc-drift';
 import { checkFile } from '../../tools/audit/security';
 import { join, dirname } from 'node:path';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -73,13 +73,24 @@ describe('doc-drift（20261031 重写版契约：文档↔代码引用校验）'
   });
 
   it('7. 引用指向 gitignore 目录内真实存在的文件 → 行号校验仍跑（不豁免行号越界）', () => {
-    // logs/verify-exit/chat-body-growth.mjs 是本机取证产物（已 gitignore 未跟踪），但本地存在
-    withTempDocs({ 'h.md': '见 logs/verify-exit/chat-body-growth.mjs:99999\n' }, (dir) => {
-      const { issues } = checkDocDrift(root, [dir]);
-      expect(
-        issues.some((i) => i.severity === 'fail' && i.ref.includes('chat-body-growth.mjs:99999')),
-      ).toBe(true);
-    });
+    // 不依赖本机任何取证文件真实存在——在 logs/ 下临时造一个两行 .mjs，
+    // 引用它的第 99999 行（越界）→ 豁免只管「可解析性」，行号越界仍 fail。
+    // logs/ 已 gitignore，造文件不污染仓；CI 上 logs/ 不存在时 mkdirSync recursive 兜底。
+    const evidenceDir = join(root, 'logs', 'verify-exit');
+    const evidenceFile = join(evidenceDir, 'drift-test-fixture.mjs');
+    const existed = existsSync(evidenceFile);
+    try {
+      mkdirSync(evidenceDir, { recursive: true });
+      if (!existed) writeFileSync(evidenceFile, '// line 1\n// line 2\n', 'utf8');
+      withTempDocs({ 'h.md': '见 logs/verify-exit/drift-test-fixture.mjs:99999\n' }, (dir) => {
+        const { issues } = checkDocDrift(root, [dir]);
+        expect(
+          issues.some((i) => i.severity === 'fail' && i.ref.includes('drift-test-fixture.mjs:99999')),
+        ).toBe(true);
+      });
+    } finally {
+      if (!existed) rmSync(evidenceFile, { force: true });
+    }
   });
 
   it('8. 引用指向非 gitignore 且不存在的文件 → 仍 fail（真漂移不豁免）', () => {
