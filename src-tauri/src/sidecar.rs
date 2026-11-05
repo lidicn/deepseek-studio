@@ -245,7 +245,7 @@ fn force_kill_process_tree(child: &mut Child) {
 fn terminate_listener_on_port(port: u16) {
     // netstat -ano 输出里 LISTENING 行的最后一列是 PID。
     let needle = format!(":{}", port);
-    if let Ok(out) = Command::new("netstat").args(["-ano"]).output() {
+    if let Ok(out) = console_command("netstat").args(["-ano"]).output() {
         let text = String::from_utf8_lossy(&out.stdout);
         for line in text.lines() {
             let trimmed = line.trim();
@@ -253,7 +253,7 @@ fn terminate_listener_on_port(port: u16) {
                 continue;
             }
             if let Some(pid) = trimmed.split_whitespace().last() {
-                let _ = Command::new("taskkill")
+                let _ = console_command("taskkill")
                     .args(["/PID", pid, "/F"])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -279,14 +279,14 @@ fn terminate_host_by_cmdline() {
         "Where-Object { $_.CommandLine -like '*tsx*dist*cli.mjs*' -and $_.CommandLine -like '*api/main.ts*' } | ",
         "ForEach-Object { Write-Output $_.ProcessId }"
     );
-    if let Ok(out) = Command::new("powershell")
+    if let Ok(out) = console_command("powershell")
         .args(["-NoProfile", "-Command", script])
         .output()
     {
         let text = String::from_utf8_lossy(&out.stdout);
         for line in text.lines() {
             if let Ok(pid) = line.trim().parse::<u32>() {
-                let _ = Command::new("taskkill")
+                let _ = console_command("taskkill")
                     .args(["/PID", &pid.to_string(), "/T", "/F"])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -442,6 +442,21 @@ fn win_creation_flags(cmd: &mut Command) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+/// 拉 console 程序（powershell / netstat / taskkill …）的唯一入口：**强制隐藏窗口**。
+///
+/// 背景（20261105 出资人真机反馈）：安装版**每次启动**都弹出一个蓝色 PowerShell 窗口。
+/// 根因就在启动路径上：`do_spawn()` 首轮调用的 `terminate_host_by_cmdline()` 直接
+/// `Command::new` 拉起 powershell 而**没有** CREATE_NO_WINDOW —— GUI 进程拉 console 程序时
+/// Windows 会为它建一个可见控制台窗口（powershell 默认蓝底，正是用户看到的那一个）。
+/// 同类风险还有 netstat / taskkill（表现为一闪而过的黑框，历史上「关闭乱闪」也源于此）。
+/// 所有隐藏 spawn 一律走本函数，别再直接 `Command::new` 拉 console 程序。
+#[cfg(windows)]
+fn console_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    win_creation_flags(&mut cmd);
+    cmd
 }
 
 // ── 监管主体 ───────────────────────────────────────────────────────────

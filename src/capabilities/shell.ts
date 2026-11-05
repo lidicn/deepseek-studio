@@ -320,6 +320,8 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
             cwd,
             shell: false, // 红线：绝不启用解释器
             stdio: ['ignore', 'pipe', 'pipe'],
+            // 不弹控制台窗口：GUI 宿主拉 console 程序（git/python/…）时 Windows 会建可见窗口
+            windowsHide: true,
           });
         } catch (err) {
           // D-2：同步抛错路径同样补 ENOENT hint
@@ -372,6 +374,7 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
               const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
                 stdio: 'ignore',
                 shell: false,
+                windowsHide: true,
               });
               killer.on('error', () => {
                 try { child.kill(); } catch { /* 已经退出：忽略 */ }

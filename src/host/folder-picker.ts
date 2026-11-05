@@ -34,6 +34,8 @@ export function pickFolderViaDialog(deps: FolderPickerDeps = {}): Promise<string
       child = spawnFn('powershell.exe', ['-NoProfile', '-STA', '-NonInteractive', '-Command', PS_SCRIPT], {
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe'],
+        // 不弹控制台：powershell.exe 是 console 程序，GUI 宿主拉起它会显示蓝底窗口
+        windowsHide: true,
       });
     } catch {
       resolve(null);

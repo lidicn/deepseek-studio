@@ -702,6 +702,7 @@ export class McpController {
       cwd: config.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: isCmdBatch,
+      windowsHide: true,
     });
 
     const conn: McpServerConnection = {
@@ -1079,6 +1080,7 @@ export class McpController {
         cwd: config.cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: isCmdBatch,
+        windowsHide: true,
       });
 
       spawnedProc = proc;

@@ -137,6 +137,7 @@ export function createTestRunCapability(options: TestRunOptions = {}): Executabl
           cwd,
           shell: false,
           env: { ...process.env, FORCE_COLOR: '0' },
+          windowsHide: true,
         });
 
         let stdout = '';

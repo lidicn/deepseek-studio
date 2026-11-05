@@ -72,6 +72,7 @@ export async function execPythonInSandbox(options: SandboxExecOptions): Promise<
         timeout: timeoutMs,
         maxBuffer,
         encoding: 'utf8',
+        windowsHide: true,
         env: {
           ...process.env,
           PYTHONIOENCODING: 'utf-8',

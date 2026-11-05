@@ -234,7 +234,7 @@ export function createAutomationManager(options?: {
       if (task.type === 'shell' && task.payload.command) {
         const { exec } = await import('node:child_process');
         output = await new Promise<string>((resolve, reject) => {
-          exec(task.payload.command!, { timeout: 30000 }, (err, stdout, stderr) => {
+          exec(task.payload.command!, { timeout: 30000, windowsHide: true }, (err, stdout, stderr) => {
             if (err) reject(new Error(stderr || err.message));
             else resolve(stdout);
           });
