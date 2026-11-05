@@ -48,6 +48,9 @@ const blockingSteps: Step[] = [
   // 重建到临时文件 → sha256 比对跟踪的 src-tauri/inject/entry.js → 不一致就 exit 1。
   // esbuild 构建确定性（锁版本 + 同参数 → 字节级复现）是前提，已实测为证。
   { name: 'entry-freshness', cmd: 'node tools/audit/entry-freshness.cjs' },
+  // 行尾断言（20261106 第三件）：index 侧 i/crlf|i/mixed 判红（读 .gitattributes 豁免 eol=crlf/binary，
+  // 不硬编码扩展名）。终结「PowerShell 写文件默认 CRLF → 内容没变却显示 M」的行尾伪影。
+  { name: 'lineend-guard', cmd: 'npx tsx tools/audit/lineend-guard.ts' },
 ];
 
 /** 信息级：红了照常合，输出进 logs/gate-info.log。 */
