@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Engineering Audit Report — deepseek-studio</title>
+<style>:root { color-scheme: light dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 960px; margin: 0 auto; padding: 0 1.5rem 3rem; line-height: 1.5; }
+  nav.topnav { position: sticky; top: 0; display: flex; gap: 0.4rem; padding: 0.6rem 0; margin: 0 -1.5rem 1.2rem; padding-left: 1.5rem; backdrop-filter: blur(8px); background: rgba(128,128,128,0.08); border-bottom: 1px solid rgba(128,128,128,0.25); z-index: 10; }
+  nav.topnav a { text-decoration: none; color: inherit; padding: 0.25rem 0.8rem; border-radius: 999px; font-size: 0.9rem; }
+  nav.topnav a.current { background: rgba(128,128,128,0.25); font-weight: 600; }
+  nav.topnav a:hover:not(.current) { background: rgba(128,128,128,0.15); }
+  .toc { font-size: 0.85rem; display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; padding: 0.5rem 0.9rem; border: 1px solid rgba(128,128,128,0.25); border-radius: 8px; margin: 0.8rem 0 1.4rem; }
+  .toc a { color: inherit; text-decoration: none; opacity: 0.85; }
+  .toc a:hover { text-decoration: underline; }
+  h1 { font-size: 1.6rem; margin: 1rem 0 0.2rem; }
+  h2 { font-size: 1.2rem; margin-top: 2.2rem; border-bottom: 1px solid currentColor; padding-bottom: 0.3rem; opacity: 0.9; scroll-margin-top: 4rem; }
+  h3 { font-size: 1rem; margin-top: 1.3rem; scroll-margin-top: 4rem; }
+  .meta { opacity: 0.7; font-size: 0.9rem; margin-bottom: 1.2rem; }
+  .banner { border-left: 4px solid #d97706; padding: 0.8rem 1rem; background: rgba(217,119,6,0.08); margin: 1rem 0; }
+  .blockers-none { border-left: 4px solid #16a34a; padding: 0.8rem 1rem; background: rgba(22,163,74,0.08); }
+  .feature { border: 1px solid rgba(128,128,128,0.3); border-radius: 8px; padding: 1rem 1.2rem; margin: 1rem 0; }
+  code { background: rgba(128,128,128,0.15); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.88em; }
+  .state-green { color: #16a34a; font-weight: 600; }
+  .state-amber { color: #d97706; font-weight: 600; }
+  .state-red { color: #dc2626; font-weight: 600; }
+  .state-nv, .state-na { color: #6b7280; font-weight: 600; }
+  .gaplink { font-size: 0.8rem; text-decoration: none; border: 1px solid rgba(128,128,128,0.4); border-radius: 999px; padding: 0.05rem 0.5rem; color: inherit; opacity: 0.8; }
+  .gaplink:hover { background: rgba(128,128,128,0.15); }
+  ol.plan li { margin-bottom: 0.6rem; }
+  ul.questions li, ul.findings li { margin-bottom: 0.5rem; }
+  .backtotop { font-size: 0.8rem; opacity: 0.7; }
+  .contest-note { font-size: 0.85rem; opacity: 0.85; border-left: 3px solid rgba(128,128,128,0.5); padding: 0.5rem 0.9rem; margin: 0.8rem 0 1.2rem; }
+  details.crit { display: inline; }
+  details.crit summary { display: inline; cursor: pointer; list-style: none; font-size: 0.8rem; border: 1px solid rgba(128,128,128,0.4); border-radius: 999px; padding: 0.05rem 0.5rem; opacity: 0.75; }
+  details.crit summary::-webkit-details-marker { display: none; }
+  details.crit summary:hover { background: rgba(128,128,128,0.15); opacity: 1; }
+  details.crit[open] summary { opacity: 1; }
+  .crit-body { display: block; margin: 0.4rem 0 0.6rem 1rem; padding: 0.5rem 0.8rem; border-left: 2px solid rgba(128,128,128,0.4); font-size: 0.87rem; opacity: 0.9; }
+  .state-strip { font-size: 0.85rem; opacity: 0.85; margin-bottom: 0.6rem; }</style>
+</head>
+<body>
+<nav class="topnav">
+  <a href="index.html">Overview</a>
+  <a class="current" href="audit-report.html">Audit Report</a>
+  <a href="gap-register.html">Gap Register</a>
+  <a href="criteria.html">Criteria</a>
+</nav>
+
+<h1 id="top">Engineering Audit Report — deepseek-studio</h1>
+<div class="meta">
+  Date: 2026-11-05 &middot; Auditor: deepseek-pp-audit pipeline (audit-software-project v1.0.1) &middot; Repository: <code>E:\NAS\deepseek-studio</code>（github.com/lidicn/deepseek-studio，master @ 410 commits，v0.14.6）<br>
+  Scope: Local repository inspection + lockfile-only dependency scan (npm audit, 官方 registry) + 全量 git 历史密钥/PII 扫描。GitHub 只读检查未执行（gh 未认证）。
+</div>
+<p class="contest-note">States are assigned against the criteria in <a href="criteria.html">criteria.html</a>（点击正文任意 control 标签可展开该控制点阈值）。Findings marked Not Verified or Red can be revised if you hold evidence this audit couldn't access — see <a href="#questions">Questions requiring human confirmation</a>。</p>
+
+<div class="toc">
+  <a href="#summary">Summary</a>
+  <a href="#blockers">Blockers</a>
+  <a href="#plan">30-day plan</a>
+  <a href="#f-api">本地控制面 API</a>
+  <a href="#f-inject">页面注入层</a>
+  <a href="#f-tools">工具执行与授权</a>
+  <a href="#f-release">自动更新与发版线</a>
+  <a href="#f-data">数据与记忆</a>
+  <a href="#f-ci">CI/CD 与质量闸</a>
+  <a href="#f-ops">仓库与运维</a>
+  <a href="#questions">Questions</a>
+  <a href="#boundary">Boundary</a>
+  <a href="criteria.html">Criteria ↗</a>
+</div>
+
+<h2 id="summary">Executive summary</h2>
+<p>deepseek-studio 是一个<strong>单人、高纪律</strong>的桌面 agent 工作台（Tauri WebView 壳 + Node 本地 API + 注入 chat.deepseek.com）。工程面整体成熟：单一 gate 真相（9 阻塞步 + 6 信息步）、strict TS、SSE/PoW 核心有测试与负控、发版线签名+draft+三向版本校验、本地 API 鉴权/限流/回环边界扎实（8.1/8.3/8.4/8.5 全绿）。<br><br>
+最严重的问题集中在 <a href="#f-ci">CI/CD 与质量闸</a>：<strong>依赖面无人守</strong>——无 Dependabot，审计期 npm audit 命中 <strong>2 critical（tinypool RCE gadget）+ 2 high（undici，含 TLS 证书校验旁路）</strong>，全部落在开发/测试工具链（vitest/esbuild/vite 依赖树）而非运行时依赖；同时安全尺（自研 SAST）挂在<strong>信息级</strong>，红灯不挡合并。第二个 Red 是 <a href="#f-ops">仓库与运维</a> 的<strong>无根 README</strong>（上手知识散落在 AGENTS.md 与 docs/，入口组织缺失）。<br><br>
+信任边界与数据面是本仓的强项：SSE 帧解码器（审计日在改的文件）解析失败为文档化良性场景；记忆删除「归档→彻底删除」两态 + 事务审计 + VACUUM/secure_delete 物理清零，14.2 有实证 Green；密钥/PII 全仓+全历史 0 真命中（唯一 AKIA 模式命中为 wasm base64 巧合）。Amber 共 6 项，均为「预防性缺口或债务」而非活体暴露。无即时阻断项（无活体密钥、无真实 PII 提交）。</p>
+
+<h2 id="blockers">Immediate blockers</h2>
+<div class="blockers-none">None identified.（6.1 的 2 critical 为开发工具链依赖漏洞，非活体暴露，进 30 天计划首位；10.1 无 README 属可维护性缺口。）</div>
+
+<h2 id="plan">30-day improvement plan</h2>
+<ol class="plan">
+  <li><strong>CI/CD 与质量闸：</strong> 升级开发工具链消掉 6.1 的 critical/high——vitest 升 5.x（breaking，按断言语义核对 40 条 golden）、undici 提至 &ge;7.31 或钉住补丁；复跑 <code>npm audit --package-lock-only</code> 至 0 high/critical。<a class="gaplink" href="gap-register.html#g1">G1</a></li>
+  <li><strong>CI/CD 与质量闸：</strong> 把 <code>tools/audit/security.ts</code> 从信息级升为 gate 阻塞级（或引入 ESLint 入 gate）；同批在 .gitignore 补 <code>.env*</code> 模式。<a class="gaplink" href="gap-register.html#g3">G3</a> <a class="gaplink" href="gap-register.html#g4">G4</a></li>
+  <li><strong>仓库与运维：</strong> 写根 README.md（定位/setup/跑 gate/tauri dev/发布与 updater/LAN 配对），把 AGENTS.md 与 docs/ 的入口知识归拢。<a class="gaplink" href="gap-register.html#g2">G2</a></li>
+  <li><strong>数据与记忆：</strong> 拍板历史残留处置：公开仓可达历史中的本机痕迹（用户名/路径，20261105 脱敏批已删工作树）是接受现状还是 filter-repo/BFG 重写（不可逆，按 DCD 流程立项）；同时把 private-leak 守卫升阻塞级。<a class="gaplink" href="gap-register.html#g7">G7</a></li>
+  <li><strong>CI/CD 与质量闸：</strong> 恢复 gh 认证后核验并补齐分支保护（master：强制 PR + ≥1 评审 + gate CI 通过才可合并），结果回填 3.1/3.2/3.3（NV 项，不入 gap register）</li>
+</ol>
+
+<h2 id="risk">Risk context</h2>
+<p>本次审计未做范围确认交互，按库存推断并在此声明为<strong>假设</strong>：专有（private:true）桌面 agent 工作台，面向 author 自身及少量安装用户（GitHub Releases 分发，提交信息称「公开仓」）；处理本地记忆数据（含对话原文，net-memsel 事件在案），无外部 API 消费方、无远程生产环境、无 PII 义务主体（非 GDPR 类）。GitHub 只读检查未跑（gh 未认证）。Accessibility and internationalization were not assessed; they require browser-based testing outside this audit's static-analysis scope.</p>
+
+<h2 id="findings">Findings by feature</h2>
+<p><em>States: <span class="state-green">Green</span> = adequate &amp; evidenced. <span class="state-amber">Amber</span> = partial/inconsistent/moderate risk. <span class="state-red">Red</span> = missing/significant risk. <span class="state-nv">Not Verified</span> = evidence unavailable, not a failure. <span class="state-na">Not Applicable</span> = doesn't apply, reason stated. Control IDs in parentheses trace to <code>audit-controls.md</code>; G-tags link to the gap register.</em></p>
+
+
+<div class="feature" id="f-api">
+  <h3>F1 · 本地控制面 API（8760 回环 HTTP/WS + 信任边界）</h3>
+  <div class="state-strip">🟢 5 · ⚪ 4</div>
+  <ul class="findings">
+<li><span class="state-green">Green</span> — 敏感端点全部挂在统一 Bearer 闸 + 回环 Origin 校验之后；<code>timingSafeEqual</code> 防时序侧信道，令牌轮换带宽限期且 fail-closed（<code>src/api/auth.ts:39-71</code>、<code>src/api/server.ts</code> 的 <code>isLocalOrigin</code>/<code>applyCors</code>：非本地 origin 不写 CORS 头，宁可跨域失败）。
+      <details class="crit"><summary>control 8.1</summary><div class="crit-body"><strong>Green requires:</strong> 外部输入在使用前被校验；敏感端点强制鉴权。<br><strong>This finding:</strong> 已满足——鉴权与回环闸在 <code>/v1/*</code> 与 WS 通道统一生效，CORS fail-closed。</div></details>
+      </li>
+<li><span class="state-green">Green</span> — MCP 服务器配置读写（敏感：可定义宿主将执行的 <code>command/args</code>）经 <code>parseConfigBody</code> 校验 JSON 形状（id 非空字符串、config 为对象，否则 400），全部位于 Bearer+回环双闸之后（<code>src/api/server.ts:300-375</code>）。
+      <details class="crit"><summary>control 8.3</summary><div class="crit-body"><strong>Green requires:</strong> 敏感端点的输入经过校验层。<br><strong>This finding:</strong> 已满足——形状校验 + 双闸；config 语义由 contract-guard 闸补强。</div></details>
+      </li>
+<li><span class="state-green">Green</span> — 关键路径错误均有去向：SSE 解码器的空 catch 为注释声明的良性场景（非 JSON 帧，<code>src/inject/deepseek-sse-frame-decoder.ts:96-100</code>「非 JSON 数据，忽略」）；WS 通道错误经 <code>ack(false, reason)</code> 回报（<code>src/host/agent-channel.ts:353</code>）；memory.purge 事务失败捕获并向用户回报原因（<code>src/host/desktop-host.ts:830-834</code>）。
+      <details class="crit"><summary>control 8.5</summary><div class="crit-body"><strong>Green requires:</strong> 关键路径错误被显式处理而非静默丢弃。<br><strong>This finding:</strong> 已满足——未发现静默吞错的关键路径。</div></details>
+      </li>
+<li><span class="state-green">Green</span> — 本地 API 有令牌桶限流（默认 60/分钟、按 Bearer 令牌独立分桶、桶键上限 10,000）+ 默认串行并发（<code>src/api/server.ts:400-440</code> <code>createRateLimiter</code>）；端点默认仅回环可达。
+      <details class="crit"><summary>control 11.3</summary><div class="crit-body"><strong>Green requires:</strong> 超时/体量限制或限流已设置。<br><strong>This finding:</strong> 已满足——限流 + 串行 + 回环绑定；未见显式 body 上限，但暴露面仅限回环且需鉴权。</div></details>
+      </li>
+<li><span class="state-green">Green</span> — 环境相关值均来自 config/env：host/port/token 由 <code>~/.config/deepseek-studio/config.json</code> 或 <code>DEEPSEEK_STUDIO_HOST/TOKEN</code> 提供（<code>src/api/config-loader.ts:128</code>、<code>tools/metrics/lib/live-client.ts:39</code>）；<code>chat.deepseek.com</code> 是产品目标站常量（架构决策，非环境配置），baseURL 可经配置覆盖（<code>config-loader.ts:220</code>）。
+      <details class="crit"><summary>control 4.5</summary><div class="crit-body"><strong>Green requires:</strong> 环境特定值读自配置/环境变量。<br><strong>This finding:</strong> 已满足——254 处 127.0.0.1 命中全部为本应用自身回环协议或测试夹具。</div></details>
+      </li>
+<li><span class="state-na">Not Applicable</span> — 不适用——无远程生产环境：控制面默认仅回环，局域网访问须显式开启并以配对码门禁（<code>server.ts</code> <code>agentLanAccess</code>，非回环请求缺配对码 → 403 且不回内嵌令牌 HTML）。生产访问控制对象不存在。
+      <details class="crit"><summary>control 6.2</summary><div class="crit-body"><strong>Green requires:</strong> 示例/真实密钥分离且有文档化访问流程。<br><strong>This finding:</strong> 本地桌面应用无独立生产访问面；LAN 模式的访问控制见 8.1 证据。</div></details>
+      </li>
+<li><span class="state-na">Not Applicable</span> — 不适用——无外部 API 消费方：API 面是回环控制面（+ 可选配对码 LAN PWA），<code>/v1/*</code> 为内部契约由 contract-guard 闸门维护，无对外 SDK/公开文档面。
+      <details class="crit"><summary>control 12.1</summary><div class="crit-body"><strong>Green requires:</strong> 外部 API 有机器可读规格。<br><strong>This finding:</strong> 无外部 API；内部契约走 contract-guard。</div></details>
+      </li>
+<li><span class="state-na">Not Applicable</span> — 不适用——同上：无对外版本化 API 面，破坏性变更只影响本机客户端自身（随版本升级原子化更新）。
+      <details class="crit"><summary>control 12.2</summary><div class="crit-body"><strong>Green requires:</strong> 破坏性变更经版本化或弃用窗口。<br><strong>This finding:</strong> 无对外 API。</div></details>
+      </li>
+<li><span class="state-na">Not Applicable</span> — 不适用——同上：不存在可供消费方依赖的公共 API。
+      <details class="crit"><summary>control 12.3</summary><div class="crit-body"><strong>Green requires:</strong> 存在可发现的兼容性政策。<br><strong>This finding:</strong> 无对外 API。</div></details>
+      </li>
+  </ul>
+</div>
+
+<div class="feature" id="f-inject">
+  <h3>F2 · 页面注入层（chat.deepseek.com 注入 / SSE 解码 / PoW / Markdown 渲染）</h3>
+  <div class="state-strip">🟠 2 · 🟢 1</div>
+  <ul class="findings">
+<li><span class="state-green">Green</span> — 所有用户数据入 HTML 的路径受控：Markdown 渲染统一走 <code>marked → DOMPurify.sanitize</code> 白名单（ALLOWED_TAGS/ATTR + <code>afterSanitizeAttributes</code> 钩子剥离 javascript:/data:/vbscript: href，异常回退 escapeHtml，<code>src/inject/markdown.ts:38-62</code>）；面板用户数据走 <code>textContent</code> 或 <code>escapeHtml</code>（W4 注释多处，如 <code>src/ui/studio-chat-room.ts:135</code>）；仓库自带 SAST（<code>tools/audit/security.ts</code>）盯 eval()/new Function。
+      <details class="crit"><summary>control 8.4</summary><div class="crit-body"><strong>Green requires:</strong> 用户输入不进入注入型汇点。<br><strong>This finding:</strong> 已满足——innerHTML 消费方全部过净化/转义；jsdom 测试夹具属测试代码。</div></details>
+      </li>
+<li><span class="state-amber">Amber</span> — 生成产物入库且与源码逻辑双轨：<code>src-tauri/inject/entry.js</code> 为 432,867 字节 esbuild 单文件包（提交记录「entry.js 重建 F9C1F8BB」表明随源码手工重建入库），<code>archive/legacy/</code> 94 个文件（含 icon.ico、Cargo.lock、package-lock.json）也在树内；仓库 pack 仅 14.2MB 未失控。 <a class="gaplink" href="gap-register.html#g5">G5</a>
+      <details class="crit"><summary>control 3.7</summary><div class="crit-body"><strong>Green requires:</strong> 历史中无意外大 blob；构建产物/依赖目录不被跟踪。<br><strong>This finding:</strong> 当前树跟踪了构建产物与 94 个 legacy 归档文件（Amber：未占主导，但存在双轨维护面）。</div></details>
+      </li>
+<li><span class="state-amber">Amber</span> — gate 信息级日志自记「M3 未完、面板 innerHTML 历史债」——<code>src/ui/</code> 部分面板（settings-panel 等）仍用模板 innerHTML + escapeHtml 混写，W4 批已修用户数据插值但历史债未清（见 <code>tools/gate/run.ts</code> 注释与 <code>logs/gate-info.log</code> 口径）。 <a class="gaplink" href="gap-register.html#g6">G6</a>
+      <details class="crit"><summary>control 4.3</summary><div class="crit-body"><strong>Green requires:</strong> 仅当判断不窄时判 Amber/Red。<br><strong>This finding:</strong> 窄化到：innerHTML 历史债 + 源码/构建包双轨（4.3 软控制，不升级）。</div></details>
+      </li>
+  </ul>
+</div>
+
+<div class="feature" id="f-tools">
+  <h3>F3 · 工具执行与授权（工具注册表 / 同意闸门 / 记忆工具）</h3>
+  <div class="state-strip">🟢 2</div>
+  <ul class="findings">
+<li><span class="state-green">Green</span> — 最关键工具链路有自动化覆盖：SSE 帧解码器测试（<code>tests/desktop/deepseek-sse-frame-decoder.test.ts</code>，与源码同步在改）、硬拒绝 argv 负控（<code>tests/desktop/c1p1-td03-hard-deny-argv.test.ts</code>，以「shutdown /s」为负控断言 <code>checkHardDeny</code> 拦截 shell/mcp 双入口）、MCP 生命周期（<code>c1p2-mcp-lifecycle.test.ts</code>）、同意闸门（<code>c1p11-consent-mcp</code> 系）；coverage-check 为阻塞闸步骤。
+      <details class="crit"><summary>control 5.2</summary><div class="crit-body"><strong>Green requires:</strong> 风险最高的用户流有自动化覆盖。<br><strong>This finding:</strong> 已满足——授权/执行/负控三层均有测试，且断言零删除纪律（提交记录可证）。</div></details>
+      </li>
+<li><span class="state-green">Green</span> — 「删除即真删」有实证：记忆两态（归档 → 彻底删除），purge 仅接受已归档条目（防绕过归档的暗门），事务内删行+写审计（审计写失败回滚、行还在），<code>forget=true</code> 连审计日志正文快照一并抹除，物理层 <code>VACUUM</code> + secure_delete 页清零（<code>src/host/desktop-host.ts:812-846</code>、UI 侧 <code>src/ui/studio-settings-panel.ts:444-466</code> 两态按钮与「彻底删除」确认文案）。
+      <details class="crit"><summary>control 14.2</summary><div class="crit-body"><strong>Green requires:</strong> 删除为硬删，或软删有可用的 purge 路径。<br><strong>This finding:</strong> 已满足——软删（归档）+ 真删出口（purge）+ 物理解除空闲页。</div></details>
+      </li>
+  </ul>
+</div>
+
+<div class="feature" id="f-release">
+  <h3>F4 · 自动更新与发版线（Tauri updater + GitHub Releases）</h3>
+  <div class="state-strip">🟢 2 · ⚪ 1</div>
+  <ul class="findings">
+<li><span class="state-green">Green</span> — 发版全脚本化且门禁密集：<code>release.yml</code> 仅 <code>v*</code> tag 触发、tag/package.json/tauri.conf.json 三向版本校验、先建 draft 再人工点 Publish（失败只留 draft）、上传字节与签名/pubkey 配对复核（G 闸 G1-G6）、并发锁防同 tag 重复推；<code>fetch-node.mjs</code> 锁死 Node v24.22.2 + SHA256，哈希不符即 exit 1 fail-closed，镜像回退共享同一信任边界；<code>release-published.yml</code> 承接发布后动作。
+      <details class="crit"><summary>control 7.1</summary><div class="crit-body"><strong>Green requires:</strong> 部署为可复现的脚本/配置。<br><strong>This finding:</strong> 已满足——tag 触发、签名校验、draft→人工发布、三向版本一致。</div></details>
+      </li>
+<li><span class="state-green">Green</span> — 依赖与运行时新鲜：package-lock.json 随 0.14.6（2026-11-05，审计日）更新，engines node &gt;=24（当前 LTS），@tauri-apps/cli ^2.0.0、esbuild ^0.24、vitest 4.x；发版节奏近一周多版（0.14.0→0.14.6）。
+      <details class="crit"><summary>control 4.2</summary><div class="crit-body"><strong>Green requires:</strong> 依赖与运行时在一年内或存在活跃更新流程。<br><strong>This finding:</strong> 已满足——锁文件随版更新，运行时为当前 LTS。</div></details>
+      </li>
+<li><span class="state-nv">Not Verified</span> — 回滚路径无法从仓库确证：版本化 GitHub Releases + 升级链验证（0.14.1→0.14.6 逐版补验记录在提交信息）表明旧版可回装，但 Tauri updater 为向前更新；本机记忆库（SQLite）无跨版本迁移/回退脚本可见。列为开放问题而非失败。
+      <details class="crit"><summary>control 7.2</summary><div class="crit-body"><strong>Green requires:</strong> 迁移版本化且与其他代码同审。<br><strong>This finding:</strong> 无否定性证据；回滚能力待 owner 确认（见问题区）。</div></details>
+      </li>
+  </ul>
+</div>
+
+<div class="feature" id="f-data">
+  <h3>F5 · 数据与记忆（本地记忆库 / PII / 密钥卫生）</h3>
+  <div class="state-strip">🟠 1 · 🟢 1 · ⚪ 4</div>
+  <ul class="findings">
+<li><span class="state-green">Green</span> — 标准密钥/PII 搜索全零：跟踪树 0 命中（AWS AKIA 20 位 / Stripe sk_live / 私有 KEY 块 / GitHub token / Slack / Google API / 带凭据 URL / JWT）；*.env* 历史 0 条；历史全量扫描中唯一 AKIA 模式命中经提取确认为 entry.js wasm base64 的巧合子串（值 <code>AKIAhBA…</code> 含小写，非合法 AWS 密钥形态）。
+      <details class="crit"><summary>control 3.4</summary><div class="crit-body"><strong>Green requires:</strong> 树与可达历史中无活体形态密钥。<br><strong>This finding:</strong> 已满足——0 真命中；base64 巧合已排除。</div></details>
+      </li>
+<li><span class="state-amber">Amber</span> — 个人数据卫生呈「事件驱动修复」形态：20261031 net-memsel 事件（抓包/postData 会话原文险入库）后加装 <code>tools/audit/private-leak.ts</code> 守卫（信息级，红了人工处置）；20261105 脱敏批提交删除 45 个含本机痕迹（用户名/主目录/内网地址）的调试文件，但这些痕迹仍留在可达历史中（公开仓语境下属低敏——均为 repo owner 自身身份，未见第三方 PII）。跟踪树 PII 搜索（邮箱/手机号形态）0 命中，测试夹具走临时目录。 <a class="gaplink" href="gap-register.html#g7">G7</a>
+      <details class="crit"><summary>control 6.3</summary><div class="crit-body"><strong>Green requires:</strong> 无真实形态个人数据被提交；夹具为合成数据。<br><strong>This finding:</strong> 树内干净；历史残留 + 守卫仅为信息级 → Amber。</div></details>
+      </li>
+<li><span class="state-nv">Not Verified</span> — 记忆库无保留期/删除策略文档（自动过期？永不删除？）。删除机制本身是完备的（见 14.2），策略层待 owner 回答。
+      <details class="crit"><summary>control 14.1</summary><div class="crit-body"><strong>Green requires:</strong> 仅当仓库有肯定性违规证据才判 Red。<br><strong>This finding:</strong> 无策略可见，列为开放问题。</div></details>
+      </li>
+<li><span class="state-na">Not Applicable</span> — 不适用——无数据库迁移体系：状态为本地 SQLite 记忆库 + JSON 配置，schema 一致性由 contract-guard 闸与 coverage 闸覆盖。
+      <details class="crit"><summary>control 8.2</summary><div class="crit-body"><strong>Green requires:</strong> 迁移版本化且同审。<br><strong>This finding:</strong> 无迁移层。</div></details>
+      </li>
+<li><span class="state-na">Not Applicable</span> — 不适用——无面向用户的无界列表数据源：记忆列表/日志列表均本地有界（<code>logs(taskId?, limit?)</code> 带 limit 参数）。
+      <details class="crit"><summary>control 11.1</summary><div class="crit-body"><strong>Green requires:</strong> 面向用户的列表端点有分页/上限。<br><strong>This finding:</strong> 无生产增长型数据源。</div></details>
+      </li>
+<li><span class="state-na">Not Applicable</span> — 不适用——关键路径无关系型数据访问层，未发现 N+1 形态。
+      <details class="crit"><summary>control 11.2</summary><div class="crit-body"><strong>Green requires:</strong> 循环内 DB 调用。<br><strong>This finding:</strong> 无 DB 查询层。</div></details>
+      </li>
+  </ul>
+</div>
+
+<div class="feature" id="f-ci">
+  <h3>F6 · CI/CD 与质量闸（gate 单真相 / 依赖面 / 分支保护）</h3>
+  <div class="state-strip">🔴 1 · 🟠 2 · 🟢 6 · ⚪ 3</div>
+  <ul class="findings">
+<li><span class="state-red">Red</span> — 无依赖漏洞自动扫描（.github 无 dependabot 配置），且审计期 <code>npm audit --package-lock-only</code>（官方 registry；npmmirror 的 advisories 端点未实现，已改道）发现 <strong>7 个漏洞：2 critical + 2 high + 3 moderate</strong>——critical：tinypool 原型污染→RCE gadget（vitest 测试工具链）；high：undici DoS/SRI 绕过/缓存投毒/TLS 证书校验旁路等 8 条 advisories。暴露面限于开发/测试工具链（运行时依赖 dompurify/marked/node-cron 未命中），但按控制点阈值（扫描暴露 high/critical 即 Red）判定。 <a class="gaplink" href="gap-register.html#g1">G1</a>
+      <details class="crit"><summary>control 6.1</summary><div class="crit-body"><strong>Green requires:</strong> 配置自动扫描，或审计期扫描无 high/critical。<br><strong>This finding:</strong> 无扫描器 + 扫描命中 2 critical/2 high → Red。修复：vitest 升 5.x（带 breaking，一次性断言语义核对）、undici 提版本/钉补丁。</div></details>
+      </li>
+<li><span class="state-nv">Not Verified</span> — 分支保护无法核验：gh 未认证（<code>gh auth status</code> 无输出），3.1 保护、3.2 评审、3.3 CI-required 三项均 Not Verified。CI 本身存在（ci.yml：push+PR 触发 <code>npm ci</code> + <code>npm run gate</code>，windows-latest，唯一真相=gate 阻塞级 9 步：typecheck→vitest→eval-golden→boundary→contract→coverage→empty-files→doc-drift→e2e-replay）。
+      <details class="crit"><summary>control 3.1</summary><div class="crit-body"><strong>Green requires:</strong> 保护开启且要求 PR+≥1 评审。<br><strong>This finding:</strong> gh 不可用 → Not Verified（非失败），待 owner 确认。</div></details>
+      </li>
+<li><span class="state-nv">Not Verified</span> — PR 是否实际被评审——同上，gh 未认证，采样不可行。
+      <details class="crit"><summary>control 3.2</summary><div class="crit-body"><strong>Green requires:</strong> 多数被采样 PR 有评审。<br><strong>This finding:</strong> Not Verified。</div></details>
+      </li>
+<li><span class="state-nv">Not Verified</span> — CI 是否被设为合并前置——同上。
+      <details class="crit"><summary>control 3.3</summary><div class="crit-body"><strong>Green requires:</strong> CI 存在且被要求。<br><strong>This finding:</strong> CI 存在（证据见 3.1 条目）；「required」Not Verified。</div></details>
+      </li>
+<li><span class="state-amber">Amber</span> — .gitignore 对构建/日志/取证件覆盖详尽（node_modules/、dist/、src-tauri/target/、*.log、*.out、logs/、PM-LOG.md、一次性取证脚本），但<strong>没有 .env* 模式</strong>——若日后在根目录出现 .env 将被跟踪（当前无 .env 被跟踪，属预防性缺口）。 <a class="gaplink" href="gap-register.html#g4">G4</a>
+      <details class="crit"><summary>control 3.5</summary><div class="crit-body"><strong>Green requires:</strong> .env*、凭据、构建产物被忽略且未被跟踪。<br><strong>This finding:</strong> gitignore 存在但不完整（缺 .env*）→ Amber。</div></details>
+      </li>
+<li><span class="state-amber">Amber</span> — 无 ESLint/Prettier 类 linter（devDependencies 仅类型/构建/测试工具）；质量闸以 strict tsc（阻塞）+ 自研 SAST <code>tools/audit/security.ts</code>（<strong>信息级、不阻塞</strong>，gate 注释自认「这些尺红是真实待办」）承担；即安全尺红灯不挡合并。 <a class="gaplink" href="gap-register.html#g3">G3</a>
+      <details class="crit"><summary>control 4.1</summary><div class="crit-body"><strong>Green requires:</strong> CI 中跑 linter 且失败挡合并。<br><strong>This finding:</strong> 类型检查阻塞但非 lint；SAST 信息级 → Amber。建议：security 步升阻塞，或引入 ESLint 入 gate。</div></details>
+      </li>
+<li><span class="state-green">Green</span> — 提交信息纪律好：30/30 样本为 feat/fix/chore/docs + 根因/判据说明（如「run#12 404 根因」「断言 15→15 零删除」）。
+      <details class="crit"><summary>control 3.6</summary><div class="crit-body"><strong>Green requires:</strong> 消息大体描述意图。<br><strong>This finding:</strong> 已满足。</div></details>
+      </li>
+<li><span class="state-green">Green</span> — TS strict:true + noUnusedLocals + noImplicitOverride + noFallthroughCasesInSwitch，gate 阻塞级 typecheck 强制；关键路径全为 TS。
+      <details class="crit"><summary>control 4.7</summary><div class="crit-body"><strong>Green requires:</strong> 关键路径静态类型化。<br><strong>This finding:</strong> 已满足。</div></details>
+      </li>
+<li><span class="state-green">Green</span> — src 内 0 个 TODO/FIXME/HACK（技术债走 QD/TD 台账 + gate 信息级尺承载，如「M3 未完、面板 innerHTML 历史债」）。
+      <details class="crit"><summary>control 4.6</summary><div class="crit-body"><strong>Green requires:</strong> 关键路径无已知不安全/未完成标记。<br><strong>This finding:</strong> 已满足——标记体系不同（台账制），等效达成。</div></details>
+      </li>
+<li><span class="state-green">Green</span> — 测试存在且在 CI 执行：vitest 全量（tests/desktop + tests/e2e）为 gate 阻塞步，CI 只跑 <code>npm run gate</code>。
+      <details class="crit"><summary>control 5.1</summary><div class="crit-body"><strong>Green requires:</strong> 测试存在且在 CI 执行。<br><strong>This finding:</strong> 已满足。</div></details>
+      </li>
+<li><span class="state-green">Green</span> — 跳过测试仅平台守卫（describeWin/winIt 按平台切换，POSIX 跳过 Windows 子进程语义块），提交记录明示「断言零删除」纪律。
+      <details class="crit"><summary>control 5.3</summary><div class="crit-body"><strong>Green requires:</strong> 大量 skip 无跟踪原因才是 Amber。<br><strong>This finding:</strong> 跳过均有文档化原因 → Green。</div></details>
+      </li>
+<li><span class="state-green">Green</span> — 集成/e2e 层存在：e2e-replay（带断言离线回放）为 gate 阻塞步 + tests/e2e/smoke.test.ts 走真实 API 配置（host/token）。
+      <details class="crit"><summary>control 5.4</summary><div class="crit-body"><strong>Green requires:</strong> 至少一条关键流有集成/e2e 覆盖。<br><strong>This finding:</strong> 已满足。</div></details>
+      </li>
+  </ul>
+</div>
+
+<div class="feature" id="f-ops">
+  <h3>F7 · 仓库与运维（责任归属 / 文档 / 观测 / 可维护性）</h3>
+  <div class="state-strip">🔴 1 · 🟠 1 · 🟢 4 · ⚪ 2 · ⬜ 4</div>
+  <ul class="findings">
+<li><span class="state-red">Red</span> — 仓库根<strong>无 README.md</strong>（跟踪文件中 README 仅存于 docs/Audit/、docs/PM〔归档〕/、tools/*、archive/legacy/）；AGENTS.md 是 bot/PM 协作规则而非上手文档，setup 知识散落在 AGENTS.md + docs/ 版本开发计划.md。新成员无法仅凭 README 把项目跑起来。 <a class="gaplink" href="gap-register.html#g2">G2</a>
+      <details class="crit"><summary>control 10.1</summary><div class="crit-body"><strong>Green requires:</strong> 新人凭 README 独立跑起项目。<br><strong>This finding:</strong> 无根 README → Red。文档本身存在且质量高，缺口是入口组织。</div></details>
+      </li>
+<li><span class="state-amber">Amber</span> — 可观测性为本地侧：sidecar 日志（%APPDATA%\deepseek-studio\logs\sidecar-*.log）、M3 真机指标流水线（tools/metrics，UTC 日归档+断档检测）、gate 信息级日志；依赖中无任何外部错误跟踪/APM（无 Sentry/Datadog 类 SDK）。已发布到用户机器的桌面应用没有远端崩溃上报。 <a class="gaplink" href="gap-register.html#g8">G8</a>
+      <details class="crit"><summary>control 9.1</summary><div class="crit-body"><strong>Green requires:</strong> 错误跟踪与基础监控接入应用。<br><strong>This finding:</strong> 有本地日志+指标策略（非零）但无外部错误跟踪 → Amber。</div></details>
+      </li>
+<li><span class="state-green">Green</span> — 责任可识别：全部 410 提交单一作者（git log %aN），AGENTS.md 记录双 PM/席位制度与 30 分钟巡检兜底，DCD 裁定编号在提交中可追。
+      <details class="crit"><summary>control 1.1</summary><div class="crit-body"><strong>Green requires:</strong> 可识别的责任人/值班。<br><strong>This finding:</strong> 已满足（单作者 + 制度文档）。</div></details>
+      </li>
+<li><span class="state-green">Green</span> — 决策留痕充分：DCD 裁定（gate 注释引「DCD 裁定 §1.4」）、docs/Audit/（根因假设、门禁接线、文档漂移台账）、docs/审计报告/ 设计评审系列、提交内 TD/QD/BUG 编号互引。
+      <details class="crit"><summary>control 1.2</summary><div class="crit-body"><strong>Green requires:</strong> 重要技术决策有书面理由。<br><strong>This finding:</strong> 已满足——台账密度高。</div></details>
+      </li>
+<li><span class="state-na">Not Applicable</span> — 单人项目（410/410 提交同作者），按控制点口径明示 Not Applicable 而非 Red。
+      <details class="crit"><summary>control 1.3</summary><div class="crit-body"><strong>Green requires:</strong> 关键路径多人触达或已知单人。<br><strong>This finding:</strong> 已知单人作业。</div></details>
+      </li>
+<li><span class="state-green">Green</span> — 变更可追溯：提交互引 DCD/QD/TD/BUG 编号，docs/审计总汇总_studio新一期第一至二十轮_20261023.md 等台账文件在树内。
+      <details class="crit"><summary>control 2.1</summary><div class="crit-body"><strong>Green requires:</strong> 多数非平凡变更引用需求/票据。<br><strong>This finding:</strong> 已满足——台账制替代 issue 跟踪。</div></details>
+      </li>
+<li><span class="state-na">Not Applicable</span> — 单人项目无外部需求流程；.github 仅 workflows（无 PR/issue 模板），但验收实践有文档（QA 独立复核卡、docs/验收报告/ 真机验收、AGENTS.md「改验收口径须 PM 批准」纪律）——按控制点单人口径 N/A，验收实践作为证据记录于此。
+      <details class="crit"><summary>control 2.2</summary><div class="crit-body"><strong>Green requires:</strong> PR/issue 通常说明「完成」的含义。<br><strong>This finding:</strong> 单人项目 N/A；验收口径纪律存在（见上）。</div></details>
+      </li>
+<li><span class="state-na">Not Applicable</span> — private:true 的专有桌面工具，无包分发/无 copyleft 依赖面；根目录无 LICENSE 文件（专有立场，记录为观察项）。
+      <details class="crit"><summary>control 4.4</summary><div class="crit-body"><strong>Green requires:</strong> 商业化/共享项目声明许可证。<br><strong>This finding:</strong> 私有专有工具 → N/A。</div></details>
+      </li>
+<li><span class="state-nv">Not Verified</span> — 状态数据（记忆库 + ~/.config/deepseek-studio/config.json）无仓库可见的备份策略——此类控制预期不可见，列为开放问题而非失败。
+      <details class="crit"><summary>control 9.2</summary><div class="crit-body"><strong>Green requires:</strong> 仅当有肯定性证据「备份被关」才 Red。<br><strong>This finding:</strong> 无证据，待 owner 回答。</div></details>
+      </li>
+<li><span class="state-na">Not Applicable</span> — 9.3 依赖 9.1 为 Green 才评估；9.1 为 Amber（无外部监控层），无告警对象。
+      <details class="crit"><summary>control 9.3</summary><div class="crit-body"><strong>Green requires:</strong> 告警规则入仓或 owner 确认已配。<br><strong>This finding:</strong> 不适用。</div></details>
+      </li>
+<li><span class="state-nv">Not Verified</span> — 无正式事故 runbook；存在根因诊断文档（docs/审计报告/Studio-启动崩溃根因诊断-20261023.md 等），接近但非「出事时做什么」的操作手册。
+      <details class="crit"><summary>control 10.2</summary><div class="crit-body"><strong>Green requires:</strong> 存在但明显过时才是 Amber。<br><strong>This finding:</strong> 无 runbook → Not Verified，列为开放问题。</div></details>
+      </li>
+<li><span class="state-green">Green</span> — 未发现需要缓存的昂贵读路径（指标聚合为离线工具，UI 读本地数据）；控制点 Green 口径「未发现昂贵读路径证据」成立。
+      <details class="crit"><summary>control 11.4</summary><div class="crit-body"><strong>Green requires:</strong> 昂贵读处有缓存，或无昂贵读证据。<br><strong>This finding:</strong> 已满足。</div></details>
+      </li>
+  </ul>
+</div>
+
+<p>Controls not reached this pass: 无——全部 47 个控制点（1.1–1.3, 2.1–2.2, 3.1–3.7, 4.1–4.7, 5.1–5.4, 6.1–6.3, 7.1–7.2, 8.1–8.5, 9.1–9.3, 10.1–10.2, 11.1–11.4, 12.1–12.3, 14.1–14.2；域 13 按控制集预留不用）均已在上方各 feature 段落或本说明中逐一点名。</p>
+
+<h2 id="questions">Questions requiring human confirmation</h2>
+<ul class="questions">
+  <li>master 分支是否已有保护（PR + 评审 + CI required）？请恢复 <code>gh</code> 认证（3.1/3.2/3.3 现为 Not Verified 的直接原因）。 — <em>CI/CD 与质量闸</em></li>
+  <li>回滚：旧版安装包是否仍可经 GitHub Releases 回装？updater 是否支持降级？本地记忆库跨版本 schema 兼容如何保证？ — <em>自动更新与发版线</em></li>
+  <li>~/.config/deepseek-studio（config.json + 记忆库）是否有备份策略？ — <em>仓库与运维</em></li>
+  <li>记忆库保留策略：条目是否自动过期？「永不删除」是否为产品语义（若有，14.1 需按相应数据保护口径重判）？ — <em>数据与记忆</em></li>
+  <li>是否有事故 runbook（或诊断文档是否承担此职能）？ — <em>仓库与运维</em></li>
+  <li>仓库可见性：提交信息称「公开仓」，请确认 public/private 现状（影响 6.3/3.4 历史残留的暴露半径定级）。 — <em>数据与记忆</em></li>
+</ul>
+
+<h2 id="boundary">Inspection boundary</h2>
+<p>What was checked: 全仓源码/文档/测试/tools（只读，排除 node_modules/dist 逐行检查）、tsconfig/ci.yml/release.yml/lockfile、git 全量历史（410 commits）密钥/PII 模式扫描、npm audit（官方 registry lockfile-only）、8 个高风险函数级深读（markdown 渲染、API 鉴权、MCP 路由、SSE 解码器、PoW 拦截、memory.purge、工具定义、agent-channel 清理）。审计前完成 codegraph 增量同步（10,442 节点/33,023 边）与 forensic 深潜（docs/codebase/ 5 工件）。</p>
+<p>What was not accessible: GitHub 平台侧（gh 未认证，3.1/3.2/3.3 与可见性/Dependabot 告警 Not Verified）；运行时外部观测面（APM 面板、告警平台）；生产机器状态。</p>
+<p>GitHub read-only checks: <strong>unavailable（gh 未认证）</strong> &middot; Dependency scan: <strong>ran（npm audit --package-lock-only，官方 registry；npmmirror advisories 端点未实现）</strong></p>
+<p>Accessibility and internationalization were not assessed; they require browser-based testing outside this audit's static-analysis scope.</p>
+
+<p class="backtotop"><a href="#top">↑ Back to top</a> &middot; <a href="index.html">Overview</a> &middot; <a href="gap-register.html">Gap register</a></p>
+</body>
+</html>

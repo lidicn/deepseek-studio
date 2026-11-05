@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Gap Register — deepseek-studio</title>
+<style>:root { color-scheme: light dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 1150px; margin: 0 auto; padding: 0 1.5rem 3rem; line-height: 1.5; }
+  nav.topnav { position: sticky; top: 0; display: flex; gap: 0.4rem; padding: 0.6rem 0; margin: 0 -1.5rem 1.2rem; padding-left: 1.5rem; backdrop-filter: blur(8px); background: rgba(128,128,128,0.08); border-bottom: 1px solid rgba(128,128,128,0.25); z-index: 10; }
+  nav.topnav a { text-decoration: none; color: inherit; padding: 0.25rem 0.8rem; border-radius: 999px; font-size: 0.9rem; }
+  nav.topnav a.current { background: rgba(128,128,128,0.25); font-weight: 600; }
+  nav.topnav a:hover:not(.current) { background: rgba(128,128,128,0.15); }
+  h1 { font-size: 1.6rem; margin: 1rem 0 0.2rem; }
+  .meta { opacity: 0.7; font-size: 0.9rem; margin-bottom: 1.5rem; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.88rem; }
+  th, td { border: 1px solid rgba(128,128,128,0.35); padding: 0.5rem 0.6rem; text-align: left; vertical-align: top; }
+  th { background: rgba(128,128,128,0.12); }
+  tr[id] { scroll-margin-top: 4rem; }
+  tr:target { outline: 2px solid #d97706; }
+  .state-amber { color: #d97706; font-weight: 600; }
+  .state-red { color: #dc2626; font-weight: 600; }
+  .blocker-row { background: rgba(220,38,38,0.06); }
+  .priority-key, .note { font-size: 0.85rem; opacity: 0.8; margin-top: 1.5rem; }
+  .priority-key ol { padding-left: 1.2rem; }
+  code { background: rgba(128,128,128,0.15); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.88em; }
+  td a { color: inherit; }</style>
+</head>
+<body>
+<nav class="topnav">
+  <a href="index.html">Overview</a>
+  <a href="audit-report.html">Audit Report</a>
+  <a class="current" href="gap-register.html">Gap Register</a>
+  <a href="criteria.html">Criteria</a>
+</nav>
+
+<h1>Gap Register — deepseek-studio</h1>
+<div class="meta">Date: 2026-11-05</div>
+
+<p>Every Amber or Red control from the audit report is one row. Not Verified items live in the report's <a href="audit-report.html#questions">questions section</a> unless the project owner later confirms them as actual gaps.</p>
+
+<table>
+  <thead>
+    <tr><th>ID</th><th>Feature</th><th>Control</th><th>Gap</th><th>State</th><th>Priority*</th><th>Evidence</th><th>Recommended action</th><th>Owner</th><th>Target date</th></tr>
+  </thead>
+  <tbody>
+    <tr id="g1" class="blocker-row"><td>G1</td><td><a href="audit-report.html#f-ci">CI/CD 与质量闸</a></td><td>6.1</td><td>开发/测试工具链存在 2 critical + 2 high 已知漏洞，且无自动依赖扫描</td><td class="state-red">Red</td><td>1</td><td><code>npm audit --package-lock-only</code>（官方 registry）：tinypool critical（GHSA-5gmw-xhrv-c9v3 / GHSA-85c8-ppgw-ccpr 原型污染→RCE gadget，vitest 依赖树）、undici high（DoS / TLS 证书校验旁路 / SRI 绕过等 8 条）、vitest 与 esbuild moderate；.github 无 dependabot.yml。暴露面限定 dev/test 工具链（运行时依赖未命中）</td><td>vitest 升 5.x（breaking，逐条核对 40 条 golden 断言语义）+ undici 提至 ≥7.31 或钉补丁；复跑 audit 至 0 high/critical；在 gate/CI 加自动 SCA 步</td><td></td><td></td></tr>
+    <tr id="g2" class="blocker-row"><td>G2</td><td><a href="audit-report.html#f-ops">仓库与运维</a></td><td>10.1</td><td>仓库根无 README.md，上手知识散落于 AGENTS.md 与 docs/</td><td class="state-red">Red</td><td>7</td><td>git ls-files 根目录仅 AGENTS.md（bot/PM 协作规则，非 setup 文档）；README 仅存于 docs/Audit/、docs/PM〔归档〕/、tools/*、archive/legacy/</td><td>写根 README：定位 / npm ci / npm run gate / tauri dev / config.json 自动生成 / updater 与 LAN 配对；把 AGENTS.md 与 docs/ 的入口知识归拢</td><td></td><td></td></tr>
+    <tr id="g3"><td>G3</td><td><a href="audit-report.html#f-ci">CI/CD 与质量闸</a></td><td>4.1</td><td>无 linter；自研 SAST 仅信息级，红灯不挡合并</td><td class="state-amber">Amber</td><td>4</td><td>devDependencies 无 eslint/prettier；tools/gate/run.ts 注释：security（tools/audit/security.ts，盯 eval/new Function）列信息级「这些尺红是真实待办」</td><td>将 security 步升为 gate 阻塞级，或引入 ESLint 入 gate 阻塞步；二选一后清掉存量信息级红</td><td></td><td></td></tr>
+    <tr id="g4"><td>G4</td><td><a href="audit-report.html#f-ci">CI/CD 与质量闸</a></td><td>3.5</td><td>.gitignore 缺 .env* 模式（预防性缺口，当前无 .env 被跟踪）</td><td class="state-amber">Amber</td><td>1</td><td>.gitignore 全文核读：覆盖 node_modules/、dist/、src-tauri/target/、*.log、*.out、logs/、PM-LOG.md、一次性取证脚本，但无 .env*/credential 模式</td><td>补 <code>.env*</code>（排除 .env.example）与常见凭据文件模式</td><td></td><td></td></tr>
+    <tr id="g5"><td>G5</td><td><a href="audit-report.html#f-inject">页面注入层</a></td><td>3.7</td><td>构建产物与 legacy 归档被跟踪（双轨维护面）</td><td class="state-amber">Amber</td><td>7</td><td><code>src-tauri/inject/entry.js</code> 432,867 字节 esbuild 单文件包入库（提交「entry.js 重建 F9C1F8BB」）；<code>git ls-files</code> 匹配 ^archive/ 94 文件（含 icon.ico、Cargo.lock、package-lock.json）；仓库 pack 仅 14.2MB 未失控</td><td>明确 entry.js 生成-入库契约（构建步自动重建 + hash 校验）或改 gitignore + CI 现编；legacy 归档评估外移</td><td></td><td></td></tr>
+    <tr id="g6"><td>G6</td><td><a href="audit-report.html#f-inject">页面注入层</a></td><td>4.3</td><td>面板 innerHTML 历史债（gate 信息级红自认）</td><td class="state-amber">Amber</td><td>7</td><td>tools/gate/run.ts 注释「M3 未完、面板 innerHTML 历史债」；src/ui/studio-settings-panel.ts 等仍模板 innerHTML + escapeHtml 混写；W4 批已修用户数据插值（studio-chat-room.ts:135、studio-project-picker.ts:179 等）</td><td>余下面板 innerHTML 全改 textContent/escapeHtml；m3-clean/security 信息级红清零后升阻塞</td><td></td><td></td></tr>
+    <tr id="g7"><td>G7</td><td><a href="audit-report.html#f-data">数据与记忆</a></td><td>6.3</td><td>本机痕迹存于可达历史（脱敏批后）；private-leak 守卫仅信息级</td><td class="state-amber">Amber</td><td>1</td><td>20261031 net-memsel 事件（抓包原文险入库）→ 加装 tools/audit/private-leak.ts（信息级）；20261105 提交删除 45 个含本机痕迹文件（用户名为 repo owner 自身身份，未见第三方 PII；树内邮箱/手机号模式 0 命中），但痕迹仍留可达历史</td><td>owner 拍板：接受现状（低风险）或 filter-repo 重写历史（不可逆，走 DCD 立项）；private-leak 升阻塞级</td><td></td><td></td></tr>
+    <tr id="g8"><td>G8</td><td><a href="audit-report.html#f-ops">仓库与运维</a></td><td>9.1</td><td>无外部错误跟踪 / APM（仅本地日志 + M3 指标）</td><td class="state-amber">Amber</td><td>7</td><td>package.json 依赖无 Sentry/Datadog 类 SDK；可观测面 = %APPDATA%\deepseek-studio\logs\sidecar-*.log + tools/metrics（UTC 日归档/断档检测）+ logs/gate-info.log</td><td>评估隐私友好的轻量崩溃上报（本地默认关、显式开启），或在文档中明示「本地日志即运维面」</td><td></td><td></td></tr>
+  </tbody>
+</table>
+
+<div class="priority-key">
+  *Risk priority (lower = more urgent):
+  <ol>
+    <li>Security, privacy, secrets, sensitive-data exposure</li>
+    <li>Missing/unreliable backup, recovery, or rollback</li>
+    <li>Uncontrolled production access</li>
+    <li>Unreviewed changes or missing CI safeguards</li>
+    <li>Missing tests around critical business behavior</li>
+    <li>Unclear ownership and operational responsibility</li>
+    <li>Documentation and maintainability</li>
+  </ol>
+  Owner and target date are left blank for the project team to fill in — this skill does not assign ownership on their behalf.
+</div>
+</body>
+</html>

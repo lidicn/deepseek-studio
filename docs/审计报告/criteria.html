@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Criteria — deepseek-studio — 2026-11-05</title>
+<style>:root { color-scheme: light dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 860px; margin: 0 auto; padding: 0 1.5rem 3rem; line-height: 1.5; }
+  nav.topnav { position: sticky; top: 0; display: flex; gap: 0.4rem; padding: 0.6rem 0; margin: 0 -1.5rem 1.2rem; padding-left: 1.5rem; backdrop-filter: blur(8px); background: rgba(128,128,128,0.08); border-bottom: 1px solid rgba(128,128,128,0.25); z-index: 10; }
+  nav.topnav a { text-decoration: none; color: inherit; padding: 0.25rem 0.8rem; border-radius: 999px; font-size: 0.9rem; }
+  nav.topnav a.current { background: rgba(128,128,128,0.25); font-weight: 600; }
+  nav.topnav a:hover:not(.current) { background: rgba(128,128,128,0.15); }
+  h1 { font-size: 1.6rem; margin: 1rem 0 0.2rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid currentColor; padding-bottom: 0.3rem; opacity: 0.9; }
+  .meta { opacity: 0.7; font-size: 0.9rem; margin-bottom: 1.2rem; }
+  .snapshot-note { border-left: 4px solid #6b7280; padding: 0.7rem 1rem; background: rgba(107,114,128,0.08); font-size: 0.88rem; margin-bottom: 1.5rem; }
+  table { border-collapse: collapse; width: 100%; margin: 0.8rem 0; font-size: 0.87rem; }
+  th, td { border: 1px solid rgba(128,128,128,0.35); padding: 0.5rem 0.6rem; text-align: left; vertical-align: top; }
+  th { background: rgba(128,128,128,0.12); }
+  tr[id] { scroll-margin-top: 4rem; }
+  code { background: rgba(128,128,128,0.15); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.88em; }</style>
+</head>
+<body>
+<nav class="topnav">
+  <a href="index.html">Overview</a>
+  <a href="audit-report.html">Audit Report</a>
+  <a href="gap-register.html">Gap Register</a>
+  <a class="current" href="criteria.html">Criteria</a>
+</nav>
+
+<h1>Audit Criteria — deepseek-studio</h1>
+<div class="meta">Snapshot as of 2026-11-05 &middot; 47 controls across 10 domains（域 13 预留不用）</div>
+
+<div class="snapshot-note">
+This page shows exactly what each finding in this audit was measured against.
+It is a snapshot taken on 2026-11-05 — 取自 audit-software-project 1.0.1 的
+<code>references/audit-controls.md</code>。该标准可能随时间细化，日后审计的
+criteria 页可能与此不同。Findings link here by control ID (e.g. "control 3.1")。
+Amber 为 Green/Red 之间的灰区（部分、不一致、中风险）；Not Verified 表示
+证据不可达（非失败）；Not Applicable 须写明理由。所有判定校准于 intake 风险
+画像（本仓：专有桌面工具、单人、本地数据面、无远程生产）。
+</div>
+
+<h2 id="d1">1. Ownership and accountability</h2>
+<table>
+  <thead><tr><th>ID</th><th>Control</th><th>Evidence required</th><th>Green</th><th>Red</th></tr></thead>
+  <tbody>
+    <tr id="d1-c1-1"><td>1.1</td><td>Named technical owner</td><td>CODEOWNERS、README maintainers、提交作者集中度</td><td>可识别的责任人或值班轮换</td><td>生产在用项目却完全无法识别责任人</td></tr>
+    <tr id="d1-c1-2"><td>1.2</td><td>Decision record for significant changes</td><td>ADR 目录、PR 设计说明、架构文档</td><td>重要技术决策某处有书面理由</td><td>老/复杂项目对任何决策零记录且已造成真实风险</td></tr>
+    <tr id="d1-c1-3"><td>1.3</td><td>Knowledge concentration (bus factor)</td><td>git shortlog 全期 + 关键路径 scoped</td><td>多人触达关键路径，或已知单人项目（明示）</td><td>多人生产项目几乎全由一个已不活跃作者提交且无 CODEOWNERS 缓解</td></tr>
+  </tbody>
+</table>
+<h2 id="d2">2. Requirements and acceptance criteria</h2>
+<table>
+  <thead><tr><th>ID</th><th>Control</th><th>Evidence required</th><th>Green</th><th>Red</th></tr></thead>
+  <tbody>
+    <tr id="d2-c2-1"><td>2.1</td><td>Traceable requirements</td><td>提交/PR 引用的票据、规格文档</td><td>多数非平凡变更引用需求/票据</td><td>零可追溯性且多贡献者</td></tr>
+    <tr id="d2-c2-2"><td>2.2</td><td>Acceptance criteria on delivered work</td><td>PR 模板、PR 描述、issue 模板</td><td>PR/issue 通常说明「完成」含义</td><td>（单人无外部需求流程 → Not Applicable）</td></tr>
+  </tbody>
+</table>
+<h2 id="d3">3. Repository and source-control safeguards</h2>
+<table>
+  <thead><tr><th>ID</th><th>Control</th><th>Evidence required</th><th>Green</th><th>Red</th></tr></thead>
+  <tbody>
+    <tr id="d3-c3-1"><td>3.1</td><td>Branch protection on default branch</td><td>gh api branches/{default}/protection</td><td>保护开启且要求 PR + ≥1 评审</td><td>默认分支接受无评审直推</td></tr>
+    <tr id="d3-c3-2"><td>3.2</td><td>PRs actually get reviewed</td><td>gh pr list --state merged --json reviews 采样</td><td>多数被采样 PR 有评审</td><td>保护名义要求但实际无评审，或自合并可见</td></tr>
+    <tr id="d3-c3-3"><td>3.3</td><td>CI required to pass before merge</td><td>branch protection 必选状态检查 + workflows</td><td>CI 被要求且至少覆盖构建/测试</td><td>CI 存在但非必选，或不存在</td></tr>
+    <tr id="d3-c3-4"><td>3.4</td><td>No secrets committed to history</td><td>标准搜索：跟踪树模式扫描 + *.env* AD 历史</td><td>树与可达历史无活体形态密钥</td><td>发现活体形态密钥——恒 Red、恒即时阻断</td></tr>
+    <tr id="d3-c3-5"><td>3.5</td><td>.gitignore covers secrets/build artifacts</td><td>.gitignore vs 跟踪文件</td><td>.env*、凭据、构建产物被忽略且未跟踪</td><td>（不完整为 Amber）</td></tr>
+    <tr id="d3-c3-6"><td>3.6</td><td>Commit message hygiene</td><td>git log -50 --format=%s 采样</td><td>消息大体描述意图</td><td>多贡献者项目多数消息无描述</td></tr>
+    <tr id="d3-c3-7"><td>3.7</td><td>Repository bloat and tracked build artifacts</td><td>历史大 blob + 当前树构建产物核对</td><td>历史无意外大 blob；构建/依赖目录不跟踪</td><td>构建产物/依赖目录以实质影响 clone 的速度入库</td></tr>
+  </tbody>
+</table>
+<h2 id="d4">4. Code quality and maintainability</h2>
+<table>
+  <thead><tr><th>ID</th><th>Control</th><th>Evidence required</th><th>Green</th><th>Red</th></tr></thead>
+  <tbody>
+    <tr id="d4-c4-1"><td>4.1</td><td>Linting/formatting enforced</td><td>linter 配置 + CI 步骤 + pre-commit</td><td>linter 在 CI 运行且失败挡合并</td><td>多贡献者代码库完全无 lint</td></tr>
+    <tr id="d4-c4-2"><td>4.2</td><td>Dependency currency</td><td>锁文件日期、npm outdated、EOL 运行时</td><td>依赖/运行时一年内或有活跃更新流程</td><td>关键依赖/运行时落后多个大版本且已知 EOL、无更新流程</td></tr>
+    <tr id="d4-c4-3"><td>4.3</td><td>No obvious dead/duplicated critical logic</td><td>复制粘贴业务逻辑、注释掉的代码块抽查</td><td>（软控制，仅当判断不窄时 Amber/Red）</td><td>（同上）</td></tr>
+    <tr id="d4-c4-4"><td>4.4</td><td>License declared and dependency licenses compatible</td><td>LICENSE 文件、package.json license</td><td>商业化/共享项目已声明且无 copyleft 冲突</td><td>代码被发布/售卖/分发却完全无许可证，或 AGPL/GPL 依赖混入专有分发</td></tr>
+    <tr id="d4-c4-5"><td>4.5</td><td>Configuration hardcoded in source</td><td>grep localhost/字面 IP/端口/分散环境分支</td><td>环境值读自配置/env</td><td>生产相关值硬编码、改环境需改码</td></tr>
+    <tr id="d4-c4-6"><td>4.6</td><td>Unresolved TODO/FIXME debt in critical paths</td><td>关键路径 grep TODO/FIXME/HACK</td><td>未发现或仅为装饰性</td><td>（Amber 层：关键路径已知不安全/未完成标记）</td></tr>
+    <tr id="d4-c4-7"><td>4.7</td><td>Type safety on critical paths</td><td>TS strict / mypy 等覆盖关键路径</td><td>关键路径静态类型化或语言固有静态类型</td><td>多贡献者生产项目关键路径无类型工具</td></tr>
+  </tbody>
+</table>
+<h2 id="d5">5. Automated testing and critical behavior coverage</h2>
+<table>
+  <thead><tr><th>ID</th><th>Control</th><th>Evidence required</th><th>Green</th><th>Red</th></tr></thead>
+  <tbody>
+    <tr id="d5-c5-1"><td>5.1</td><td>Tests exist and run</td><td>测试目录/框架 + CI 步骤</td><td>测试存在且在 CI 执行</td><td>完全无自动化测试</td></tr>
+    <tr id="d5-c5-2"><td>5.2</td><td>Critical business paths are covered</td><td>测试名/内容对照核心特性</td><td>风险最高流有自动化覆盖</td><td>关键流（资金/鉴权/数据丢失）零覆盖</td></tr>
+    <tr id="d5-c5-3"><td>5.3</td><td>Tests aren't silently skipped/broken</td><td>.skip/xit/@Disabled 标记、CI 历史</td><td>（大量无跟踪原因的跳过为 Amber）</td><td>（同上）</td></tr>
+    <tr id="d5-c5-4"><td>5.4</td><td>Integration/e2e coverage on critical flows</td><td>全流测试 vs 纯单测</td><td>至少一条关键流有集成/e2e 覆盖</td><td>（仅单测覆盖为 Amber）</td></tr>
+  </tbody>
+</table>
+<h2 id="d6">6. Security, secrets, dependencies, and production access</h2>
+<table>
+  <thead><tr><th>ID</th><th>Control</th><th>Evidence required</th><th>Green</th><th>Red</th></tr></thead>
+  <tbody>
+    <tr id="d6-c6-1"><td>6.1</td><td>Dependency vulnerability scanning</td><td>Dependabot/Snyk 配置 + 审计期 lockfile-only 扫描</td><td>已配置自动扫描，或审计扫描无 high/critical</td><td>无扫描且审计扫描命中 high/critical</td></tr>
+    <tr id="d6-c6-2"><td>6.2</td><td>Production access control</td><td>部署/生产访问文档、env 处理</td><td>示例与真实密钥分离、访问流程有文档</td><td>（通常 Not Verified——入 intake 问题）</td></tr>
+    <tr id="d6-c6-3"><td>6.3</td><td>Personal/sensitive data handling</td><td>schema/seed/fixture 字段扫描</td><td>无真实形态个人数据入库；夹具合成</td><td>发现真实形态个人数据——按密钥同等对待，恒即时阻断</td></tr>
+  </tbody>
+</table>
+<h2 id="d7">7. CI/CD, deployment repeatability, and rollback</h2>
+<table>
+  <thead><tr><th>ID</th><th>Control</th><th>Evidence required</th><th>Green</th><th>Red</th></tr></thead>
+  <tbody>
+    <tr id="d7-c7-1"><td>7.1</td><td>Deployment is defined as code/config</td><td>CI/CD 管线、IaC、部署脚本 vs 手册</td><td>部署脚本化、可复现</td><td>部署依赖仅一人知道的未记录手动步骤</td></tr>
+    <tr id="d7-c7-2"><td>7.2</td><td>Rollback path exists</td><td>回滚文档、版本化 tag、迁移 down 脚本</td><td>（通常 Not Verified——仓库难以确证）</td><td>有肯定性证据表明回滚不可能（不可逆迁移且无备份策略）</td></tr>
+  </tbody>
+</table>
+<h2 id="d8">8. Architecture, trust boundaries, APIs, and data</h2>
+<table>
+  <thead><tr><th>ID</th><th>Control</th><th>Evidence required</th><th>Green</th><th>Red</th></tr></thead>
+  <tbody>
+    <tr id="d8-c8-1"><td>8.1</td><td>Trust boundaries are identifiable</td><td>鉴权中间件、边界输入校验</td><td>外部输入使用前被校验；敏感端点强制鉴权</td><td>敏感端点（数据变更/管理动作）发现无可见鉴权</td></tr>
+    <tr id="d8-c8-2"><td>8.2</td><td>Database migrations are safe and reviewed</td><td>迁移目录、与其他代码同走评审</td><td>迁移版本化且随代码同审</td><td>（绕过评审为 Amber）</td></tr>
+    <tr id="d8-c8-3"><td>8.3</td><td>Input validation at API boundaries</td><td>校验层（zod/joi/pydantic 等）vs 裸消费 body</td><td>敏感端点外部输入过校验层</td><td>敏感变更（资金/鉴权/管理/PII）直接消费未校验输入</td></tr>
+    <tr id="d8-c8-4"><td>8.4</td><td>Injection surface</td><td>拼接 SQL、eval、命令解释器插值、innerHTML 喂用户输入</td><td>无用户可达注入汇点，或用参数化/转义等价物</td><td>用户可达路径把未净化输入喂给注入汇点</td></tr>
+    <tr id="d8-c8-5"><td>8.5</td><td>Error handling discipline on critical paths</td><td>空 catch/except: pass/未处理 rejection 扫描</td><td>关键路径错误被显式处理（抛出/带上下文记日志/作为响应返回）</td><td>关键路径静默吞错，失败对用户与运维均不可见</td></tr>
+  </tbody>
+</table>
+<h2 id="d9">9. Operations, monitoring, alerts, backups, and recovery</h2>
+<table>
+  <thead><tr><th>ID</th><th>Control</th><th>Evidence required</th><th>Green</th><th>Red</th></tr></thead>
+  <tbody>
+    <tr id="d9-c9-1"><td>9.1</td><td>Monitoring/observability present</td><td>日志配置、APM/错误跟踪 SDK</td><td>错误跟踪与基础监控接入应用</td><td>面向生产的应用零错误跟踪、零可见日志策略</td></tr>
+    <tr id="d9-c9-2"><td>9.2</td><td>Backups exist for stateful data</td><td>（几乎不可能从仓库确证）</td><td>（默认 Not Verified——非失败）</td><td>仅当仓库有肯定性证据表明备份被关闭/移除</td></tr>
+    <tr id="d9-c9-3"><td>9.3</td><td>Alerting configured, not just monitoring installed</td><td>告警规则配置 vs 仅 SDK 依赖；依赖 9.1 Green</td><td>告警规则入仓或 owner 确认已配</td><td>owner 肯定确认监控装了但无人被叫醒</td></tr>
+  </tbody>
+</table>
+<h2 id="d10">10. Documentation and operational knowledge</h2>
+<table>
+  <thead><tr><th>ID</th><th>Control</th><th>Evidence required</th><th>Green</th><th>Red</th></tr></thead>
+  <tbody>
+    <tr id="d10-c10-1"><td>10.1</td><td>README covers setup and purpose</td><td>README 内容</td><td>新人凭 README 独立跑起项目</td><td>无 README，或 README 严重过时（引用已删除的技术栈）</td></tr>
+    <tr id="d10-c10-2"><td>10.2</td><td>Runbook/operational docs for production issues</td><td>事故处置文档</td><td>（预期多项目缺失——入问题区；明显过时为 Amber）</td><td>（同上）</td></tr>
+  </tbody>
+</table>
+<h2 id="d11">11. Performance and scalability</h2>
+<table>
+  <thead><tr><th>ID</th><th>Control</th><th>Evidence required</th><th>Green</th><th>Red</th></tr></thead>
+  <tbody>
+    <tr id="d11-c11-1"><td>11.1</td><td>Unbounded queries</td><td>热路径数据访问无分页/LIMIT 扫描</td><td>面向用户的列表端点有分页/上限</td><td>面向用户端点返回可无限增长表的无界结果集</td></tr>
+    <tr id="d11-c11-2"><td>11.2</td><td>N+1 query patterns</td><td>循环内 DB 调用 vs 批量/JOIN</td><td>（Amber 层：关键路径 N+1 形态）</td><td>（同上）</td></tr>
+    <tr id="d11-c11-3"><td>11.3</td><td>Resource limits on external-facing endpoints</td><td>超时/体量上限/限流 全局或按路由</td><td>超时与体量上限已设置（全局或逐端点）</td><td>面向用户且未鉴权端点三无（超时/体量/限流）——兼作安全 DoS 项</td></tr>
+    <tr id="d11-c11-4"><td>11.4</td><td>Caching on read-heavy paths</td><td>缓存层 vs 昂贵聚合读；仓库内性能关注证据</td><td>昂贵读处有缓存，或未发现昂贵读路径</td><td>（永不为 Red——Amber 层）</td></tr>
+  </tbody>
+</table>
+<h2 id="d12">12. API contract and versioning discipline</h2>
+<table>
+  <thead><tr><th>ID</th><th>Control</th><th>Evidence required</th><th>Green</th><th>Red</th></tr></thead>
+  <tbody>
+    <tr id="d12-c12-1"><td>12.1</td><td>API surface is documented</td><td>OpenAPI/GraphQL schema/生成客户端</td><td>对外 API 有机器可读或公开规格</td><td>对外 API 无处可查、需逆向源码集成</td></tr>
+    <tr id="d12-c12-2"><td>12.2</td><td>Breaking changes are versioned or gated</td><td>版本前缀、changelog、弃用头</td><td>破坏性变更走版本升级或弃用窗口</td><td>证据表明破坏性变更原地上线且无弃用通知</td></tr>
+    <tr id="d12-c12-3"><td>12.3</td><td>Backward-compatibility policy for public/partner APIs</td><td>可发现的兼容政策文档</td><td>兼容政策存在且消费方可发现</td><td>（无政策但 API 年轻 → Not Verified，入问题区）</td></tr>
+  </tbody>
+</table>
+<h2 id="d14">14. Data lifecycle and retention</h2>
+<table>
+  <thead><tr><th>ID</th><th>Control</th><th>Evidence required</th><th>Green</th><th>Red</th></tr></thead>
+  <tbody>
+    <tr id="d14-c14-1"><td>14.1</td><td>Retention/deletion policy</td><td>（几乎不可能从仓库确证；涉 PII 时入问题区）</td><td>（默认 Not Verified）</td><td>仅当仓库有肯定性违规证据（如声明用户数据永不删除且受数据保护制度约束）</td></tr>
+    <tr id="d14-c14-2"><td>14.2</td><td>Deletion actually deletes</td><td>读删除端点/流程源码（可占用深读预算）</td><td>硬删，或软删有可用 purge 路径</td><td>「已删除」PII 仍可查询/仍被服务且产品承诺删除——第 1 级风险</td></tr>
+  </tbody>
+</table>
+<h2 id="d13">13. (intentionally unused)</h2>
+<p>预留——可访问性与国际化曾考虑放在此槽位并被刻意排除：静态分析无法以足够置信度验证 a11y 合规。编号保留不复用，未来若以真实浏览器工具支撑的 a11y/i18n 域加入，直接占用此号即可。报告在 Inspection boundary 中明示该排除。</p>
+</body>
+</html>
