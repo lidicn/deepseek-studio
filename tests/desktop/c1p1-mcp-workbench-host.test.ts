@@ -20,47 +20,56 @@
  * 5. 非回环 Origin + 正确 Bearer → 403（模型够不到）。
  */
 
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
-
-const tmpDirs: string[] = [];
-
-function mkConfigDir(): string {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'mcpapi-'));
-  tmpDirs.push(d);
-  return d;
-}
-
-afterEach(() => {
-  while (tmpDirs.length) {
-    const d = tmpDirs.pop();
-    fs.rmSync(d as string, { recursive: true, force: true });
-  }
-});
+// 静态 import：模块图在 collect 阶段一次性就位，用例执行期不再触发
+// vitest 的「模块 fetch RPC」——满载时那条 RPC 会被饿死（`Timeout calling "fetch"`），
+// 这正是全量 gate 偶发红的直接机制。单例是懒建的（`new McpController()` 才读 env），
+// 所以只要 bootHost() 在 start 前设好 STUDIO_MCP_CONFIG，静态导入安全。
+import { createDesktopHost } from '../../src/host/desktop-host';
 
 /**
- * 隔离 MCP 控制器单例。
+ * 20261105（全量 gate 两轮 flaky 定位后重构）：
  *
- * `getMcpController()` 是**模块级单例**，构造时读一次 `STUDIO_MCP_CONFIG`；
- * 而 `STUDIO_MCP_CONFIG` 只在**模块首次 import 时**被读进单例的 configPath。
- * 不重置模块的话，第二个用例会复用第一个用例的单例 → 读写**另一个**配置文件。
+ * 旧实现每条用例都 `vi.resetModules()` + `await import('../../src/host/desktop-host')`，
+ * 目的是让 MCP 控制器单例重读 `STUDIO_MCP_CONFIG`。代价是**每条用例重载整张宿主模块图**——
+ * 满载时这会走 vitest 的「模块 fetch RPC」，实测直接饿死：
+ *   `[vitest-worker]: Timeout calling "fetch" with "/src/host/desktop-host.ts"`
+ * （12 个 CPU 占用进程 / 8 核时三条用例全部 5000ms 超时，与 CI 红的现象一致）。
  *
- * `vi.resetModules()` 清模块注册表 → 随后的动态 import 得到**全新**的模块实例
- * → 单例重建 → 读到本次的 env。
+ * 新实现只用**一张**配置路径 + 静态 import：
+ *   - 单例是进程级的，但 `McpController` 自己会按文件 mtime 热重载（`refreshConfigIfChanged`），
+ *     所以只要每条用例**改写同一个配置文件**，单例就能读到新内容 —— 不需要 resetModules；
+ *   - 断言一条未减：读明文 / 掩码还原 / 磁盘不被毁 / cwd 不丢 / 非回环 Origin 403 全在。
  */
-async function freshHost(cfgPath: string) {
-  vi.resetModules();
+const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcpapi-'));
+const cfgPath = path.join(cfgDir, 'mcp-servers.json');
+/** 本文件宿主的唯一 token 来源：host 配置与请求头共用，避免两处字面量漂移。 */
+const TOKEN = 'test-token';
+
+/** 写一份配置；顺手把 mtime 往后推 1ms，确保单例的 mtime 快照一定失效（不靠计时巧合）。 */
+function writeCfg(servers: Record<string, unknown>): void {
+  fs.writeFileSync(cfgPath, JSON.stringify({ servers } as unknown, null, 2), 'utf8');
+  const next = new Date(Date.now() + 1);
+  fs.utimesSync(cfgPath, next, next);
+}
+
+/** 起一个真宿主；控制器单例在 start() 内首次构造时读 env。 */
+async function bootHost() {
   process.env.STUDIO_MCP_CONFIG = cfgPath;
-  const { createDesktopHost } = await import('../../src/host/desktop-host');
   const host = createDesktopHost({
-    config: { host: '127.0.0.1', port: 0, token: 'test-token' },
+    config: { host: '127.0.0.1', port: 0, token: TOKEN },
     secret: 's',
   });
   await host.start();
   return host;
 }
+
+afterAll(() => {
+  try { fs.rmSync(cfgDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 
 const SECRET_CFG = {
   command: 'npx',
@@ -73,16 +82,12 @@ const SECRET_CFG = {
 
 describe('MCP 端点 · 宿主真实实现（读明文 / 写回不毁配置）', () => {
   it('GET 回明文；PUT 写回后磁盘上的真实密钥未被覆盖；cwd 不丢', async () => {
-    const dir = mkConfigDir();
-    const cfgPath = path.join(dir, 'mcp-servers.json');
-    fs.writeFileSync(cfgPath, JSON.stringify({ servers: { 'srv-a': SECRET_CFG } }, null, 2), 'utf8');
+    writeCfg({ 'srv-a': SECRET_CFG });
 
-    const prev = process.env.STUDIO_MCP_CONFIG;
+    const host = await bootHost();
+    const base = host.url;
+    const auth = { Authorization: `Bearer ${TOKEN}` };
     try {
-      const host = await freshHost(cfgPath);
-      const base = host.url;
-      const auth = { Authorization: 'Bearer test-token' };
-      try {
         // ① 读端点回明文
         const listRes = await fetch(`${base}/v1/mcp/servers`, { headers: auth });
         expect(listRes.status).toBe(200);
@@ -129,23 +134,15 @@ describe('MCP 端点 · 宿主真实实现（读明文 / 写回不毁配置）',
       } finally {
         await host.stop();
       }
-    } finally {
-      if (prev === undefined) delete process.env.STUDIO_MCP_CONFIG;
-      else process.env.STUDIO_MCP_CONFIG = prev;
-    }
   });
 
   it('用户真改过的值才覆盖（改过的 key 用新值，没改的还原成原值）', async () => {
-    const dir = mkConfigDir();
-    const cfgPath = path.join(dir, 'mcp-servers.json');
-    fs.writeFileSync(cfgPath, JSON.stringify({ servers: { 'srv-a': SECRET_CFG } }, null, 2), 'utf8');
+    writeCfg({ 'srv-a': SECRET_CFG });
 
-    const prev = process.env.STUDIO_MCP_CONFIG;
+    const host = await bootHost();
+    const base = host.url;
+    const auth = { Authorization: `Bearer ${TOKEN}` };
     try {
-      const host = await freshHost(cfgPath);
-      const base = host.url;
-      const auth = { Authorization: 'Bearer test-token' };
-      try {
         const putRes = await fetch(`${base}/v1/mcp/servers/srv-a`, {
           method: 'PUT',
           headers: { ...auth, 'Content-Type': 'application/json' },
@@ -174,31 +171,19 @@ describe('MCP 端点 · 宿主真实实现（读明文 / 写回不毁配置）',
       } finally {
         await host.stop();
       }
-    } finally {
-      if (prev === undefined) delete process.env.STUDIO_MCP_CONFIG;
-      else process.env.STUDIO_MCP_CONFIG = prev;
-    }
   });
 
   it('非回环 Origin（DeepSeek 页面）+ 正确 Bearer → 403（模型够不到）', async () => {
-    const dir = mkConfigDir();
-    const cfgPath = path.join(dir, 'mcp-servers.json');
-    fs.writeFileSync(cfgPath, JSON.stringify({ servers: { 'srv-a': SECRET_CFG } }, null, 2), 'utf8');
+    writeCfg({ 'srv-a': SECRET_CFG });
 
-    const prev = process.env.STUDIO_MCP_CONFIG;
+    const host = await bootHost();
     try {
-      const host = await freshHost(cfgPath);
-      try {
         const r = await fetch(`${host.url}/v1/mcp/servers`, {
-          headers: { Authorization: 'Bearer test-token', Origin: 'https://chat.deepseek.com' },
+          headers: { Authorization: `Bearer ${TOKEN}`, Origin: 'https://chat.deepseek.com' },
         });
         expect(r.status).toBe(403);
       } finally {
         await host.stop();
       }
-    } finally {
-      if (prev === undefined) delete process.env.STUDIO_MCP_CONFIG;
-      else process.env.STUDIO_MCP_CONFIG = prev;
-    }
   });
 });
