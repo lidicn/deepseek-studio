@@ -24,7 +24,12 @@ function makeHomedir() {
 
 describe('consent-whitelist-store v2', () => {
   let ctx: ReturnType<typeof makeHomedir>;
-  beforeEach(() => { ctx = makeHomedir(); });
+  beforeEach(() => {
+    // 本组用 mock deps（homedir + 假 fs）测路径解析；全局 setupFiles 默认设了 STUDIO_CONFIG_DIR
+    // 会让 store 走 env 而非 mock homedir → 路径与 ctx.path 对不上。这里显式清掉，回到 homedir 路径。
+    delete process.env.STUDIO_CONFIG_DIR;
+    ctx = makeHomedir();
+  });
 
   it('空目录首次 load 返回空且不写文件', () => {
     const s = createWhitelistStore(ctx.deps);

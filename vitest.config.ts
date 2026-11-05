@@ -8,6 +8,9 @@ export default defineConfig({
     // 序列化文件执行：desktop-entry 与既有 inject-loader 都调用全局幂等的 bootstrapInjection，
     // 并行执行会争用其模块级 installState 单例，改为串行消除跨文件竞态。
     fileParallelism: false,
+    // 默认把 STUDIO_CONFIG_DIR 指向临时目录，避免 host.start() 集成测试写真目录污染用户配置。
+    // 仅在 env 未显式设置时注入；显式测 env 缺失/覆盖的用例自行 delete/set/restore，不受影响。
+    setupFiles: ['tests/desktop/_setup-isolated-config.ts'],
     // ── 超时预算（20261105 · 全量 gate 两轮 flaky 定位）───────────────────────────
     // 本套件有一批「起一个**真宿主**再走**真实 HTTP**」的重量级用例（desktop-host 会装配
     // sqlite / bot registry / API server …）：空闲单机下首次启动约 1.8s、单次 HTTP 往返
