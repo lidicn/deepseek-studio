@@ -12,8 +12,13 @@
  *   C. 引擎日志提及：logs/verify-exit/ 等 .log/.json 里的 completion= / stopReason= / API 返回体文案
  * 另有 E. 频率口径（M3，20261102）：每任务请求数分布 / 同任务相邻间隔 / 截断重发占比。
  *   判读铁律：**字节类只回答成本，频率类只回答请求表面积**——两件事互相独立，
- *   本脚本不产出「所以被限流」类合成结论；retryable HTTP 重试在 interceptor 内无
- *   trace 打点，E3 只测 trace 可见的「截断终态后任务继续」，缺口如实缺报不编数。
+ *   本脚本不产出「所以被限流」类合成结论。
+ *   M3-1（20261105）补上 retryable 重试占比：打点在 interceptor 里**实有其事**
+ *   （continuation.decision 的 first-attempt-retry / error-retry-<reason> /
+ *   continuation-truncated，见 main-world-interceptor.ts:2620/:3004/:3016），
+ *   分母 = request.sent 打点（实际发出请求数，含重试重发，:1636/:1918/:2885）。
+ *   口径纪律：轮数（turn.end 数）= 请求数**下界**，与「实际发出请求数」**两个分母分开列**，不混算；
+ *   attempt 序号不在 trace 字段里（:2619 的 d() 日志有、record 没带），占比只能数事件条数——如实注明。
  *
  * 用法：
  *   npx tsx tools/metrics/term-state.ts [路径...] [--out <file.md>]
@@ -292,6 +297,140 @@ export function quantile(sortedAsc: number[], q: number): number {
   return sortedAsc[lo] + (sortedAsc[hi] - sortedAsc[lo]) * (pos - lo);
 }
 
+// ---------------------------------------------------------------- M3-1 retry 口径
+
+/**
+ * 三类重试的 trace 事件形态（interceptor 实测，源码行号 20261105 核对）：
+ *   ① 首轮 retryable 重试：continuation.decision reason='first-attempt-retry' triggered=true
+ *      （main-world-interceptor.ts:2620，fetch/XHR 共用 escalateFirstAttemptFailure :2595）
+ *   ② 续跑 error-retry：reason='error-retry-<classifyResponse.reason>' triggered=true
+ *      （:3004，reason 后缀 = 具体失败原因，分列统计）
+ *   ③ 截断重发：reason='continuation-truncated' triggered=true（:3016）
+ * 预算耗尽是「重试被拒」不是「重试发生」，单列不计入分子：
+ *   - turn.end stopReason='first-attempt-retry-out'（:2605，首轮预算 FIRST_ATTEMPT_MAX_RETRIES 尽）
+ *   - continuation.decision reason='error-budget-out' / 'continuation-truncated-budget-out'
+ *     （:2981，续跑预算 MAX_ERROR_RETRIES=3 尽，按 isTruncated 分流）
+ *
+ * 分母：request.sent 打点（:1636 fetch / :1918 XHR / :2885，每条 = 一次实际发出的 chat 请求，
+ * 含重试重发）——轮数（turn.end 数）只是请求数下界，两个分母分开列，不混算。
+ *
+ * 已知缺口（如实注明）：attempt 序号（第几次重试）不在 trace 字段里，
+ * 占比只能数事件条数；「重试集中在哪几轮」需先补打点才能测。
+ */
+export const RETRY_REASON = {
+  firstAttempt: 'first-attempt-retry',
+  errorRetryPrefix: 'error-retry-',
+  truncatedResend: 'continuation-truncated',
+} as const;
+
+export interface DecisionEvent {
+  turnId?: string;
+  reason?: string;
+  triggered: boolean;
+}
+
+export interface RequestSentEvent {
+  turnId?: string;
+  bytes?: number;
+}
+
+/** 从 jsonl 行里取 continuation.decision / request.sent / first-attempt-retry-out 终态。 */
+export function collectRetryEvidence(lines: string[]): {
+  decisions: DecisionEvent[];
+  requestsSent: RequestSentEvent[];
+  firstAttemptRetryOutTurnEnds: number;
+} {
+  const decisions: DecisionEvent[] = [];
+  const requestsSent: RequestSentEvent[] = [];
+  let firstAttemptRetryOutTurnEnds = 0;
+  for (const rawLine of lines) {
+    const s = rawLine.trim();
+    if (s === '') continue;
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(s) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (typeof obj !== 'object' || obj === null) continue;
+    if (obj.t === 'continuation.decision' && typeof obj.reason === 'string') {
+      decisions.push({
+        turnId: typeof obj.turnId === 'string' && obj.turnId !== '' ? obj.turnId : undefined,
+        reason: obj.reason,
+        triggered: obj.triggered === true,
+      });
+    } else if (obj.t === 'request.sent') {
+      requestsSent.push({
+        turnId: typeof obj.turnId === 'string' && obj.turnId !== '' ? obj.turnId : undefined,
+        bytes: typeof obj.bytes === 'number' ? obj.bytes : undefined,
+      });
+    } else if (obj.t === 'turn.end' && obj.stopReason === 'first-attempt-retry-out') {
+      firstAttemptRetryOutTurnEnds++;
+    }
+  }
+  return { decisions, requestsSent, firstAttemptRetryOutTurnEnds };
+}
+
+export interface RetryReport {
+  /** 分母：实际发出请求数（request.sent 计数，含重试重发）。 */
+  requestsSent: number;
+  /** 其中有 turnId 归属的条数（无 turnId 单列不进每任务聚合）。 */
+  requestsSentWithTurnId: number;
+  /** 分子（分列，不混算）：各类 triggered=true 的调度事件条数。 */
+  firstAttemptRetry: number;
+  errorRetry: number;
+  errorRetryByReason: Record<string, number>;
+  truncatedResend: number;
+  /** 预算耗尽（重试被拒，单列）：first-attempt-retry-out 走 turn.end，另两类走 continuation.decision。 */
+  budgetOut: { firstAttemptRetryOut: number; errorBudgetOut: number; truncatedBudgetOut: number };
+  /** 占比：分子 / 实际发出请求数（分母 0 时为 0）。 */
+  retryShare: number;
+  perClassShare: { firstAttempt: number; errorRetry: number; truncated: number };
+}
+
+export function buildRetryReport(
+  decisions: DecisionEvent[],
+  requestsSent: RequestSentEvent[],
+  firstAttemptRetryOutTurnEnds: number,
+): RetryReport {
+  let firstAttemptRetry = 0;
+  let errorRetry = 0;
+  let truncatedResend = 0;
+  let errorBudgetOut = 0;
+  let truncatedBudgetOut = 0;
+  const errorRetryByReason: Record<string, number> = {};
+  for (const d of decisions) {
+    const reason = d.reason ?? '';
+    if (reason === RETRY_REASON.firstAttempt && d.triggered) {
+      firstAttemptRetry++;
+    } else if (reason.startsWith(RETRY_REASON.errorRetryPrefix) && d.triggered) {
+      errorRetry++;
+      const sub = reason.slice(RETRY_REASON.errorRetryPrefix.length);
+      errorRetryByReason[sub] = (errorRetryByReason[sub] ?? 0) + 1;
+    } else if (reason === RETRY_REASON.truncatedResend && d.triggered) {
+      truncatedResend++;
+    } else if (reason === 'error-budget-out') {
+      errorBudgetOut++;
+    } else if (reason === 'continuation-truncated-budget-out') {
+      truncatedBudgetOut++;
+    }
+  }
+  const denom = requestsSent.length;
+  const share = (n: number): number => (denom > 0 ? n / denom : 0);
+  const totalRetry = firstAttemptRetry + errorRetry + truncatedResend;
+  return {
+    requestsSent: denom,
+    requestsSentWithTurnId: requestsSent.filter((r) => typeof r.turnId === 'string' && r.turnId !== '').length,
+    firstAttemptRetry,
+    errorRetry,
+    errorRetryByReason,
+    truncatedResend,
+    budgetOut: { firstAttemptRetryOut: firstAttemptRetryOutTurnEnds, errorBudgetOut, truncatedBudgetOut },
+    retryShare: share(totalRetry),
+    perClassShare: { firstAttempt: share(firstAttemptRetry), errorRetry: share(errorRetry), truncated: share(truncatedResend) },
+  };
+}
+
 export interface FrequencyReport {
   /** 口径：turnId = 一次用户消息；轮数 = turn.end 数 = 请求数下界（HTTP 重试无打点）。 */
   taskCount: number;
@@ -317,6 +456,8 @@ export interface FrequencyReport {
   tasksWithResend: number;
   resendRounds: number;
   resendRoundShare: number;
+  /** M3-1：retryable 重试占比（分列口径）；仅当输入含 .jsonl trace 时产出。 */
+  retry: RetryReport | null;
 }
 
 export function buildFrequencyReport(events: TurnEndFull[], withoutTurnId: number): FrequencyReport {
@@ -397,6 +538,7 @@ export function buildFrequencyReport(events: TurnEndFull[], withoutTurnId: numbe
     tasksWithResend,
     resendRounds,
     resendRoundShare: resendRounds / shareBase,
+    retry: null, // main() 采集到 continuation.decision / request.sent 后回填
   };
 }
 
@@ -481,13 +623,51 @@ function fmtFrequency(f: FrequencyReport): string[] {
   out.push(`| 会话内最小 / 最大 (ms) | ${f.intervalMin} / ${f.intervalMax} |`);
   out.push(`| ≤5000ms 的「快速重发对」（占会话内间隔） | ${f.fastResendPairs}（${pctStr(f.fastResendShare)}） |`);
   out.push('');
-  out.push('### E3. 重试占比（可测口径：截断重发）');
+  out.push('### E3. 重试占比（M3-1 分列口径：分子分列、预算耗尽单列、两个分母不混算）');
   out.push('');
-  out.push('| 指标 | 值 |');
-  out.push('|---|---|');
-  out.push(`| 含截断重发的任务数 | ${f.tasksWithResend} / ${f.taskCount} |`);
-  out.push(`| 截断重发轮数 / 有归属轮总数 | ${f.resendRounds} / ${f.totalTurnEnds - f.eventsWithoutTurnId}（${pctStr(f.resendRoundShare)}） |`);
-  out.push('| retryable HTTP 重试占比 | **数据源缺失**（interceptor 内无 trace 打点，缺报不编数） |');
+  const r = f.retry;
+  if (r === null) {
+    out.push('| retryable HTTP 重试占比 | 数据源缺失（输入无 .jsonl trace，缺报不编数） |');
+  } else {
+    // 「未采集」与「采集到 0」必须区分（PM 20261105：空值不是零）：
+    // retry 证据（request.sent + 三类调度事件 + 预算耗尽）全零 = 落盘白名单未放行
+    // （interceptor :649 只放行 turn.end / m15.*）或该批无聊天流量 → 显示「未采集」；
+    // 任一证据非零 → 显示真实数字。
+    const hasRetryEvidence =
+      r.requestsSent > 0 ||
+      r.firstAttemptRetry + r.errorRetry + r.truncatedResend > 0 ||
+      r.budgetOut.firstAttemptRetryOut + r.budgetOut.errorBudgetOut + r.budgetOut.truncatedBudgetOut > 0;
+    if (!hasRetryEvidence) {
+      out.push('| 指标 | 值 |');
+      out.push('|---|---|');
+      out.push('| **分母 A：实际发出请求数** | **未采集（无打点）** |');
+      out.push('| 分子①②③（三类重试） | **未采集（无打点）** |');
+      out.push(`| 对照：分母 B（轮数下界 = turn.end 数，与分母 A 不混算） | ${f.totalTurnEnds - f.eventsWithoutTurnId} |`);
+      out.push('');
+      out.push('**未采集 ≠ 零**：当前 `logs/trace/*.jsonl` 里没有任何 retry 证据事件——原因是落盘白名单（interceptor :649）尚未放行 `continuation.decision` / `request.sent` 两类事件（见 ⚠️ 备注），此状态下**不许把重试占比写成 0**。');
+    } else {
+      out.push('| 指标 | 值 |');
+      out.push('|---|---|');
+      out.push(`| **分母 A：实际发出请求数**（request.sent 计数，含重试重发） | ${r.requestsSent}（有 turnId 归属 ${r.requestsSentWithTurnId}） |`);
+      out.push(`| 分子① 首轮 retryable 重试（reason='first-attempt-retry'） | ${r.firstAttemptRetry}（占分母 A ${pctStr(r.perClassShare.firstAttempt)}） |`);
+      const sub = Object.keys(r.errorRetryByReason).sort().map((k) => `${k}×${r.errorRetryByReason[k]}`).join('， ') || '（无）';
+      out.push(`| 分子② 续跑 error-retry（reason='error-retry-<原因>'，分列） | ${r.errorRetry}（占分母 A ${pctStr(r.perClassShare.errorRetry)}）；原因明细：${sub} |`);
+      out.push(`| 分子③ 截断重发（reason='continuation-truncated'） | ${r.truncatedResend}（占分母 A ${pctStr(r.perClassShare.truncated)}） |`);
+      out.push(`| **重试合计 / 分母 A** | ${r.firstAttemptRetry + r.errorRetry + r.truncatedResend} / ${r.requestsSent}（**${pctStr(r.retryShare)}**） |`);
+      out.push(`| 代理口径·含截断重发的任务数（turn.end 序列推断） | ${f.tasksWithResend} / ${f.taskCount} |`);
+      out.push(`| 代理口径·截断重发轮数 / 有归属轮总数 | ${f.resendRounds} / ${f.totalTurnEnds - f.eventsWithoutTurnId}（${pctStr(f.resendRoundShare)}） |`);
+      out.push(`| 预算耗尽·首轮（turn.end 'first-attempt-retry-out'，不计分子） | ${r.budgetOut.firstAttemptRetryOut} |`);
+      out.push(`| 预算耗尽·续跑（'error-budget-out' / 'continuation-truncated-budget-out'，不计分子） | ${r.budgetOut.errorBudgetOut} / ${r.budgetOut.truncatedBudgetOut} |`);
+      out.push(`| 对照：分母 B（轮数下界 = turn.end 数，与分母 A **不混算**） | ${f.totalTurnEnds - f.eventsWithoutTurnId} |`);
+    }
+    out.push('');
+    out.push('口径备注：');
+    out.push('- 分子 = `continuation.decision` 里各类 `triggered:true` 的**调度事件条数**（每次调度 → 一条 request.sent）；分母 = `request.sent` 打点数（**实际发出请求数**，含重试重发）。');
+    out.push('- 轮数（turn.end 数）只是请求数**下界**（turn.end 在轮结束时打、HTTP 重试不产生新轮），与分母 A 是两个口径，E1 表的「请求数分布」仍是下界口径。');
+    out.push('- **attempt 序号不在 trace 字段里**（interceptor :2619 的 d() 日志有、record 没带）：占比按事件条数计，「重试集中在哪几轮」需补打点才能测——如实缺报。');
+    out.push('- **⚠️ 落盘白名单缺口（20261105 核实）**：`interceptorTrace.record` 的落盘白名单只有 `turn.end` 与 `m15.*`（main-world-interceptor.ts:649），`continuation.decision` / `request.sent` **只进内存环（2000 条上限）、不落盘**——白名单放行前，本表的分母 A / 分子恒走「未采集」分支。聚合侧已就绪（本文件测试锁定），UI 域把这两类加进 :649 白名单后真数据即流入。');
+    out.push('- 截断重发的 E3 代理口径（turn.end 序列推断）与真打点口径并存：前者是轮级代理、后者是请求级实测，互不替代。');
+  }
   out.push('');
   out.push('### 判读口径（字节类与频率类分开，不互相推论）');
   out.push('');
@@ -603,6 +783,9 @@ function main(): void {
   };
   const mentionParts: Record<string, number>[] = [];
   const freqEvents: TurnEndFull[] = [];
+  const retryDecisions: DecisionEvent[] = [];
+  const retryRequestsSent: RequestSentEvent[] = [];
+  let firstAttemptRetryOutTurnEnds = 0;
   let freqWithoutId = 0;
   let hasTraceJsonl = false;
 
@@ -618,9 +801,15 @@ function main(): void {
       for (const [k, v] of Object.entries(d.buckets)) report.trace.buckets[k] = (report.trace.buckets[k] ?? 0) + v;
       for (const [k, v] of Object.entries(d.rawValues)) report.trace.rawValues[k] = (report.trace.rawValues[k] ?? 0) + v;
       for (const [k, v] of Object.entries(d.unmapped)) report.trace.unmapped[k] = (report.trace.unmapped[k] ?? 0) + v;
-      const ev = collectTurnEvents(text.split('\n'));
+      const allLines = text.split('\n');
+      const ev = collectTurnEvents(allLines);
       freqEvents.push(...ev.withId);
       freqWithoutId += ev.withoutId;
+      // M3-1：retry 证据与 turn.end 同源同文件采集（continuation.decision / request.sent）
+      const retryEv = collectRetryEvidence(allLines);
+      retryDecisions.push(...retryEv.decisions);
+      retryRequestsSent.push(...retryEv.requestsSent);
+      firstAttemptRetryOutTurnEnds += retryEv.firstAttemptRetryOutTurnEnds;
     } else {
       mentionParts.push(scanLogMentions(text));
       if (ext === '.json' || ext === '.txt') {
@@ -629,7 +818,10 @@ function main(): void {
     }
   }
   report.logMentions = aggregateLogMentions(mentionParts);
-  if (hasTraceJsonl) report.frequency = buildFrequencyReport(freqEvents, freqWithoutId);
+  if (hasTraceJsonl) {
+    report.frequency = buildFrequencyReport(freqEvents, freqWithoutId);
+    report.frequency.retry = buildRetryReport(retryDecisions, retryRequestsSent, firstAttemptRetryOutTurnEnds);
+  }
 
   // capture 目录：仅当输入里显式包含 cdp-chat-capture 目录时分组扫描
   for (const p of inputPaths) {

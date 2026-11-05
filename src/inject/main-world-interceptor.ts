@@ -641,12 +641,25 @@ export function setInterceptorTraceSink(sink: ((line: string) => void) | null): 
 const interceptorTrace: StudioTraceCollector = {
   record(event) {
     traceCollector.record(event);
-    // 落盘两类：
+    // 落盘四类（M3 口径，2026-11-05 放行）：
     //   - `turn.end`：一轮真正收尾（所有退出路径的公共汇聚点），正好一轮一行；
     //   - `m15.*`：M1.5 观测（head_duplicated / continuation_prompt），Verify 要在
-    //     `logs/trace/trace-*.jsonl` 里直接 grep 到，才能真机取证「head 唯一」「字节账」。
+    //     `logs/trace/trace-*.jsonl` 里直接 grep 到，才能真机取证「head 唯一」「字节账」；
+    //   - `continuation.decision`（重试决策）+ `request.sent`（实际发出请求数/字节）：
+    //     M3-1 重试分布口径（Gate 的 buildRetryReport 分母 A）必须能离线算，故放行落盘。
+    //     **只放行这两类，不放内存环整体**（体积失控 + 含用户正文）：
+    //     `request.sent` 事件体只有 {t, turnId, bytes}（1636/1918/2885 三处实核，无 body 字段）；
+    //     `continuation.decision` 事件体只有 {t, turnId, reason(枚举/短字面量), triggered}
+    //     （reason 取值含 continuationReasonForReply 的 'no-tools'|'tool-text-unparsed'，无正文）
+    //     ⇒ 两类均无需脱敏即可落盘。
     // 其余事件只进内存环（`interceptorTraceSnapshot()` 可读），不落盘。
-    if (traceLineSink && (event.t === 'turn.end' || event.t.startsWith('m15.'))) {
+    if (
+      traceLineSink &&
+      (event.t === 'turn.end' ||
+        event.t.startsWith('m15.') ||
+        event.t === 'continuation.decision' ||
+        event.t === 'request.sent')
+    ) {
       try {
         traceLineSink(JSON.stringify({ ...(event as Record<string, unknown>), ts: Date.now() }));
       } catch {
