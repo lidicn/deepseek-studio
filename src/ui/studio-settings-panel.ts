@@ -2,7 +2,7 @@
  * StudioUI 设置面板（v1.0）
  *
  * 模态弹窗，Tab 切换：
- * - 通用：版本信息、日志路径
+ * - 通用：版本（构建期注入真值，非手写常量）、日志路径（运行时数据目录，稳定表述）
  * - 工作区：当前工作区路径、修改
  * - 策略：workspace/auto/full 三选一（档位来自共享契约 PANEL_POLICY_MODES）
  * - MCP：服务器列表、添加/编辑/删除
@@ -12,6 +12,22 @@
 
 import { el, icon, Icons, injectStyles, createShadowContainer, globalEvents, globalState, callHostTool, openWorkbench } from './studio-ui-core';
 import { escapeHtml } from './sanitizer';
+
+/**
+ * 版本真值（2026-11-05 假路径卡）：由构建脚本 esbuild.inject.mjs 经 esbuild define
+ * 注入编译期常量 `__STUDIO_APP_VERSION__`（源 = package.json 的 version，与 tauri.conf.json
+ * 同源）。dev 树/单测没有 define → `typeof` 守卫返回 'unknown'（**绝不手写版本常量**——
+ * 此前写死的 `v1.0.0` 随安装版打进产物，用户看到假版本，真实 0.14.x 被遮住）。
+ */
+declare global {
+  // 构建期 define 注入点（见 esbuild.inject.mjs）；类型仅为编译期声明，运行期可不存在。
+  var __STUDIO_APP_VERSION__: string;
+}
+
+function runtimeAppVersion(): string {
+  // `typeof` 对未声明变量安全（不抛 ReferenceError）；define 存在时被替换为字面量比较。
+  return typeof __STUDIO_APP_VERSION__ !== 'undefined' ? __STUDIO_APP_VERSION__ : 'unknown';
+}
 import { PANEL_POLICY_MODES, POLICY_MODE_LABELS, type PolicyMode } from '../shared/policy-contract';
 import { createStudioControlsStore, type StudioControlsStore } from './studio-controls-store';
 import type { ComposerSettingsTab } from './studio-composer-actions';
@@ -155,11 +171,13 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   const generalTab = el('div', { className: 'studio-tab-content active' });
   generalTab.dataset.tabPanel = 'general';
   generalTab.innerHTML = `
-    <div class="studio-info-row"><span class="studio-info-label">版本</span><span class="studio-info-value">v1.0.0</span></div>
-    <div class="studio-info-row"><span class="studio-info-label">日志路径</span><span class="studio-info-value">E:\\NAS\\deepseek-studio\\tauri-real.log</span></div>
+    <div class="studio-info-row"><span class="studio-info-label">版本</span><span class="studio-info-value" data-settings-version></span></div>
+    <div class="studio-info-row"><span class="studio-info-label">日志路径</span><span class="studio-info-value">sidecar 日志：&lt;用户配置目录&gt;/deepseek-studio/logs/ · 宿主 trace：&lt;运行数据目录&gt;/logs/trace/（随 OS/安装方式变化，实际路径见启动日志「[studio] sidecar runtime log: …」行）</span></div>
     <div class="studio-info-row"><span class="studio-info-label">配置路径</span><span class="studio-info-value">~/.config/deepseek-studio/</span></div>
     <div class="studio-info-row"><span class="studio-info-label">宿主端口</span><span class="studio-info-value">8760</span></div>
   `;
+  // 版本行：构建期注入的真值（runtimeAppVersion 读 `__STUDIO_APP_VERSION__`，dev 树为 unknown）。
+  generalTab.querySelector('[data-settings-version]')!.textContent = runtimeAppVersion();
   tabContents['general'] = generalTab;
   contentPane.appendChild(generalTab);
 
@@ -167,7 +185,7 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   const workspaceTab = el('div', { className: 'studio-tab-content' });
   workspaceTab.dataset.tabPanel = 'workspace';
   const workspaceRow = el('div', { className: 'studio-workspace-row' });
-  const workspaceInput = el('input', { className: 'studio-input studio-workspace-input', attrs: { value: globalState.workspaceRoot ?? '', placeholder: '工作区根目录路径，如 E:/NAS' } });
+  const workspaceInput = el('input', { className: 'studio-input studio-workspace-input', attrs: { value: globalState.workspaceRoot ?? '', placeholder: '工作区根目录路径，如 /path/to/project' } });
   const workspaceSaveBtn = el('button', { className: 'studio-btn primary sm', text: '保存' });
   const workspaceHint = el('p', { className: 'studio-form-hint', text: '工作区是工具操作的根目录。文件读写和命令执行默认限制在此目录内。' });
   workspaceSaveBtn.addEventListener('click', async () => {
@@ -487,9 +505,8 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   const diagnosticsTab = el('div', { className: 'studio-tab-content' });
   diagnosticsTab.dataset.tabPanel = 'diagnostics';
   diagnosticsTab.innerHTML = `
-    <div class="studio-info-row"><span class="studio-info-label">日志路径</span><span class="studio-info-value">E:\\NAS\\deepseek-studio\\tauri-real.log</span></div>
+    <div class="studio-info-row"><span class="studio-info-label">日志路径</span><span class="studio-info-value">sidecar 日志：&lt;用户配置目录&gt;/deepseek-studio/logs/ · 宿主 trace：&lt;运行数据目录&gt;/logs/trace/（实际路径见启动日志「[studio] sidecar runtime log: …」行）</span></div>
     <div class="studio-info-row"><span class="studio-info-label">配置路径</span><span class="studio-info-value">~/.config/deepseek-studio/</span></div>
-    <div class="studio-info-row"><span class="studio-info-label">归档位置</span><span class="studio-info-value">archive/legacy/</span></div>
     <p class="studio-form-hint">旧外部集成入口已归档；安全执行审计和聊天室审计会议仍保留。</p>
   `;
   tabContents['diagnostics'] = diagnosticsTab;

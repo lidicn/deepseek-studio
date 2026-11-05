@@ -147,19 +147,27 @@ export function createProjectPicker(): { container: HTMLElement; open: () => voi
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
   shadow.appendChild(overlay);
 
-  // 项目数据
-  let projects: ProjectInfo[] = [
-    { id: 'deepseek-studio', name: 'deepseek-studio', path: 'E:\\NAS\\deepseek-studio' },
-  ];
+  // 项目数据（2026-11-05 门禁 ui-display-truth）：初始为空数组——项目必须来自
+  // **运行时发现**（loadProjects() → host `project.list`）或用户动作（「创建新项目」/
+  // 「通过本地文件夹创建」→ folder.pick + project.create），不再写死任何默认条目
+  // （写死的开发树路径对装版用户是指向不存在目录的假项目）。
+  let projects: ProjectInfo[] = [];
 
   async function loadProjects(): Promise<void> {
     try {
       const result = await callHostTool('project.list', {});
       if (result.ok && result.data) {
         projects = (result.data as { projects: ProjectInfo[] }).projects;
+        // 2026-11-05 门禁返工：默认项目已删（改空数组起步），侧边栏无宿主调用、
+        // 其项目列表靠 `ui:projects-updated` 刷新（全仓唯一订阅方）——
+        // picker 运行时发现后 emit，侧边栏随真实项目渲染，不再永久空白。
+        globalEvents.emit('ui:projects-updated', {
+          projects,
+          current: globalState.currentProject ?? null,
+        });
       }
     } catch {
-      // 使用默认项目
+      // 宿主不可达：维持当前列表（无写死默认项可回退，保持空）
     }
     renderProjectList();
   }

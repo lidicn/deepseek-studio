@@ -252,7 +252,7 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
     // 这里**必须有**输入框：编辑既有服务器时若不回传原值，保存会把 cwd 丢掉。
     const cwdGroup = el('div', { className: 'mcp-editor-field' });
     cwdGroup.appendChild(el('label', { className: 'mcp-editor-label', text: '工作目录 cwd（可选，stdio）' }));
-    const cwdInput = el('input', { className: 'mcp-editor-input', attrs: { type: 'text', placeholder: '如 E:/NAS/mcp-server' } });
+    const cwdInput = el('input', { className: 'mcp-editor-input', attrs: { type: 'text', placeholder: '如 /path/to/mcp-server（相对路径或本机的目录）' } });
     cwdGroup.appendChild(cwdInput);
 
     const urlGroup = el('div', { className: 'mcp-editor-field' });

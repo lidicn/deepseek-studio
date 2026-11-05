@@ -332,11 +332,11 @@ export function createSidebar(): { container: HTMLElement; show: () => void; hid
     }
   }
 
-  // 初始项目列表
-  const defaultProjects: ProjectInfo[] = [
-    { id: 'deepseek-studio', name: 'deepseek-studio', path: 'E:\\NAS\\deepseek-studio' },
-  ];
-  renderProjects(defaultProjects, globalState.currentProject ?? 'deepseek-studio');
+  // 初始项目列表（2026-11-05 门禁 ui-display-truth）：空数组起步，项目条目一律来自
+  // 运行时「ui:projects-updated」事件（宿主 project.list 真实发现）——写死的开发树
+  // 路径对装版用户是指向不存在目录的假项目。
+  const defaultProjects: ProjectInfo[] = [];
+  renderProjects(defaultProjects, globalState.currentProject ?? '');
 
   // 监听项目列表更新
   globalEvents.on('ui:projects-updated', (payload) => {
