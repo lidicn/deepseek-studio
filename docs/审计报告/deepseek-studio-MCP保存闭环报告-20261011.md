@@ -1,4 +1,4 @@
-﻿# deepseek-studio MCP 保存问题闭环报告
+# deepseek-studio MCP 保存问题闭环报告
 
 - 日期：2026-10-11
 - 症状：MCP 服务器配置「保存不了」——UI 提示成功，重启后配置消失
@@ -64,13 +64,13 @@ return out;
 
 ## 3. Round-trip 验证（决定性证据）
 
-磁盘文件 `C:\Users\lidicn\.config\deepseek-studio\mcp-servers.json`（709 字节，最后写入 2026-10-11 19:49:01）：
+磁盘文件 `C:\Users\<user>\.config\deepseek-studio\mcp-servers.json`（709 字节，最后写入 2026-10-11 19:49:01）：
 ```json
 {
   "servers": {
     "example-filesystem": { ... },
-    "TVPIlot": { ... "transport": "http", "url": "http://192.168.2.200:8090/mcp" },
-    "TVPilot": { ... "transport": "http", "url": "http://192.168.2.200:8090/mcp" },
+    "TVPIlot": { ... "transport": "http", "url": "http://<lan-host>:8090/mcp" },
+    "TVPilot": { ... "transport": "http", "url": "http://<lan-host>:8090/mcp" },
     "ws-test-save": { ... "url": "http://127.0.0.1:9999/wstest" }
   }
 }

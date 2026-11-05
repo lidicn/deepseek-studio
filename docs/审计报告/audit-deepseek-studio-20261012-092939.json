@@ -103,7 +103,7 @@
     "available": true,
     "branch": "master",
     "last_commit": "830a26e feat: 新增 dir-scan.py 目录扫描脚本（端到端验证用） (7 minutes ago)",
-    "last_commit_author": "lidicn",
+    "last_commit_author": "<user>",
     "last_commit_date": "2026-10-12 09:22:28 +0800",
     "total_commits": "22",
     "uncommitted_changes": 3,

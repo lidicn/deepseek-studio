@@ -46,6 +46,13 @@ yuanbao-audit/src-tauri/target/
 # QD 台账第 11/16 条：仓根一次性调试件统一罩面（只仓根，不递归）。
 # 历史上散落 .diag/.port/.proc/.status/.tail/.p*/*-out/*-log/vitest-*/tc-*/gate-* 等 60+ 枚。
 /*.txt
+# 20261105 脱敏批：调试输出残留（.out 与命名前缀形态）同样不入库——它们含本机用户名/绝对路径痕迹。
+*.out
+vitest-*.txt
+gate-out*.txt
+seat5-*.out
+# 一次性取证脚本（审计期临时写的，含本机路径）不入库
+scripts/_memdb-audit*.cjs
 
 # 本地取证产物（日志、真机截图、一次性 DB 审计脚本），不入代码仓
 logs/

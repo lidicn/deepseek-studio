@@ -1,4 +1,4 @@
-﻿# deepseek-studio MCP 保存不了 — 根因定位与解决方案
+# deepseek-studio MCP 保存不了 — 根因定位与解决方案
 
 - 日期：2026-10-11
 - 症状：MCP 设置点保存后看似成功，但重启/刷新后配置丢失，始终存不上
@@ -8,14 +8,14 @@
 
 ## 一、铁证（磁盘文件 + 运行时实测）
 
-### 磁盘实际文件 `C:\Users\lidicn\.config\deepseek-studio\mcp-servers.json`
+### 磁盘实际文件 `C:\Users\<user>\.config\deepseek-studio\mcp-servers.json`
 ```json
 {
   "servers": {
     "example-filesystem": { "command": "npx", "args": [...] }
   },
-  "TVPIlot": { "transport": "http", "url": "http://192.168.2.200:8090/mcp" },
-  "TVPilot":  { "transport": "http", "url": "http://192.168.2.200:8090/mcp" }
+  "TVPIlot": { "transport": "http", "url": "http://<lan-host>:8090/mcp" },
+  "TVPilot":  { "transport": "http", "url": "http://<lan-host>:8090/mcp" }
 }
 ```
 **同一个文件里并存两套 schema**：
@@ -144,7 +144,7 @@ export function loadMcpServers(configPath?: string): Record<string, McpServerCon
 
 ## 五、附带的第二个缺陷（HTTP MCP 必需）
 
-用户 MCP 全是 **HTTP 类型**（TVPilot: http://192.168.2.200:8090/mcp），但：
+用户 MCP 全是 **HTTP 类型**（TVPilot: http://<lan-host>:8090/mcp），但：
 
 1. `mcp.save` 的 execute（desktop-host.ts）只透传 6 个字段：
 ```ts

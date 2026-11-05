@@ -51,7 +51,7 @@ summary: 本轮用 storage.json 的事件时间戳把故障钉死在毫秒级：
 | 真实 SSE 抓包 | `logs/cdp-chat-capture/*-response-body.txt` 等 | 20 个响应体 + 20 份请求 JSON + meta | 协议实况（第 4 节） |
 | 协议验证算术 | `logs/runtime-out.log:585` | 1 行 | 185 字节切片的字节级校验 |
 | 注入层 diag 实跑输出 | `logs/runtime-out.log` | 1,117 行 | 确认 chat 走 XHR、哨兵曾正常抵达 |
-| 执行事件库 | `C:\Users\lidicn\.config\deepseek-studio\storage.json` | 1,275,906 B / 27 会话 / 411 事件 | 真实失败分布（第 3 节） |
+| 执行事件库 | `C:\Users\<user>\.config\deepseek-studio\storage.json` | 1,275,906 B / 27 会话 / 411 事件 | 真实失败分布（第 3 节） |
 | sidecar 崩因 | `%APPDATA%\deepseek-studio\logs\crash.jsonl` | 838 行 | 宿主侧区分判据（第 5.5 节） |
 | 注入源码 | `src/inject/main-world-interceptor.ts` | 1,833 行（现） | 判定条件树（第 2 节） |
 | 帧解码器 | `src/inject/deepseek-sse-frame-decoder.ts` | 150 行 | 哨兵定义与切帧 |

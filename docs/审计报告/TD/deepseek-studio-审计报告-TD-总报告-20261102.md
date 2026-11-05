@@ -76,7 +76,7 @@ summary: 四轮只读审计的收尾总报告，基线 HEAD 12cfd55，工作区 
 | BUG-024 | 历史 | `server.ts:772-806` | readBody 超限/超时只 reject，不 destroy/drain；慢速上传白占 30s | reject 前 req.destroy()；超限即关连接 |
 | R2-06 | R2 | `tool-definitions.ts:382-392` / `desktop-host.ts:913-940` | project.create 声明 read/none 却 mkdir+写文件，path 不过 resolveWithin | 改 always+校验；中文名不撞 id，非目录被拒 |
 | R2-07 | R2 | `tool-definitions.ts:170-178` / `desktop-host.ts:533-540` | memory.save 无审批持久写入；迭加 R2-01 即持续上下文污染 | 改 mode 档+source 标记；首调弹窗 |
-| R2-08 | R2 | `main-world-interceptor.ts:2739-2745` | 硬编码 C:/Users/lidicn/... 临时路径，换用户后代码块运行必失败 | 宿主提供 temp dir；非 lidicn 可运行 |
+| R2-08 | R2 | `main-world-interceptor.ts:2739-2745` | 硬编码 <user-profile>/... 临时路径，换用户后代码块运行必失败 | 宿主提供 temp dir；非 <user> 可运行 |
 | R3-02 | R3 | `ui/consent.ts:281-294` | Enter 绑成允许一次，keydown 挂 document、无 isComposing/focus trap；中文 IME 回车即批准 | 加 isComposing 守卫，Enter 改绑拒绝 |
 | R3-03 | R3 | `web-engine.ts:191/600/761` vs `desktop-host.ts:1010-1028` | M1-C 严格判停未接线（工作区版）：readFinishSentinel 无注入方 → 永不判 interrupted | 接线或标注未启用；断流真机得到 interrupted |
 ### P3（8 条）

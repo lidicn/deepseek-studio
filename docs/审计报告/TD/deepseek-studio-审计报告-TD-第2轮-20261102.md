@@ -99,12 +99,12 @@ summary: 第 2 轮只读审计，基线 HEAD 12cfd55（工作区含 6 个已修�
 - 验收判据：workspace 档下 `memory.save` 首次调用会弹同意；审计里每条记忆都带来源标记。
 
 #### R2-08 注入脚本里硬编码了某个开发者的绝对路径（代码块“运行”在其他机器上必失败）
-- 位置：`src/inject/main-world-interceptor.ts:2739`：`const tmp = `C:/Users/lidicn/AppData/Local/Temp/studio-run-${Date.now()}.${ext}`;`，随后 `:2740` 用 `local_file_write` 写该路径、`:2745` 用 `shell_exec` 跑 `node`。
+- 位置：`src/inject/main-world-interceptor.ts:2739`：`const tmp = `<user-profile>/AppData/Local/Temp/studio-run-${Date.now()}.${ext}`;`，随后 `:2740` 用 `local_file_write` 写该路径、`:2745` 用 `shell_exec` 跑 `node`。
 - 触发：在其他 Windows 用户/机器上点助手消息里 JS/TS 代码块的“运行”。
-- 实际影响：`local_file_write` 走 `file.ts:45-50` 的 `resolveWithin`，`C:/Users/lidicn/...` 不属于当前工作区 → 返回 `outside-workspace` → 代码块运行恒失败（仅对用户名正好是 `lidicn` 且工作区就是它家目录的开发机不失败）。另外把用户代码写到固定的他人目录、且有 `Date.now()` 无清理。
+- 实际影响：`local_file_write` 走 `file.ts:45-50` 的 `resolveWithin`，`<user-profile>/...` 不属于当前工作区 → 返回 `outside-workspace` → 代码块运行恒失败（仅对用户名正好是 `<user>` 且工作区就是它家目录的开发机不失败）。另外把用户代码写到固定的他人目录、且有 `Date.now()` 无清理。
 - 证据类型：代码级证明（路径硬编码 + 边界校验）。“在其他机器上必失败”依赖“该路径不在工作区”这一项，对本仓库默认工作区（`E:\NAS\deepseek-studio`）成立。
 - 修复建议：路径不写死，改为由宿主提供一个 `temp.dir` 能力（或让 `shell.exec` 直接接 stdin）、或让宿主侧派生临时目录；并事前清理。
-- 验收判据：在非 `lidicn` 用户下点 JS 代码块的“运行”，能拿到执行结果而不是 `outside-workspace`。
+- 验收判据：在非 `<user>` 用户下点 JS 代码块的“运行”，能拿到执行结果而不是 `outside-workspace`。
 
 ### P3 轻微
 

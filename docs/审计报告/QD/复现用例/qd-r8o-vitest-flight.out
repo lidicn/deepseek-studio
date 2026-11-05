@@ -40,7 +40,7 @@ after : {"toolCallsTotal":0,"successCount":0,"failureCount":0,"skipCount":0,"too
  [32m✓[39m tests/desktop/tool-hooks.test.ts [2m([22m[2m25 tests[22m[2m)[22m[90m 20[2mms[22m[39m
  [32m✓[39m tests/desktop/agent-loop.test.ts [2m([22m[2m16 tests[22m[2m)[22m[90m 15[2mms[22m[39m
 [90mstderr[2m | tests/desktop/bot-report-store.test.ts[2m > [22m[2mFileReportStore · 子报告读回[2m > [22m[2m坏 JSON 文件跳过不抛（不阻塞 merge）
-[22m[39m[report-store] skip unreadable report C:\Users\lidicn\AppData\Local\Temp\studio-report-store-test-1792767485304\runs\batch-1\zz-broken.report.json: Expected property name or '}' in JSON at position 2 (line 1 column 3)
+[22m[39m[report-store] skip unreadable report C:\Users\<user>\AppData\Local\Temp\studio-report-store-test-1792767485304\runs\batch-1\zz-broken.report.json: Expected property name or '}' in JSON at position 2 (line 1 column 3)
 
  [32m✓[39m tests/desktop/bot-report-store.test.ts [2m([22m[2m28 tests[22m[2m)[22m[33m 852[2mms[22m[39m
  [32m✓[39m tests/desktop/policy.test.ts [2m([22m[2m24 tests[22m[2m)[22m[90m 17[2mms[22m[39m
@@ -97,10 +97,10 @@ after : {"toolCallsTotal":0,"successCount":0,"failureCount":0,"skipCount":0,"too
 (node:16624) ExperimentalWarning: SQLite is an experimental feature and might change at any time
 (Use `node --trace-warnings ...` to show where the warning was created)
 [90mstderr[2m | tests/desktop/memory-store-v2.test.ts[2m > [22m[2m记忆层 v2：迁移与降级[2m > [22m[2m旧 memories.json 首次启动自动导入（原文件保留）
-[22m[39m[memory] migrated 1 memories from C:\Users\lidicn\AppData\Local\Temp\studio-mem-v2-test-1792767503212\memories.json (file kept as backup)
+[22m[39m[memory] migrated 1 memories from C:\Users\<user>\AppData\Local\Temp\studio-mem-v2-test-1792767503212\memories.json (file kept as backup)
 
 [90mstderr[2m | tests/desktop/memory-store-v2.test.ts[2m > [22m[2m记忆层 v2：迁移与降级[2m > [22m[2mnode:sqlite 不可用时降级内存存储，读写检索仍可用
-[22m[39m[memory] sqlite unavailable, degraded to in-memory store: The argument 'path' must be a string, Uint8Array, or URL without null bytes. Received 'C:\\Users\\lidicn\\AppData\\Local\\Temp\\studio-mem-v2-test-1792767503212\\bad\x00path'
+[22m[39m[memory] sqlite unavailable, degraded to in-memory store: The argument 'path' must be a string, Uint8Array, or URL without null bytes. Received '<user-profile>\\AppData\\Local\\Temp\\studio-mem-v2-test-1792767503212\\bad\x00path'
 
  [32m✓[39m tests/desktop/memory-store-v2.test.ts [2m([22m[2m18 tests[22m[2m)[22m[33m 1666[2mms[22m[39m
  [32m✓[39m tests/desktop/tool-result-format.test.ts [2m([22m[2m33 tests[22m[2m)[22m[90m 18[2mms[22m[39m
@@ -220,7 +220,7 @@ after : {"toolCallsTotal":0,"successCount":0,"failureCount":0,"skipCount":0,"too
  [32m✓[39m tests/desktop/qd-r7-real-body-sentinel.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 49[2mms[22m[39m
  [32m✓[39m tests/desktop/kernel-message-history.test.ts [2m([22m[2m15 tests[22m[2m)[22m[90m 12[2mms[22m[39m
 [90mstderr[2m | tests/desktop/v07-storage-runtime.test.ts[2m > [22m[2mv0.7: file-storage-backend 持久化[2m > [22m[2m文件损坏时 readAll 返回空对象并打警告（不崩溃）
-[22m[39m[storage] failed to read C:\Users\lidicn\AppData\Local\Temp\studio-v07-test-1792767537943\corrupt.json, starting empty: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+[22m[39m[storage] failed to read C:\Users\<user>\AppData\Local\Temp\studio-v07-test-1792767537943\corrupt.json, starting empty: Expected property name or '}' in JSON at position 1 (line 1 column 2)
 
  [32m✓[39m tests/desktop/v07-storage-runtime.test.ts [2m([22m[2m12 tests[22m[2m)[22m[33m 333[2mms[22m[39m
  [32m✓[39m tests/desktop/studio-execution-store.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 195[2mms[22m[39m
@@ -372,7 +372,7 @@ after : {"toolCallsTotal":0,"successCount":0,"failureCount":0,"skipCount":0,"too
 [22m[39mLIST result: {
   "ok": true,
   "data": {
-    "root": "C:\\Users\\lidicn\\AppData\\Local\\Temp\\sf-host-wWYCxE",
+    "root": "<user-profile>\\AppData\\Local\\Temp\\sf-host-wWYCxE",
     "entries": [
       {
         "path": "a.txt",

@@ -23,7 +23,7 @@
 
 ```
 [pre] 预检通过：无实例、8760 空闲、9222 空闲
-[pre] sidecar 日志目录：C:\Users\lidicn\AppData\Roaming\deepseek-studio\logs（启动前已有 1 个）
+[pre] sidecar 日志目录：C:\Users\<user>\AppData\Roaming\deepseek-studio\logs（启动前已有 1 个）
 [run] 已启动 pid=27824（GUI 模式，无 stdout 重定向）
 [PASS] sidecar /healthz 就绪 耗时 5.5s
 [PASS] 主窗口可见

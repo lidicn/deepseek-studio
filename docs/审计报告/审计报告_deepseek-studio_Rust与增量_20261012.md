@@ -278,5 +278,5 @@ agent 识别出三类跨模块通则，与跨项目审计报告（`E:\NAS\ADM-au
 
 **审计署名**：Claude Code · ADM-auditkit 审计 agent
 **报告日期**：2026-10-12
-**工具链**：lidicn/ADM-auditkit @ NAS 192.168.2.200 容器 auditkit（round-001 generic_text 扫描）+ 人工 Rust/Node 源码审读
+**工具链**：<owner>/ADM-auditkit @ NAS <lan-host> 容器 auditkit（round-001 generic_text 扫描）+ 人工 Rust/Node 源码审读
 **并存报告**：`审计报告_deepseek-studio_20261012.md`（CodeBuddy 审计席，round-003，覆盖前端 MCP 层）

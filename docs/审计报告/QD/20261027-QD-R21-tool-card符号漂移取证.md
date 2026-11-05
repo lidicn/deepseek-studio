@@ -98,7 +98,7 @@ export const updateToolCardByCallId = updateRedesignedToolCardByCallId
 
 ```
 commit eb3955e2002f40708de5301fb17e14454dd12902
-Author: lidicn
+Author: <user>
 Date:   Sat Oct 24 07:57:25 2026 +0800
 
     chore: 收口历史未提交改动并重建 inject 产物
