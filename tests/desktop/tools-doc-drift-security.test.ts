@@ -60,6 +60,36 @@ describe('doc-drift（20261031 重写版契约：文档↔代码引用校验）'
       expect(issues.some((i) => i.ref.includes('src/also/not-here.ts'))).toBe(false);
     });
   });
+
+  // ── 20261105 CI 环境对齐：gitignore 目录/未跟踪文件的豁免（PM 裁定）──────────────
+  it('6. 引用指向 gitignore 目录内不存在的文件 → 豁免（warn，不 fail）', () => {
+    // logs/ 是 gitignore 目录（.gitignore 末段），CI 环境天然没有
+    withTempDocs({ 'g.md': '见 logs/verify-exit/nonexistent-evidence.mjs:12\n' }, (dir) => {
+      const { issues } = checkDocDrift(root, [dir]);
+      const fail = issues.find((i) => i.severity === 'fail' && i.ref.includes('nonexistent-evidence.mjs'));
+      expect(fail).toBeUndefined();
+      expect(issues.some((i) => i.severity === 'warn' && i.ref.includes('nonexistent-evidence.mjs'))).toBe(true);
+    });
+  });
+
+  it('7. 引用指向 gitignore 目录内真实存在的文件 → 行号校验仍跑（不豁免行号越界）', () => {
+    // logs/verify-exit/chat-body-growth.mjs 是本机取证产物（已 gitignore 未跟踪），但本地存在
+    withTempDocs({ 'h.md': '见 logs/verify-exit/chat-body-growth.mjs:99999\n' }, (dir) => {
+      const { issues } = checkDocDrift(root, [dir]);
+      expect(
+        issues.some((i) => i.severity === 'fail' && i.ref.includes('chat-body-growth.mjs:99999')),
+      ).toBe(true);
+    });
+  });
+
+  it('8. 引用指向非 gitignore 且不存在的文件 → 仍 fail（真漂移不豁免）', () => {
+    withTempDocs({ 'i.md': '见 tools/audit/ghost-file-that-never-existed.mjs:1\n' }, (dir) => {
+      const { issues } = checkDocDrift(root, [dir]);
+      expect(
+        issues.some((i) => i.severity === 'fail' && i.ref.includes('ghost-file-that-never-existed.mjs')),
+      ).toBe(true);
+    });
+  });
 });
 
 describe('S21 security', () => {

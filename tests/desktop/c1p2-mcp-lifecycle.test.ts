@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import type { ChildProcess } from 'node:child_process';
@@ -53,7 +54,16 @@ import {
   TEST_STEP_TIMEOUT_MS,
 } from '../../src/host/mcp-controller';
 
-const HERE = path.dirname(new URL(import.meta.url).pathname.replace(/^\//, ''));
+// 环境对齐（20261105，CI #151）：
+//   1) 原 `new URL(import.meta.url).pathname.replace(/^\//, '')` 是 Windows-only 写法——
+//      POSIX 下去掉前导斜杠会让 HERE 变成**相对路径**，fixture 路径随即不存在。改 fileURLToPath（跨平台）。
+//   2) A-1/A-2/A-3 打的是**真实 node 子进程**的 kill 与退出语义（SIGTERM+sighalCode 与 exitCode 在
+//      POSIX/Windows 上形态不同）。这类用例只在 Windows 语义下有验证价值，故在非 Windows 上**整块跳过**，
+//      而不是放宽断言——放宽就失去区分力。CI 的 gate 作业在 windows-latest 上跑，跳过分支在 CI 不生效。
+//      A-4（假子进程 + fake timers）、A-5（HTTP fixture）不依赖平台语义，保持跨平台执行。
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const isWindows = process.platform === 'win32';
+const describeWin = isWindows ? describe : describe.skip;
 const FIXTURE_RESPONDER = path.join(HERE, 'fixtures', 'mcp-fake-responder.mjs');
 const FIXTURE_SILENT = path.join(HERE, 'fixtures', 'mcp-fake-silent.mjs');
 
@@ -148,7 +158,7 @@ afterEach(() => {
   }
 });
 
-describe('组 A · A-1 R2-04 · testConnection 失败路径必须收尸', () => {
+describeWin('组 A · A-1 R2-04 · testConnection 失败路径必须收尸', () => {
   it('tools/list 超时返回后，MCP server 子进程 1s 内退出', async () => {
     const ctl = new McpController(writeConfig({}));
     const r = await ctl.testConnection(
@@ -175,7 +185,7 @@ describe('组 A · A-1 R2-04 · testConnection 失败路径必须收尸', () => 
   });
 });
 
-describe('组 A · A-2 BUG-036 · connect 失败路径必须收尸', () => {
+describeWin('组 A · A-2 BUG-036 · connect 失败路径必须收尸', () => {
   it('connect 因 tools/list 超时失败后，MCP server 子进程 1s 内退出', async () => {
     const prev = MCP_REQUEST_TIMEOUT.ms;
     MCP_REQUEST_TIMEOUT.ms = 300;
@@ -201,7 +211,7 @@ describe('组 A · A-2 BUG-036 · connect 失败路径必须收尸', () => {
   });
 });
 
-describe('组 A · A-3 BUG-027 · 并发 connect 去重', () => {
+describeWin('组 A · A-3 BUG-027 · 并发 connect 去重', () => {
   it('并发 connect 同一 serverId：只 spawn 一次，两次拿到同一连接实例', async () => {
     const ctl = new McpController(writeConfig({ dup: stdioServer(FIXTURE_RESPONDER) }));
     const before = state.spawned.length;

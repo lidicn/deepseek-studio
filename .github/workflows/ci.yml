@@ -5,9 +5,15 @@ on: [push, pull_request]
 # 步骤差异 = 0 由构造保证（清单唯一真相在 tools/gate/run.ts）。
 # 注：GitHub runner 上 `upstream-drift`（信息级）会因读不到 E:\NAS\deepseek-pp 记 FAIL，
 # 但信息级不阻塞，gate 仍 exit 0。
+#
+# 20261105 CI 环境对齐：runner 从 ubuntu-latest 改 windows-latest——本仓测试本就是
+# Windows 导向（E:/NAS 路径断言、Windows 进程行为、注册表/HKCU 交互）；
+# Release 线已在 windows-latest 实战全绿（release.yml run#14）。CI 环境与本地环境的
+# 差异面收窄到「未跟踪取证产物」（logs/、.studio-tmp/ 等已 gitignore），由 doc-drift
+# 的豁免规则（tools/audit/doc-drift.ts）补齐。
 jobs:
   gate:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

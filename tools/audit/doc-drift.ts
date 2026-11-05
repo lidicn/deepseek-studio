@@ -14,6 +14,12 @@
  *      且引用行号不得超过文件实际行数；
  *   2) `src/...` / `tools/...` 带行号的路径引用 —— 同上，按路径精确解析。
  *
+ * 豁免（20261105 CI 环境对齐）：引用指向 gitignore 目录（logs/、.studio-tmp/、
+ *   .screenshots/ 等）或未跟踪文件时，**可解析性检查跳过**——这些是本机取证产物，
+ *   CI 环境天然没有，不该挡 CI（本地 gate 绿、CI 红的差异正是这个）。行号越界仍查
+ *   （若该文件在本地存在则按实际行数查；不存在则跳过，不判 fail）。
+ *   真漂移（该在库里却不在的，如 src/xxx.ts 被删但文档还在引用）仍红，不受影响。
+ *
  * 信息（打印，不阻塞）：
  *   - `src/...` / `tools/...` 不带行号但文件不存在 —— 设计稿引用"规划中/已裁撤"
  *     模块属文档侧待办（20261031 实测 14 处，见 docs/Audit/20261031-门禁接线.md），
@@ -30,6 +36,44 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import type { Stats } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execSync } from 'node:child_process';
+
+/**
+ * 判断一个仓库相对路径是否「本地存在但不会进 CI」——即落在 gitignore 目录内、
+ * 或文件本身未跟踪。CI 环境天然没有这些文件，doc-drift 对它们的可解析性检查
+ * 不该挡 CI（本地有、CI 没有 = 假红）。
+ *
+ * 口径（PM 20261105 裁定）：
+ *   - 豁免只限「目标路径落在已忽略目录或文件未跟踪」；
+ *   - 真漂移（该在库里却不在的）仍红，不受影响。
+ */
+function isIgnoredOrUntracked(root: string, rel: string): boolean {
+  // 去掉行号尾巴，取纯路径
+  const pathOnly = rel.replace(/:\d+(?:-\d+)?$/, '');
+  if (existsSync(join(root, pathOnly))) {
+    // 本地有这个文件 → 看它是不是已跟踪
+    try {
+      execSync(`git ls-files --error-unmatch -- "${pathOnly}"`, {
+        cwd: root,
+        stdio: 'ignore',
+      });
+      return false; // 已跟踪，不豁免
+    } catch {
+      return true; // 本地有但未跟踪 → 豁免
+    }
+  }
+  // 本地也没有 → 看路径是否落在已忽略目录内
+  try {
+    const out = execSync(`git check-ignore -- "${pathOnly}"`, {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    return out.trim().length > 0;
+  } catch {
+    return false; // 不是 ignored 且本地不存在 → 走原 fail 逻辑（真漂移）
+  }
+}
 
 export interface DocDriftIssue {
   severity: 'fail' | 'warn';
@@ -218,6 +262,16 @@ export function checkDocDrift(
 
         const cands = resolveCandidates(ref, root, idx);
         if (cands.length === 0) {
+          // 豁免判定（20261105 CI 对齐）：目标落在 gitignore 目录或未跟踪 → 不挡 CI
+          if (isIgnoredOrUntracked(root, ref.path ?? ref.raw)) {
+            issues.push({
+              severity: 'warn',
+              ref: ref.raw,
+              docFile: docRel,
+              detail: '指向 gitignore 目录或未跟踪文件（本机取证产物），CI 环境没有——豁免可解析性检查',
+            });
+            continue;
+          }
           issues.push({
             severity: 'fail',
             ref: ref.raw,
