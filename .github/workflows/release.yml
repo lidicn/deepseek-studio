@@ -221,6 +221,9 @@ jobs:
           Write-Host 'preflight gate PASS'
 
       # G3：闸失败必须删掉 draft（fail-closed），不留半成品；已公开的 Release 绝不删。
+      # 查草稿必须走全量列表按 tag 过滤（GET /releases/tags/{tag} 不返回 draft——run#12 404 根因，
+      # 与 Preflight gate 同坑）；只匹配 draft=true，已发布的 Release 天然不会命中，
+      # 从构造上保证「绝不删已发布」。
       - name: Delete draft on failure (fail-closed)
         if: failure()
         shell: pwsh
@@ -235,14 +238,10 @@ jobs:
             'X-GitHub-Api-Version' = '2022-11-28'
             'User-Agent' = 'studio-release-gate'
           }
-          try {
-            $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/tags/$tag"
-          } catch {
-            Write-Host "no release for $tag, nothing to clean"
-            exit 0
-          }
-          if (-not $rel.draft) {
-            Write-Host "release $tag is already published — refusing to delete it"
+          $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases?per_page=100" |
+            Where-Object { $_.tag_name -eq $tag -and $_.draft } | Select-Object -First 1
+          if (-not $rel) {
+            Write-Host "no draft release for $tag, nothing to clean"
             exit 0
           }
           Invoke-RestMethod -Method Delete -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$($rel.id)"

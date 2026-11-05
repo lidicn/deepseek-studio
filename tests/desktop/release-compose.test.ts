@@ -69,12 +69,18 @@ describe('P1-2：latest.json 的 url 必须与 GitHub 实际资产名一字不�
 describe('G1/G2/G5 前置闸：只认 GitHub 上的实际结果', () => {
   it('按 Release assets API 的实际资产名复核 url basename，并核对双产物 + .sig', () => {
     const gate = step(release, 'Preflight gate (G1/G2/G5)');
-    expect(gate).toContain('/releases/tags/$tag');
+    // 查草稿必须走全量列表按 tag 过滤（GET /releases/tags/{tag} 不返回 draft，run#12 404 根因）
+    expect(gate).toContain('/releases?per_page=100');
+    expect(gate).toContain("$_.tag_name -eq $tag -and $_.draft");
     expect(gate).toContain("[uri]::UnescapeDataString(($plat.url -split '/')[-1])");
     expect(gate).toContain("if ($urlName -ne $nsis) { throw");
     expect(gate).toContain("@($nsis, \"$nsis.sig\", $msi, \"$msi.sig\", 'latest.json')");
     // 资产名带空格 = GitHub 会再改名 → 直接失败
     expect(gate).toContain("if ($n -match ' ') { throw");
+    // 负控：两处（前置闸 + 闸失败清理）都不许回退到不返回 draft 的 tags 端点
+    // （只禁真实 API URI 模式，不误咬「该端点不返回 draft」的注释原文）
+    expect(gate).not.toContain('releases/tags/$tag');
+    expect(release).not.toContain('$repo/releases/tags/');
   });
 
   it('下载已上传资产字节并跑 verify-sig.mjs（客户端 verify_signature 同判据）', () => {
@@ -88,8 +94,11 @@ describe('G1/G2/G5 前置闸：只认 GitHub 上的实际结果', () => {
   it('闸失败删 draft（fail-closed），已发布的 Release 绝不删', () => {
     const cleanup = step(release, 'Delete draft on failure (fail-closed)');
     expect(release).toContain('if: failure()');
-    expect(cleanup).toContain('if (-not $rel.draft)');
-    expect(cleanup).toContain('refusing to delete');
+    // 与前置闸同坑：查草稿必须走全量列表按 tag 过滤（tags 端点不返回 draft）
+    expect(cleanup).toContain('/releases?per_page=100');
+    // 只匹配 draft=true：已发布的 Release 天然不命中，从构造上保证「绝不删已发布」
+    expect(cleanup).toContain("$_.tag_name -eq $tag -and $_.draft");
+    expect(cleanup).not.toContain('$repo/releases/tags/');
     expect(cleanup).toContain('-Method Delete');
   });
 });
