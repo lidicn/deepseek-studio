@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 /**
- * tools/audit/entry-freshness.cjs（建议路径）—— entry.js 新鲜度机械闸（R1.5 缺口加固①）
+ * tools/audit/entry-freshness.cjs —— entry.js 新鲜度机械闸（R1.5 缺口加固①）
  *
  * 原理：esbuild 构建确定性（锁版本 + 同参数 → 字节级复现，2026-11-05 实测为证）。
  * 重建到临时文件，与跟踪的 src-tauri/inject/entry.js 做 sha256 比对；不一致 → exit 1。
  * 用法（gate 阻塞级）：node tools/audit/entry-freshness.cjs
+ * 可选 --tracked <path>：用指定文件作为「被比对对象」（默认 src-tauri/inject/entry.js），
+ *   供负控测试篡改临时副本而不碰跟踪产物；缺省时行为完全不变。
  * 无本机路径，可入库。失败时顺带打印建议：node esbuild.inject.mjs 后重跑。
  */
 const { createRequire } = require('node:module');
@@ -27,7 +29,10 @@ const { build } = req('esbuild');
     define: { __STUDIO_APP_VERSION__: JSON.stringify(String(pkg.version)) },
   });
   const h = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex').slice(0, 8).toUpperCase();
-  const tracked = path.join(root, 'src-tauri/inject/entry.js');
+  // 默认比对跟踪产物 src-tauri/inject/entry.js；--tracked <path> 改比对对象（负控用，不改缺省行为）。
+  const argv = process.argv.slice(2);
+  const ti = argv.indexOf('--tracked');
+  const tracked = (ti !== -1 && argv[ti + 1]) ? path.resolve(argv[ti + 1]) : path.join(root, 'src-tauri/inject/entry.js');
   if (!fs.existsSync(tracked)) { console.error('[entry-freshness] FAIL: 跟踪文件缺失 ' + tracked); process.exit(1); }
   const a = h(tracked), b = h(out);
   if (a !== b) {

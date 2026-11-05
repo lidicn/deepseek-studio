@@ -36,7 +36,7 @@ deepseek-pp-audit 流水线三工具审计，目标仓库 `<repo-root>`（v0.14.
 
 ## R1.5 代码级缺陷深潜（同日追加，11-05 23:00）
 - 报告：[R1.5-代码级缺陷深潜-20261105.md](R1.5-代码级缺陷深潜-20261105.md) — 0 可利用缺陷（5 PASS · 1 缺口加固 · 3 观察）
-- 缺口加固①（G5 强化）：entry.js 新鲜度无机械闸 → 可入库参考实现 [gate-check-entry-freshness.cjs](gate-check-entry-freshness.cjs)（IN-SYNC 实测字节级复现为证）
+- 缺口加固①（G5 强化）：entry.js 新鲜度机械闸 → 已落 [tools/audit/entry-freshness.cjs](../../tools/audit/entry-freshness.cjs) 并已在 gate 阻塞级注册（IN-SYNC 实测字节级复现为证）
 - CVE 暴露面确认：7 漏洞全部 dev/test 工具链（undici←jsdom、tinypool←vitest），运行时零暴露
 - 后续轮次计划：[docs/Audit/后续审计计划-20261105.md](../Audit/后续审计计划-20261105.md)（R2 ~11-25 全量复审为质变点）
 ## Top 5 待办（= 30 天计划，与 index.html 勾选清单同序）

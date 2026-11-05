@@ -2,7 +2,7 @@
 /**
  * tools/audit/ui-display-truth.ts — UI 展示值真实性门禁（20261105 Gate）
  *
- * 背景：发行版设置面板曾写死 `v1.0.0`（实际 0.14.6）、`E:\NAS\deepseek-studio\tauri-real.log`
+ * 背景：发行版设置面板曾写死 `v1.0.0` 假版本号、`E:\NAS\deepseek-studio\tauri-real.log`
  * （陈旧未入库文件）、`archive/legacy/`（发行版没有这个目录）——三行假数据被用户肉眼发现。
  * 本门禁在 gate 里静态扫 `src/ui/**` 与 `src/inject/**`（注释先剥），命中以下**精确字符串**
  * 即阻塞（精确而非形态，保证零误报）：
