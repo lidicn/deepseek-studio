@@ -12,8 +12,8 @@
 import cron, { type ScheduledTask } from 'node-cron';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { resolveConfigDir } from '../shared/distribution';
 
 // ── 类型定义 ───────────────────────────────────────────────────────────
 
@@ -81,8 +81,9 @@ export function createAutomationManager(options?: {
   storageDir?: string;
   onTaskTrigger?: (task: AutomationTask) => Promise<void>;
 }): AutomationManager {
-  const storageDir =
-    options?.storageDir ?? path.join(os.homedir(), '.config', 'deepseek-studio');
+  // 设计稿 §8.2 第 5 处：原默认分支写死 `~/.config/deepseek-studio`、不认 env。
+  // `options.storageDir` 注入口保持不变（显式传入优先）。
+  const storageDir = options?.storageDir ?? resolveConfigDir();
   const tasksFile = path.join(storageDir, 'automation-tasks.json');
   const logsFile = path.join(storageDir, 'automation-logs.json');
 

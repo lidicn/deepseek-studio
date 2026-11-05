@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "start": "tsx src/api/main.ts",
+    "start": "tsx src/api/dev-main.ts",
     "build:inject": "node esbuild.inject.mjs",
     "build:host": "node esbuild.host.mjs",
     "build": "npm run build:inject && npm run build:host",

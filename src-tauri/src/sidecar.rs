@@ -319,6 +319,30 @@ fn wait_pid_gone(_pid: u32, _budget: Duration) {}
 
 // ── TD-04：宿主入口形态与 node 解析 ─────────────────────────────────────
 
+/// 分布形态（设计稿 §8.3，2026-11-06）。
+///
+/// **判据是「实际走了 `main.rs` 的哪条宿主入口分支」**，不是 `cfg!(debug_assertions)`
+/// （后者只能分「debug/release 构建」，分不了「release 构建但从仓库运行」）。
+/// 该值经此枚举由编译器强制在**每个构造点**填对，再以 `STUDIO_DISTRIBUTION` 传给 Node：
+/// Node 侧只读不算，避免出现与 Rust 判定不一致的第二套推断。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Distribution {
+    /// 装版：`main.rs:1130` 之后任一 return（`:1134` 正常 / `:1154` 缺 agent.html）。
+    Installed,
+    /// 开发树：`:1111`（仓库内 Bundled）或 `:1127`（tsx 回退）。
+    Dev,
+}
+
+impl Distribution {
+    /// 注入给宿主的 `STUDIO_DISTRIBUTION` 取值。
+    pub fn as_env(self) -> &'static str {
+        match self {
+            Distribution::Installed => "installed",
+            Distribution::Dev => "dev",
+        }
+    }
+}
+
 /// 宿主入口形态。
 ///
 /// 旧实现只有一种：`node node_modules/tsx/dist/cli.mjs src/api/main.ts` —— 它要求
@@ -339,9 +363,19 @@ pub enum HostEntry {
         /// TD-04(a)：随包分发的 node.exe（`<resource_dir>/node/node.exe`）。
         /// `Some` 且文件存在 → **首选它**；`None`/不存在 → 回退 `STUDIO_NODE` → PATH。
         node: Option<PathBuf>,
+        /// 分布形态（见 [`Distribution`]）。
+        distribution: Distribution,
+        /// 装版：`STUDIO_CONFIG_DIR`（`<data_dir>/config`）；dev = `None`（行为不变）。
+        config_dir: Option<PathBuf>,
+        /// 装版：`STUDIO_LOG_DIR`（`<data_dir>/logs`）；dev = `None`（行为不变）。
+        log_dir: Option<PathBuf>,
     },
     /// 开发回退：`node <project_root>/node_modules/tsx/dist/cli.mjs <project_root>/src/api/main.ts`。
-    Tsx { project_root: PathBuf },
+    Tsx {
+        project_root: PathBuf,
+        /// 恒为 [`Distribution::Dev`]（tsx 回退只在开发构建路径上）。
+        distribution: Distribution,
+    },
 }
 
 /// 找不到可用 Node.js 时的专用退出码（TD-04）。
@@ -480,6 +514,10 @@ impl SidecarSupervisor {
         shutdown_requested: Arc<AtomicBool>,
         child_pid: Arc<AtomicU32>,
     ) -> Self {
+        // 批 N（2026-11-06 PM 裁定③）：**路径注入（`STUDIO_CONFIG_DIR` / `STUDIO_LOG_DIR`）
+        // 随段 2 一起推迟到批 N+1** —— 因为段 2 必须与段 3（首启迁移）同批，
+        // 否则老用户记忆/会话会「看起来消失」。本批 `log_dir` 恒为 `None`，
+        // 故这里保持原有回落链，行为逐字节不变。
         let crash_log_path = std::env::var("STUDIO_LOG_DIR")
             .ok()
             .map(PathBuf::from)
@@ -523,12 +561,16 @@ impl SidecarSupervisor {
         let node = node_choice.path.clone();
         eprintln!("[studio] node: {}", node_choice.label);
         let mut cmd = match &self.host_entry {
-            HostEntry::Bundled { script, resource_root, work_dir, .. } => {
+            HostEntry::Bundled { script, resource_root, work_dir, distribution, .. } => {
                 let mut c = Command::new(&node);
                 c.arg(script);
                 // 宿主据此找静态资源：<res>/src/ui/agent.html、<res>/dist/agent-panel.js。
                 // 安装版 resource_dir() 与开发树仓库根**目录结构同构**，宿主无须区分两种形态。
                 c.env("STUDIO_RESOURCE_ROOT", resource_root);
+                // 设计稿 §8.3：形态由 Rust 单点判定后传下去，Node 只读不算（避免第二套推断）。
+                // 批 N：**只注入形态**；`STUDIO_CONFIG_DIR` / `STUDIO_LOG_DIR` 随段 2 推迟到批 N+1
+                // （段 2 必须与段 3 首启迁移同批，否则老用户数据会「看起来消失」）。
+                c.env("STUDIO_DISTRIBUTION", distribution.as_env());
                 // 工作目录（可写）≠ 资源根（可能只读）：logs/trace 走 process.cwd()。
                 //
                 // 目录必须**先建出来**：安装版首次运行时 app_data_dir 还不存在，
@@ -554,8 +596,10 @@ impl SidecarSupervisor {
                 c.current_dir(work_dir);
                 c
             }
-            HostEntry::Tsx { project_root } => {
+            HostEntry::Tsx { project_root, distribution } => {
                 let mut c = Command::new(&node);
+                // 设计稿 §8.3：tsx 回退恒为 dev（`main.rs:1127`），同样显式传给宿主。
+                c.env("STUDIO_DISTRIBUTION", distribution.as_env());
                 // 旧路径（仅 dev 回退）：直连本地 tsx，绕过 npx/npm CLI
                 // （冷启动 12.7–41.2s → 4.6s，见本文件上方注释）。
                 if cfg!(windows) {
@@ -1009,6 +1053,10 @@ mod td_tests {
     use super::*;
     use std::fs;
     use std::process::{Command, Stdio};
+
+    // 注：`batch_n_does_not_inject_paths`（批 N「路径注入字段恒 None」不变量）住在
+    // `main.rs` 的 `mod tests` —— 它考的是 `main.rs::resolve_host_entry_with`，
+    // 而该函数是 `main.rs` 的私有项，兄弟模块看不见（E0425）。
 
     // ── TD-05 ──────────────────────────────────────────────────────────
 

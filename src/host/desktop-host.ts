@@ -34,6 +34,7 @@ import { appendTraceLine } from './trace-log';
 import { AGENT_SENTINEL, type AgentLoopEvent } from './agent-loop';
 import { createAgentChannel, type AgentChannel } from './agent-channel';
 import { pickFolderViaDialog } from './folder-picker';
+import { resolveConfigDir } from '../shared/distribution';
 import { createWebEngine } from './engine/web-engine';
 import { createApiEngine } from './engine/api-engine';
 import { createBotRegistry, SessionAllowlist } from './bot/registry';
@@ -1527,7 +1528,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
 
   // v0.7：全局 KV 存储（页端 chrome.storage shim 经 ws 读写此 backend，落盘）。
   // C1 墨鉴 R2-2：路径可注入（默认仍是用户真实配置目录，行为不变；测试用临时目录）。
-  const storageFilePath = options.storageFilePath ?? path.join(os.homedir(), '.config', 'deepseek-studio', 'storage.json');
+  // 设计稿 §8.2 第 3 处：默认分支原本写死 homedir，且 `main.ts` 不注入 `storageFilePath`
+  // → options 通道实际等于不存在，装版永远写旧目录。现默认分支认 STUDIO_CONFIG_DIR。
+  const storageFilePath = options.storageFilePath ?? path.join(resolveConfigDir(), 'storage.json');
   const kvBackend = createFileStorageKvBackend({ filePath: storageFilePath });
   const kvCache: Record<string, unknown> = {};
   let kvLoaded = false;

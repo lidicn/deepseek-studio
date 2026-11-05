@@ -8,6 +8,7 @@
  */
 
 import { createHash } from 'crypto';
+import { resolveConfigDir } from '../shared/distribution';
 
 export const MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024; // 16 MiB
 export const MAX_SNAPSHOTS = 500;
@@ -69,7 +70,10 @@ function emptyHash(): string {
 }
 
 export function createShadowStore(deps: ShadowDeps): ShadowStore {
-  const root = `${deps.homedir}/.config/deepseek-studio/shadow`;
+  // 设计稿 §8.2 第 2 处（B 类）：原实现整串写死 `${deps.homedir}/.config/deepseek-studio/shadow`、
+  // 零 env 分支 —— 这是「测试污染用户真目录」的唯一漏网：`desktop-host.ts:489` 传的是
+  // `os.homedir()`，测试侧注入 STUDIO_CONFIG_DIR 也堵不住它（每跑一次全量测试就写真目录）。
+  const root = `${resolveConfigDir(process.env, deps.homedir)}/shadow`;
   const indexPath = `${root}/index.json`;
 
   function loadIndex(): SnapshotRecord[] {

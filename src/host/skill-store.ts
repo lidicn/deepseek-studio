@@ -13,6 +13,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { resolveConfigDir } from '../shared/distribution';
 
 export interface SkillInfo {
   /** 技能 ID（目录名） */
@@ -30,7 +31,12 @@ export interface SkillInfo {
  *   1. 显式传入（面板扫描时输入框里的路径）
  *   2. STUDIO_SKILLS_DIR 环境变量
  *   3. ~/.agents/skills（通用/Codex 技能根，存在则用）
- *   4. ~/.config/deepseek-studio/skills（本项目默认）
+ *   4. `<STUDIO_CONFIG_DIR>`/skills（本项目默认；缺省 `~/.config/deepseek-studio/skills`）
+ *
+ * **第 ③ 位保持无条件命中**（PM 裁定③ 批 N 口径，2026-11-06）：装版「跳过第 ③ 位」
+ * 属 D 组，随**批 N+1（段 2 + 段 3 同批）**一起改 —— 那一批才有 `STUDIO_CONFIG_DIR` 注入，
+ * 在此之前单独切 ③ 位会让 dev 行为与装版行为同时变，违背「批 N 零行为变化」。
+ * 本批只做第 ④ 位接 `STUDIO_CONFIG_DIR`（**无人注入该 env 时逐字节等价于旧行为**）。
  */
 export function resolveSkillsDir(explicit?: string): string {
   const trimmed = explicit?.trim();
@@ -43,7 +49,7 @@ export function resolveSkillsDir(explicit?: string): string {
   } catch {
     // 访问失败则回落默认
   }
-  return path.join(os.homedir(), '.config', 'deepseek-studio', 'skills');
+  return path.join(resolveConfigDir(), 'skills');
 }
 
 function defaultSkillsDir(): string {
@@ -140,6 +146,9 @@ export function scanSkills(skillsDir?: string): SkillInfo[] {
 /**
  * 确保技能目录存在（不存在则创建空目录）。
  * 不写入任何示例技能——目录内容应完全来自用户，避免"假技能"混进列表。
+ *
+ * PM 裁定③（2026-11-06）：**「装版不建」属 D 组，随批 N+1 落地**（与段 2 + 段 3 同批，
+ * 那时才有 `STUDIO_CONFIG_DIR` 注入）。本批保持原语义 → 批 N 零行为变化。
  */
 export function ensureSkillsDir(skillsDir?: string): string {
   const dir = skillsDir ?? defaultSkillsDir();

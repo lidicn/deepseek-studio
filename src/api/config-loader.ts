@@ -15,9 +15,9 @@
  */
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { resolveConfigDir } from '../shared/distribution';
 import type { ApiConfig } from './types';
 import type { RoomConfig } from '../host/bot/types';
 import { DEFAULT_POLICY_MODE, isPolicyMode, type PolicyMode } from '../host/policy';
@@ -77,9 +77,14 @@ export function parsePort(raw: unknown, fallback = 8760): number {
   return n;
 }
 
-/** 默认配置目录：~/.config/deepseek-studio */
+/**
+ * 默认配置目录：`STUDIO_CONFIG_DIR` 优先，缺省 `~/.config/deepseek-studio`。
+ *
+ * 设计稿 §8.2 第 1 处：原实现只认 `override` 参数、不认 env，导致装版配置仍写旧目录
+ * （「设置写 A、宿主读 B」的错位来源）。缺省分支与历史行为逐字节一致 → **dev 行为不变**。
+ */
 export function defaultConfigDir(): string {
-  return path.join(os.homedir(), '.config', 'deepseek-studio');
+  return resolveConfigDir();
 }
 
 /**

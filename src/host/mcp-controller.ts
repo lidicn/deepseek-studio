@@ -392,7 +392,13 @@ export function removeMcpServer(serverId: string, configPath?: string): { ok: bo
   }
 }
 
-/** 确保配置文件存在（如果不存在则创建示例配置） */
+/**
+ * 确保配置文件存在（如果不存在则创建示例配置）。
+ *
+ * **「装版不写示例」属 D 组，随批 N+1 落地**（PM 裁定③ 2026-11-06：D 组必须与
+ * §8 第 2 段路径注入 + 第 3 段首启迁移同批，否则装版首启会出现「配置在新目录、
+ * 示例服务器凭空冒出」这种半成品状态）。**本批保持原语义** → 批 N 零行为变化。
+ */
 export function ensureMcpConfig(configPath?: string): string {
   const p = configPath ?? defaultConfigPath();
   try {

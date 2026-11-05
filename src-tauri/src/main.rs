@@ -1091,7 +1091,16 @@ fn strip_verbatim(p: &std::path::Path) -> std::path::PathBuf {
     p.to_path_buf()
 }
 
-fn resolve_host_entry(
+/// 宿主入口形态决策（**可注入**，单测显式控制两条分支）。
+///
+/// `packaged = true` → 只认 `resource_dir`（release/装版），产物形态 `Distribution::Installed`；
+/// `packaged = false` → 只认仓库内产物，或回退 tsx（dev），形态 `Distribution::Dev`。
+///
+/// 为什么把 `packaged` 做成形参而不是在函数里读 `cfg!(debug_assertions)`：
+/// 单测要能**显式**覆盖两条分支（与 `resolve_project_root` 的 `allow_repo_search` 同一套做法）；
+/// 且 `cfg!` 只分「debug/release 构建」，分不了「release 构建但从仓库运行」。
+fn resolve_host_entry_with(
+    packaged: bool,
     resource_dir: Option<&std::path::Path>,
     project_root: Option<&std::path::Path>,
 ) -> sidecar::HostEntry {
@@ -1104,7 +1113,7 @@ fn resolve_host_entry(
     //    ① 副本可能是旧的，dev 应该跑仓库里最新的那份；
     //    ② 若认副本，「把 src-tauri/host/main.mjs 改名 → 应回退 tsx」这条 dev 回退验证
     //       就永远测不出来（总有副本兜着）。
-    if cfg!(debug_assertions) {
+    if !packaged {
         if let Some(root) = project_root {
             let script = root.join("src-tauri").join("host").join("main.mjs");
             if script.is_file() && has_ui(root) {
@@ -1115,6 +1124,10 @@ fn resolve_host_entry(
                     work_dir: strip_verbatim(root),
                     // dev 不吃 bundled node（仓库里没有 node/node.exe；就算有也不用，避免掩盖 PATH 问题）
                     node: None,
+                    // 设计稿 §8.3：走的是 dev 分支 → Dev；两个目录**不注入**（开发期行为不变）
+                    distribution: sidecar::Distribution::Dev,
+                    config_dir: None,
+                    log_dir: None,
                 };
             }
         }
@@ -1124,10 +1137,17 @@ fn resolve_host_entry(
         eprintln!(
             "[studio] WARN: 未找到仓库内宿主单文件 <root>/src-tauri/host/main.mjs → 回退 tsx（仅开发可用，打包版必须带 host/main.mjs）"
         );
-        return sidecar::HostEntry::Tsx { project_root: root };
+        return sidecar::HostEntry::Tsx {
+            project_root: root,
+            distribution: sidecar::Distribution::Dev,
+        };
     }
 
     // ── 打包版：只认 resource_dir。
+    //    工作目录统一先算出来：release 用它承载可写数据（宿主 cwd / trace / 日志）。
+    let work_dir = project_root
+        .map(strip_verbatim)
+        .unwrap_or_else(|| resource_dir.map(strip_verbatim).unwrap_or_else(|| std::path::PathBuf::from(".")));
     if let Some(res) = resource_dir {
         let script = res.join("host").join("main.mjs");
         if script.is_file() && has_ui(res) {
@@ -1136,14 +1156,19 @@ fn resolve_host_entry(
                 resource_root: strip_verbatim(res),
                 // release：工作目录 = 数据目录（app_data_dir），**不是安装目录**
                 // （安装目录可能只读 → logs/trace 写不进去）。
-                work_dir: project_root
-                    .map(strip_verbatim)
-                    .unwrap_or_else(|| strip_verbatim(res)),
+                work_dir: work_dir.clone(),
                 // TD-04(a)：包内 node.exe（存在才用；不存在 → 回退 STUDIO_NODE → PATH）
                 node: {
                     let p = res.join("node").join("node.exe");
                     if p.is_file() { Some(strip_verbatim(&p)) } else { None }
                 },
+                // 设计稿 §8.3：走 `:1130` 之后的 return → Installed（**必须**）
+                distribution: sidecar::Distribution::Installed,
+                // 批 N（PM 裁定③ 2026-11-06）：**路径注入字段一律 None** ——
+                // `STUDIO_CONFIG_DIR` / `STUDIO_LOG_DIR` 的注入属段 2，必须与段 3（首启迁移）
+                // 同批发，否则老用户记忆/会话会「看起来消失」。批 N 只传形态。
+                config_dir: None,
+                log_dir: None,
             };
         }
         if script.is_file() {
@@ -1151,24 +1176,33 @@ fn resolve_host_entry(
                 "[studio] WARN: 资源根 {:?} 下缺 src/ui/agent.html —— /agent 面板会 404（其余 API 可用）",
                 res
             );
+            // 注意：**缺 agent.html 也仍是装版**（只是面板会 404）——
+            // 漏掉这条就会把「缺面板的装版」判成 dev → 又写回 example-filesystem（设计稿 §8.3 第 ③ 条单测）。
             return sidecar::HostEntry::Bundled {
                 script: strip_verbatim(&script),
                 resource_root: strip_verbatim(res),
-                // release：工作目录 = 数据目录（app_data_dir），**不是安装目录**
-                // （安装目录可能只读 → logs/trace 写不进去）。
-                work_dir: project_root
-                    .map(strip_verbatim)
-                    .unwrap_or_else(|| strip_verbatim(res)),
+                work_dir: work_dir.clone(),
                 node: {
                     let p = res.join("node").join("node.exe");
                     if p.is_file() { Some(strip_verbatim(&p)) } else { None }
                 },
+                distribution: sidecar::Distribution::Installed,
+                config_dir: None,
+                log_dir: None,
             };
         }
     }
     eprintln!("[studio] 宿主入口缺失：<resource_dir>/host/main.mjs 不存在。");
     eprintln!("[studio] 这是打包错误（bundle.resources 漏了 host/main.mjs）→ 先 `npm run build:host` 再打包。");
     std::process::exit(sidecar::EXIT_HOST_MISSING);
+}
+
+/// 生产调用点：形态由构建类型决定（debug = 开发树，release = 装版）。
+fn resolve_host_entry(
+    resource_dir: Option<&std::path::Path>,
+    project_root: Option<&std::path::Path>,
+) -> sidecar::HostEntry {
+    resolve_host_entry_with(!cfg!(debug_assertions), resource_dir, project_root)
 }
 
 fn main() {
@@ -1276,15 +1310,20 @@ fn main() {
                 let host_entry =
                     resolve_host_entry(resource_dir.as_deref(), project_root.as_deref());
                 match &host_entry {
-                    sidecar::HostEntry::Bundled { script, resource_root, work_dir, node } => {
+                    sidecar::HostEntry::Bundled { script, resource_root, work_dir, node, distribution, config_dir, log_dir } => {
                         eprintln!("[studio] host entry: bundled {:?}", script);
                         eprintln!("[studio] STUDIO_RESOURCE_ROOT: {:?}", resource_root);
                         // 工作目录（可写）：宿主把 logs/trace 写在这里 → 必须是数据目录，不是安装目录
                         eprintln!("[studio] host work_dir: {:?}", work_dir);
                         eprintln!("[studio] bundled node: {:?}", node);
+                        // 设计稿 §8.3：形态与两个目录一次打出，真机一眼可核「装版到底注入了什么」。
+                        eprintln!("[studio] STUDIO_DISTRIBUTION: {}", distribution.as_env());
+                        eprintln!("[studio] STUDIO_CONFIG_DIR: {:?}", config_dir);
+                        eprintln!("[studio] STUDIO_LOG_DIR: {:?}", log_dir);
                     }
-                    sidecar::HostEntry::Tsx { project_root } => {
+                    sidecar::HostEntry::Tsx { project_root, distribution } => {
                         eprintln!("[studio] host entry: tsx (dev fallback) {:?}", project_root);
+                        eprintln!("[studio] STUDIO_DISTRIBUTION: {}", distribution.as_env());
                     }
                 }
 
@@ -1331,6 +1370,11 @@ fn main() {
                 );
                 main_builder = main_builder.initialization_script(&init_script);
             }
+
+            // ⚠️ 装版主窗独立 WebView2 `data_directory` 属**段 2**（设计稿 §8.1 手段②）。
+            // PM 裁定③（2026-11-06）：段 2 必须与段 3（首启迁移）同批发版 → **批 N 不启用**，
+            // 否则装版换新 profile = 用户要重新登录一次，而迁移/回退链还没就位。
+            // 批 N 的装版行为必须逐字节不变，故这里只保留决策注释、不调用 data_directory。
 
             // 应用保存的窗口大小和位置
             if let (Some(w), Some(h)) = (win_state.width, win_state.height) {
@@ -1621,6 +1665,169 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 造一个空文件（含父目录）。
+    fn touch_file(p: &std::path::Path) {
+        std::fs::create_dir_all(p.parent().expect("parent")).expect("mkdir -p");
+        std::fs::write(p, b"").expect("write");
+    }
+
+    /// 每次用独立临时目录，避免与并行用例互踩。
+    fn fresh_tmp(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "studio-hostentry-{}-{}-{:?}",
+            tag,
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("mk tmp");
+        d
+    }
+
+    /// 造一个「像开发树」的目录：同时有 `package.json` 与 `src-tauri/`。
+    fn make_repo_like(root: &std::path::Path) {
+        touch_file(&root.join("package.json"));
+        std::fs::create_dir_all(root.join("src-tauri")).expect("src-tauri");
+    }
+
+    /// 装版资源根：`<res>/host/main.mjs`（+ 可选 `<res>/src/ui/agent.html`）。
+    fn make_resource_root(root: &std::path::Path, with_agent_html: bool) {
+        touch_file(&root.join("host").join("main.mjs"));
+        if with_agent_html {
+            touch_file(&root.join("src").join("ui").join("agent.html"));
+        }
+    }
+
+    fn distribution_of(entry: &sidecar::HostEntry) -> sidecar::Distribution {
+        match entry {
+            sidecar::HostEntry::Bundled { distribution, .. } => *distribution,
+            sidecar::HostEntry::Tsx { distribution, .. } => *distribution,
+        }
+    }
+
+    /// 设计稿 §8.3 Rust 单测 ①：**像开发树（`package.json` + `src-tauri/` 都在）但 exe 在
+    /// `resource_dir` 内 → 必须判 `installed`**。
+    ///
+    /// 这条锁的是「不许用 `looks_like_repo_root` 当形态判据」：它只回答「能不能找到开发树」，
+    /// 而形态判据是「实际走了哪条宿主入口分支」。装版 exe 恰落在含这两个标记的目录树下时，
+    /// 若用「找到开发树」判 dev，就会又写回 `example-filesystem` + 建技能目录。
+    #[test]
+    fn packaged_build_from_repo_like_dir_is_installed() {
+        let tmp = fresh_tmp("installed-with-repo");
+        let res = tmp.join("res");
+        let repo_like = tmp.join("repo-like");
+        make_resource_root(&res, true);
+        make_repo_like(&repo_like);
+
+        // packaged = true（release 构建）→ 只认 resource_dir
+        let entry =
+            resolve_host_entry_with(true, Some(res.as_path()), Some(repo_like.as_path()));
+        assert_eq!(
+            distribution_of(&entry),
+            sidecar::Distribution::Installed,
+            "release 构建即便处在该开发树目录下，也必须判 installed"
+        );
+        match entry {
+            sidecar::HostEntry::Bundled { work_dir, config_dir, log_dir, .. } => {
+                // 可写数据目录 = app_data_dir（此测试里传入的 project_root）
+                assert_eq!(work_dir, repo_like);
+                // 批 N：路径注入属段 2（批 N+1），此批恒 None → 装版行为逐字节不变
+                assert!(config_dir.is_none(), "批 N 不得注入 STUDIO_CONFIG_DIR");
+                assert!(log_dir.is_none(), "批 N 不得注入 STUDIO_LOG_DIR");
+            }
+            sidecar::HostEntry::Tsx { .. } => panic!("装版不应回退 tsx"),
+        }
+    }
+
+    /// 设计稿 §8.3 Rust 单测 ②：**debug 分支 → `dev`**（且两个目录不注入，dev 行为不变）。
+    #[test]
+    fn dev_branch_is_dev_and_injects_no_dirs() {
+        let tmp = fresh_tmp("dev-branch");
+        let repo = tmp.join("repo");
+        touch_file(&repo.join("src-tauri").join("host").join("main.mjs"));
+        touch_file(&repo.join("src").join("ui").join("agent.html"));
+        make_repo_like(&repo);
+
+        let entry = resolve_host_entry_with(false, None, Some(repo.as_path()));
+        assert_eq!(distribution_of(&entry), sidecar::Distribution::Dev);
+        match entry {
+            sidecar::HostEntry::Bundled { config_dir, log_dir, work_dir, .. } => {
+                assert_eq!(work_dir, repo, "dev 的 work_dir 仍是仓库根");
+                assert!(config_dir.is_none(), "dev 不得注入 STUDIO_CONFIG_DIR");
+                assert!(log_dir.is_none(), "dev 不得注入 STUDIO_LOG_DIR");
+            }
+            sidecar::HostEntry::Tsx { .. } => panic!("仓库内宿主单文件存在时应走高优先级分支"),
+        }
+    }
+
+    /// 设计稿 §8.3 Rust 单测 ③（**最容易漏的一条**）：`resource_dir` 内**缺
+    /// `src/ui/agent.html` → 仍必须是 `installed`**。
+    ///
+    /// 依据 `main.rs` release 分支的第二次 return：缺面板时**也返回 Bundled**（只打 WARN）。
+    /// 漏了这条，打包漏带面板的装版会被判成 dev → 用户机又出现假 MCP + 空技能目录。
+    #[test]
+    fn packaged_without_agent_html_is_still_installed() {
+        let tmp = fresh_tmp("installed-no-agent-html");
+        let res = tmp.join("res");
+        let data = tmp.join("appdata");
+        make_resource_root(&res, false); // 刻意不建 src/ui/agent.html
+        std::fs::create_dir_all(&data).expect("appdata");
+
+        let entry = resolve_host_entry_with(true, Some(res.as_path()), Some(data.as_path()));
+        assert_eq!(
+            distribution_of(&entry),
+            sidecar::Distribution::Installed,
+            "缺 agent.html 只是面板 404，形态仍是装版"
+        );
+        match entry {
+            sidecar::HostEntry::Bundled { config_dir, log_dir, .. } => {
+                // 批 N：两个路径字段恒 None（注入属段 2/批 N+1）
+                assert!(config_dir.is_none());
+                assert!(log_dir.is_none());
+            }
+            sidecar::HostEntry::Tsx { .. } => panic!("装版不得回退 tsx"),
+        }
+    }
+
+    /// 形态 → env 值的映射（Node 侧 `resolveStudioDistribution` 只认这两个字面量）。
+    #[test]
+    fn distribution_env_values_are_stable() {
+        assert_eq!(sidecar::Distribution::Installed.as_env(), "installed");
+        assert_eq!(sidecar::Distribution::Dev.as_env(), "dev");
+    }
+
+    /// 批 N 不变量（PM 裁定③，2026-11-06）：**路径注入推迟到批 N+1**。
+    ///
+    /// 两个路径字段必须存在（编译器强制每个构造点填），但**批 N 的构造点一律 `None`** ——
+    /// 段 2（Rust 注入 `STUDIO_CONFIG_DIR` / `STUDIO_LOG_DIR`）必须与段 3（首启迁移）同批发，
+    /// 否则老用户记忆/会话会「看起来消失」。这条用例防止有人批 N 期间顺手把注入打开。
+    #[test]
+    fn batch_n_does_not_inject_paths() {
+        // dev 分支：Tsx 回退 → Dev
+        match resolve_host_entry_with(false, None, None) {
+            sidecar::HostEntry::Tsx { distribution, .. } => {
+                assert_eq!(distribution, sidecar::Distribution::Dev);
+            }
+            _ => panic!("project_root 为 None 时应回退 tsx"),
+        }
+
+        // 装版分支：形态 Installed，但两个路径字段恒 None
+        let tmp = fresh_tmp("batch-n");
+        let res = tmp.join("res");
+        make_resource_root(&res, true);
+        let data = tmp.join("appdata");
+        std::fs::create_dir_all(&data).expect("appdata");
+
+        match resolve_host_entry_with(true, Some(res.as_path()), Some(data.as_path())) {
+            sidecar::HostEntry::Bundled { distribution, config_dir, log_dir, .. } => {
+                assert_eq!(distribution, sidecar::Distribution::Installed);
+                assert!(config_dir.is_none(), "批 N 不得注入 STUDIO_CONFIG_DIR（段 2 属批 N+1）");
+                assert!(log_dir.is_none(), "批 N 不得注入 STUDIO_LOG_DIR（段 2 属批 N+1）");
+            }
+            sidecar::HostEntry::Tsx { .. } => panic!("装版不应回退 tsx"),
+        }
+    }
 
     /// TD-02 关键：HMAC-SHA256 自实现必须与标准一致（否则 Rust 签的 grant，host(ts)
     /// 用 Web Crypto verifyRaw 验不过）。用 RFC 4231 Test Case 2 向量锁死。

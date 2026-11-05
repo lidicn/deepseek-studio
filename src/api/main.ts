@@ -16,6 +16,7 @@ import { FilePersonaRegistry } from '../host/bot/persona-registry';
 import { generatePairingCode } from './agent-lan-access';
 // C1 P0-2：配置加载抽到独立模块（纯函数、无副作用、路径可注入 → 可安全单测）。
 import { loadConfig } from './config-loader';
+import { isQueryOnly as isQueryOnlyRun } from './cli-args';
 // TD-04：资源根解析（安装版靠 STUDIO_RESOURCE_ROOT，开发树回退 import.meta.url）。
 import { missingResourceFiles, resolveResourceRoot, resourceRootDiagnostics } from './resource-root';
 
@@ -182,10 +183,11 @@ export async function main(): Promise<void> {
 // argv[1] 是被执行的脚本路径（tsx 下是 main.ts），只有它之后才是用户参数。
 // 判据：存在 --help/-h/--version/-V 且**没有**其它实参 → 只查询，不起宿主。
 // 正常启动（tsx src/api/main.ts，无附加参数）必须落到下面的 main()。
-const cliArgs = process.argv.slice(2).filter((a) => !a.endsWith("main.ts"));
-const QUERY_FLAGS = new Set(["--help", "-h", "--version", "-V"]);
-const isQueryOnly =
-  cliArgs.length > 0 && cliArgs.every((a) => QUERY_FLAGS.has(a));
+//
+// 解析逻辑抽到 `./cli-args`（纯函数、可单测）：本文件有顶层副作用（会起 8760 宿主），
+// 不能为了测这段判据去 import 它。2026-11-06 引入 dev 入口 `dev-main.ts` 后，
+// 「按文件名结尾猜脚本路径」这种写法不再成立 → 改成枚举入口名（见 cli-args.ts 注释）。
+const isQueryOnly = isQueryOnlyRun(process.argv);
 if (isQueryOnly) {
   // 只打印用法，不起宿主。stdout 供人读，退出码 0。
   // 本文件在 src/api/ 下，package.json 在仓库根 → 要上跳两级。
