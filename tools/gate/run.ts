@@ -72,37 +72,51 @@ function main(): void {
   const root = resolve(__dirname, '..', '..');
   const startedAt = Date.now();
 
+  // 每步进度即时落盘（20261106 PM 派卡）：闸跑到一半看不出卡在哪 → 每步完成即追加一行到
+  // logs/gate-progress.log（步名 + 结果 + 耗时 + 时刻）。tail 此文件即可定位当前在哪一步。
+  const logDir = join(root, 'logs');
+  mkdirSync(logDir, { recursive: true });
+  const progressFile = join(logDir, 'gate-progress.log');
+  const progress = (line: string) => appendFileSync(progressFile, line + '\n', 'utf8');
+  progress(`=== gate START @ ${new Date().toISOString()} pid=${process.pid} ===`);
+
+  const stepElapsed = (t0: number) => ((Date.now() - t0) / 1000).toFixed(1);
+
   // 阻塞级
   for (const step of blockingSteps) {
     console.log(`\n=== [阻塞] ${step.name} ===`);
+    const t0 = Date.now();
     try {
       execSync(step.cmd, { cwd: root, stdio: 'inherit' });
       console.log(`✅ [${step.name}] 通过`);
+      progress(`[PASS] ${step.name}  ${stepElapsed(t0)}s`);
     } catch {
       console.error(`\n❌ [阻塞] [${step.name}] 失败：请检查上方输出`);
+      progress(`[FAIL] ${step.name}  ${stepElapsed(t0)}s  —— 阻塞，闸终止`);
       process.exit(1);
     }
   }
 
   // 信息级
-  const logDir = join(root, 'logs');
-  mkdirSync(logDir, { recursive: true });
   const logFile = join(logDir, 'gate-info.log');
   const stamp = new Date().toISOString();
   const infoLines: string[] = [`\n=== gate info @ ${stamp} ===`];
 
   for (const step of infoSteps) {
     console.log(`\n=== [信息] ${step.name} ===`);
+    const t0 = Date.now();
     let out = '';
     try {
       out = execSync(step.cmd, { cwd: root, encoding: 'utf8' });
       console.log(`ℹ️ [${step.name}] 通过`);
       infoLines.push(`[${step.name}] PASS\n${out}`);
+      progress(`[PASS] ${step.name}  ${stepElapsed(t0)}s  (信息级)`);
     } catch (e) {
       const err = e as { stdout?: string; stderr?: string };
       out = (err.stdout || '') + (err.stderr || '');
       console.log(`ℹ️ [${step.name}] 红（信息级，不阻塞）：见 logs/gate-info.log`);
       infoLines.push(`[${step.name}] FAIL\n${out}`);
+      progress(`[FAIL] ${step.name}  ${stepElapsed(t0)}s  (信息级，不阻塞)`);
     }
   }
 
@@ -110,6 +124,7 @@ function main(): void {
 
   const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
   console.log(`\n✅ 阻塞级全过（${blockingSteps.length} 步阻塞 + ${infoSteps.length} 步信息，${elapsed}s）`);
+  progress(`=== gate END @ ${new Date().toISOString()} exit=0 total=${elapsed}s ===`);
   process.exit(0);
 }
 
