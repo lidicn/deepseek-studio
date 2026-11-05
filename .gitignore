@@ -62,5 +62,16 @@ _memdb-audit.cjs
 # 双 PM 实例协调日志（本机磁盘，不入公开仓）
 PM-LOG.md
 
+# 20261105：代码库取证工具（forensic deep-dive）的产物——工具生成、含本机路径痕迹、
+# 带 ~38MB 本地缓存，属工具工作区不入代码仓（要留档就单独归档，不进 git）。
+/.claude-plugin/
+/.claude/
+/.continue/
+/.cursor/
+/.deepdive/
+/.forensic-deepdive/
+/CLAUDE.md
+/docs/codebase/
+
 # TD-04(a)：内置 node.exe（由 src-tauri/fetch-node.mjs 拉取，不入库）
 src-tauri/node/
