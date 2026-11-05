@@ -2,7 +2,9 @@
 name = "deepseek-studio"
 version = "0.4.0"
 description = "DeepSeek++ Studio 桌面宿主（Tauri 外壳，v0.4 加载真实聊天页 + 注入常驻宿主）"
-authors = ["lidicn"]
+# authors 省略（公开仓去标识化，20261105）：该字段是 Cargo 已弃用的旧元数据；
+# 安装包 Publisher 实测取自 bundle 配置/标识符（装好的 0.14.6 注册表 Publisher=deepseek），
+# 与本地 authors 无关，故删除不影响构建与发版产物。
 edition = "2021"
 
 # v0.2 验证构建链路（窗口 + initialization_script 占位）；v0.4 加载 chat.deepseek.com + 注入 entry.js + 拉起 Node 宿主。

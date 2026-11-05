@@ -24,7 +24,15 @@ import path from 'node:path';
 export const LEVER_HUB_PORT = 8762;
 export const LEVER_HUB_HOST = '127.0.0.1';
 export const LEVER_HUB_ROOT = 'E:/NAS/Lever-Hub';
-export const PYTHON = 'C:/Users/lidicn/AppData/Local/Programs/Python/Python313/python.exe';
+/**
+ * Python 解释器路径。
+ *
+ * 去标识化（20261105）：原值为**本机绝对路径**，形态是
+ * `C:/Users/<本机用户名>/AppData/Local/Programs/Python/Python313/python.exe`；
+ * 公开仓不留个人标识，故此处写成占位路径。本文件是 archive 存档、不承担运行时职责，
+ * 真要在某台机器上跑，把下面的占位换成本机实际路径即可（不引入任何运行时依赖）。
+ */
+export const PYTHON = 'C:/Users/<user>/AppData/Local/Programs/Python/Python313/python.exe';
 
 const MAX_BODY = 10 * 1024 * 1024;
 

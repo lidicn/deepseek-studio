@@ -184,10 +184,10 @@ describe('记忆层 v2：失效与人设路由', () => {
 
   it('formatForPrompt 输出格式与 v1 一致', async () => {
     const s = newStore();
-    s.save({ type: 'user', name: '身份', content: 'lidicn' });
+    s.save({ type: 'user', name: '身份', content: 'tester' });
     s.save({ type: 'project', name: '决策', content: '走 API 路径' });
     const text = s.formatForPrompt(await s.list());
-    expect(text).toMatch(/^- #mem-\S+ \[user\] 身份: lidicn$/m);
+    expect(text).toMatch(/^- #mem-\S+ \[user\] 身份: tester$/m);
     expect(text).toMatch(/^- #mem-\S+ \[project project\] 决策: 走 API 路径$/m);
     expect(s.formatForPrompt([])).toBe('');
     s.close();

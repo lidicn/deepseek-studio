@@ -46,7 +46,7 @@ describe('记忆面板取数', () => {
   it('打开面板即拉取生效记忆并渲染（不再恒为空）', async () => {
     setHostBridge(stubBridge(
       [
-        { id: 'mem-1', type: 'user', name: '用户身份', content: 'lidicn' },
+        { id: 'mem-1', type: 'user', name: '用户身份', content: 'tester' },
         { id: 'mem-2', type: 'project', name: '项目决策', content: '走 API 路径' },
       ],
       [],

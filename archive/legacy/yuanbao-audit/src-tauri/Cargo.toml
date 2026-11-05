@@ -2,7 +2,7 @@
 name = "yuanbao-audit"
 version = "0.1.0"
 description = "元宝审计桌面壳：Tauri WebView 打开元宝网页 + 注入自启动监控脚本"
-authors = ["lidicn"]
+# authors 省略（公开仓去标识化，20261105）；本 crate 属 archive，不参与发版。
 edition = "2021"
 
 [build-dependencies]

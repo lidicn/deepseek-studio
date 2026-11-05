@@ -1020,7 +1020,7 @@ fn open_bot_window(
 ///
 /// 只看 `package.json` 是不够的：安装版在 `C:\Users\<user>\AppData\Local\...`
 /// 向上找时，会在 **用户 home** 撞到一份不相干的 `package.json`，于是把 home
-/// 当成项目根（20261103 实测：`project_root` 落到 `C:\Users\lidicn`，
+/// 当成项目根（20261103 实测：`project_root` 落到 `C:\Users\<user>`，
 /// `logs/`、`trace` 会写进用户 home）。两个标记缺一不可。
 fn looks_like_repo_root(dir: &std::path::Path) -> bool {
     dir.join("package.json").is_file() && dir.join("src-tauri").is_dir()
@@ -1837,16 +1837,28 @@ mod tests {
     }
 
     /// 负控：**只看 package.json 的旧判定**会把 home 认成仓库根 —— 这就是 20261103
-    /// 那条 `project_root = C:\Users\lidicn` 的成因；严格判定不会。
+    /// 那条 `project_root = C:\Users\<user>` 的成因；严格判定不会。
+    ///
+    /// 20261105 去标识化时发现原实现直接写死 `Path::new("C:/Users/<本机用户名>")`：
+    /// 它**只有在「开发机 home 恰好有一份野生 package.json」时才成立**（本机正是这形态；
+    /// 换台机器/换用户名这条负控就恒红，而 gate 不跑 cargo test，所以一直没暴露）。
+    /// 改为临时目录夹具自带野生 package.json：**断言与语义一字不变**，但跨机成立，
+    /// 公开仓也不再出现个人用户名。
     #[test]
     fn naive_package_json_only_would_misjudge_home_as_repo_root() {
-        let home = std::path::Path::new("C:/Users/lidicn");
-        let naive = find_project_root_with(home, |d| d.join("package.json").is_file());
-        assert_eq!(naive, Some(home.to_path_buf()));
-        let strict = find_project_root_with(home, |d| {
+        // 「home」形态：只有 package.json、没有 src-tauri/（安装版向上找时撞见的正是它）
+        let base = tmp_base("naive-home");
+        let home = base.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("package.json"), "{}").unwrap();
+
+        let naive = find_project_root_with(&home, |d| d.join("package.json").is_file());
+        assert_eq!(naive, Some(home.clone()));
+        let strict = find_project_root_with(&home, |d| {
             d.join("package.json").is_file() && d.join("src-tauri").is_dir()
         });
         assert_eq!(strict, None);
+        std::fs::remove_dir_all(&base).ok();
     }
 }
 
