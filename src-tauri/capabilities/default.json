@@ -13,6 +13,8 @@
     "allow-open-bot-window",
     "allow-updater-check",
     "allow-updater-install",
-    "allow-updater-progress"
+    "allow-updater-progress",
+    "allow-studio-request-grant",
+    "allow-studio-open-mcp-settings"
   ]
 }

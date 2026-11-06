@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-studio-open-mcp-settings"
+description = "Enables the studio_open_mcp_settings command without any pre-configured scope."
+commands.allow = ["studio_open_mcp_settings"]
+
+[[permission]]
+identifier = "deny-studio-open-mcp-settings"
+description = "Denies the studio_open_mcp_settings command without any pre-configured scope."
+commands.deny = ["studio_open_mcp_settings"]
