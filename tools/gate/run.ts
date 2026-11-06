@@ -51,6 +51,10 @@ const blockingSteps: Step[] = [
   // 行尾断言（20261106 第三件）：index 侧 i/crlf|i/mixed 判红（读 .gitattributes 豁免 eol=crlf/binary，
   // 不硬编码扩展名）。终结「PowerShell 写文件默认 CRLF → 内容没变却显示 M」的行尾伪影。
   { name: 'lineend-guard', cmd: 'npx tsx tools/audit/lineend-guard.ts' },
+  // Rust 侧配置路径硬编码断言（P0 卡 (B) 判据，20261106）：src-tauri/src 里 .join(".config")
+  // 只许出现在 resolve_config_dir 函数体（唯一入口）/ 注释 / 单测断言——P1 路径漂移（grant 脚本
+  // 硬编码旧路径逃出 env 注入）的回归守卫。先红后绿已证：b147ca5 红 3 处 / HEAD 绿。
+  { name: 'rust-path-guard', cmd: 'npx tsx tools/audit/rust-path-guard.ts' },
 ];
 
 /** 信息级：红了照常合，输出进 logs/gate-info.log。 */
