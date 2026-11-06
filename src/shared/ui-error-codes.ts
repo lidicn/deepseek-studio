@@ -9,6 +9,10 @@ export const UI_ERROR_CODES: Readonly<Record<string, string>> = {
   consumed: '授权凭证已被使用（一次性凭证不可重复消费）',
   'not-found': '资源或授权不存在',
   malformed: '授权凭证格式不正确',
+  // 裁定五十八新增对外 reason `absent`（"没带券"，与 `malformed` 的"券串畸形"分开）
+  // ⇒ UI 侧补中文映射，否则用户直接看到原码 `absent`，等于一句英文报错。
+  // （这是实现侧判断，不是 PM 指派的约束 —— 归因如实写，别让后来人反查不到出处。）
+  absent: '本次连接没有携带授权凭证（宿主凭据未取得），请查看页面顶部的错误提示后重试',
   'bad-signature': '授权签名校验失败',
   expired: '授权已过期',
   'scope-mismatch': '授权范围与本次操作不匹配',

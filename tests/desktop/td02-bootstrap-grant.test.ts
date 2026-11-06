@@ -105,10 +105,22 @@ describe('TD-02 负控', () => {
     expect(r.reason).toBe('aud-mismatch');
   });
 
-  it('缺 grant → malformed', async () => {
+  // 裁定五十八（2026-11-06 真机）：**「没带券」与「券串畸形」必须分开**。
+  // 原断言把 `null` / `''` 都判 `malformed`，而真机上这两个形态恰恰是
+  // 「取券失败 → 回落拼出裸 URL」（0.14.8 起不再注入静态券，裁定四十一）——
+  // 日志写 `malformed` 会把人往 `bad-signature` 方向引，今晚绕的就是这个歧义。
+  it('缺 grant（null / 空串）→ absent（不是 malformed）', async () => {
     const a = auth();
-    expect((await verifyBootstrapGrant(a, null, new Set(), 'main')).reason).toBe('malformed');
-    expect((await verifyBootstrapGrant(a, '', new Set(), 'main')).reason).toBe('malformed');
+    expect((await verifyBootstrapGrant(a, null, new Set(), 'main')).reason).toBe('absent');
+    expect((await verifyBootstrapGrant(a, '', new Set(), 'main')).reason).toBe('absent');
+  });
+
+  it('真回归：带了券但无 `.` 分段 → **仍必须 malformed**（证明 absent 没把畸形串吞掉）', async () => {
+    const a = auth();
+    // 非空、无 `.` ⇒ 是「串畸形」，不是「没带券」
+    expect((await verifyBootstrapGrant(a, 'notagrant', new Set(), 'main')).reason).toBe('malformed');
+    // 以 `.` 开头（dot === 0）同样是畸形，不是 absent
+    expect((await verifyBootstrapGrant(a, '.sig-only', new Set(), 'main')).reason).toBe('malformed');
   });
 
   it('伪造签名 → bad-signature（换了密钥签的 grant）', async () => {

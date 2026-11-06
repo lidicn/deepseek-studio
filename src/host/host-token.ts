@@ -338,7 +338,28 @@ export class BoundedJtiSet implements JtiRegistry {
 export interface VerifyBootstrapResult {
   readonly ok: boolean;
   readonly claims?: BootstrapGrantClaims;
-  readonly reason?: 'malformed' | 'bad-signature' | 'expired' | 'consumed' | 'scope-mismatch' | 'aud-mismatch';
+  /**
+   * 失败原因（封闭词表）。
+   *
+   * ⚠️ `absent` 与 `malformed` 必须分开（裁定五十八，2026-11-06 真机）：
+   *   - `absent`    = 连接**根本没带券**（`?token=` 缺失 / 空串）。真机上的典型场景是
+   *                   「取券失败 → 页面走回落路径 → 而 0.14.8 起建窗已不再注入静态券
+   *                   （裁定四十一）⇒ **无静态券可拼**，回落拼出的是裸 URL（无 `?token=`）」。
+   *                   **这不是券坏了，是没券**。
+   *   - `malformed` = 带了券但结构不合法（无 `.` / 段解析失败）。
+   * 合并成一个词会让人照 `bad-signature` 方向去查（真机上绕了两小时的正是这个歧义）。
+   *
+   * 注：`authority.ts` 里另有一套同名 `reason`，语义本来就是「串畸形」（`splitToken` 失败），
+   * **不要跟着改** —— 两处同名不同义，是最容易改串的地方。
+   */
+  readonly reason?:
+    | 'absent'
+    | 'malformed'
+    | 'bad-signature'
+    | 'expired'
+    | 'consumed'
+    | 'scope-mismatch'
+    | 'aud-mismatch';
 }
 
 export async function verifyBootstrapGrant(
@@ -348,7 +369,10 @@ export async function verifyBootstrapGrant(
   expectedAud: string,
   now: () => number = () => Date.now(),
 ): Promise<VerifyBootstrapResult> {
-  if (!presented) return { ok: false, reason: 'malformed' };
+  // 裁定五十八：「没带券」与「券串畸形」必须分开（详见 VerifyBootstrapResult.reason 注释）。
+  if (presented === null || presented === undefined || presented === '') {
+    return { ok: false, reason: 'absent' };
+  }
   const dot = presented.indexOf('.');
   if (dot <= 0) return { ok: false, reason: 'malformed' };
   const payload = presented.slice(0, dot);
