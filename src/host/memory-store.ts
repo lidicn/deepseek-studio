@@ -52,6 +52,7 @@ export type {
 } from './memory/types';
 export { MAX_MEMORIES } from './memory/types';
 import { MEMORY_INJECT_LIMIT } from '../inject/untrusted-memory';
+import { writeFileAtomicSync } from '../shared/atomic-write';
 import type { AuditCrypto } from './audit-crypto';
 
 /**
@@ -108,7 +109,10 @@ function registerWorkspace(basePath: string, workspaceId: string): void {
       if (parsed && typeof parsed === 'object') map = parsed as Record<string, string>;
     }
     map[workspaceSlug(workspaceId)] = workspaceId;
-    fs.writeFileSync(idxPath, JSON.stringify(map, null, 2), 'utf8');
+    // 批 3：原子写（tmp + rename）。直接 writeFileSync 时，磁盘满/断电会留下半截 JSON，
+    // 下次 listWorkspaceIds 解析失败 → 已登记的 workspace **静默消失**（列表变空），
+    // 而数据本身还在磁盘上 —— 表现为「记忆突然全没了」。
+    writeFileAtomicSync(idxPath, JSON.stringify(map, null, 2), { encoding: 'utf8' });
   } catch (e) {
     console.warn(
       '[memory] workspace index update failed:',

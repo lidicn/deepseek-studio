@@ -6,8 +6,9 @@
  * 2. 支持单文件替换（oldText → newText），比 unified diff 更可靠
  * 3. 多文件批量编辑时，任意一个失败都回滚所有已成功的文件
  */
-import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { writeFileAtomicSync } from '../../shared/atomic-write';
 
 /** 单文件编辑指令 */
 export interface EditInstruction {
@@ -84,8 +85,10 @@ export function applyEdits(workspace: string, instructions: EditInstruction[]): 
     try {
       const content = readFileSync(absPath, 'utf-8');
       const newContent = content.replace(instr.oldText, instr.newText);
-      writeFileSync(absPath + '.tmp', newContent, 'utf-8');
-      renameSync(absPath + '.tmp', absPath);
+      // 批 3 顺带：原实现用固定 `${absPath}.tmp` —— 两个编辑并发时共用同一临时名，
+      // A 写 tmp → B 覆写 tmp → A rename ⇒ A 把 B 的内容搬成自己的结果（静默串档）。
+      // 改用 helper 的带 pid+序号临时名 + 同一套失败清理（失败时目标保持原样）。
+      writeFileAtomicSync(absPath, newContent, { encoding: 'utf-8' });
       applied.push({ absPath, originalContent });
       result.files.push({ path: instr.path, ok: true, replacements: 1 });
     } catch (e) {
@@ -94,7 +97,13 @@ export function applyEdits(workspace: string, instructions: EditInstruction[]): 
       // 逆序回滚
       for (const { absPath: rollPath, originalContent } of applied.reverse()) {
         try {
-          writeFileSync(rollPath, originalContent, 'utf-8');
+          // 批 3（Verify 补进的真候选）：**回滚路径必须与主路径同等原子**。
+          //
+          // 主件 `:87` 早就是 tmp+rename，回滚这里原来是裸 `writeFileSync`。
+          // 为什么这个不对称比「没修好」更糟：回滚发生时**主路径已经失败过一次**，
+          // 回滚再崩 = 用户的文件被**二次损坏**（叠加在已发生的失败之上）。
+          // 通用口径：回滚/补偿路径的可靠性要求 ≥ 主路径。
+          writeFileAtomicSync(rollPath, originalContent, { encoding: 'utf-8' });
         } catch { /* ignore rollback error */ }
       }
       result.rolledBack = true;

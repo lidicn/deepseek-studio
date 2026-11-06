@@ -35,6 +35,7 @@ import { AGENT_SENTINEL, type AgentLoopEvent } from './agent-loop';
 import { createAgentChannel, type AgentChannel } from './agent-channel';
 import { pickFolderViaDialog } from './folder-picker';
 import { resolveConfigDir } from '../shared/distribution';
+import { writeFileAtomicSync } from '../shared/atomic-write';
 import { resolveLogDir, resolveStudioDataDir } from '../shared/distribution';
 import { createWebEngine } from './engine/web-engine';
 import { createApiEngine } from './engine/api-engine';
@@ -498,13 +499,17 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   const whitelistStore = createWhitelistStore({
     homedir: os.homedir(),
     readFile: (p) => fs.readFileSync(p, 'utf-8'),
-    writeFile: (p, d) => fs.writeFileSync(p, d, 'utf-8'),
+    // 批 3（真候选 2/5）：白名单文件是**授权事实**，写崩留下半截 JSON ⇒ 下次解析失败
+    // 「用户批准过的工具全部消失」，而用户以为是自己没保存。改走 tmp+rename 原子替换。
+    writeFile: (p, d) => writeFileAtomicSync(p, d, { encoding: 'utf-8' }),
     mkdirp: (p) => fs.mkdirSync(p, { recursive: true }),
   });
   const shadowStore = createShadowStore({
     homedir: os.homedir(),
     readFile: (p) => fs.readFileSync(p),
-    writeFile: (p, d) => fs.writeFileSync(p, d),
+    // 批 3（真候选 3/5）：shadow `.bin` 同理 —— 半截镜像比没有镜像更危险
+    // （上层会拿它当「一致」去比对/回放）。
+    writeFile: (p, d) => writeFileAtomicSync(p, d, { encoding: 'utf-8' }),
     readJson: (p) => {
       // audit P2-7：文件缺失/JSON 损坏不抛，返回 null 让上层走默认值。
       try {
@@ -515,9 +520,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     },
     // audit E-15：writeJson 走 tmp+rename 原子替换，防崩溃半截损坏配置。
     writeJson: (p, d) => {
-      const tmp = `${p}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(d, null, 2), 'utf-8');
-      fs.renameSync(tmp, p);
+      // 批 3 顺带：原实现用固定 `${p}.tmp` —— 两个写方并发时共用同一临时名
+      // （A 写 tmp → B 覆写 → A rename ⇒ A 搬走了 B 的内容）。改用带 pid+序号的临时名。
+      writeFileAtomicSync(p, JSON.stringify(d, null, 2), { encoding: 'utf-8' });
     },
     exists: (p) => fs.existsSync(p),
     mkdirp: (p) => fs.mkdirSync(p, { recursive: true }),

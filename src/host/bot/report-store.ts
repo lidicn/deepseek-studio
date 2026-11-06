@@ -24,6 +24,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ReportStore, SubBotReport } from './types';
+import { writeFileAtomicSync } from '../../shared/atomic-write';
 
 /** 默认 runs 目录：<configDir>/runs。configDir 口径对齐 memory-store / persona-registry。 */
 export function defaultRunsDir(): string {
@@ -69,9 +70,10 @@ export class FileReportStore implements ReportStore {
   writeSubReport(batchId: string, slotId: string, report: SubBotReport): void {
     const dir = this.ensureBatchDir(batchId);
     const target = path.join(dir, `${assertSafeSegment(slotId, 'slotId')}.report.json`);
-    const tmp = `${target}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(report, null, 2));
-    fs.renameSync(tmp, target);
+    // 批 3 顺带：原实现固定用 `${target}.tmp` —— 两个写入方并发时**共用同一个临时名**，
+    // A 写完 tmp、B 覆写 tmp、A rename ⇒ A 把 B 的内容搬成了自己的结果（静默串档）。
+    // 改用 helper 的带 pid+序号的临时名（同目录、隐藏前缀），并复用同一套失败清理。
+    writeFileAtomicSync(target, JSON.stringify(report, null, 2), { encoding: 'utf8' });
   }
 
   /** 读该批次所有 *.report.json → SubBotReport[]。批次不存在返 []；坏文件跳过并告警（不抛，不阻塞 merge）。 */
@@ -101,7 +103,9 @@ export class FileReportStore implements ReportStore {
   writeMergedReport(batchId: string, content: string): string {
     const dir = this.ensureBatchDir(batchId);
     const file = path.join(dir, 'summary.md');
-    fs.writeFileSync(file, content);
+    // 批 3：原子写（tmp + rename）。这是**给人读的汇总**，直接写崩了会留下半截 md：
+    // 用户打开看到的是「像被删了一半的报告」，而真实内容其实只是没写完。
+    writeFileAtomicSync(file, content, { encoding: 'utf8' });
     return file;
   }
 
