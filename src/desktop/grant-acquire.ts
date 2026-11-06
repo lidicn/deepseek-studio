@@ -74,6 +74,12 @@ export interface GrantAcquireResult {
    * (C) 的四分支日志 / GrantError 六枚举 / `grant_log` 全部被绕过。所以页端必须捕获
    * 原文，由调用方（entry.ts）写进可见横幅 + 页端可 grep 痕迹（`window.__studioGrantStatus`
    * + `console.error`）。`host-down` 的「停止、不重试」语义**不变**（本字段只补可见性）。
+   *
+   * 裁定五十八（0.14.9 必做）：取券**枚举失败回落**（非闭包抛错，如 `no-config` 退避耗尽 /
+   * `rate-limited` / …）也**必带本字段** = 稳定字面量 `GRANT_FALLBACK_BARE_URL_CAUSE`
+   * （`grant-fallback-bare-url`），指向「没拿到券所以裸连」，与 Core 侧 `host-token.ts` 的
+   * `absent` reason 成对（宿主日志 `invalid bootstrap grant (absent)` ⇄ 页端 cause 该字面量）。
+   * 负控：不许只留枚举 / 泛化 host-down。
    */
   cause?: string;
 }
@@ -86,6 +92,38 @@ function readStudioRequestGrant(): RequestGrantFn | null {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/**
+ * 裁定五十八（0.14.9 必做，Core 字符串契约）：取券失败（枚举，非闭包抛错）→ 页面回落**裸 URL**
+ * 时，`__studioGrantStatus.cause` 必须写**稳定可 grep 字面量**（不是泛化 host-down、不是自由句式）。
+ *
+ * 与 Core 侧 `host-token.ts` 的 `absent` reason **成对**（两边各说各的、指同一件事＝ACL 已修好但
+ * 取券失败导致裸连）：
+ *   - 页端：`__studioGrantStatus.cause === GRANT_FALLBACK_BARE_URL_CAUSE`；
+ *   - 宿主：sidecar 日志 `invalid bootstrap grant (absent)`（`host-token.ts` `presented` 为空 ⇒ `absent`）。
+ * **改这一边必须同时改 Core 的 `absent` 侧配对断言**（tests/desktop/td02-bootstrap-grant.test.ts），
+ * 别让下一个人只改一边（PM 裁定五十八 明令）。
+ *
+ * **三形态判读表**（0.14.9 现场 CDP 直读 `__studioGrantStatus`，按 `cause` 内容互斥可判）：
+ *
+ *   | `cause`                                  | 判读 |
+ *   |------------------------------------------|------|
+ *   | 含 `not allowed by ACL`（IPC 原文）       | 缺陷① 未修（IPC 层拒绝，Rust 未执行、宿主日志全被绕过） |
+ *   | `grant-fallback-bare-url`                | ACL 已修、取券失败致裸连（宿主侧对应 `absent`） |
+ *   | `grant-reply-shape-violation`（见下方常量） | 宿主回了非可辨识联合 ⇒ **宿主/页端版本不配对**（先核宿主版本号） |
+ *
+ * 负控（PM 原话）：`no-config` 退避耗尽 → `cause` 必非空且指向回落，不许只留枚举。
+ */
+export const GRANT_FALLBACK_BARE_URL_CAUSE = 'grant-fallback-bare-url';
+
+/**
+ * 裁定五十八 P3（形状违例稳定字面量）：取券闭包**正常返回但形状违反可辨识联合**
+ * （`ok:true` 缺字段 / 非对象）时的 `cause`——**既非** ACL（① 原文）、**也非**枚举回落（② 字面量），
+ * 而是宿主回了非可辨识联合 ⇒ **宿主/页端版本不配对**（宿主旧构建返回旧形状，或页端契约漂移改了闭包形状）。
+ * 用稳定字面量而非自由句式，使 0.14.9 现场 CDP 直读可 grep 判定（与 `GRANT_FALLBACK_BARE_URL_CAUSE` 同族契约）。
+ * 横幅文案须与 ①② 两形态**互异**（否则现场分不清）。
+ */
+export const GRANT_REPLY_SHAPE_VIOLATION_CAUSE = 'grant-reply-shape-violation';
 
 /** 单飞表：同 aud 并发只发一次 IPC（重连/连接/面板拉取撞车时复用 in-flight，不自造请求风暴打红自己的限流）。
  *  结算即摘除——**不缓存结果**：下一轮连接/重连无条件现取新券（纪律 1）。 */
@@ -118,13 +156,13 @@ export function acquireGrant(opts: GrantAcquireOptions): Promise<GrantAcquireRes
       }
       if (!reply || typeof reply !== 'object' || !('ok' in reply)) {
         // 返回形状违反可辨识联合（旧宿主/拼写漂移）：不猜、不静默，按 host-down 停。
-        // 同样给 cause（页端 fail-visible 需要一个可读原因，别只留 host-down 枚举）。
+        // 裁定五十八 P3：稳定字面量（宿主/页端版本不配对的信号），页端 fail-visible 可 grep。
         opts.onState?.('attempt');
         return {
           grant: null,
           attempts: attempt + 1,
           lastError: 'host-down',
-          cause: '取券闭包返回形状违反可辨识联合（ok:true 缺字段 / 非对象）',
+          cause: GRANT_REPLY_SHAPE_VIOLATION_CAUSE,
         };
       }
       opts.onState?.('attempt', reply);
@@ -133,12 +171,14 @@ export function acquireGrant(opts: GrantAcquireOptions): Promise<GrantAcquireRes
       }
       if (!RETRYABLE.has(reply.error)) {
         // rate-limited / no-secret / sign-failed / bad-aud / host-down：停，不重试。
-        return { grant: null, attempts: attempt + 1, lastError: reply.error };
+        // 裁定五十八：回落裸连必带稳定 cause（与宿主 absent 成对），不只留枚举。
+        return { grant: null, attempts: attempt + 1, lastError: reply.error, cause: GRANT_FALLBACK_BARE_URL_CAUSE };
       }
       const wait = backoff[attempt];
       if (wait === undefined) {
         // 预算耗尽（裁定三十六 5 次）：回落 + 调用方 fail-visible。
-        return { grant: null, attempts: attempt + 1, lastError: reply.error };
+        // 裁定五十八：no-config 退避耗尽也回落裸连 → 稳定 cause（负控：不许只留 no-config 枚举）。
+        return { grant: null, attempts: attempt + 1, lastError: reply.error, cause: GRANT_FALLBACK_BARE_URL_CAUSE };
       }
       await sleep(wait);
     }

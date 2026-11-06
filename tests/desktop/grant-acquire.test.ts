@@ -16,6 +16,8 @@ import { describe, expect, it, vi, afterEach, type Mock } from 'vitest';
 import {
   acquireGrant,
   GRANT_BACKOFF_MS,
+  GRANT_FALLBACK_BARE_URL_CAUSE,
+  GRANT_REPLY_SHAPE_VIOLATION_CAUSE,
   type GrantAcquireResult,
   type GrantError,
   type GrantReply,
@@ -84,6 +86,32 @@ describe('grant-acquire：按需取券状态机（P0 卡 (A) 页端半）', () =
     expect(r.attempts).toBe(6);
     expect(r.lastError).toBe('no-config');
     expect(fn.mock.calls.length).toBe(6); // 恰好 6 次 IPC（1 首试 + 5 退避），不多发一次
+    // 裁定五十八：no-config 退避耗尽回落裸连 → cause 必带稳定字面量（与宿主 absent 成对），不许只留枚举。
+    expect(r.cause).toBe(GRANT_FALLBACK_BARE_URL_CAUSE);
+  });
+
+  it('裁定五十八 负控：no-config 退避耗尽（backoffMs=[] 立即耗尽）→ cause=回落裸连字面量，非仅枚举', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      '__studioRequestGrant',
+      vi.fn(async (): Promise<GrantReply> => ({ ok: false, error: 'no-config' })),
+    );
+    const r = await acquireGrant({ aud: 'main', backoffMs: [] });
+    expect(r.grant).toBeNull();
+    expect(r.attempts).toBe(1);
+    expect(r.lastError).toBe('no-config');
+    // 可读 cause（指向回落裸连、与 Core absent 成对），且非空、非「只留枚举」。
+    expect(r.cause).toBe(GRANT_FALLBACK_BARE_URL_CAUSE);
+    expect(r.cause).toBe('grant-fallback-bare-url');
+  });
+
+  it('裁定五十八：rate-limited（不可重试枚举）回落裸连 → 同样带稳定 cause（不是泛化 host-down）', async () => {
+    vi.useFakeTimers();
+    mockHostGrantError('rate-limited');
+    const r = await acquireGrant({ aud: 'main', backoffMs: [] });
+    expect(r.grant).toBeNull();
+    expect(r.lastError).toBe('rate-limited');
+    expect(r.cause).toBe(GRANT_FALLBACK_BARE_URL_CAUSE);
   });
 
   it('rate-limited 一律停：第一回就回落（attempts=1、不重试），不拿重试去打爆宿主限流', async () => {
@@ -142,8 +170,9 @@ describe('grant-acquire：按需取券状态机（P0 卡 (A) 页端半）', () =
     const r = await runThroughBudget(acquireGrant({ aud: 'main' }));
     expect(r.grant).toBeNull();
     expect(r.lastError).toBe('host-down');
-    // 裁定五十七 缺陷③：形状违例也给可读 cause（页端 fail-visible 依赖它，不只留 host-down 枚举）。
-    expect(r.cause).toBe('取券闭包返回形状违反可辨识联合（ok:true 缺字段 / 非对象）');
+    // 裁定五十八 P3：形状违例改稳定字面量（宿主/页端版本不配对的信号），非自由句式、可 grep。
+    expect(r.cause).toBe(GRANT_REPLY_SHAPE_VIOLATION_CAUSE);
+    expect(r.cause).toBe('grant-reply-shape-violation');
   });
 
   it('裁定五十七 缺陷③ 负控：闭包抛 ACL 拒绝（IPC 层）→ host-down 停、不重试，cause 捕获原文', async () => {

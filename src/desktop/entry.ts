@@ -19,7 +19,12 @@ import { createChatReadCapability } from '../capabilities/chat-read';
 import { createChatInsertCapability } from '../capabilities/chat-insert';
 import { createChatSendCapability } from '../capabilities/chat-send';
 import { createHostClient, type HostClient } from './host-client';
-import { acquireGrant, type GrantError } from './grant-acquire';
+import {
+  acquireGrant,
+  GRANT_FALLBACK_BARE_URL_CAUSE,
+  GRANT_REPLY_SHAPE_VIOLATION_CAUSE,
+  type GrantError,
+} from './grant-acquire';
 import { installMainWorldInterceptor, setInterceptorTraceSink, configureMemorySelect } from '../inject/main-world-interceptor';
 import { installTraceReportHandle } from '../inject/main-world-interceptor';
 import {
@@ -133,8 +138,11 @@ function setGrantStatus(status: GrantStatus): void {
 }
 
 /**
- * 取券失败 → fail-visible（横幅 + 页端可 grep 痕迹）。裁定五十七 缺陷③ 页面侧那条腿：
- *  - 横幅必须带**真实原因**（`cause`，如 `Command … not allowed by ACL`），不许只写「不可用」；
+ * 取券失败 → fail-visible（横幅 + 页端可 grep 痕迹）。裁定五十七 缺陷③ 页面侧那条腿 +
+ * 裁定五十八 回落裸连 cause 契约：
+ *  - 横幅必须带**真实原因**（`cause`），不许只写「不可用」。`cause` 两种形态（CDP 直读三选一）：
+ *    ① 闭包抛错/形状违例 = IPC/ACL 原文（如 `Command … not allowed by ACL`）⇒ 缺陷① 未修；
+ *    ② 回落裸连 = 稳定字面量 `GRANT_FALLBACK_BARE_URL_CAUSE`（与 Core 侧 `absent` 成对）⇒ ACL 已修、取券失败致裸连；
  *  - 页端留 `window.__studioGrantStatus`（CDP/Verify 直读）+ `console.error`（页端控制台可 grep）；
  *  - `host-down` / 不可重试枚举 = **停止不重试**（语义不变），但**停止必须可见**。
  */
@@ -150,7 +158,17 @@ export function surfaceGrantFailure(
       : result.lastError === 'no-config'
         ? '重试预算耗尽，已停止'
         : '已停止（不可重试）';
-  const causeNote = result.cause ? `；取券闭包抛错：${result.cause}` : '';
+  // 裁定五十八：cause 有**三形态**，横幅文案逐形互异（否则 0.14.9 现场分不清）：
+  //   - ① 回落裸连（`cause === grant-fallback-bare-url`，与宿主 `absent` 成对）→「非 ACL、没拿到券所以裸连」；
+  //   - ② 形状违例（`cause === grant-reply-shape-violation`）→「宿主/页端版本不配对」；
+  //   - ③ 闭包抛错（`cause` = IPC/ACL 原文，如 `not allowed by ACL`）→ 缺陷① 未修的可读信号。
+  const causeNote = result.cause
+    ? result.cause === GRANT_FALLBACK_BARE_URL_CAUSE
+      ? `；回落裸连（无券裸 URL、宿主判 absent 拒绝、非 ACL）：${result.cause}`
+      : result.cause === GRANT_REPLY_SHAPE_VIOLATION_CAUSE
+        ? `；取券闭包返回形状违例（宿主/页端版本不配对，先核宿主版本）：${result.cause}`
+        : `；取券闭包抛错（IPC/ACL 层拒绝原文）：${result.cause}`
+    : '';
   const message = `宿主凭据不可用，agent 能力离线（原因：${lastError}${causeNote}）。${stopNote}。`;
   setBanner(message);
   // 失败必发生在 resolver 阶段（本函数只由 urlResolver 链调用）：stage 钉 'resolver-invoked'（判别仪第 3 选）。

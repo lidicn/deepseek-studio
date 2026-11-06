@@ -9,7 +9,12 @@
  * `host-down` 停止不重试的语义不变（本测试只验「停止必须可见」）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { acquireGrant, type RequestGrantFn } from '../../src/desktop/grant-acquire';
+import {
+  acquireGrant,
+  GRANT_FALLBACK_BARE_URL_CAUSE,
+  GRANT_REPLY_SHAPE_VIOLATION_CAUSE,
+  type RequestGrantFn,
+} from '../../src/desktop/grant-acquire';
 import { createGrantBanner, surfaceGrantFailure, installStudio } from '../../src/desktop/entry';
 
 describe('裁定五十七 缺陷③ · 取券闭包抛错 → 页端 fail-visible', () => {
@@ -61,6 +66,56 @@ describe('裁定五十七 缺陷③ · 取券闭包抛错 → 页端 fail-visibl
     const logged = consoleErrorSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(logged).toContain('[studio-grant]');
     expect(logged).toContain('not allowed by ACL');
+  });
+
+  it('裁定五十八：回落裸连（no-config 枚举）vs ACL 拒绝（闭包抛错）现场互斥可判（CDP 三选一）', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const banner = createGrantBanner({ enabled: true, getMount: () => document.body });
+
+    // 场景 A：回落裸连（no-config 退避耗尽，枚举、非闭包抛错）⇒ cause=稳定字面量（与 Core absent 成对）
+    surfaceGrantFailure(
+      { grant: null, attempts: 6, lastError: 'no-config', cause: GRANT_FALLBACK_BARE_URL_CAUSE },
+      'main',
+      banner.setBanner,
+    );
+    let status = (globalThis as { __studioGrantStatus?: Record<string, unknown> }).__studioGrantStatus;
+    expect(status!.stage).toBe('resolver-invoked');
+    expect(status!.failed).toBe(true);
+    expect(status!.lastError).toBe('no-config');
+    expect(status!.cause).toBe(GRANT_FALLBACK_BARE_URL_CAUSE); // 稳定字面量，非「只留枚举」
+    let el = document.querySelector('[data-studio-grant-banner]');
+    expect(el!.textContent).toContain('回落裸连'); // 横幅明说「非 ACL」
+    expect(el!.textContent).toContain('grant-fallback-bare-url');
+    expect(el!.textContent).not.toContain('取券闭包抛错'); // 回落场景不得误标成「闭包抛错」
+
+    // 场景 B：ACL 拒绝（闭包抛错、IPC 原文）⇒ cause 含 ACL 原文（缺陷① 未修信号），保留「闭包抛错」标签
+    surfaceGrantFailure(
+      { grant: null, attempts: 1, lastError: 'host-down', cause: 'Command studio_request_grant not allowed by ACL' },
+      'main',
+      banner.setBanner,
+    );
+    status = (globalThis as { __studioGrantStatus?: Record<string, unknown> }).__studioGrantStatus;
+    expect(status!.lastError).toBe('host-down');
+    expect(String(status!.cause)).toContain('not allowed by ACL');
+    el = document.querySelector('[data-studio-grant-banner]');
+    expect(el!.textContent).toContain('取券闭包抛错');
+    expect(el!.textContent).toContain('not allowed by ACL');
+
+    // 场景 C：形状违例（闭包正常返回但违反可辨识联合）⇒ cause=稳定字面量（宿主/页端版本不配对），
+    // 横幅「形状违例」文案与 场景 A（回落裸连）/ 场景 B（闭包抛错）**互异**（现场三选一可判）。
+    surfaceGrantFailure(
+      { grant: null, attempts: 1, lastError: 'host-down', cause: GRANT_REPLY_SHAPE_VIOLATION_CAUSE },
+      'main',
+      banner.setBanner,
+    );
+    status = (globalThis as { __studioGrantStatus?: Record<string, unknown> }).__studioGrantStatus;
+    expect(status!.cause).toBe(GRANT_REPLY_SHAPE_VIOLATION_CAUSE); // 稳定字面量，非自由句式
+    expect(status!.cause).toBe('grant-reply-shape-violation');
+    el = document.querySelector('[data-studio-grant-banner]');
+    expect(el!.textContent).toContain('形状违例'); // 专属文案
+    expect(el!.textContent).toContain('grant-reply-shape-violation');
+    expect(el!.textContent).not.toContain('回落裸连'); // 与场景 A 互异
+    expect(el!.textContent).not.toContain('取券闭包抛错'); // 与场景 B 互异
   });
 
   it('横幅 enabled=false（非主窗/登录页）：surfaceGrantFailure 仍留页端痕迹，但不挂 DOM 横幅', () => {
