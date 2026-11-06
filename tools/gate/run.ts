@@ -59,6 +59,10 @@ const blockingSteps: Step[] = [
   // 字面量 join 必须全部出现在 tauri.conf.json bundle.resources——缺条目 = dev 能跑、装版 500
   // （与 P0 竞态同族：两形态路径解析不同）。先红已证：当前树红 3 条（mcp-settings 壳三件）。
   { name: 'resource-contract-guard', cmd: 'npx tsx tools/audit/resource-contract-guard.ts' },
+  // generate_handler! ↔ capabilities ACL 一致性（v0.14.8 P0，20261106）：main.rs 注册的每条
+  // 命令必须在 capabilities/*.json permissions 里有对应 allow-<kebab>——ACL 只由真实 Tauri
+  // runtime 强制，mock-invoke 测试与 cargo test 都不校验。先红：当前树缺 2 条（studio_open_mcp_settings + studio_request_grant）。
+  { name: 'acl-contract-guard', cmd: 'npx tsx tools/audit/acl-contract-guard.ts' },
 ];
 
 /** 信息级：红了照常合，输出进 logs/gate-info.log。 */
