@@ -116,7 +116,7 @@ import { createFileEditCapability } from '../capabilities/edit-engine';
 import { getMemoryStore } from './memory-store';
 import { normalizeMemorySaveParams } from './memory-tool-params';
 import { scanSkills, ensureSkillsDir, resolveSkillsDir } from './skill-store';
-import { getMcpController, ensureMcpConfig, getMcpServer, removeMcpServer, maskMcpServerSecrets, mergeMaskedSecrets, toMcpServerSummary, type McpServerConfig } from './mcp-controller';
+import { getMcpController, ensureMcpConfig, getMcpServer, removeMcpServer, maskMcpServerSecrets, mergeMaskedSecretsChecked, toMcpServerSummary, type McpServerConfig } from './mcp-controller';
 import { createAutomationManager, type AutomationManager } from './automation';
 import { execPythonInSandbox } from './sandbox-executor';
 import {
@@ -760,12 +760,18 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
               cwd: typeof config.cwd === 'string' ? config.cwd : undefined,
               headers: config.headers && typeof config.headers === 'object' ? (config.headers as Record<string, string>) : undefined,
             };
-            // C1 P1 安全批 R2-02（防毁配置）：UI 编辑弹窗的表单里躺的是 `mcp.get`
-            // 返回的**掩码值**（`****`）。原样写回会把用户真实的 API Key / Authorization
-            // 头**永久覆盖成 `****`** —— 掩码挡住了外泄，却毁了配置。
-            // 这里把掩码占位还原成磁盘上的原值；只有用户真的改过的值才覆盖。
-            const merged = mergeMaskedSecrets(next, controller.getServerConfig(serverId));
-            const result = controller.saveServer(serverId, merged);
+            // C1 P1 安全批 R2-02（防毁配置）+ P1 安全小卡（裁定五十一）：
+            // UI/模型回写的是 `mcp.get` 的**掩码值**，原样写回会毁掉真实凭据。
+            // 用**可判别**版本：env/headers 逐键还原；url/args 段级/元素级还原，
+            // **任何掩码位找不到对应真值 ⇒ 拒写 + 可见错误**（不猜、不静默）。
+            const mergedResult = mergeMaskedSecretsChecked(next, controller.getServerConfig(serverId));
+            if (!mergedResult.ok) {
+              console.log(
+                `[mcp] level=warn save-refused ${mergedResult.error} serverId=${serverId} detail=${mergedResult.detail}`,
+              );
+              return { ok: false, error: `${mergedResult.error}: ${mergedResult.detail}` };
+            }
+            const result = controller.saveServer(serverId, mergedResult.config);
             if (result.ok) controller.reload();
             return { ok: result.ok, error: result.error };
           },
@@ -1488,9 +1494,11 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       async create(id, config) {
         const controller = getMcpController();
         const next = mcpConfigFromDto(config);
-        // 新增：磁盘上还没有这台 → 不做「掩码还原」（没有可还原的基准）。
-        const merged = mergeMaskedSecrets(next, controller.getServerConfig(id));
-        const r = controller.saveServer(id, merged);
+        // 新增：磁盘上还没有这台 → 没有可还原的基准。仍走 checked 版本：
+        // 入参自带掩码位（例如从别处粘来的 `****`）必须**拒写**，不许当真值落盘。
+        const mergedResult = mergeMaskedSecretsChecked(next, controller.getServerConfig(id));
+        if (!mergedResult.ok) return { ok: false, error: `${mergedResult.error}: ${mergedResult.detail}` };
+        const r = controller.saveServer(id, mergedResult.config);
         if (r.ok) controller.reload();
         return r;
       },
@@ -1498,8 +1506,10 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         const controller = getMcpController();
         const next = mcpConfigFromDto(config);
         // 防毁配置：用户没改的字段（表单里躺的是掩码占位 `****`）还原成磁盘原值。
-        const merged = mergeMaskedSecrets(next, controller.getServerConfig(id));
-        const r = controller.saveServer(id, merged);
+        // 掩码位找不到对应真值 ⇒ 拒写 + 可见错误（PM 裁定五十一 4）。
+        const mergedResult = mergeMaskedSecretsChecked(next, controller.getServerConfig(id));
+        if (!mergedResult.ok) return { ok: false, error: `${mergedResult.error}: ${mergedResult.detail}` };
+        const r = controller.saveServer(id, mergedResult.config);
         if (r.ok) controller.reload();
         return r;
       },

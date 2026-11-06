@@ -42,24 +42,43 @@ export interface McpTool {
 }
 
 /**
- * C1 P1 安全批 R2-02：MCP 服务器配置的**敏感值掩码**。
+ * C1 P1 安全批 R2-02 + **P1 安全小卡（`mcp.get` 凭据面收口，2026-11-06）**。
  *
- * 缺陷：`mcp.get` 工具原样返回整份配置（含 `env` / `headers` 明文），
- * 且该工具是 `approvalClass:'none'`（**零审批**）→ 模型调一次就把
- * 用户配置里的 API Key / Authorization 头**原样送进模型上下文**
- * （模型是外部服务方 → 密钥外泄）。
+ * 缺陷史：
+ *   1. R2-02：`mcp.get` 原样返回 `env` / `headers` 明文，且该工具
+ *      `approvalClass:'none'`（**零审批**）→ 模型调一次就把用户的 API Key /
+ *      Authorization 头原样送进模型上下文（模型是外部服务方 ⇒ 密钥外泄）。
+ *   2. 本卡补的**同类残留**：`maskMcpServerSecrets` 只掩 `env` / `headers`，
+ *      而 `url` / `args` **原样透出** —— `toMcpServerSummary`（F11，喂 `mcp.list`）
+ *      **早就掩了这两个字段**，两处口径不一致：
+ *        - `url` 可内嵌 userinfo（`https://user:pass@host`）或
+ *          `?token=` 形查询参数；
+ *        - `args` 可内嵌 `--token xxx` / `--api-key=xxx`。
+ *      而这套值会经 **页内只读弹窗**（`studio-mcp-dialog.ts`，与站点 JS **同 world**）
+ *      渲染进 DOM ⇒ 站点脚本可读；同时也进**模型上下文**。
  *
- * 现在：`env` 与 `headers` 的**值**统一替换成 `****`，**键名保留**
- * —— 键名是「需要配哪些变量」的信息，不是秘密；值才是。
+ * ── 为什么当初是有意不掩，现在必须改 ──
  *
- * 其它字段（command / args / cwd / transport / url）**不掩码**：
- * 它们是连接方式信息，调用方（编辑弹窗）需要它们才能正确回填。
- * `url` 里可能自带 token —— 但那是**用户自己填的服务器地址**，
- * 掩掉会让编辑弹窗无法显示地址；`headers` 才是标准放密钥的地方。
+ * 原注释的理由是「掩掉会让**编辑弹窗**无法显示地址，`headers` 才是标准放密钥的地方」。
+ * 但那个取舍的前提是「`mcp.get` 服务的调用方需要真值回填」；**现在的调用方是页内只读弹窗
+ * 与模型**（工作台编辑器走 HTTP `/v1/mcp/servers*` + Bearer，不经本工具）——
+ * **前提变了，取舍没跟着变，就成了泄漏口**。
+ *
+ * ⚠️ **掩码必须与 `mergeMaskedSecrets` 成对**：多掩一个字段而不加对应的还原，
+ * `mcp.get` → `mcp.save` 这条**同样零审批**的回路就会把 `****` 写回磁盘，
+ * 把「防外泄」变成「毁配置」（R2-02 引入过一模一样的新缺陷）。见 `mergeMaskedSecrets`。
+ *
+ * 口径与 F11 对齐：**复用** `maskMcpServerUrl` / `maskMcpServerArgs`，
+ * 不写第二套掩码实现（两套口径必然漂移）。
  */
 export const MCP_SECRET_MASK = '****';
 
-/** 把 `env` / `headers` 的值掩码，返回新对象（不改原配置）。 */
+/**
+ * 把凭据字段掩码，返回新对象（不改原配置）。
+ *
+ * 掩码：`env` / `headers` 的**值**、`url` 的凭据部分、`args` 的凭据参数值。
+ * 保留：键名 / 参数名 / 用户名 / 主机 / 路径（「需要配什么」不是秘密，「值」才是）。
+ */
 export function maskMcpServerSecrets(cfg: McpServerConfig): McpServerConfig {
   const maskRecord = (rec: Record<string, string> | undefined): Record<string, string> | undefined => {
     if (!rec) return undefined;
@@ -73,6 +92,9 @@ export function maskMcpServerSecrets(cfg: McpServerConfig): McpServerConfig {
     ...cfg,
     ...(cfg.env ? { env: maskRecord(cfg.env) } : {}),
     ...(cfg.headers ? { headers: maskRecord(cfg.headers) } : {}),
+    // P1 小卡：与 F11（`toMcpServerSummary`）同口径、同函数
+    ...(cfg.url !== undefined ? { url: maskMcpServerUrl(cfg.url) } : {}),
+    ...(cfg.args ? { args: maskMcpServerArgs(cfg.args) } : {}),
   };
 }
 
@@ -98,6 +120,17 @@ export function mergeMaskedSecrets(
   incoming: McpServerConfig,
   existing: McpServerConfig | null | undefined,
 ): McpServerConfig {
+  const r = mergeMaskedSecretsChecked(incoming, existing);
+  if (r.ok) return r.config;
+  // 兼容入口无法表达「拒写」→ 抛错。**绝不静默把 `****` 写回磁盘**。
+  throw new Error(`unresolved-mask: ${r.detail}`);
+}
+
+/** env / headers 的逐键还原（R2-02 原有语义，保持不变）。 */
+function mergeEnvHeaders(
+  incoming: McpServerConfig,
+  existing: McpServerConfig | null | undefined,
+): McpServerConfig {
   if (!existing) return incoming;
   const restore = (
     next: Record<string, string> | undefined,
@@ -120,6 +153,213 @@ export function mergeMaskedSecrets(
     ...(incoming.env ? { env: restore(incoming.env, existing.env) } : {}),
     ...(incoming.headers ? { headers: restore(incoming.headers, existing.headers) } : {}),
   };
+}
+
+/** `mergeMaskedSecrets` 的**可判别**版本：歧义时显式失败，供写盘路径使用。 */
+export type MergeMaskedResult =
+  | { ok: true; config: McpServerConfig }
+  | { ok: false; error: 'unresolved-mask'; detail: string };
+
+/**
+ * 段级/元素级还原（PM 裁定五十一 二）：
+ *   - `url`：把入参与磁盘原值都解析，**逐段**比对 —— 掩码位取磁盘该位原值；
+ *   - `args`：按 **flag 名配对**（不是按下标，用户可能增删元素）；
+ *   - **任何 `****` 找不到对应的磁盘真值 ⇒ 拒写**（返回 ok:false），不猜、不静默。
+ */
+export function mergeMaskedSecretsChecked(
+  incoming: McpServerConfig,
+  existing: McpServerConfig | null | undefined,
+): MergeMaskedResult {
+  const base = mergeEnvHeaders(incoming, existing);
+  const ua = mergeUrlAndArgsChecked(incoming, existing ?? undefined);
+  if (!ua.ok) return { ok: false, error: 'unresolved-mask', detail: ua.detail };
+  return { ok: true, config: { ...base, ...ua.patch } };
+}
+
+/** url / args 的合并补丁（段级/元素级）。 */
+type UrlArgsPatch = { url?: string; args?: string[] };
+type UrlArgsResult = { ok: true; patch: UrlArgsPatch } | { ok: false; detail: string };
+
+function mergeUrlAndArgsChecked(
+  incoming: McpServerConfig,
+  existing: McpServerConfig | undefined,
+): UrlArgsResult {
+  const patch: UrlArgsPatch = {};
+  // 新建服务器（磁盘上没有这台）：**没有基准** ⇒ 不做还原，也不做歧义判定。
+  // 保持既有契约「新增 → 原样使用入参」（`c1p1-r202` 已锁）。入参自带 `****` 会被
+  // 如实写盘 —— 那是已登记在册的 P2 项（PM 裁定五十一 三），不在本卡改。
+  if (!existing) return { ok: true, patch };
+
+  // ── url：段级合并（**原始串手术，不走 URL 重序列化**）──
+  //
+  // ⚠️ 为什么不能用 `new URL()` + `toString()` 重建：那会把还原出来的凭据**百分号编码**
+  // （`{{PASSWORD_x}}` → `%7B%7BPASSWORD_x%7D%7D`），写回磁盘就是**另一个密码**——
+  // 表面「还原成功」，实际把凭据改坏。本函数只在原串上替换掩码段，其余字节原样保留。
+  if (incoming.url !== undefined) {
+    if (!hasMask(incoming.url)) {
+      patch.url = incoming.url; // 用户没留掩码位 → 原样
+    } else {
+      if (!existing?.url) {
+        return { ok: false, detail: `url 含掩码位但磁盘上无对应原值：${incoming.url}` };
+      }
+      const r = mergeMaskedUrlRaw(incoming.url, existing.url);
+      if (!r.ok) return { ok: false, detail: r.detail };
+      patch.url = r.url;
+    }
+  }
+
+  // ── args：按 flag 名配对 ──
+  if (incoming.args && incoming.args.some((a) => a.includes(MCP_SECRET_MASK))) {
+    if (!existing?.args) {
+      return { ok: false, detail: 'args 含掩码位但磁盘上无对应原值' };
+    }
+    const diskByFlag = collectArgValuesByFlag(existing.args);
+    const merged = [...incoming.args];
+    for (let i = 0; i < merged.length; i += 1) {
+      const cur = merged[i];
+      if (cur === MCP_SECRET_MASK) {
+        // `--flag ****` 形态：值在当前位置，flag 在前一个元素
+        const flag = i > 0 ? normalizeSecretName(merged[i - 1]) : '';
+        const diskVal = flag ? diskByFlag.get(flag) : undefined;
+        if (diskVal === undefined) {
+          return { ok: false, detail: `args[${i}] 是掩码，但找不到可配对的 flag（前一个元素=${merged[i - 1] ?? '(无)'}）` };
+        }
+        merged[i] = diskVal;
+        continue;
+      }
+      if (!cur.includes(MCP_SECRET_MASK)) continue;
+      // `--flag=****` 形态：值与 flag 同元素
+      const eq = cur.indexOf('=');
+      if (eq <= 0) {
+        return { ok: false, detail: `args[${i}] 含掩码但无法识别 flag 形态：${cur}` };
+      }
+      const flag = normalizeSecretName(cur.slice(0, eq));
+      const diskVal = diskByFlag.get(flag);
+      if (diskVal === undefined) {
+        return { ok: false, detail: `args 的 ${cur.slice(0, eq)} 是掩码，但磁盘上没有同 flag 的原值可还原` };
+      }
+      merged[i] = `${cur.slice(0, eq + 1)}${diskVal}`;
+    }
+    if (merged.some((a) => a.includes(MCP_SECRET_MASK))) {
+      return { ok: false, detail: `args 合并后仍残留掩码位：${merged.join(' ')}` };
+    }
+    patch.args = merged;
+  }
+
+  return { ok: true, patch };
+}
+
+/** url 里是否含掩码位（**按原始串判断**，不做 URL 解析）。 */
+function hasMask(s: string): boolean {
+  return s.includes(MCP_SECRET_MASK);
+}
+
+/**
+ * url 的**原始串**段级还原（不经过 `new URL().toString()`）。
+ *
+ * 为什么必须绕开 URL 重序列化：`toString()` 会把 userinfo / query 里的特殊字符
+ * **百分号编码**，还原成 `%7B%7BPASSWORD_x%7D%7D` 写回磁盘就成了**另一个密码**——
+ * 表面「还原成功」、实际改坏凭据。这里逐段在**原串**上替换，保留其余字节。
+ */
+function mergeMaskedUrlRaw(
+  incomingUrl: string,
+  diskUrl: string,
+): { ok: true; url: string } | { ok: false; detail: string } {
+  let out = incomingUrl;
+
+  // ① userinfo 密码段：`scheme://user:****@host` → 取磁盘密码
+  const incAuth = /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^/?#]*)(.*)$/s.exec(out);
+  const dskAuth = /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^/?#]*)(.*)$/s.exec(diskUrl);
+  if (!dskAuth) {
+    return { ok: false, detail: `磁盘上的 url 无法解析出 authority 段：${diskUrl}` };
+  }
+  if (incAuth) {
+    const prefix = incAuth[1];
+    const authority = incAuth[2];
+    const rest = incAuth[3];
+    const at = authority.lastIndexOf('@');
+    if (at >= 0) {
+      const userinfo = authority.slice(0, at);
+      const colon = userinfo.indexOf(':');
+      if (colon >= 0 && userinfo.slice(colon + 1) === MCP_SECRET_MASK) {
+        const diskUserinfo = dskAuth[2].slice(0, dskAuth[2].lastIndexOf('@'));
+        const diskColon = diskUserinfo.indexOf(':');
+        if (dskAuth[2].lastIndexOf('@') < 0 || diskColon < 0) {
+          return { ok: false, detail: 'url 的密码位是掩码，但磁盘上的 url 没有密码段可还原' };
+        }
+        const diskPassword = diskUserinfo.slice(diskColon + 1);
+        const newUserinfo = `${userinfo.slice(0, colon + 1)}${diskPassword}`;
+        out = `${prefix}${newUserinfo}@${authority.slice(at + 1)}${rest}`;
+      }
+    }
+  }
+
+  // ② 查询参数：掩码位逐个取磁盘同名原值（原串手术，不重编码）
+  const qIdx = out.indexOf('?');
+  if (qIdx >= 0 && out.slice(qIdx).includes(MCP_SECRET_MASK)) {
+    const head = out.slice(0, qIdx);
+    const queryAndHash = out.slice(qIdx + 1);
+    const hashIdx = queryAndHash.indexOf('#');
+    const query = hashIdx >= 0 ? queryAndHash.slice(0, hashIdx) : queryAndHash;
+    const hash = hashIdx >= 0 ? queryAndHash.slice(hashIdx) : '';
+    const diskQIdx = diskUrl.indexOf('?');
+    const diskQuery =
+      diskQIdx >= 0
+        ? (() => {
+            const t = diskUrl.slice(diskQIdx + 1);
+            const h = t.indexOf('#');
+            return h >= 0 ? t.slice(0, h) : t;
+          })()
+        : '';
+    const diskParams = new Map<string, string>();
+    for (const pair of diskQuery.split('&')) {
+      if (!pair) continue;
+      const eq = pair.indexOf('=');
+      const k = eq >= 0 ? pair.slice(0, eq) : pair;
+      diskParams.set(k, eq >= 0 ? pair.slice(eq + 1) : '');
+    }
+    const rebuilt = query
+      .split('&')
+      .filter((p) => p.length > 0)
+      .map((pair) => {
+        const eq = pair.indexOf('=');
+        const k = eq >= 0 ? pair.slice(0, eq) : pair;
+        const v = eq >= 0 ? pair.slice(eq + 1) : '';
+        if (v !== MCP_SECRET_MASK) return pair;
+        const diskVal = diskParams.get(k);
+        if (diskVal === undefined) {
+          throw Object.assign(new Error(`url 的查询参数 ${k} 是掩码，但磁盘上没有同名参数可还原`), {
+            unresolvedMask: true,
+          });
+        }
+        return `${k}=${diskVal}`;
+      })
+      .join('&');
+    out = `${head}?${rebuilt}${hash}`;
+  }
+
+  // 硬不变量：任何位置都不得残留掩码位
+  if (out.includes(MCP_SECRET_MASK)) {
+    return { ok: false, detail: `url 合并后仍残留掩码位：${out}` };
+  }
+  return { ok: true, url: out };
+}
+
+/** 从磁盘 args 收集 `flag → 值`（两种形态都收；同一 flag 取最后一个）。 */function collectArgValuesByFlag(args: readonly string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (let i = 0; i < args.length; i += 1) {
+    const cur = args[i];
+    if (!cur.startsWith('-')) continue;
+    const eq = cur.indexOf('=');
+    if (eq > 0) {
+      out.set(normalizeSecretName(cur.slice(0, eq)), cur.slice(eq + 1));
+      continue;
+    }
+    const next = args[i + 1];
+    if (next === undefined) continue;
+    out.set(normalizeSecretName(cur), next);
+  }
+  return out;
 }
 
 /**
