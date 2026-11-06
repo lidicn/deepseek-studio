@@ -37,7 +37,10 @@
       "../src/ui/agent.webmanifest": "src/ui/agent.webmanifest",
       "../src/ui/agent-sw.js": "src/ui/agent-sw.js",
       "../src/ui/icon-192.png": "src/ui/icon-192.png",
-      "../src/ui/icon-512.png": "src/ui/icon-512.png"
+      "../src/ui/icon-512.png": "src/ui/icon-512.png",
+      "../dist/mcp-settings-panel.js": "dist/mcp-settings-panel.js",
+      "../src/ui/mcp-settings.html": "src/ui/mcp-settings.html",
+      "../src/ui/mcp-settings.css": "src/ui/mcp-settings.css"
     },
     "icon": [
       "icons/32x32.png",

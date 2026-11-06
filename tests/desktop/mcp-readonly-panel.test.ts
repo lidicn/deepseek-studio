@@ -57,6 +57,9 @@ export function isPagePanelReadonly(source: string): boolean {
 afterEach(() => {
   document.body.replaceChildren();
   callHostToolMock.mockReset();
+  // 卡 C：两个入口桥都要清掉，防跨用例污染（主路径闭包 vs 回落工作台桥）。
+  delete (window as unknown as { __studioOpenMcpSettings?: () => void }).__studioOpenMcpSettings;
+  delete (window as unknown as { __studioOpenWorkbench?: () => void }).__studioOpenWorkbench;
 });
 
 describe('页面内 MCP 弹窗：只读行为', () => {
@@ -116,9 +119,12 @@ describe('页面内 MCP 弹窗：只读行为', () => {
     expect(text).toContain('****');
   });
 
-  it('「去工作台编辑」调已有的 open_workbench 桥', async () => {
+  it('（兜底）「去工作台编辑」：__studioOpenMcpSettings 缺失 → 回落 open_workbench 桥（旧构建不打红）', async () => {
     callHostToolMock.mockResolvedValue({ ok: true, data: { config: { transport: 'stdio', command: 'npx' } } });
     const opened: number[] = [];
+    // 主路径闭包**不设**（模拟旧构建 / Core 注入未就位），并显式删净确保顺序无关；
+    // 按钮的 `openMcpSettings` 兜底必须落到 open_workbench 桥。
+    delete (window as unknown as { __studioOpenMcpSettings?: () => void }).__studioOpenMcpSettings;
     (window as unknown as { __studioOpenWorkbench?: () => void }).__studioOpenWorkbench = () => { opened.push(1); };
 
     const dialog = createMcpConfigDialog();
@@ -131,8 +137,27 @@ describe('页面内 MCP 弹窗：只读行为', () => {
     expect(btn).toBeTruthy();
     btn!.click();
     expect(opened.length).toBe(1);
+  });
 
-    delete (window as unknown as { __studioOpenWorkbench?: () => void }).__studioOpenWorkbench;
+  it('（主路径）「去工作台编辑」：优先调 __studioOpenMcpSettings、**不**回落 open_workbench（卡 C 真回归）', async () => {
+    callHostToolMock.mockResolvedValue({ ok: true, data: { config: { transport: 'stdio', command: 'npx' } } });
+    const mcpOpened: number[] = [];
+    const wbOpened: number[] = [];
+    (window as unknown as { __studioOpenMcpSettings?: () => void }).__studioOpenMcpSettings = () => { mcpOpened.push(1); };
+    (window as unknown as { __studioOpenWorkbench?: () => void }).__studioOpenWorkbench = () => { wbOpened.push(1); };
+
+    const dialog = createMcpConfigDialog();
+    document.body.appendChild(dialog.container);
+    dialog.open('fs');
+    await new Promise((r) => setTimeout(r, 0));
+
+    const btn = Array.from(dialog.container.querySelectorAll('button'))
+      .find((b) => (b.textContent ?? '').includes('去工作台编辑'));
+    expect(btn).toBeTruthy();
+    btn!.click();
+    // 主路径命中：__studioOpenMcpSettings 被调；回落的 open_workbench **不得**被调。
+    expect(mcpOpened.length).toBe(1);
+    expect(wbOpened.length).toBe(0);
   });
 });
 

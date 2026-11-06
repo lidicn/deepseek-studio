@@ -200,6 +200,33 @@ export interface ApiServerOptions {
     lanEnabled: boolean;
     pairingCode: string;
   };
+  /**
+   * C 卡（MCP 独立原生窗口，2026-11-06）：`/mcp-settings` 页面**壳**（磁盘路径）。
+   *
+   * 提供后开放：`GET /mcp-settings`（HTML）、`/mcp-settings.js`、`/mcp-settings.css`。
+   *
+   * ⚠️ 与 `agentPage` 的本质区别：**这一页不内嵌任何令牌**（token 由 Tauri init script
+   * 注入该窗，见 `src-tauri/src/main.rs` 的 `mcp_settings_init_script`）。
+   *
+   * ⚠️ 路由位置（PM 2026-11-06 裁定，撤回原卡第 5 条「页面壳也在 Bearer 闸内」）：
+   * 这是**物理限制**不是取舍 —— 顶层导航不带 `Authorization`，而 Tauri 2.12.2 没有
+   * 给导航请求加头的钩子（`on_web_resource_request` 只改响应
+   * `tauri-2.12.2/src/webview/webview_window.rs:235`；`on_navigation` 只返回 bool）
+   * ⇒ 硬塞进 Bearer 闸，这个窗永远只看到 401。
+   *
+   * 所以「**壳里没有秘密**」是这条链唯一的安全边界，由两道收口 + 一条机器判据守着：
+   *   ① 只服务回环客户端（`decideAgentAccess({lanEnabled:false})`，比 /agent 的配对码闸更紧）；
+   *   ② 有 Origin 时必须是回环 Origin；
+   *   ③ 机器判据：`tests/desktop/mcp-settings-window.test.ts` 扫壳 HTML/JS 产物与
+   *      `/mcp-settings` 响应体，断言不含真实 token 值、不含 `config.token`、
+   *      不含「把字面量赋给 `__STUDIO_TOKEN__`」的嵌入形态（附装置自检）。
+   * **秘密面** `/v1/mcp/servers*` 仍在统一 Bearer 闸 + 回环 Origin 闸之内，原样未动。
+   */
+  mcpSettingsPage?: {
+    htmlPath: string;
+    jsPath: string;
+    cssPath?: string;
+  };
 }
 
 export interface ApiServer {
@@ -609,6 +636,78 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
           }
         } catch {
           sendJson(500, { error: { code: 'agent_page_missing', message: 'agent panel assets not built' } });
+        }
+        return;
+      }
+
+      // —— C 卡（MCP 独立原生窗口）：`/mcp-settings` 页面壳 ——
+      //
+      // 先读「为什么它不挂在 Bearer 闸之后」。这不是图省事，是物理限制（三条都实读过）：
+      //   ① 它是**顶层导航**：浏览器 / WebView2 导航不会带 `Authorization` 头；
+      //   ② Tauri 2.12.2 **没有**「给导航请求加请求头」的钩子 ——
+      //      `on_web_resource_request` 的签名是 `(Request<Vec<u8>>, &mut Response<..>)`，
+      //      只能改**响应**（tauri-2.12.2/src/webview/webview_window.rs:235）；
+      //      `on_navigation` 只返回 bool（放行/拒绝），改不了头；
+      //   ③ 所以把页面壳放进 Bearer 闸 = 这个窗打开就只会看到一页 401。
+      //   ⇒ 用**两道更紧的收口**替代，并用「页面本身零秘密」把风险面消掉：
+      //   ① **只服务回环客户端**（走 `decideAgentAccess({lanEnabled:false})`，
+      //      即「回环放行、其余一律拒」——比 `/agent` 的配对码闸更紧：开了局域网也进不来）；
+      //   ② 有 Origin 时必须是**回环 Origin**（挡「本机某个网页 fetch 这一页再读它」）。
+      //   秘密面在 `/v1/mcp/servers*`（下面的统一 Bearer 闸 + 回环 Origin 闸之内），
+      //   本页 HTML/JS/CSS **不含令牌、不含配置**：拿不到 token 就什么都读不到。
+      if (
+        options.mcpSettingsPage &&
+        req.method === 'GET' &&
+        (pathname === '/mcp-settings' ||
+          pathname === '/mcp-settings.js' ||
+          pathname === '/mcp-settings.css')
+      ) {
+        const loopbackOnly = decideAgentAccess(
+          { lanEnabled: false, pairingCode: '' },
+          clientHostOf(req.socket?.remoteAddress),
+          undefined,
+        );
+        if (!loopbackOnly.allowed) {
+          sendJson(403, {
+            error: { code: 'loopback_only', message: 'mcp settings page is loopback-only' },
+          });
+          return;
+        }
+        const pageOrigin = req.headers.origin;
+        if (pageOrigin !== undefined && !isLocalOrigin(pageOrigin)) {
+          sendJson(403, {
+            error: { code: 'origin_not_allowed', message: 'mcp settings page is loopback-origin-only' },
+          });
+          return;
+        }
+        try {
+          if (pathname === '/mcp-settings') {
+            const html = readFileSync(options.mcpSettingsPage.htmlPath, 'utf8');
+            res.writeHead(200, {
+              'Content-Type': 'text/html; charset=utf-8',
+              'Cache-Control': 'no-store',
+            });
+            res.end(html);
+          } else if (pathname === '/mcp-settings.css') {
+            if (!options.mcpSettingsPage.cssPath) {
+              sendJson(404, { error: { code: 'not_found', message: 'no mcp settings stylesheet' } });
+              return;
+            }
+            const css = readFileSync(options.mcpSettingsPage.cssPath, 'utf8');
+            res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8' });
+            res.end(css);
+          } else {
+            const js = readFileSync(options.mcpSettingsPage.jsPath, 'utf8');
+            res.writeHead(200, {
+              'Content-Type': 'text/javascript; charset=utf-8',
+              'Cache-Control': 'no-store',
+            });
+            res.end(js);
+          }
+        } catch {
+          sendJson(500, {
+            error: { code: 'mcp_settings_page_missing', message: 'mcp settings page assets not built' },
+          });
         }
         return;
       }

@@ -25,12 +25,14 @@
  *
  * 纪律：
  *   - 本文件**不 import** `callHostTool` 的写类调用，只保留 `mcp.get`（读掩码值）。
- *   - 「去工作台编辑」按钮走**已有** Tauri 命令 `open_workbench`
- *     （`src/desktop/entry.ts` 注入 `window.__studioOpenWorkbench`，UI 域，只调不改），
- *     **不新开任何凭据面**。
+ *   - 「去工作台编辑」按钮走 `openMcpSettings`（卡 C 主路径）：
+ *     读 `window.__studioOpenMcpSettings`（Core Rust 注入，调 `studio_open_mcp_settings`，
+ *     开 `/mcp-settings` 独立 webview 窗）；未注入时**回落既有**工作台入口
+ *     `window.__studioOpenWorkbench`（`src/desktop/entry.ts` 注入，UI 域，只调不改），
+ *     明文仍只在工作台可见，**不新开任何凭据面**。
  */
 
-import { el, icon, Icons, injectStyles, createShadowContainer, globalEvents, callHostTool, openWorkbench } from './studio-ui-core';
+import { el, icon, Icons, injectStyles, createShadowContainer, globalEvents, callHostTool, openMcpSettings } from './studio-ui-core';
 
 interface ReadonlyMcpConfig {
   transport?: 'stdio' | 'http' | 'sse';
@@ -108,7 +110,7 @@ export function createMcpConfigDialog(): { container: HTMLElement; open: (server
     el('span', { text: '去工作台编辑' }),
   ]);
   workbenchBtn.addEventListener('click', () => {
-    openWorkbench();
+    openMcpSettings();
     close();
   });
   const cancelBtn = el('button', { className: 'studio-btn', text: '关闭' });

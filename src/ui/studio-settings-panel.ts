@@ -10,7 +10,7 @@
  * - 记忆：记忆列表、删除
  */
 
-import { el, icon, Icons, injectStyles, createShadowContainer, globalEvents, globalState, callHostTool, openWorkbench } from './studio-ui-core';
+import { el, icon, Icons, injectStyles, createShadowContainer, globalEvents, globalState, callHostTool, openMcpSettings } from './studio-ui-core';
 import { escapeHtml } from './sanitizer';
 
 /**
@@ -305,7 +305,7 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
     text: '出于安全考虑，MCP 配置的明文（命令、参数、环境变量、URL、Headers）不在聊天页面内显示或编辑。请到工作台中查看与修改。',
   });
   const mcpAddBtn = el('button', { className: 'studio-mcp-add-btn' }, [icon(Icons.settings, 16), el('span', { text: '去工作台编辑' })]);
-  mcpAddBtn.addEventListener('click', () => { openWorkbench(); });
+  mcpAddBtn.addEventListener('click', () => { openMcpSettings(); });
   mcpTab.appendChild(mcpReadonlyHint);
   mcpTab.appendChild(mcpServerList);
   mcpTab.appendChild(mcpError);
@@ -338,7 +338,7 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
       const viewBtn = el('button', { className: 'studio-btn sm' }, [icon(Icons.edit, 12), el('span', { text: '详情' })]);
       viewBtn.addEventListener('click', () => globalEvents.emit('ui:mcp-view', serverId));
       const workbenchBtn = el('button', { className: 'studio-btn sm' }, [icon(Icons.settings, 12), el('span', { text: '去工作台编辑' })]);
-      workbenchBtn.addEventListener('click', () => { openWorkbench(); });
+      workbenchBtn.addEventListener('click', () => { openMcpSettings(); });
       actions.appendChild(viewBtn);
       actions.appendChild(workbenchBtn);
       mcpServerList.appendChild(item);

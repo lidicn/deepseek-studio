@@ -27,6 +27,15 @@ export const RESOURCE_FILES = [
   path.join('src', 'ui', 'icon-192.png'),
   path.join('src', 'ui', 'icon-512.png'),
   path.join('dist', 'agent-panel.js'),
+  // C 卡（MCP 独立原生窗口，2026-11-06）：设置窗的页面壳。
+  //
+  // 补入时机是有意的：PM 裁定「三件壳落盘 + `bundle.resources` 三行已加之后，
+  // 同一笔里由 Core 补进本表」。**在此之前不加** —— 本表驱动的是「资源根无效」
+  // 那条诊断，壳未产出时加进来会把正常的开发树/装版误报成资源根故障。
+  // 现在它们真的是「装版必须具备的资源」了，缺就该报。
+  path.join('src', 'ui', 'mcp-settings.html'),
+  path.join('src', 'ui', 'mcp-settings.css'),
+  path.join('dist', 'mcp-settings-panel.js'),
 ] as const;
 
 /**

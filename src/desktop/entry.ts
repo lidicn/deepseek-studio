@@ -251,6 +251,7 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
     if (!isBotWindow) {
       const g = globalThis as {
         __studioOpenWorkbench?: () => void;
+        __studioOpenMcpSettings?: () => void;
         __studioFocusMain?: () => void;
       };
       g.__studioOpenWorkbench = () => {
@@ -263,6 +264,39 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
           console.warn('[StudioUI] open_workbench unavailable (not running under Tauri)');
         }
       };
+      // 卡 C 页端半（2026-11-06）：接 Core Rust 注入的 `__studioOpenMcpSettings` 闭包
+      // （调 Tauri 命令 `studio_open_mcp_settings`，开 `/mcp-settings` 独立 webview 窗）。
+      // 「缺失才补」：**仅当** Rust 侧未注入该闭包时（旧构建 / dev / 注入未就位）才顶上兜底闭包，
+      // 绝不覆盖 Rust 注入版（防双定义打架——谁后写谁覆盖，会让 Core 的注入失效）。
+      // 兜底闭包：先 invoke 新命令；reject（旧构建命令不存在）→ 回落**既有** `open_workbench`。
+      // invoke 返回 Promise，两处都必须 `.catch`，否则 unhandled rejection（第 9 次闸红同族）。
+      if (typeof g.__studioOpenMcpSettings !== 'function') {
+        g.__studioOpenMcpSettings = () => {
+          const internals = (globalThis as {
+            __TAURI_INTERNALS__?: { invoke?: (cmd: string) => Promise<unknown> | unknown };
+          }).__TAURI_INTERNALS__;
+          // fire-and-forget：吞掉 reject，不产生 unhandled rejection。
+          const fireForget = (cmd: string): void => {
+            try {
+              const p = internals?.invoke?.(cmd);
+              const m = p as { catch?: (onRejected?: (e: unknown) => void) => unknown } | undefined;
+              if (m && typeof m.catch === 'function') m.catch(() => { /* 已吞 */ });
+            } catch {
+              console.warn(`[StudioUI] ${cmd} unavailable (not running under Tauri)`);
+            }
+          };
+          try {
+            const p = internals?.invoke?.('studio_open_mcp_settings');
+            const m = p as { catch?: (onRejected?: (e: unknown) => void) => unknown } | undefined;
+            if (m && typeof m.catch === 'function') {
+              // 新命令的 Promise：reject（旧构建 / 命令未实现）→ 回落既有工作台入口（明文仍只在工作台可见）。
+              m.catch(() => { fireForget('open_workbench'); });
+            }
+          } catch {
+            fireForget('open_workbench');
+          }
+        };
+      }
       g.__studioFocusMain = () => {
         try {
           const internals = (globalThis as {

@@ -67,7 +67,8 @@ describe('TD-04 资源根解析', () => {
   });
 
   it('③ 资源缺失时逐个点名，且诊断文案带资源根与全部缺失项', () => {
-    // 只有 agent-panel.js 存在 ⇒ 其余 6 个缺失（存在的不该出现在 missing 里）
+    // 只有 agent-panel.js 存在 ⇒ 其余全部缺失（存在的不该出现在 missing 里）。
+    // 断言按 RESOURCE_FILES.length 自适应：C 卡补入三件壳后条数从 7 变 10，本用例不改判据。
     const missing = missingResourceFiles('C:/res', (p) => p.endsWith('agent-panel.js'));
     expect(missing).not.toContain('dist/agent-panel.js');
     expect(missing).toContain('src/ui/agent.html');

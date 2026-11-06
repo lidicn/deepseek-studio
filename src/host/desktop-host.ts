@@ -195,6 +195,18 @@ export interface DesktopHostOptions {
     pairingCode: string;
   };
   /**
+   * C 卡（MCP 独立原生窗口）：`/mcp-settings` 页面**壳**资源（透传给 API server）。
+   *
+   * 与 `agentPage` 的关键区别：**不内嵌令牌**（token 由 Tauri init script 注入该窗），
+   * 因此本页免鉴权也不泄密；`/v1/mcp/servers*` 数据面仍在 Bearer + 回环 Origin 闸之内。
+   * 缺省则 `/mcp-settings` 路由整体不可用（fail-closed）。
+   */
+  mcpSettingsPage?: {
+    htmlPath: string;
+    jsPath: string;
+    cssPath?: string;
+  };
+  /**
    * v0.25：SlotRuntime（人设工具白名单）。
    * hub 收到页端 tool-call 时，先取发起 bot 的 per-persona executor 执行——
    * 白名单拒绝走 tool-not-allowed-by-persona，命中后仍回到 invokeTool 走完整授权链。
@@ -1465,6 +1477,8 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     rateLimit: options.rateLimit,
     agentPage: options.agentPage,
     agentLanAccess: options.agentLanAccess,
+    // C 卡：MCP 设置窗的页面壳（不含令牌；数据面仍走下面的 mcpServers）。
+    mcpSettingsPage: options.mcpSettingsPage,
     // C1 P1 安全批（(B) 方案）：MCP 配置读写面（工作台专用）。
     // 挂在 /v1/* 统一 Bearer 闸 + 回环 Origin 闸之后 → 页面里的模型够不到。
     mcpServers: {

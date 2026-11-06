@@ -1108,19 +1108,26 @@ fn sanitize_window_label(raw: &str) -> String {
 
 /// W1：工作台窗口 URL（`http://host:port/agent`），与 sidecar 读同一份 config.json 的
 /// host/port；缺文件/解析失败回落 127.0.0.1:8760。不 panic。
-fn workbench_url() -> String {
+///
+/// 与 `mcp_settings_url()` 同源（都用 `studio_host_port()`）：两处各读一遍
+/// `config.json` 就会在「用户改了端口」时漂移，故收敛到同一个读取函数。
+fn studio_host_port() -> (String, u16) {
     // (B) 路径同源：与 grant / 宿主读**同一个** config.json（装版 = <app_data_dir>/config）
-    let (host, port) = std::fs::read_to_string(config_dir().join("config.json"))
+    std::fs::read_to_string(config_dir().join("config.json"))
         .ok()
         .as_deref()
-        .and_then(|s| serde_json::from_str::<StudioConfig>(&s).ok())
+        .and_then(|s| serde_json::from_str::<StudioConfig>(s).ok())
         .map(|c| {
             (
                 c.host.unwrap_or_else(|| "127.0.0.1".to_string()),
                 c.port.unwrap_or(8760),
             )
         })
-        .unwrap_or_else(|| ("127.0.0.1".to_string(), 8760));
+        .unwrap_or_else(|| ("127.0.0.1".to_string(), 8760))
+}
+
+fn workbench_url() -> String {
+    let (host, port) = studio_host_port();
     format!("http://{}:{}/agent", host, port)
 }
 
@@ -1179,6 +1186,179 @@ fn focus_main_window(app: tauri::AppHandle) -> Result<(), String> {
         let _ = win.unminimize();
         let _ = win.set_focus();
     }
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C 卡（MCP 独立原生窗口，2026-11-06）：`studio_open_mcp_settings`
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 窗口 label。**只存在于运行时**：
+///   - 不进 `window-state.json`（那份只记主窗几何，见 `save_window_state`）；
+///   - 不进 `bot-windows.json`（那是 bot 槽位配置，`open_bot_window` 的后端）。
+/// 负控 = `tests/desktop/mcp-settings-window.test.ts` 的静态守卫（关窗后两文件都不得出现它）。
+const MCP_SETTINGS_LABEL: &str = "mcp-settings";
+
+/// 该窗**唯一**允许停留的路径前缀（裁定四十七 d）。
+const MCP_SETTINGS_PATH: &str = "/mcp-settings";
+
+/// 该窗的页面 URL：与工作台同源（同一次 `config.json` 读取），只换路径。
+fn mcp_settings_url() -> String {
+    let (host, port) = studio_host_port();
+    format!("http://{}:{}{}", host, port, MCP_SETTINGS_PATH)
+}
+
+/// 回环判定。只认字面回环地址 —— `0.0.0.0` / 局域网 IP / 域名一律不算。
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]")
+}
+
+/// 导航策略（**纯函数**，可单测）：该窗只准停在「http + 回环 host + 本机端口 + /mcp-settings 前缀」。
+///
+/// 为什么必须是白名单而不是黑名单：这个窗里躺着**宿主全权 token**
+/// （裁定四十七 三的 P2 未收口项），一旦被导航到远端页面，
+/// 该页面就继承了 token ⇒ 宿主全权失守。所以除白名单外一律 false。
+fn mcp_settings_navigation_allowed(target: &Url, port: u16) -> bool {
+    if target.scheme() != "http" {
+        return false;
+    }
+    let host = match target.host_str() {
+        Some(h) => h,
+        None => return false,
+    };
+    if !is_loopback_host(host) {
+        return false;
+    }
+    if target.port_or_known_default() != Some(port) {
+        return false;
+    }
+    target.path().starts_with(MCP_SETTINGS_PATH)
+}
+
+/// 拒绝导航的日志行（裁定四十七 d：拒绝要**可 grep**）。
+///
+/// ⚠️ 只记 scheme / host / port / path —— **不记 query、不记 userinfo**：
+/// 被拒的 URL 里可能带着对方塞进来的凭据，写进日志等于换一个地方泄漏。
+fn mcp_settings_nav_denied_line(target: &Url) -> String {
+    format!(
+        "[studio] level=warn mcp-settings navigation denied: scheme={} host={} port={} path={}",
+        target.scheme(),
+        target.host_str().unwrap_or("-"),
+        target
+            .port_or_known_default()
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        target.path()
+    )
+}
+
+/// 该窗的 init script。
+///
+/// 三件事，缺一件这张卡就不成立：
+///   ① 注入 token（裁定四十七 三）：**走 init script，不落 HTML** —— 页面本体不含秘密，
+///      所以「页面壳免鉴权」不等于「秘密免鉴权」；
+///   ② 只暴露 `__studioOpenMcpSettings()` 一个闭包（与 `__studioRequestGrant` 同套路）；
+///   ③ **捕获后删掉裸 `__TAURI_INTERNALS__`** —— 这才是「远端页面拿不到裸 invoke」那句
+///      断言的实现（只捕获不删除，页面照样能自己 `internals.invoke(...)` 打任意 command）。
+///
+/// ⚠️ P2（已登记、本卡不收）：注入的是**宿主全权 token**，而该窗只需要
+/// `/v1/mcp/servers*`。scope 化要一起动 `server.ts` 的 Bearer 校验与 token ring，
+/// 混进来会把两件事都做坏 ⇒ 另立卡。在那之前：**该窗一旦被 XSS = 宿主全权失守**。
+fn mcp_settings_init_script(token: &str, origin: &str) -> String {
+    let token_js = serde_json::to_string(token).unwrap_or_else(|_| "\"\"".to_string());
+    let origin_js = serde_json::to_string(origin).unwrap_or_else(|_| "\"\"".to_string());
+    format!(
+        "(function(){{\n\
+          try {{\n\
+            var internals = window.__TAURI_INTERNALS__;\n\
+            window.__STUDIO_TOKEN__ = {token};\n\
+            window.__STUDIO_API_ORIGIN__ = {origin};\n\
+            if (internals && typeof internals.invoke === 'function') {{\n\
+              window.__studioOpenMcpSettings = function () {{\n\
+                return internals.invoke('studio_open_mcp_settings', {{}});\n\
+              }};\n\
+            }}\n\
+            try {{ delete window.__TAURI_INTERNALS__; }} catch (e) {{}}\n\
+          }} catch (e) {{ /* 注入失败 → 页面 fail-visible，不静默 */ }}\n\
+        }})();\n",
+        token = token_js,
+        origin = origin_js
+    )
+}
+
+/// 读 `config.json` 的 `token`（页面调 `/v1/mcp/servers*` 用的 Bearer）。
+/// 读不到就返回空串，由调用方 fail-closed。
+fn host_token_from_config() -> String {
+    std::fs::read_to_string(config_dir().join("config.json"))
+        .ok()
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<StudioConfig>(s).ok())
+        .map(|c| c.token)
+        .unwrap_or_default()
+}
+
+/// C 卡：打开 MCP 设置独立窗口。
+///
+/// 幂等：label 已存在 → show + unminimize + focus，不重复建窗（与 `open_workbench` 同）。
+/// 建窗**必须离开 IPC 回调**：wry 建 webview 是「投递 + rx.recv() 阻塞」，在 IPC 回调里
+/// 等于主线程自锁（详见 `open_workbench` 那段根因注释）。故同样丢工作线程 + inflight 闸。
+///
+/// 生命周期：**绑 opener、关窗即毁**（不拦 `CloseRequested`、不 `hide()`），
+/// 也不写任何窗口状态文件 —— 这三个「不」是本卡的负控对象。
+#[tauri::command]
+fn studio_open_mcp_settings(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(MCP_SETTINGS_LABEL) {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+
+    // token 拿不到 ⇒ **不开窗**（不开一个「打开了但什么都做不了」的空窗）。
+    // fail-closed 并留一行可 grep 日志，避免表现为「按钮没反应」。
+    let token = host_token_from_config();
+    if token.is_empty() {
+        grant_log(
+            "[studio] level=warn mcp-settings: no-token (config.json missing/empty) → window not opened",
+        );
+        return Err("no-token".to_string());
+    }
+
+    let (host, port) = studio_host_port();
+    let url = Url::parse(&mcp_settings_url()).map_err(|e| format!("invalid mcp-settings url: {}", e))?;
+    let origin = format!("http://{}:{}", host, port);
+    let script = mcp_settings_init_script(&token, &origin);
+
+    if !inflight_begin(MCP_SETTINGS_LABEL) {
+        p0_log("mcp-settings build skipped (already inflight)");
+        return Ok(());
+    }
+    std::thread::spawn(move || {
+        p0_log("mcp-settings build begin (worker)");
+        let built = WebviewWindowBuilder::new(&app, MCP_SETTINGS_LABEL, WebviewUrl::External(url))
+            .title("DeepSeek++ Studio · MCP 服务器")
+            .inner_size(960.0, 720.0)
+            .min_inner_size(720.0, 520.0)
+            .initialization_script(&script)
+            // 导航白名单：非白名单一律拒 + 写一行可 grep 日志（裁定四十七 d）。
+            .on_navigation(move |target| {
+                let allowed = mcp_settings_navigation_allowed(target, port);
+                if !allowed {
+                    grant_log(&mcp_settings_nav_denied_line(target));
+                }
+                allowed
+            })
+            .build();
+        p0_log(format!(
+            "mcp-settings build ok={} tracked={:?}",
+            built.is_ok(),
+            app.webview_windows().keys().collect::<Vec<_>>()
+        ));
+        if let Err(e) = built {
+            eprintln!("[studio] failed to create mcp-settings window: {}", e);
+        }
+        inflight_end(MCP_SETTINGS_LABEL);
+    });
     Ok(())
 }
 
@@ -1573,6 +1753,7 @@ fn main() {
             open_workbench,
             focus_main_window,
             open_bot_window,
+            studio_open_mcp_settings,
             studio_request_grant,
             updater::updater_check,
             updater::updater_install,
@@ -2355,6 +2536,111 @@ mod tests {
             !script.contains("__studioGrant"),
             "不得在建窗时注入静态券（P0 卡 (A) 已去掉）"
         );
+    }
+
+    // ── C 卡（MCP 独立原生窗口）：导航白名单 / 注入脚本 / 三种拒绝 ──────────────
+
+    /// 装置自检：先证明这组夹具真的同时踩到了 allow 与 deny 两条分支。
+    /// 没有这条，下面几条断言可能因为「夹具全落在同一侧」而静默失去意义。
+    #[test]
+    fn mcp_settings_nav_fixture_exercises_both_branches() {
+        let allowed = Url::parse("http://127.0.0.1:8760/mcp-settings").unwrap();
+        let denied = Url::parse("https://evil.example.com/mcp-settings").unwrap();
+        assert!(
+            mcp_settings_navigation_allowed(&allowed, 8760),
+            "装置自检：allow 侧夹具必须真的被放行，否则 deny 断言是在空跑"
+        );
+        assert!(
+            !mcp_settings_navigation_allowed(&denied, 8760),
+            "装置自检：deny 侧夹具必须真的被拒，否则 allow 断言是在空跑"
+        );
+    }
+
+    #[test]
+    fn mcp_settings_nav_allows_own_loopback_page_only() {
+        let port = 8760;
+        for ok in [
+            "http://127.0.0.1:8760/mcp-settings",
+            "http://127.0.0.1:8760/mcp-settings?tab=servers",
+            "http://localhost:8760/mcp-settings/index.html",
+        ] {
+            let u = Url::parse(ok).unwrap();
+            assert!(mcp_settings_navigation_allowed(&u, port), "应放行：{}", ok);
+        }
+    }
+
+    #[test]
+    fn mcp_settings_nav_denies_remote_and_foreign_paths() {
+        let port = 8760;
+        let denied = [
+            // ① 远端主机（本卡最核心的一条：导航过去 = 那个页面继承宿主 token）
+            "https://evil.example.com/mcp-settings",
+            "http://evil.example.com/mcp-settings",
+            // ② 非回环但「长得像本机」的地址
+            "http://0.0.0.0:8760/mcp-settings",
+            "http://192.168.2.200:8760/mcp-settings",
+            // ③ 端口不对（别的本机服务）
+            "http://127.0.0.1:8080/mcp-settings",
+            // ④ 路径越界（该窗只准停在自己的页面上）
+            "http://127.0.0.1:8760/agent",
+            "http://127.0.0.1:8760/v1/mcp/servers",
+            // ⑤ 非 http
+            "file:///C:/Windows/System32/drivers/etc/hosts",
+        ];
+        for bad in denied {
+            let u = Url::parse(bad).unwrap();
+            assert!(
+                !mcp_settings_navigation_allowed(&u, port),
+                "必须拒绝：{}",
+                bad
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_settings_nav_denied_log_omits_query_and_userinfo() {
+        let u = Url::parse("https://evil.example.com:8443/mcp-settings?token=SEKRET#frag").unwrap();
+        let line = mcp_settings_nav_denied_line(&u);
+        // 可 grep：前缀 + level
+        assert!(line.starts_with("[studio] level=warn"), "日志行前缀必须可 grep：{}", line);
+        assert!(line.contains("mcp-settings navigation denied"), "{}", line);
+        assert!(line.contains("host=evil.example.com"), "{}", line);
+        // 不泄漏：query / fragment / userinfo 一个都不许进日志
+        assert!(!line.contains("SEKRET"), "query 不得进日志：{}", line);
+        assert!(!line.contains("frag"), "fragment 不得进日志：{}", line);
+        let with_auth = Url::parse("http://user:pw@127.0.0.1:1/mcp-settings").unwrap();
+        let line2 = mcp_settings_nav_denied_line(&with_auth);
+        assert!(!line2.contains("pw"), "userinfo 不得进日志：{}", line2);
+    }
+
+    #[test]
+    fn mcp_settings_init_script_injects_token_and_single_closure() {
+        let script = mcp_settings_init_script("tok-123", "http://127.0.0.1:8760");
+        assert!(script.contains("__STUDIO_TOKEN__"), "必须注入 token");
+        assert!(script.contains("tok-123"), "token 值必须落进脚本");
+        assert!(script.contains("__studioOpenMcpSettings"), "必须暴露打开闭包");
+        assert!(
+            script.contains("studio_open_mcp_settings"),
+            "闭包必须调该 command"
+        );
+        // 关键（裁定四十七 三）：捕获后**删除裸 invoke** —— 不删的话
+        // 「远端页面拿不到裸 invoke」这句就是假的（页面自己就能 invoke 任意命令）。
+        assert!(
+            script.contains("delete window.__TAURI_INTERNALS__"),
+            "必须删除裸 __TAURI_INTERNALS__，否则页面仍可自行 invoke 任意 command"
+        );
+        assert!(
+            script.find("var internals = window.__TAURI_INTERNALS__").unwrap()
+                < script.find("delete window.__TAURI_INTERNALS__").unwrap(),
+            "删除必须发生在捕获之后（顺序反了就把闭包自己也废了）"
+        );
+    }
+
+    #[test]
+    fn mcp_settings_init_script_escapes_hostile_token() {
+        // token 里出现引号/换行时，脚本必须仍是合法 JS 字面量（JSON 转义）。
+        let script = mcp_settings_init_script("a\"b\nc", "http://127.0.0.1:8760");
+        assert!(script.contains(r#""a\"b\nc""#), "token 必须按 JSON 转义：{}", script);
     }
     /// P0 卡 (B)：**配置目录唯一入口** —— 装版走 `<app_data_dir>/config`（与批 N+1
     /// 注入给宿主的 `STUDIO_CONFIG_DIR` 同源），dev 走 `~/.config/deepseek-studio`。

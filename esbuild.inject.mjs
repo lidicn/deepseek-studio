@@ -53,4 +53,19 @@ if (!gateMode) {
     logLevel: 'info',
     minify: true,
   });
+
+  // 卡 C（MCP 独立原生窗口）：/mcp-settings 页面壳 JS。src/ui/mcp-settings-panel.ts →
+  // dist/mcp-settings-panel.js（IIFE，浏览器，与 agent-panel 同型）。宿主路由 /mcp-settings.js
+  // 服务它（src/api/main.ts 的 mcpSettingsPage.jsPath 契约，与 :127 逐字一致）。
+  // 独立产物，不进 entry.js、不参与 entry-freshness 字节比对，故同样置于 gateMode 跳过区。
+  await build({
+    entryPoints: [path.join(__dirname, 'src/ui/mcp-settings-panel.ts')],
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: 'es2020',
+    outfile: 'dist/mcp-settings-panel.js',
+    logLevel: 'info',
+    minify: true,
+  });
 }

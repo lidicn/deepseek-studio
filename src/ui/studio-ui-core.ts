@@ -102,6 +102,13 @@ declare global {
      * 由 `src/desktop/entry.ts`（UI 域）注入；本模块**只调用、不修改**。
      */
     __studioOpenWorkbench?: () => void;
+    /**
+     * 卡 C（MCP 独立原生窗口）：打开 MCP 设置窗（`/mcp-settings`，复用工作台全量编辑面）。
+     * 由 Core 的 Rust init script 注入（调 Tauri 命令 `studio_open_mcp_settings`）；
+     * 旧构建/dev 未注入时由 `src/desktop/entry.ts` 的「缺失才补」兜底闭包顶上。
+     * 本模块**只调用、不修改**（与 `__studioOpenWorkbench` 同口径）。
+     */
+    __studioOpenMcpSettings?: () => void;
   }
 }
 
@@ -122,6 +129,28 @@ export function openWorkbench(): void {
     return;
   }
   console.warn('[StudioUI] __studioOpenWorkbench unavailable (not running under Tauri)');
+}
+
+/**
+ * 打开 MCP 设置窗（卡 C 主路径）。
+ *
+ * - 主路径：`window.__studioOpenMcpSettings`（Core Rust 注入；旧构建/dev 未注入时
+ *   由 `src/desktop/entry.ts` 的「缺失才补」兜底闭包顶上，调 `studio_open_mcp_settings`）。
+ * - 兜底：闭包缺失（dev 形态 / 注入未就位 / 非 Tauri）→ 回落**既有**工作台入口
+ *   `openWorkbench()`（`__studioOpenWorkbench`）——零等待、不抛、不让旧构建打红
+ *   （与 `grant-acquire` 的 dev 形态零等待回落同套路）。
+ *
+ * 与 `openWorkbench` 同放本模块：`studio-mcp-dialog` 的引用方白名单收敛在两个文件内，
+ * 新增第三处 `window.__studio*` 直连会破坏 `mcp-readonly-panel.test.ts` 的引用收敛。
+ */
+export function openMcpSettings(): void {
+  const fn = window.__studioOpenMcpSettings;
+  if (typeof fn === 'function') {
+    fn();
+    return;
+  }
+  // 兜底：MCP 设置入口未注入 → 回落既有工作台入口（明文仍只在工作台可见，安全属性不变）。
+  openWorkbench();
 }
 
 /**

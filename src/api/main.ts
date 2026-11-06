@@ -113,6 +113,32 @@ export async function main(): Promise<void> {
     icon512Path: path.join(resourceRoot, 'src', 'ui', 'icon-512.png'),
   };
   // TD-04：资源根体检 —— 缺文件时给一行明确诊断，而不是让 /agent 变成 500/白屏。
+  // C 卡（MCP 独立原生窗口）：页面壳资源（与 agentPage 同一套路径约定）。
+  //
+  // ⚠️ 壳**不含令牌**（token 由 Tauri init script 注入该窗：`mcp_settings_init_script`），
+  // 所以它不走 Bearer 闸 —— 顶层导航带不了 `Authorization`，Tauri 2.12.2 也没有给导航
+  // 加请求头的钩子（PM 2026-11-06 裁定）。这条链唯一的安全边界是「壳里没有秘密」，
+  // 机器判据 = tests/desktop/mcp-settings-window.test.ts（扫产物 + 响应体，附装置自检）。
+  //
+  // 这三条路径是**壳的固化契约**：UI 侧按此产出（`src/ui/mcp-settings.html`、
+  // `src/ui/mcp-settings.css`、`src/ui/mcp-settings-panel.ts` → `dist/mcp-settings-panel.js`）。
+  const mcpSettingsPage = {
+    htmlPath: path.join(resourceRoot, 'src', 'ui', 'mcp-settings.html'),
+    jsPath: path.join(resourceRoot, 'dist', 'mcp-settings-panel.js'),
+    cssPath: path.join(resourceRoot, 'src', 'ui', 'mcp-settings.css'),
+  };
+  {
+    // fail-visible：壳缺失时给一行明确诊断（该窗会 500），而不是让人对着白屏猜。
+    // 刻意**不进** RESOURCE_FILES：那会让「资源根无效」在壳未产出前误报为装版故障。
+    const missingShell = [mcpSettingsPage.htmlPath, mcpSettingsPage.jsPath, mcpSettingsPage.cssPath].filter(
+      (p) => !fs.existsSync(p),
+    );
+    if (missingShell.length > 0) {
+      console.warn(
+        `[deepseek-studio] MCP 设置窗页面壳尚未产出（该窗会显示 500，其余功能不受影响）：${missingShell.join('、')}`,
+      );
+    }
+  }
   {
     const missingResources = missingResourceFiles(resourceRoot, (p) => fs.existsSync(p));
     const diagnostics = resourceRootDiagnostics(resourceRoot, missingResources);
@@ -147,6 +173,7 @@ export async function main(): Promise<void> {
   }
   const host = createDesktopHost({
     config, secret, workspace, policyMode, agentPage, apiEngine,
+    mcpSettingsPage,
     chatRooms: chatRooms.length > 0 ? chatRooms : undefined,
     chatRoomMaxDepth,
     personas,
