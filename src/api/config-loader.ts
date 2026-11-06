@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { resolveConfigDir } from '../shared/distribution';
+import { writeFileAtomicSync } from '../shared/atomic-write';
 import type { ApiConfig } from './types';
 import type { RoomConfig } from '../host/bot/types';
 import { DEFAULT_POLICY_MODE, isPolicyMode, type PolicyMode } from '../host/policy';
@@ -199,11 +200,15 @@ export function loadConfig(override?: { cfgDir?: string; cfgPath?: string }): Re
       };
       if (workspaceRoot) toWrite.workspaceRoot = workspaceRoot;
       if (policyMode) toWrite.policyMode = policyMode;
-      fs.writeFileSync(cfgPath, JSON.stringify(toWrite, null, 2), { mode: 0o600 });
+      // 原子写（批 1 第 3 件）：config.json 含 token/secret，半截写会让下次启动
+      // 走 .bad 备份 + 本次不写盘 → token 失效、需重新配对。与 workspace.ts:275
+      // 是**同一个文件的两套写法**，必须同批原子化（只改一半 = 留一半裸写）。
+      writeFileAtomicSync(cfgPath, JSON.stringify(toWrite, null, 2), { mode: 0o600 });
     } catch (err) {
       // fail-open：持久化失败仍可运行（token/secret 仅本进程有效）。
-      console.warn(
-        `[deepseek-studio] 无法持久化配置到 ${cfgPath}: ${err instanceof Error ? err.message : String(err)}`,
+      // 走 stdout（装版下进 sidecar-<ms>.log）；stderr 依赖 try_clone，装版可能丢失。
+      console.log(
+        `[deepseek-studio] level=warn 无法持久化配置到 ${cfgPath}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   } else if (configFileBroken) {

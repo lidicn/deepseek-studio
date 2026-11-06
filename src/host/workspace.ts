@@ -12,7 +12,8 @@
 
 import path from 'node:path';
 import os from 'node:os';
-import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { writeFileAtomicSync } from '../shared/atomic-write';
 import type { Stats } from 'node:fs';
 
 export const WORKSPACE_ENV_KEY = 'STUDIO_WORKSPACE_ROOT';
@@ -269,10 +270,12 @@ export function persistConfigPatch(
   try {
     const data = JSON.stringify(bag, null, 2);
     if (options.writeFile) {
+      // 测试注入通道保持原样（不动 `options.writeFile` 接口，见 PM 裁定二十四 ③）
       options.writeFile(cfgPath, data);
     } else {
-      mkdirSync(path.dirname(cfgPath), { recursive: true });
-      writeFileSync(cfgPath, data, { mode: 0o600 });
+      // 原子写（批 1 第 3 件）：与 `src/api/config-loader.ts:202` 是同一个
+      // `config.json` 的两套写法 —— 必须同批原子化，否则等于留一半裸写。
+      writeFileAtomicSync(cfgPath, data, { mode: 0o600 });
     }
     return { ok: true };
   } catch (err) {

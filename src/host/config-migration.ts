@@ -32,6 +32,46 @@ import { resolveStudioDataDir, resolveStudioDistribution, isInstalledDistributio
 export const GENERATION = 1;
 export const MIGRATION_LOG_NAME = 'migration.log';
 
+/** 终局类型（PM 裁定二十六 的 7 条表；`dev` 形态不算终局、保持静默）。 */
+export type MigrationTerminal =
+  | 'ran'
+  | 'skipped-no-new-dir'
+  | 'skipped-same-dir'
+  | 'skipped-new-dir-missing'
+  | 'skipped-already-migrated'
+  | 'skipped-env-pair'
+  | 'failed';
+
+/**
+ * 打一条终局行 —— **既是现场第一手线索，也是权威记录**。
+ *
+ * 两条通道（PM 裁定二十六 ② + 二十七 ④）：
+ *   1. `console.log`（stdout）：装版下进 `sidecar-<ms>.log`，dev 下直接可见；
+ *      **不用 stderr** —— sidecar 里 stderr 依赖 `try_clone` 成功，失败走 inherit，
+ *      装版无控制台即丢。
+ *   2. 若给了 `appendTo`（= 新配置目录下的 `migration.log`），**同时追加进去**：
+ *      那是代际标记 + 结构化明细的持久载体（`readLogGeneration` 读它判 already-migrated），
+ *      可离线取证、不依赖宿主是否在跑。
+ *
+ * 统一前缀 `[studio-migration]`、行内 `level=` 表严重度 —— 便于真机 grep。
+ */
+export function emitTerminal(
+  terminal: MigrationTerminal,
+  level: 'info' | 'warn' | 'error',
+  detail: string,
+  appendTo?: string,
+): void {
+  const line = `[studio-migration] level=${level} ${terminal} ${detail}`.trimEnd();
+  console.log(line);
+  if (!appendTo) return;
+  try {
+    fs.mkdirSync(path.dirname(appendTo), { recursive: true });
+    fs.appendFileSync(appendTo, `${new Date().toISOString()} ${line}\n`, 'utf8');
+  } catch {
+    // 追加失败不改变迁移结果；stdout 那份仍在
+  }
+}
+
 /** 需要从老配置目录搬到新配置目录的**目录级**条目。 */
 export const MIGRATED_DIRS = ['shadow'] as const;
 
@@ -160,8 +200,7 @@ function copyTree(
   }
 }
 
-/** 迁移过程中的累积袋（copyTree / copyFileIfAbsent 共用）。 */
-interface OutBag {
+/** 迁移过程中的累积袋（copyTree / copyFileIfAbsent 共用）。 */interface OutBag {
   copied: string[];
   skippedExisting: string[];
   errors: { path: string; error: string }[];
@@ -287,21 +326,26 @@ export function migrateLegacyConfig(paths: MigratePaths): MigrateResult {
   };
 
   // —— 触发条件（先判，避免无谓建目录）——
+  // 终局 2/3（PM 裁定二十六 7 条表）：跳过也必须留一行，否则真机上「没迁移」无迹可查。
   if (!newConfigDir) {
+    emitTerminal('skipped-no-new-dir', 'info', 'newConfigDir 为空');
     return { ran: false, skippedReason: 'no-new-dir', ...out };
   }
   if (samePath(legacyConfigDir, newConfigDir)) {
+    emitTerminal('skipped-same-dir', 'info', 'from=' + legacyConfigDir + ' to=' + newConfigDir);
     return { ran: false, skippedReason: 'same-dir', ...out };
   }
   // 新目录必须已经由 Rust 建出来：**没有它说明段 2 没生效 / dev 形态**，
   // 这时绝不能凭一个 env 值就在用户机上凭空造目录。
   if (!exists(newConfigDir) || !isDirectory(newConfigDir)) {
+    emitTerminal('skipped-new-dir-missing', 'warn', 'newConfigDir=' + newConfigDir + ' 不存在或不是目录（段 2 未生效？）');
     return { ran: false, skippedReason: 'new-dir-missing', ...out };
   }
 
   const logPath = path.join(newConfigDir, MIGRATION_LOG_NAME);
   const seen = readLogGeneration(logPath);
   if (seen !== null && seen >= GENERATION) {
+    emitTerminal('skipped-already-migrated', 'info', 'gen=' + GENERATION + ' log=' + logPath);
     return { ran: false, skippedReason: 'already-migrated', ...out, logPath };
   }
 
@@ -399,34 +443,73 @@ export function runStartupMigration(
   homedir: string = os.homedir(),
 ): MigrateResult | null {
   try {
+    // 终局「dev 形态」：dev 不迁移是**正确语义**，保持静默、不算终局（裁定二十六 末行）。
     if (resolveStudioDistribution(env) !== 'installed') return null;
+
+    // 终局 6：installed 但两个 env 不成对。**今天这里是静默 `return null`** ——
+    // 用户升级后「记忆没了」而日志里一行都没有（fail-visible 缺口，裁定二十五 P0）。
+    const cfg = env.STUDIO_CONFIG_DIR?.trim();
+    const logDirRaw = env.STUDIO_LOG_DIR?.trim();
+    if (!cfg || !logDirRaw) {
+      const fmt = (v: string | undefined): string => (v === undefined ? '(unset)' : v === '' ? '(empty)' : v);
+      emitTerminal(
+        'skipped-env-pair',
+        'warn',
+        `CONFIG=${fmt(env.STUDIO_CONFIG_DIR)} LOG=${fmt(env.STUDIO_LOG_DIR)} —— 装版形态但两 env 不成对，本次不迁移`,
+      );
+      return null;
+    }
+
     const dataDir = resolveStudioDataDir(env);
-    if (!dataDir || !isInstalledDistribution(env)) return null;
+    if (!dataDir || !isInstalledDistribution(env)) {
+      emitTerminal(
+        'skipped-env-pair',
+        'warn',
+        `CONFIG=${cfg} LOG=${logDirRaw} —— 两 env 父目录不一致或同值（resolveStudioDataDir=null），本次不迁移`,
+      );
+      return null;
+    }
+
     const legacyDataDir = path.join(appDataRoot(homedir), 'deepseek-studio');
     const result = migrateLegacyConfig({
       legacyConfigDir: path.join(homedir, '.config', 'deepseek-studio'),
-      newConfigDir: env.STUDIO_CONFIG_DIR!.trim(),
+      newConfigDir: cfg,
       legacyLogDir: path.join(legacyDataDir, 'logs'),
-      newLogDir: env.STUDIO_LOG_DIR!.trim(),
+      newLogDir: logDirRaw,
       legacyDataDir,
     });
+
+    // 终局 1：ran（errors>0 时升级为 warn + 「需人工检查」，不许与全绿同形）
     if (result.ran) {
-      console.log(
-        `[deepseek-studio] 首启迁移 gen=${GENERATION}: copied=${result.copied.length} ` +
-          `skip-existing=${result.skippedExisting.length} errors=${result.errors.length} → ${result.logPath}`,
+      const hasErr = result.errors.length > 0 || result.warnings.length > 0;
+      emitTerminal(
+        'ran',
+        hasErr ? 'warn' : 'info',
+        `gen=${GENERATION} copied=${result.copied.length} skip-existing=${result.skippedExisting.length} ` +
+          `errors=${result.errors.length} warnings=${result.warnings.length} → ${result.logPath}` +
+          (hasErr ? ' 需人工检查' : ''),
+        result.logPath,
       );
       for (const e of result.errors) {
-        console.error(`[deepseek-studio] 迁移失败 ${e.path}: ${e.error}`);
+        console.log(`[studio-migration] level=error item-error path=${e.path} err=${e.error}`);
       }
-    } else if (result.skippedReason === 'new-dir-missing') {
-      // Rust 应已建出该目录；没有说明段 2 没生效 —— 打一行便于真机排查，不阻断启动。
-      console.error(
-        `[deepseek-studio] 首启迁移跳过：新配置目录不存在 ${env.STUDIO_CONFIG_DIR}`,
-      );
+      for (const w of result.warnings) {
+        console.log(`[studio-migration] level=warn item-warning ${w}`);
+      }
     }
     return result;
   } catch (e) {
-    console.error(`[deepseek-studio] 首启迁移异常（已忽略）: ${e instanceof Error ? e.message : String(e)}`);
+    // 终局 7：failed —— **打出点在这里**（migration 内部 catch），不是 host 启动层。
+    // 调用方 `src/api/main.ts:84` 是同步调用、`main().catch`（:224）兜的是 main 自身，
+    // 不 handle 本函数；故这一行是唯一记录。`code=` 才是 Windows 上的可行动信息，
+    // `first_frame` 指向出错行；**不打全栈**（装版一行一帧足够定位）。
+    const err = e as NodeJS.ErrnoException;
+    const firstFrame = (err.stack ?? '').split('\n')[1]?.trim() ?? '(none)';
+    emitTerminal(
+      'failed',
+      'error',
+      `gen=${GENERATION} code=${err.code ?? '(none)'} error=${err.message ?? String(e)} first_frame=${firstFrame}`,
+    );
     return null;
   }
 }

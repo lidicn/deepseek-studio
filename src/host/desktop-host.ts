@@ -2258,7 +2258,10 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           grantVerifier: async (presented, aud) => {
             const g = await verifyBootstrapGrant(authority.authority.hostToken, presented, usedBootstrapJtis, aud);
             if (g.ok) return g;
-            return { ok: verifyWsQueryToken(presented, () => apiTokenRing.accepted) };
+            // 与 page-runtime 那处同一修法（批 1 第 7 件）：回退失败时必须带原因，
+            // 否则这里同样报 `unknown`，把「失败不可区分」复制到控制面。
+            const fallbackOk = verifyWsQueryToken(presented, () => apiTokenRing.accepted);
+            return fallbackOk ? { ok: true } : { ok: false, reason: g.reason ?? 'fallback-token' };
           },
           // 手机 PWA 与页面同源；只有显式开启 LAN 且配对成功后才可能拿到页面令牌。
           allowLanOrigins: options.agentLanAccess?.lanEnabled === true,
@@ -2354,9 +2357,17 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         grantVerifier: async (presented, aud) => {
           const g = await verifyBootstrapGrant(authority.authority.hostToken, presented, usedBootstrapJtis, aud);
           if (g.ok) return g;
-          return { ok: verifyWsQueryToken(presented, () => apiTokenRing.accepted) };
+          // 批 1 第 7 件（P0 诊断前提）：**必须把失败原因透出去**。
+          // 原实现回退分支只返回 `{ ok: false }`，于是 `page-runtime.ts:264` 的
+          // `verdict.reason ?? 'unknown'` 恒为 unknown —— 装版真机上 1300 条拒绝
+          // 全是同一句 `(unknown)`，等于「失败不可区分」，与裁定二十一/二十五 同族。
+          // 回退仍尝试旧 token（本机 UI / 测试持有 config.token），但无论成败都带上原因。
+          const fallbackOk = verifyWsQueryToken(presented, () => apiTokenRing.accepted);
+          return fallbackOk ? { ok: true } : { ok: false, reason: g.reason ?? 'fallback-token' };
         },
-        onError: (m, e) => console.warn(`[page-runtime] ${m}`, e),
+        // 批 1 第 7 件：原写法多传一个 `e`，而 `page-runtime.ts:264` 只给一个参数
+        // → 装版日志每行尾部恒为 ` undefined`，白占噪声还会误导排查。
+        onError: (m) => console.warn(`[page-runtime] ${m}`),
         // v0.6：页端 tool-call 的真实执行入口（走完整授权链 + 同意闸门 + 宿主侧能力）。
         // v0.24：botId 透传，工具按发起 bot 的窗口路由 + 其授权/白名单执行。
         // v0.25：该 bot 已加载人设时先经其白名单过滤器（SlotRuntime.executorFor）；

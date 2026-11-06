@@ -10,7 +10,7 @@
  * 覆盖 PM 裁定③ 的四条硬要求：(a) 幂等不覆盖 (b) 源保留不删 (c) migration.log 可对账
  * (d) memories.db 与 .audit.key 成对、缺件显式记 WARN。
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,6 +19,7 @@ import {
   runStartupMigration,
   GENERATION,
   MIGRATION_LOG_NAME,
+  emitTerminal,
 } from '../../src/host/config-migration';
 import { resolveStudioDataDir } from '../../src/shared/distribution';
 import { McpController, loadMcpServers, removeMcpServer } from '../../src/host/mcp-controller';
@@ -326,5 +327,102 @@ describe('runStartupMigration：装版形态下的完整路径推导', () => {
       home,
     );
     expect(r).toBeNull();
+  });
+});
+
+describe('裁定二十六：7 条终局必须各有可 grep 的一行（fail-visible）', () => {
+  /** 抓一段执行期间打到 console.log 的行。 */
+  function captureLogs(fn: () => void): string[] {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    });
+    try {
+      fn();
+    } finally {
+      spy.mockRestore();
+    }
+    return lines;
+  }
+
+  it('终局 ran：level=info / level=warn（errors>0）+ 需人工检查，且同时追加进 migration.log', () => {
+    const logPath = path.join(next, MIGRATION_LOG_NAME);
+    const infoLines = captureLogs(() => emitTerminal('ran', 'info', 'gen=1 copied=1', logPath));
+    expect(infoLines.join('\n')).toContain('[studio-migration] level=info ran');
+    const warnLines = captureLogs(() => emitTerminal('ran', 'warn', 'gen=1 errors=1 需人工检查', logPath));
+    expect(warnLines.join('\n')).toContain('level=warn');
+    expect(warnLines.join('\n')).toContain('需人工检查');
+    const authoritative = fs.readFileSync(logPath, 'utf8');
+    expect(authoritative).toContain('[studio-migration] level=info ran');
+    expect(authoritative).toContain('[studio-migration] level=warn ran');
+  });
+
+  it('终局 skipped-same-dir / skipped-no-new-dir / skipped-new-dir-missing / skipped-already-migrated', () => {
+    const a = captureLogs(() => migrateLegacyConfig({ legacyConfigDir: next, newConfigDir: next }));
+    expect(a.join('\n')).toContain('skipped-same-dir');
+
+    const b = captureLogs(() => migrateLegacyConfig({ legacyConfigDir: legacy, newConfigDir: '' }));
+    expect(b.join('\n')).toContain('skipped-no-new-dir');
+
+    const c = captureLogs(() =>
+      migrateLegacyConfig({ legacyConfigDir: legacy, newConfigDir: path.join(root, 'not-there') }),
+    );
+    expect(c.join('\n')).toContain('skipped-new-dir-missing');
+
+    migrateLegacyConfig({ legacyConfigDir: legacy, newConfigDir: next });
+    const d = captureLogs(() => migrateLegacyConfig({ legacyConfigDir: legacy, newConfigDir: next }));
+    expect(d.join('\n')).toContain('skipped-already-migrated');
+  });
+
+  it('终局 skipped-env-pair：区分 (unset) 与 (empty)，且零搬移', () => {
+    const data = path.join(root, 'data2');
+    const newCfg = path.join(data, 'config');
+    fs.mkdirSync(newCfg, { recursive: true });
+    mk(path.join(root, 'home'), '.config/deepseek-studio/config.json', '{}');
+
+    const unsetLogs = captureLogs(() =>
+      runStartupMigration(
+        { STUDIO_DISTRIBUTION: 'installed', STUDIO_CONFIG_DIR: newCfg } as NodeJS.ProcessEnv,
+        path.join(root, 'home'),
+      ),
+    );
+    expect(unsetLogs.join('\n')).toContain('skipped-env-pair');
+    expect(unsetLogs.join('\n')).toContain('LOG=(unset)');
+
+    const emptyLogs = captureLogs(() =>
+      runStartupMigration(
+        { STUDIO_DISTRIBUTION: 'installed', STUDIO_CONFIG_DIR: newCfg, STUDIO_LOG_DIR: '' } as NodeJS.ProcessEnv,
+        path.join(root, 'home'),
+      ),
+    );
+    expect(emptyLogs.join('\n')).toContain('LOG=(empty)');
+    expect(fs.existsSync(path.join(newCfg, 'config.json'))).toBe(false);
+  });
+
+  it('终局 failed：带 code= 与 first_frame=，且不打全栈', () => {
+    const err = Object.assign(new Error('EACCES: permission denied'), {
+      code: 'EACCES',
+      stack: 'Error: EACCES: permission denied\n    at runStartupMigration (config-migration.ts:1:1)',
+    });
+    const logs = captureLogs(() => {
+      const badEnv = {
+        STUDIO_DISTRIBUTION: 'installed',
+        get STUDIO_CONFIG_DIR(): string {
+          throw err;
+        },
+      } as unknown as NodeJS.ProcessEnv;
+      runStartupMigration(badEnv, path.join(root, 'home'));
+    });
+    const text = logs.join('\n');
+    expect(text).toContain('level=error failed');
+    expect(text).toContain('code=EACCES');
+    expect(text).toContain('first_frame=');
+    // 不打全栈：只留第一帧
+    expect(text.split('\n').filter((l) => l.trim().startsWith('at ')).length).toBe(0);
+  });
+
+  it('dev 形态保持静默（不算终局）', () => {
+    const logs = captureLogs(() => runStartupMigration({ STUDIO_DISTRIBUTION: 'dev' } as NodeJS.ProcessEnv, root));
+    expect(logs.join('\n')).not.toContain('[studio-migration]');
   });
 });

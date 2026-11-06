@@ -13,6 +13,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import { writeFileAtomicSync } from '../shared/atomic-write';
 
 /** 密文前缀。带此前缀 = 密文；不带 = 历史明文（兼容读取）。 */
 export const AUDIT_SEAL_PREFIX = 'enc1:';
@@ -89,7 +90,12 @@ function readOrCreateKey(dbPath: string): Buffer | null {
       return null;
     }
     const key = crypto.randomBytes(32);
-    fs.writeFileSync(keyPath, key.toString('hex'), { mode: 0o600 });
+    // 原子写（批 1 第 2 件）：钥匙半截写 = 已有 memories.db 永久解不开，**不可逆**。
+    // 同文件读侧早已用 renameSync 备份并明写「refusing to overwrite original」，
+    // 写侧裸写属防御不对称（2026-11-06 排查，PM 裁定二十二 ③）。
+    // 落点：`<db 名>.audit.key`（与 db 同目录的兄弟文件），32 字节 hex。
+    // 失败时**保持降级**（记忆功能不因写钥失败而不可用），但告警必须进可观测通道。
+    writeFileAtomicSync(keyPath, key.toString('hex'), { mode: 0o600 });
     try {
       fs.chmodSync(keyPath, 0o600);
     } catch {
@@ -97,9 +103,12 @@ function readOrCreateKey(dbPath: string): Buffer | null {
     }
     return key;
   } catch (e) {
-    console.warn(
-      '[memory] audit key unavailable, falling back to plaintext snapshots:',
-      e instanceof Error ? e.message : String(e),
+    // 可观测性（批 1 第 2 件 + 裁定二十六 ⑤）：装版下 stdout 进 sidecar-<ms>.log，
+    // 这行是「钥匙为什么没建成」的唯一现场证据。前缀固定，便于真机 grep。
+    console.log(
+      `[memory] level=warn audit-key unavailable: ${e instanceof Error ? e.message : String(e)}` +
+        ` path=${keyPath} —— 降级为明文快照（落 memories.db 的同一列，不新建明文副本），` +
+        `不生成第二个 key（历史密文保持可恢复）`,
     );
     return null;
   }

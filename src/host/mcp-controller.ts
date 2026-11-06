@@ -16,6 +16,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { isInstalledDistribution } from '../shared/distribution';
+import { writeFileAtomicSync } from '../shared/atomic-write';
 
 export interface McpServerConfig {
   /** 启动命令（如 npx、python、uvx），stdio 传输时必填 */
@@ -350,16 +351,58 @@ export function parseMcpServers(raw: string): Record<string, McpServerConfig> {
   return out;
 }
 
-/** 读取 MCP 服务器配置 */
-export function loadMcpServers(configPath?: string): Record<string, McpServerConfig> {
+/**
+ * 读取 MCP 服务器配置（**可区分失败**，批 1 第 4 件）。
+ *
+ * 判据（PM 裁定二十一/二十二）：**IO/解析失败必须与「空状态」可区分**。
+ *   - 文件不存在（`ENOENT`）= 合法的「从未配置」→ `ok:true, servers:{}`
+ *   - JSON 损坏 / 读失败 → `ok:false, error:'config-corrupt'|'config-unreadable'`
+ *     **绝不**再折叠成 `{}`：折叠会让面板显示「一台都没有」，用户接着保存一台就把
+ *     其余全部静默丢掉（2026-11-06 串起来的那条链）。
+ *
+ * 告警走 **stdout**（装版进 `sidecar-<ms>.log`）：stderr 在 `sidecar.rs` 里依赖
+ * `try_clone` 成功，失败走 `inherit`，装版无控制台 ⇒ 丢失。
+ */
+export type McpConfigLoadError = 'config-corrupt' | 'config-unreadable';
+
+export function loadMcpServersState(
+  configPath?: string,
+): { ok: true; servers: Record<string, McpServerConfig> } | { ok: false; error: McpConfigLoadError; message: string } {
   const p = configPath ?? defaultConfigPath();
+  let raw: string;
   try {
-    if (!fs.existsSync(p)) return {};
-    return parseMcpServers(fs.readFileSync(p, 'utf8'));
+    raw = fs.readFileSync(p, 'utf8');
   } catch (err) {
-    console.warn(`[mcp-controller] failed to load MCP servers config: ${err}`);
-    return {};
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      // 文件不存在 = 从未配置，这是**合法空状态**，不是失败
+      return { ok: true, servers: {} };
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    console.log(`[mcp-controller] level=error config-unreadable path=${p} code=${code ?? '(none)'} err=${message}`);
+    return { ok: false, error: 'config-unreadable', message };
   }
+  try {
+    return { ok: true, servers: parseMcpServers(raw) };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // 损坏必须可见：这行是「面板为什么显示配置读取失败」的唯一现场证据
+    console.log(`[mcp-controller] level=error config-corrupt path=${p} err=${message}`);
+    return { ok: false, error: 'config-corrupt', message };
+  }
+}
+
+/**
+ * 读取 MCP 服务器配置（**兼容签名**）。
+ *
+ * ⚠️ 失败与空状态仍在此处折叠成 `{}` —— 保留只因为既有调用方（`getMcpServer`、
+ * 内部 reload 之外的历史路径）依赖该签名。**需要区分失败的新代码一律用
+ * `loadMcpServersState()`**；`reload()` 已改为走后者的失败分支（损坏时保留旧连接，
+ * 不再把所有连接断开）。
+ */
+export function loadMcpServers(configPath?: string): Record<string, McpServerConfig> {
+  const r = loadMcpServersState(configPath);
+  return r.ok ? r.servers : {};
 }
 
 /**
@@ -386,7 +429,8 @@ export function removeMcpServer(serverId: string, configPath?: string): { ok: bo
       : all;
     if (!(serverId in bag)) return { ok: false, error: `server not found: ${serverId}` };
     delete bag[serverId];
-    fs.writeFileSync(p, JSON.stringify(all, null, 2), 'utf8');
+    // 原子写（批 1 第 4 件）：ACH-02 取消点在这两行之间 → 半截写会让整个 MCP 表读成损坏
+    writeFileAtomicSync(p, JSON.stringify(all, null, 2));
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -409,7 +453,8 @@ export function ensureMcpConfig(configPath?: string): string {
     if (!fs.existsSync(p)) {
       const dir = path.dirname(p);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(
+      // 原子写（批 1 第 4 件，PM 裁定二十二 ③ 点名的第四处）：示例配置同样不能半截。
+      writeFileAtomicSync(
         p,
         JSON.stringify(
           {
@@ -423,11 +468,13 @@ export function ensureMcpConfig(configPath?: string): string {
           null,
           2,
         ),
-        'utf8',
       );
     }
-  } catch {
-    // 创建失败忽略
+  } catch (e) {
+    // 创建失败忽略（不阻断宿主），但必须留下可 grep 的一行
+    console.log(
+      `[mcp-controller] level=warn ensure-mcp-config failed path=${p} err=${e instanceof Error ? e.message : String(e)}`,
+    );
   }
   return p;
 }
@@ -612,7 +659,17 @@ export class McpController {
   /** 重新加载配置 */
   reload(configPath?: string): void {
     const p = configPath ?? this.configPath;
-    const next = loadMcpServers(p);
+    // 批 1 第 4 件：损坏/读失败时**保留旧配置与旧连接**，不再把所有连接断开。
+    // 原实现 `next = loadMcpServers(p)` 在损坏时得到 `{}` → 下面的循环会把
+    // 全部连接断掉，面板显示「一台都没有」——比「没刷新」更糟。
+    const state = loadMcpServersState(p);
+    if (!state.ok) {
+      console.log(
+        `[mcp-controller] level=warn reload-skipped ${state.error} path=${p} —— 保留现有 ${Object.keys(this.servers).length} 台配置与连接`,
+      );
+      return;
+    }
+    const next = state.servers;
     // 配置变化或服务器被删除时，旧连接必须断开；
     // 否则 connect() 会命中 initialized 的旧连接，继续用旧 URL/旧 token。
     for (const serverId of [...this.connections.keys()]) {
@@ -1243,23 +1300,62 @@ export class McpController {
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
       // 统一为嵌套式 { servers: { id: cfg } }
       let file: { servers: Record<string, McpServerConfig> } = { servers: {} };
+      // 批 1 第 4 件（真正的丢数据路径）：原实现 `catch { /* 新文件 */ }` 把
+      // **ENOENT** 与 **JSON 损坏**混为一谈 —— 文件损坏时同样从空表起写，
+      // 一次保存就把用户其余 MCP 全部静默覆盖。现在两者分开：
+      //   - ENOENT          → 空表合法（新文件）
+      //   - 其他读错        → 拒写（config-unreadable）
+      //   - JSON 解析失败    → 拒写 + 备份 `mcp-servers.json.corrupt-<ts>`（config-corrupt）
+      let raw: string | null = null;
       try {
-        const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        raw = fs.readFileSync(configPath, 'utf8');
+      } catch (readErr) {
+        const code = (readErr as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT') {
+          const message = readErr instanceof Error ? readErr.message : String(readErr);
+          console.log(
+            `[mcp-controller] level=error save-refused config-unreadable path=${configPath} code=${code ?? '(none)'} err=${message}`,
+          );
+          return { ok: false, error: 'config-unreadable' };
+        }
+      }
+      if (raw !== null) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw);
+        } catch (parseErr) {
+          const ts = new Date().toISOString().replace(/[:.]/g, '-');
+          const backup = `${configPath}.corrupt-${ts}`;
+          try {
+            fs.copyFileSync(configPath, backup);
+          } catch (copyErr) {
+            console.log(
+              `[mcp-controller] level=error save-refused backup-failed path=${configPath} err=${copyErr instanceof Error ? copyErr.message : String(copyErr)}`,
+            );
+            return { ok: false, error: 'config-corrupt' };
+          }
+          console.log(
+            `[mcp-controller] level=error save-refused config-corrupt path=${configPath} backup=${backup} err=${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
+          );
+          return { ok: false, error: 'config-corrupt' };
+        }
         if (parsed && typeof parsed === 'object') {
+          const obj = parsed as Record<string, unknown>;
           // 优先取 .servers；兼容历史平铺式（顶层键当作服务器）
-          if (parsed.servers && typeof parsed.servers === 'object') {
-            file.servers = parsed.servers as Record<string, McpServerConfig>;
+          if (obj.servers && typeof obj.servers === 'object') {
+            file.servers = obj.servers as Record<string, McpServerConfig>;
           } else {
-            for (const [k, v] of Object.entries(parsed)) {
+            for (const [k, v] of Object.entries(obj)) {
               if (k !== 'servers' && v && typeof v === 'object') {
                 file.servers[k] = v as McpServerConfig;
               }
             }
           }
         }
-      } catch { /* 新文件 */ }
+      }
       file.servers[serverId] = config;
-      fs.writeFileSync(configPath, JSON.stringify(file, null, 2), 'utf8');
+      // 原子写（批 1 第 4 件）：半截写会让下一次 load 读成损坏。
+      writeFileAtomicSync(configPath, JSON.stringify(file, null, 2));
       this.servers = file.servers;
       this.configMtimeMs = (() => {
         try { return fs.statSync(configPath).mtimeMs; } catch { return null; }
