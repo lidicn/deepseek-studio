@@ -90,6 +90,29 @@ describe('设置面板：假路径/假版本防线（形态断言）', () => {
     handle.destroy();
   });
 
+  /** P4 UX 卡（0.14.10）：「诊断与关于」页补了版本行（值仍走 runtimeAppVersion()）。
+   *  负控须证明「版本行真的渲染出构建期版本」——钉在**诊断页**那个 `[data-settings-version]` 上，
+   *  不是泛泛断言 DOM 里有 span。取**诊断页专属**节点（`[data-tab-panel=diagnostics]` 作用域）。 */
+  function diagnosticsVersionText(handle: { container: HTMLElement }): string | null {
+    const el = handle.container.querySelector('[data-tab-panel="diagnostics"] [data-settings-version]');
+    return el ? el.textContent : null;
+  }
+
+  it('P4 负控：诊断页版本行渲染构建期版本（注入 0.999-test ⇒ 诊断页显示 0.999-test，非空、非硬编码）', () => {
+    setInjectedVersion('0.999-test');
+    const handle = mount('diagnostics');
+    expect(diagnosticsVersionText(handle)).toBe('0.999-test'); // 构建期值真的渲染进诊断页
+    expect(handle.container.textContent).not.toContain('v1.0.0');
+    handle.destroy();
+  });
+
+  it('P4 负控：dev 树（无 define）→ 诊断页版本行 = unknown（非空、非缺失）', () => {
+    setInjectedVersion(undefined);
+    const handle = mount('diagnostics');
+    expect(diagnosticsVersionText(handle)).toBe('unknown'); // dev 形态兜底 unknown，而非空串
+    handle.destroy();
+  });
+
   it('③ 日志/配置路径行（无宿主桥 / sendToolCall 失败）：显式「不可用」，不出现模板串、不出现盘符形态', async () => {
     // 旧断言替换报备（规矩④，2026-11-06 裁定十）：删的是旧「日志路径行：稳定表述」一条
     //（锁模板串稳定文案的时代），换成此条 + 下面两条真值分支。
@@ -98,9 +121,11 @@ describe('设置面板：假路径/假版本防线（形态断言）', () => {
     await flushOneTick();
     const lines = allTextLines(handle.container);
     const text = lines.join('\n');
-    // 值节点与 label 节点是两个独立文本节点：按**精确值行**断（防模板串/占位回退），不用跨行拼接串
-    expect(lines).toContain('sidecar 日志：不可用 · 宿主 trace：不可用（当前形态未注入数据根）');
-    expect(lines).toContain('不可用');
+    // 值节点与 label 节点是两个独立文本节点：按**精确值行**断（防模板串/占位回退），不用跨行拼接串。
+    // P4 UX 卡（0.14.10）：宿主未连上（deadBridge）→「不可用」须说清「宿主未连接、不是路径不存在」。
+    expect(lines).toContain('sidecar 日志：不可用（宿主未连接，读不到） · 宿主 trace：不可用（宿主未连接，读不到）');
+    expect(lines).toContain('不可用（宿主未连接，读不到）');
+    expect(text).toContain('不可用'); // 子串（数组 toContain 是严格相等，加注释后配置行非纯「不可用」）
     // 旧模板串不许复活
     expect(text).not.toContain('<用户配置目录>');
     expect(text).not.toContain('<运行数据目录>');
@@ -134,6 +159,8 @@ describe('设置面板：假路径/假版本防线（形态断言）', () => {
     expect(text).toContain('/opt/studio/logs（回落值，非注入）');
     expect(text).toContain('宿主 trace：不可用（当前形态未注入数据根）');
     expect(text).toContain('/opt/studio/config');
+    // P4 UX 回归：宿主可达（settings.get 取到 data）→ 不得误标「宿主未连接」（那是真·宿主没连上的信号）。
+    expect(text).not.toContain('宿主未连接，读不到');
     handle.destroy();
   });
 
@@ -183,8 +210,9 @@ describe('设置面板：假路径/假版本防线（形态断言）', () => {
 
   function assertPathRowsUnavailable(handle: { container: HTMLElement }): void {
     const lines = allTextLines(handle.container);
-    expect(lines).toContain('sidecar 日志：不可用 · 宿主 trace：不可用（当前形态未注入数据根）');
-    expect(lines).toContain('不可用');
+    // P4 UX 卡（0.14.10）：宿主未连上（sendToolCall reject / ok:false / 无 data）→「不可用（宿主未连接，读不到）」。
+    expect(lines).toContain('sidecar 日志：不可用（宿主未连接，读不到） · 宿主 trace：不可用（宿主未连接，读不到）');
+    expect(lines).toContain('不可用（宿主未连接，读不到）');
   }
 
   it('③ 回归（第 9 次闸）：宿主返回 {ok:true} 但无 data → 路径行显「不可用」且零 unhandled rejection', async () => {

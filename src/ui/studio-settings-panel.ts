@@ -8,6 +8,7 @@
  * - MCP：服务器列表、添加/编辑/删除
  * - 技能：技能目录、扫描
  * - 记忆：记忆列表、删除
+ * - 诊断与关于：版本（P4 UX 卡，用户查版本号的自然去处，同走 runtimeAppVersion()）、日志/配置路径
  */
 
 import { el, icon, Icons, injectStyles, createShadowContainer, globalEvents, globalState, callHostTool, openMcpSettings } from './studio-ui-core';
@@ -540,10 +541,15 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   const diagnosticsTab = el('div', { className: 'studio-tab-content' });
   diagnosticsTab.dataset.tabPanel = 'diagnostics';
   diagnosticsTab.innerHTML = `
+    <div class="studio-info-row"><span class="studio-info-label">版本</span><span class="studio-info-value" data-settings-version></span></div>
     <div class="studio-info-row"><span class="studio-info-label">日志路径</span><span class="studio-info-value" data-settings-logpath>加载中…</span></div>
     <div class="studio-info-row"><span class="studio-info-label">配置路径</span><span class="studio-info-value" data-settings-configpath>加载中…</span></div>
     <p class="studio-form-hint">旧外部集成入口已归档；安全执行审计和聊天室审计会议仍保留。</p>
   `;
+  // P4 UX 卡（0.14.10）：「诊断与关于」是用户查版本号的自然去处 → 补版本行。
+  // 值仍走 runtimeAppVersion()（构建期 define 注入真值；dev 树/无 define → 'unknown'，绝不手写常量、不读 package.json）。
+  // 与通用页版本行同源，两页都可见（通用页那行是否撤出归后续产品决定，本卡只加诊断页）。
+  diagnosticsTab.querySelector('[data-settings-version]')!.textContent = runtimeAppVersion();
   tabContents['diagnostics'] = diagnosticsTab;
   contentPane.appendChild(diagnosticsTab);
 
@@ -579,6 +585,8 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   //   logDirSource === 'fallback' → 真值 + 「（回落值，非注入）」标注；
   //   dataDir === null（dev 形态未注入数据根）→ 宿主 trace 行显「不可用」。
   // 取不到 settings.get（宿主不可达/字段缺失）→ 显「不可用」，不回填任何假路径。
+  // P4 UX 卡（0.14.10）：「不可用」须让用户看出「是宿主没连上、不是路径不存在」——
+  // settings.get 取不到数据（宿主通道未连）时附「（宿主未连接，读不到）」；宿主可达但字段缺 → 保持朴素「不可用」。
   // 宿主 trace 的**路径**不在 UI 侧拼装（不把宿主目录知识复制进面板）；traceDir 真值字段归 Core 后续小卡。
   async function fillPathRows(): Promise<void> {
     // fail-visible（2026-11-06 第 9 次闸修复）：任何取不到 settings.get 的路径（无桥 /
@@ -591,6 +599,7 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
       configDir: string;
       dataDir: string | null;
     }> = {};
+    let gotData = false; // settings.get 是否取到可用数据（宿主通道是否连着）
     try {
       const r = await callHostTool('settings.get', {});
       // 守卫补全：ok===true **且 data 是对象（非 null/数组/字符串）** 才取 data，否则回「不可用」。
@@ -601,20 +610,28 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
           configDir: string;
           dataDir: string | null;
         }>;
+        gotData = true;
       }
     } catch {
       // 异常路径（桥 sendToolCall reject 等）：落到下方「不可用」文案，不再向外抛。
       info = {};
+      gotData = false;
     }
+    // P4 UX 卡（0.14.10）：「不可用」要说清「是宿主没连上、不是路径不存在」——
+    // settings.get 取不到可用数据（宿主通道未连）→ 附「宿主未连接，读不到」；
+    // 宿主可达但某字段缺 → 保持朴素「不可用」（该字段本就未提供，别误标成宿主没连）。
+    const noDataNote = gotData ? '' : '（宿主未连接，读不到）';
     const logValue =
       typeof info.logDir === 'string' && info.logDir.length > 0
         ? info.logDir + (info.logDirSource === 'fallback' ? '（回落值，非注入）' : '')
-        : '不可用';
+        : `不可用${noDataNote}`;
     const traceValue =
       typeof info.dataDir === 'string' && info.dataDir.length > 0
         ? `宿主 trace 在数据根下（${info.dataDir}）`
-        : '宿主 trace：不可用（当前形态未注入数据根）';
-    const cfgValue = typeof info.configDir === 'string' && info.configDir.length > 0 ? info.configDir : '不可用';
+        : gotData
+          ? '宿主 trace：不可用（当前形态未注入数据根）'
+          : `宿主 trace：不可用${noDataNote}`;
+    const cfgValue = typeof info.configDir === 'string' && info.configDir.length > 0 ? info.configDir : `不可用${noDataNote}`;
     const logText = `sidecar 日志：${logValue} · ${traceValue}`;
     for (const tab of [generalTab, diagnosticsTab]) {
       const logEl = tab.querySelector('[data-settings-logpath]');
