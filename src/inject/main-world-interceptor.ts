@@ -3148,11 +3148,17 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       loopState.streamActive = false;
       interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'auto-continue-failed' });
       const message = e instanceof Error ? e.message : String(e);
+      // QD-R23 #2：`pow-invalid-difficulty` 与 `pow-expired` 同族（code-string + 本处 includes 识别 + ui-error-codes 映射），
+      // 让调用方能区分「PoW 算不出来 / 过期」与「服务端给的 difficulty 非法（超上界，已拦截、未进求解循环）」。
+      const isInvalidPow = message.includes('pow-invalid-difficulty');
+      const isPowExpired = !isInvalidPow && message.includes('pow-expired');
       finishStepFlow({
-        code: message.includes('pow-expired') ? 'pow-expired' : 'auto-continue-failed',
-        message: message.includes('pow-expired')
-          ? 'PoW 挑战已过期，重新获取后仍失败，已停止自动续跑。'
-          : `自动续跑失败：${message}`,
+        code: isInvalidPow ? 'pow-invalid-difficulty' : isPowExpired ? 'pow-expired' : 'auto-continue-failed',
+        message: isInvalidPow
+          ? '服务端返回的 PoW 难度非法（超出安全上界），为防止页面卡死已停止自动续跑，请稍后重试。'
+          : isPowExpired
+            ? 'PoW 挑战已过期，重新获取后仍失败，已停止自动续跑。'
+            : `自动续跑失败：${message}`,
       });
       loopDepth = 0;
     }

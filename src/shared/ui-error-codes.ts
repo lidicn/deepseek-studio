@@ -29,6 +29,9 @@ export const UI_ERROR_CODES: Readonly<Record<string, string>> = {
   failed: '执行失败',
   cancelled: '已取消',
   'pow-expired': 'PoW 挑战已过期，重新获取后仍无法继续',
+  // QD-R23 #2（跨域一行，Core 域 src/shared，PM 06:5x 派 UI 卡明令「复用 pow-expired 同族通道」）：
+  // difficulty 非法（超安全上界/非整数/非有限）已被页端拦在求解循环之前 ⇒ 文案指向「难度非法、非算不出」。
+  'pow-invalid-difficulty': '服务端返回的 PoW 难度非法（超出安全上界），已拦截以防页面卡死，请稍后重试',
   // 工具参数/文件
   'missing-argument': '缺少必填参数',
   'invalid-argument': '参数格式不正确',

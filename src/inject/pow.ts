@@ -12,6 +12,27 @@ import { WASM_BASE64 } from './pow-wasm';
 
 const SUPPORTED_ALGORITHM = 'DeepSeekHashV1';
 
+/**
+ * QD-R23 #2：difficulty **上界**（封顶）。`difficulty` 完全来自服务端响应、本地原零校验
+ * （`Number()` 可出 NaN/Infinity）⇒ 服务端或改写方给极大值 ⇒ WASM 求解循环长期占主线程 ⇒ 页面卡死。
+ *
+ * 依据（**推断，如实标**）：`logs/cdp-chat-capture/` 9 份真机抓包全部 `difficulty = 144000`（唯一权威观测值）；
+ * 上游 deepseek++ `core/deepseek/pow.ts:92` 只验**下界/类型**（`Number.isSafeInteger && > 0`）、**无上界**。
+ * 无「DeepSeek 最大可能下发多少」的权威依据 ⇒ 取保守上界 `2_000_000`（≈14× 观测值余量）：
+ * 放得下难度正常上调，又挡住「会卡死主线程」的极大值。超上界/非整数/非有限/非正 → 抛可辨识
+ * `pow-invalid-difficulty`（与 `pow-expired` 同族 code-string 通道，见 `ui-error-codes.ts`），而非喂进求解循环。
+ */
+export const POW_DIFFICULTY_MAX = 2_000_000;
+
+/**
+ * QD-R23 #2：difficulty 合法性（正整数 + ≤ 上界 + 有限）。
+ * 拒绝 NaN / ±Infinity / 负数 / 小数 / 0 / 超上界。`Number.isInteger` 单独钉死 NaN 与小数
+ * （NaN 过所有大小比较、最易漏）；`> 0` 钉死负数与 0；`<= POW_DIFFICULTY_MAX` 钉死超界。
+ */
+export function isPowDifficultyValid(d: number): boolean {
+  return Number.isInteger(d) && d > 0 && d <= POW_DIFFICULTY_MAX;
+}
+
 interface PowChallenge {
   algorithm: string;
   challenge: string;
@@ -153,6 +174,15 @@ export async function createPowHeaders(
     if (isPowChallengeExpired(challenge)) {
       if (attempt === 0) continue;
       throw new Error('pow-expired');
+    }
+    // QD-R23 #2：difficulty 上界/合法性守卫（拦在喂 WASM 求解循环**之前**）。
+    // 服务端/改写方给的 NaN/±Infinity/负数/小数/超上界难度，绝不进求解循环（否则主线程长期占住卡死）；
+    // 抛可辨识 `pow-invalid-difficulty`（与 `pow-expired` 同族 code-string，调用方 `includes` 可区分「算不出」与「难度非法」）。
+    // 不 `continue` 重试：难度非法是确定性错误，重取同值只会再撞一次。
+    if (!isPowDifficultyValid(challenge.difficulty)) {
+      throw new Error(
+        `pow-invalid-difficulty: 服务端 difficulty=${challenge.difficulty} 非法（须为 1..${POW_DIFFICULTY_MAX} 的整数）；已拦截、未进求解循环`,
+      );
     }
     const wasm = await loadWasm();
     const prefix = `${challenge.salt}_${challenge.expire_at}_`;
