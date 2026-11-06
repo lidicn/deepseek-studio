@@ -66,6 +66,16 @@ export interface GrantAcquireResult {
   lastError?: GrantError;
   /** 券的过期时刻（宿主报的 expMs；回落时为 undefined）。 */
   expMs?: number;
+  /**
+   * 裁定五十七 缺陷③（P0，v0.14.8 真机）：闭包**抛错 / 形状违例**时的**原文**原因
+   * （如 `Command studio_request_grant not allowed by ACL`）。
+   *
+   * 宿主侧**结构上拿不到**这类失败——ACL / IPC 层拒绝发生在 Rust 函数执行**之前**，
+   * (C) 的四分支日志 / GrantError 六枚举 / `grant_log` 全部被绕过。所以页端必须捕获
+   * 原文，由调用方（entry.ts）写进可见横幅 + 页端可 grep 痕迹（`window.__studioGrantStatus`
+   * + `console.error`）。`host-down` 的「停止、不重试」语义**不变**（本字段只补可见性）。
+   */
+  cause?: string;
 }
 
 function readStudioRequestGrant(): RequestGrantFn | null {
@@ -97,15 +107,25 @@ export function acquireGrant(opts: GrantAcquireOptions): Promise<GrantAcquireRes
       let reply: GrantReply;
       try {
         reply = await fn(opts.aud);
-      } catch {
+      } catch (e) {
         // 闭包自身抛错 = 契约违反（宿主侧只该返回 {ok:false,error}）：按 host-down 停，不重试。
+        // 裁定五十七 缺陷③：ACL / IPC 层拒绝（`Command … not allowed by ACL`）就落在这里——
+        // Rust 函数根本没执行、宿主侧日志全被绕过。把**原文**捕获进 cause，页端 fail-visible
+        // 依赖它（横幅 + 页端可 grep 痕迹）；停止不重试的语义不变。
+        const cause = e instanceof Error ? e.message : String(e);
         opts.onState?.('attempt', { ok: false, error: 'host-down' });
-        return { grant: null, attempts: attempt + 1, lastError: 'host-down' };
+        return { grant: null, attempts: attempt + 1, lastError: 'host-down', cause };
       }
       if (!reply || typeof reply !== 'object' || !('ok' in reply)) {
         // 返回形状违反可辨识联合（旧宿主/拼写漂移）：不猜、不静默，按 host-down 停。
+        // 同样给 cause（页端 fail-visible 需要一个可读原因，别只留 host-down 枚举）。
         opts.onState?.('attempt');
-        return { grant: null, attempts: attempt + 1, lastError: 'host-down' };
+        return {
+          grant: null,
+          attempts: attempt + 1,
+          lastError: 'host-down',
+          cause: '取券闭包返回形状违反可辨识联合（ok:true 缺字段 / 非对象）',
+        };
       }
       opts.onState?.('attempt', reply);
       if (reply.ok) {

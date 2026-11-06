@@ -142,6 +142,24 @@ describe('grant-acquire：按需取券状态机（P0 卡 (A) 页端半）', () =
     const r = await runThroughBudget(acquireGrant({ aud: 'main' }));
     expect(r.grant).toBeNull();
     expect(r.lastError).toBe('host-down');
+    // 裁定五十七 缺陷③：形状违例也给可读 cause（页端 fail-visible 依赖它，不只留 host-down 枚举）。
+    expect(r.cause).toBe('取券闭包返回形状违反可辨识联合（ok:true 缺字段 / 非对象）');
+  });
+
+  it('裁定五十七 缺陷③ 负控：闭包抛 ACL 拒绝（IPC 层）→ host-down 停、不重试，cause 捕获原文', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const throwing: RequestGrantFn = async () => {
+      calls += 1;
+      throw new Error('Command studio_request_grant not allowed by ACL');
+    };
+    vi.stubGlobal('__studioRequestGrant', throwing);
+    const r = await runThroughBudget(acquireGrant({ aud: 'main' }));
+    expect(r.grant).toBeNull();
+    expect(r.attempts).toBe(1); // 停、不重试（20s 预算窗口内没有第二次 IPC）
+    expect(r.lastError).toBe('host-down');
+    expect(r.cause).toBe('Command studio_request_grant not allowed by ACL'); // 原文捕获（非泛化枚举）
+    expect(calls).toBe(1);
   });
 
   it('退避表锁死为裁定三十六数值：500→1s→2s→4s→8s（防有人改节奏不留痕）', () => {

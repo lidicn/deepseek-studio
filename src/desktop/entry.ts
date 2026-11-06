@@ -19,7 +19,7 @@ import { createChatReadCapability } from '../capabilities/chat-read';
 import { createChatInsertCapability } from '../capabilities/chat-insert';
 import { createChatSendCapability } from '../capabilities/chat-send';
 import { createHostClient, type HostClient } from './host-client';
-import { acquireGrant } from './grant-acquire';
+import { acquireGrant, type GrantError } from './grant-acquire';
 import { installMainWorldInterceptor, setInterceptorTraceSink, configureMemorySelect } from '../inject/main-world-interceptor';
 import { installTraceReportHandle } from '../inject/main-world-interceptor';
 import {
@@ -75,6 +75,88 @@ const GRANT_BANNER_CSS =
   'position:fixed;right:12px;bottom:12px;z-index:2147483646;max-width:340px;padding:8px 12px;' +
   'font:12px/1.5 system-ui,-apple-system,sans-serif;color:#5b4300;background:#fff8e1;' +
   'border:1px solid #f0c36d;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.15);';
+
+/**
+ * 取券状态横幅（裁定三十二 fail-visible + 裁定五十七 缺陷③ 页面侧腿）。
+ *
+ * 抽成独立工厂以便单测（jsdom 下直接断言「横幅真的挂到 document.body」）：
+ *   - 退避期「正在等待宿主就绪…」；失败「宿主凭据不可用，agent 能力离线（原因：…）」；
+ *   - **静默裸连判红**（台账 §七 负控）——调用方（`surfaceGrantFailure`）保证失败必挂横幅。
+ * 仅主窗非登录页 `enabled`（`installStudio` 传入），其余形态不挂、不影响装配。
+ * `data-studio-grant-banner` 属性 = 页端可 grep 的 DOM 标记（CDP/Verify 可直接查）。
+ */
+export interface GrantBanner {
+  setBanner(message: string | null): void;
+  /** 当前横幅元素（null = 未挂 / 已移除）。供测试与取证。 */
+  el(): HTMLElement | null;
+}
+
+export function createGrantBanner(opts: {
+  enabled: boolean;
+  getMount: () => HTMLElement | DocumentFragment | null;
+}): GrantBanner {
+  const ref: { el: HTMLElement | null } = { el: null };
+  return {
+    setBanner(message: string | null): void {
+      if (!opts.enabled) return;
+      let el = ref.el;
+      if (!message) {
+        el?.remove();
+        ref.el = null;
+        return;
+      }
+      if (!el) {
+        el = document.createElement('div');
+        el.style.cssText = GRANT_BANNER_CSS;
+        el.setAttribute('data-studio-grant-banner', '1');
+        opts.getMount()?.appendChild(el);
+        ref.el = el;
+      }
+      if (el.textContent !== message) el.textContent = message;
+    },
+    el: () => ref.el,
+  };
+}
+
+/** 页端可 grep 痕迹（裁定五十七 缺陷③）：宿主侧结构上拿不到 ACL/IPC 层拒绝，改在页端留痕。
+ * 裁定五十七 0.14.9 判别仪（PM 裁）：`stage` 把「只能真机暴露」的缺陷变成 CDP 直读一次四选一——
+ *   无痕（undefined）= 注入脚本没跑；'init' = 跑了但 connect() 没被调（**另一缺陷，不归 ACL**）；
+ *   'resolver-invoked' + failed:true + cause = ACL/IPC 拒绝；'resolver-invoked' + failed:false = 通。 */
+type GrantStage = 'init' | 'resolver-invoked';
+type GrantStatus =
+  | { stage: GrantStage; aud: string; ts: number }
+  | { stage: 'resolver-invoked'; failed: false; aud: string; ts: number }
+  | { stage: 'resolver-invoked'; failed: true; aud: string; lastError: GrantError | null; cause: string | null; ts: number };
+
+function setGrantStatus(status: GrantStatus): void {
+  (globalThis as { __studioGrantStatus?: unknown }).__studioGrantStatus = status;
+}
+
+/**
+ * 取券失败 → fail-visible（横幅 + 页端可 grep 痕迹）。裁定五十七 缺陷③ 页面侧那条腿：
+ *  - 横幅必须带**真实原因**（`cause`，如 `Command … not allowed by ACL`），不许只写「不可用」；
+ *  - 页端留 `window.__studioGrantStatus`（CDP/Verify 直读）+ `console.error`（页端控制台可 grep）；
+ *  - `host-down` / 不可重试枚举 = **停止不重试**（语义不变），但**停止必须可见**。
+ */
+export function surfaceGrantFailure(
+  result: { grant: string | null; attempts: number; lastError?: GrantError; cause?: string },
+  aud: string,
+  setBanner: (message: string | null) => void,
+): void {
+  const lastError = result.lastError ?? 'unknown';
+  const stopNote =
+    result.lastError === 'rate-limited'
+      ? '宿主拒绝续签，已停止'
+      : result.lastError === 'no-config'
+        ? '重试预算耗尽，已停止'
+        : '已停止（不可重试）';
+  const causeNote = result.cause ? `；取券闭包抛错：${result.cause}` : '';
+  const message = `宿主凭据不可用，agent 能力离线（原因：${lastError}${causeNote}）。${stopNote}。`;
+  setBanner(message);
+  // 失败必发生在 resolver 阶段（本函数只由 urlResolver 链调用）：stage 钉 'resolver-invoked'（判别仪第 3 选）。
+  setGrantStatus({ stage: 'resolver-invoked', failed: true, aud, lastError: result.lastError ?? null, cause: result.cause ?? null, ts: Date.now() });
+  console.error(`[studio-grant] ${message}`);
+}
 
 /**
  * W2（20261023 用户定调的窗口设计）：主窗口 = 主 bot。
@@ -183,27 +265,19 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
   const isLoginPage = locationPathname.includes('/login') || locationPathname.includes('/signin');
   const bannerEnabled =
     typeof globalThis.document !== 'undefined' && botId === 'main' && !isLoginPage;
-  const grantBannerRef: { el: HTMLElement | null } = { el: null };
-  const setGrantBanner = (message: string | null): void => {
-    if (!bannerEnabled) return;
-    let el = grantBannerRef.el;
-    if (!message) {
-      el?.remove();
-      grantBannerRef.el = null;
-      return;
-    }
-    if (!el) {
-      el = document.createElement('div');
-      el.style.cssText = GRANT_BANNER_CSS;
-      (document.body ?? document.documentElement).appendChild(el);
-      grantBannerRef.el = el;
-    }
-    if (el.textContent !== message) el.textContent = message;
-  };
+  const setGrantBanner = createGrantBanner({
+    enabled: bannerEnabled,
+    getMount: () => (typeof document !== 'undefined' ? (document.body ?? document.documentElement) : null),
+  }).setBanner;
+  // 判别仪（第 1/2 选）：取券 bootstrap 一开始就把痕迹钉 'init'——
+  // CDP 之后若仍停在 'init'（resolver 从未被调）= connect() 没被调 = 另一缺陷，不归给 ACL。
+  setGrantStatus({ stage: 'init', aud, ts: Date.now() });
   const host = createHostClient({
     url: fallbackUrl,
-    urlResolver: (): Promise<string> =>
-      acquireGrant({
+    urlResolver: (): Promise<string> => {
+      // 判别仪（第 3 选前置）：resolver 入口（connect/重连真调到）钉 'resolver-invoked'。
+      setGrantStatus({ stage: 'resolver-invoked', aud, ts: Date.now() });
+      return acquireGrant({
         aud,
         onState: (state) => {
           // 裁定三十六：退避期间必须可见（「正在等待宿主就绪…」），不许静默等 15s
@@ -212,15 +286,19 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
       }).then((r) => {
         if (r.grant) {
           setGrantBanner(null);
+          // 成功（判别仪第 4 选）：刷新页端标记为成功态（stage 钉 resolver-invoked），避免残留旧失败痕迹误导取证。
+          setGrantStatus({ stage: 'resolver-invoked', failed: false, aud, ts: Date.now() });
           return resolveHostUrl(r.grant, botId, fallbackUrl);
         }
         if (r.attempts > 0) {
-          // attempts>0 = 真进过按需取券且回落：可见原因（各错误枚举不共用一条提示）。
-          setGrantBanner(`宿主凭据不可用，agent 能力离线（原因：${r.lastError}）。重连时会自动重试取券。`);
+          // attempts>0 = 真进过按需取券且回落：横幅带**真实原因**（cause，如 ACL 拒绝原文）
+          // + 页端可 grep 痕迹（window.__studioGrantStatus + console.error）——裁定五十七 缺陷③ 页面侧腿。
+          surfaceGrantFailure(r, aud, setGrantBanner);
         }
         // dev 形态（attempts===0）：不提示——裸连在 dev 是合法形态（设计稿 §6 fail-closed 只约束生产）。
         return fallbackUrl;
-      }),
+      });
+    },
     capabilities: executable,
     reportError: options.reportError,
     botId,
