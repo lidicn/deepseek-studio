@@ -16,6 +16,8 @@ import { FilePersonaRegistry } from '../host/bot/persona-registry';
 import { generatePairingCode } from './agent-lan-access';
 // C1 P0-2：配置加载抽到独立模块（纯函数、无副作用、路径可注入 → 可安全单测）。
 import { loadConfig } from './config-loader';
+import { runStartupMigration } from '../host/config-migration';
+import { resolveConfigDir, resolveStudioDistribution } from '../shared/distribution';
 import { isQueryOnly as isQueryOnlyRun } from './cli-args';
 // TD-04：资源根解析（安装版靠 STUDIO_RESOURCE_ROOT，开发树回退 import.meta.url）。
 import { missingResourceFiles, resolveResourceRoot, resourceRootDiagnostics } from './resource-root';
@@ -65,6 +67,21 @@ if (!process.env.STUDIO_TEST) {
 
 
 export async function main(): Promise<void> {
+  // 批 N+1 可观测性：把**自己实际读到的**形态与两个目录打到 stdout —— 装版的 stdout
+  // 由 Rust 重定向进 `sidecar-<ms>.log`，于是「装版到底被注入了什么」在真机上可核
+  // （批 N 之前 Rust 那几行是 `eprintln!`，装版无控制台 → 永久丢失，只能靠推断）。
+  // 与 Rust 侧 `HostEntry::describe()` 写进的是**同一份文件**，两边可对账。
+  console.log(
+    `[studio] host env: STUDIO_DISTRIBUTION=${process.env.STUDIO_DISTRIBUTION ?? '(unset)'} ` +
+      `STUDIO_CONFIG_DIR=${process.env.STUDIO_CONFIG_DIR ?? '(unset)'} ` +
+      `STUDIO_LOG_DIR=${process.env.STUDIO_LOG_DIR ?? '(unset)'} ` +
+      `resolved_config_dir=${resolveConfigDir()} mode=${resolveStudioDistribution()}`,
+  );
+  // 批 N+1 段 3：装版首启迁移**必须是第一件事** —— 早于 loadConfig/任何落点解析，
+  // 否则新的 STUDIO_CONFIG_DIR 还是空的，宿主会先在新目录里写一份空配置，
+  // 迁移再进来就只能跳过已存在的文件 → 老配置「看起来消失」。
+  // dev（含 vitest / tsx）形态直接返回，行为不变。
+  runStartupMigration();
   const { config, secret, workspaceRoot, policyMode, chatRooms, chatRoomMaxDepth, apiEngine: configuredApiEngine, configPath } = loadConfig();
   // F1/F2：apiEngine 在探测中可能被置空，用 let。
   let apiEngine = configuredApiEngine;

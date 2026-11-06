@@ -1,15 +1,18 @@
 /**
  * tests/desktop/distribution-shape.test.ts
  *
- * **批 N 口径**（Studio-PM 裁定③，2026-11-06）：本批只落地「形态判定 + 5 处认 env」，
- * **D 组（装版不写示例 / 装版不建技能目录 / 装版跳过 `~/.agents/skills`）与段 2 路径注入
- * 一并留到批 N+1**（必须与段 3 首启迁移同批，否则老用户数据会「看起来消失」）。
+ * **批 N+1 口径**（2026-11-06）：D 组（装版不写示例 / 装版不建技能目录 / 装版跳过
+ * `~/.agents/skills`）与段 2 路径注入、段 3 首启迁移**同批落地**（PM 裁定③）。
+ * 批 N 期间以 `it.skip` 留住的 3 条口径**已解开并全部执行**（不许永久留在跳过态）。
  *
- * 因此本文件分两部分：
- * 1. **批 N 不变量**：形态判定 fail-safe、`resolveConfigDir` 回落、**装版路径不变**、
- *    **dev 宿主（不经 Rust）拿得到 dev 形态**；
- * 2. **批 N+1 待启用项**：以 `it.skip` 形式留住口径（D 组三条），批 N+1 解开即可当回归。
- *    —— 不用「改实现让测试变绿」，也不删断言不补（群纪律第 4 条）。
+ * 本文件覆盖：
+ * 1. 形态判定 fail-safe（缺失/非法 → installed）、`resolveConfigDir` 回落；
+ * 2. dev 与装版两形态下的 D 组行为（**双向**：装版不写示例 / dev 仍写示例）；
+ * 3. 「不经 Rust 启动的 dev 宿主必须拿到 dev 形态」这条裁定②回归。
+ *
+ * 批 N 曾有两条「D 组未启用」的反向断言（断言装版仍写示例、仍命中 ③ 位）——
+ * 那是锁「批 N 零行为变化」的**过时断言**，本批按群纪律第 4 条换成
+ * 「装版不写示例 / 不命中 ③ 位」的真回归断言，不是只删不补。
  */
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -88,24 +91,19 @@ describe('批 N 不变量：装版与 dev 的路径行为都不变（改前改�
     ).toBe(path.join('X:', 'home', '.config', 'deepseek-studio'));
   });
 
-  it('D 组未启用：装版形态下 ensureMcpConfig 仍写示例（批 N+1 才反转）', () => {
+  it('批 N+1 反转：装版形态下 ensureMcpConfig 不写示例（D 组已落地）', () => {
     process.env.STUDIO_DISTRIBUTION = 'installed';
     const p = ensureMcpConfig();
     expect(p).toBe(path.join(tmp, 'mcp-servers.json'));
-    expect(fs.existsSync(p)).toBe(true);
-    const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as { servers: Record<string, unknown> };
-    expect(Object.keys(parsed.servers)).toContain('example-filesystem');
+    // 装版：不创建、不写 example-filesystem
+    expect(fs.existsSync(p)).toBe(false);
   });
 
-  it('D 组未启用：装版形态下第 ③ 位仍无条件命中 ~/.agents/skills', () => {
+  it('批 N+1 反转：装版形态下第 ③ 位不再命中 ~/.agents/skills', () => {
     process.env.STUDIO_DISTRIBUTION = 'installed';
     const resolved = resolveSkillsDir();
-    if (fs.existsSync(agentsDir)) {
-      expect(resolved).toBe(agentsDir);
-    } else {
-      // 干净机没有 ~/.agents/skills → 回落 <config>/skills（与改前一致）
-      expect(resolved).toBe(path.join(tmp, 'skills'));
-    }
+    expect(resolved).toBe(path.join(tmp, 'skills'));
+    expect(resolved).not.toBe(agentsDir);
   });
 
   it('显式传入 skillsDir 仍按原语义创建（面板「添加技能目录」不受形态影响）', () => {
@@ -138,20 +136,20 @@ describe('裁定② 回归：不经 Rust 启动的 dev 宿主必须拿到 dev �
   });
 });
 
-describe('批 N+1 待启用（D 组）：解开 skip 即可当回归用', () => {
-  it.skip('installed → ensureMcpConfig 不创建文件（且不得含 example-filesystem）', () => {
+describe('批 N+1（D 组）：解跳后的回归断言（批 N 时以 it.skip 留口径）', () => {
+  it('installed → ensureMcpConfig 不创建文件（且不得含 example-filesystem）', () => {
     process.env.STUDIO_DISTRIBUTION = 'installed';
     const p = ensureMcpConfig();
     expect(fs.existsSync(p)).toBe(false);
   });
 
-  it.skip('installed → resolveSkillsDir 返回 <STUDIO_CONFIG_DIR>/skills，且不命中 ~/.agents/skills', () => {
+  it('installed → resolveSkillsDir 返回 <STUDIO_CONFIG_DIR>/skills，且不命中 ~/.agents/skills', () => {
     process.env.STUDIO_DISTRIBUTION = 'installed';
     expect(resolveSkillsDir()).toBe(path.join(tmp, 'skills'));
     expect(resolveSkillsDir()).not.toBe(agentsDir);
   });
 
-  it.skip('installed → ensureSkillsDir 直接 return，不创建 <config>/skills', () => {
+  it('installed → ensureSkillsDir 直接 return，不创建 <config>/skills', () => {
     process.env.STUDIO_DISTRIBUTION = 'installed';
     expect(ensureSkillsDir()).toBe(path.join(tmp, 'skills'));
     expect(fs.existsSync(path.join(tmp, 'skills'))).toBe(false);

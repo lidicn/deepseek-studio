@@ -15,6 +15,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { isInstalledDistribution } from '../shared/distribution';
 
 export interface McpServerConfig {
   /** 启动命令（如 npx、python、uvx），stdio 传输时必填 */
@@ -393,14 +394,17 @@ export function removeMcpServer(serverId: string, configPath?: string): { ok: bo
 }
 
 /**
- * 确保配置文件存在（如果不存在则创建示例配置）。
+ * 确保配置文件存在（dev 下不存在则创建示例配置）。
  *
- * **「装版不写示例」属 D 组，随批 N+1 落地**（PM 裁定③ 2026-11-06：D 组必须与
- * §8 第 2 段路径注入 + 第 3 段首启迁移同批，否则装版首启会出现「配置在新目录、
- * 示例服务器凭空冒出」这种半成品状态）。**本批保持原语义** → 批 N 零行为变化。
+ * **装版不写示例**（批 N+1，D 组，设计稿 §8.4）：装版首启不得凭空写出一份带
+ * `example-filesystem`（`npx -y @modelcontextprotocol/server-filesystem <homedir>\projects`）
+ * 的示例配置 —— 那是开发者的脚手架，不是用户配置。装版缺省路径只返回、不落盘。
+ * dev 行为逐字节不变。
  */
 export function ensureMcpConfig(configPath?: string): string {
   const p = configPath ?? defaultConfigPath();
+  // 装版：不创建、不写示例（显式传入 configPath 的调用方视为已知自己要什么，仍按原样写）
+  if (!configPath && isInstalledDistribution()) return p;
   try {
     if (!fs.existsSync(p)) {
       const dir = path.dirname(p);

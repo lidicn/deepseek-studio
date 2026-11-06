@@ -45,3 +45,63 @@ export function resolveConfigDir(
   if (fromEnv) return fromEnv;
   return path.join(homedir ?? os.homedir(), '.config', 'deepseek-studio');
 }
+
+/**
+ * 装版落点根目录（设计稿 §8「机械推导」节）。
+ *
+ * 批 N+1 起 Rust 会同时注入 `STUDIO_CONFIG_DIR` 与 `STUDIO_LOG_DIR`，二者形如
+ * `<data>/config`、`<data>/logs`；本函数从**已注入的**两个 env 反推出那个共同的
+ * `<data>`，供「首启迁移」把老目录的东西搬过去。
+ *
+ * 只做**字符串推导**，不猜 exe 位置、不读注册表：
+ *   - 两个 env 都没有（纯粹老装版 / dev）→ `null`，调用方据此跳过迁移；
+ *   - 两个都指向同一父目录 → 返回该父目录（装版正常态）；
+ *   - 只有一个，或父目录不一致（用户手工只设了一个）→ 返回 `null`，
+ *     **宁可这次不迁移，也不往一个推导错的位置搬用户数据**（判错代价不对称）。
+ *
+ * 迁移本身的判据在地面（`config-migration.ts`），这里只回答「装版要把数据放到哪」。
+ */
+export function resolveStudioDataDir(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const cfg = env.STUDIO_CONFIG_DIR?.trim();
+  const log = env.STUDIO_LOG_DIR?.trim();
+  if (!cfg || !log) return null;
+  const cfgParent = path.dirname(cfg);
+  const logParent = path.dirname(log);
+  if (normalizeForCompare(cfgParent) !== normalizeForCompare(logParent)) return null;
+  // 两者必须是真的两个不同子目录（同一个值说明调用方把 config/log 注成了同一处 → 不迁移）
+  if (normalizeForCompare(cfg) === normalizeForCompare(log)) return null;
+  return cfgParent;
+}
+
+/** 路径比较用归一（Windows 大小写不敏感、分隔符混用；末尾分隔符不算差异）。 */
+function normalizeForCompare(p: string): string {
+  const trimmed = p.replace(/[\\/]+$/, '');
+  return process.platform === 'win32' ? trimmed.toLowerCase() : trimmed;
+}
+
+/**
+ * 日志目录：`STUDIO_LOG_DIR` 优先，缺省**逐字镜像 Rust 侧的回落链**
+ * （`sidecar.rs`：`dirs::config_dir()/deepseek-studio/logs`）。
+ *
+ * 为什么要在 Node 侧镜像：面板要显示**真实路径**（PM 裁定十），
+ * 而 Rust 的回落值 Node 拿不到；镜像它比让面板显示模板串诚实得多。
+ * `dirs::config_dir()` 在 Windows = `%APPDATA%`、在类 Unix = `~/.config`，
+ * 故这里按平台分支，与 Rust 行为对齐。
+ *
+ * 返回值带 `source`：面板可据此区分「装版注入了」与「回落值」（诊断用）。
+ */
+export function resolveLogDir(
+  env: NodeJS.ProcessEnv = process.env,
+  homedir?: string,
+): { dir: string; source: 'env' | 'fallback' } {
+  const fromEnv = env.STUDIO_LOG_DIR?.trim();
+  if (fromEnv) return { dir: fromEnv, source: 'env' };
+  const home = homedir ?? os.homedir();
+  const configRoot =
+    process.platform === 'win32'
+      ? env.APPDATA?.trim() || path.join(home, 'AppData', 'Roaming')
+      : path.join(home, '.config');
+  return { dir: path.join(configRoot, 'deepseek-studio', 'logs'), source: 'fallback' };
+}

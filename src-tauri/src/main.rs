@@ -359,8 +359,26 @@ struct WindowState {
 }
 
 fn window_state_path() -> std::path::PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
+    window_state_path_with(std::env::var("STUDIO_CONFIG_DIR").ok().as_deref(), dirs::config_dir().as_deref())
+}
+
+/// 窗口状态落点（**可注入**，两形态各一条单测）。
+///
+/// - **装版**：Rust 在批 N+1 段 2 注入 `STUDIO_CONFIG_DIR = <data_dir>/config` →
+///   窗口状态与 Node 侧配置同目录（同一份数据根，用户文件夹里只有一处 deepseek-studio）。
+///   老用户的 `window-state.json` 由段 3 首启迁移搬过去（`config-migration.ts`），
+///   源文件保留不删，故升级后窗口几何不丢。
+/// - **dev**：无人注入 → `config_dir_env = None` → 回落 `dirs::config_dir()/deepseek-studio`，
+///   **行为逐字节不变**（这是硬要求：dev 形态必须保持旧落点）。
+fn window_state_path_with(
+    config_dir_env: Option<&str>,
+    config_dir_fallback: Option<&std::path::Path>,
+) -> std::path::PathBuf {
+    if let Some(dir) = config_dir_env.map(str::trim).filter(|s| !s.is_empty()) {
+        return std::path::PathBuf::from(dir).join("window-state.json");
+    }
+    config_dir_fallback
+        .unwrap_or_else(|| std::path::Path::new("."))
         .join("deepseek-studio")
         .join("window-state.json")
 }
@@ -1104,6 +1122,34 @@ fn resolve_host_entry_with(
     resource_dir: Option<&std::path::Path>,
     project_root: Option<&std::path::Path>,
 ) -> sidecar::HostEntry {
+    resolve_host_entry_with_data_dir(packaged, resource_dir, project_root, None)
+}
+
+/// 同 [`resolve_host_entry_with`]，另接受 `data_dir`（装版 = `app_data_dir()`）。
+///
+/// 批 N+1 段 2：装版把 `STUDIO_CONFIG_DIR` / `STUDIO_LOG_DIR` 指到
+/// `<data_dir>/config` 与 `<data_dir>/logs` —— **与段 3 首启迁移同批**，
+/// 否则老用户配置/记忆「看起来消失」（PM 裁定③）。
+/// `data_dir = None`（dev / 单测未给）→ 两个字段仍为 `None`，行为不变。
+fn resolve_host_entry_with_data_dir(
+    packaged: bool,
+    resource_dir: Option<&std::path::Path>,
+    project_root: Option<&std::path::Path>,
+    data_dir: Option<&std::path::Path>,
+) -> sidecar::HostEntry {
+    // 装版才注入路径；dev 恒为 None（开发期行为逐字节不变）
+    let injected_dirs = |packaged: bool| -> (Option<std::path::PathBuf>, Option<std::path::PathBuf>) {
+        if !packaged {
+            return (None, None);
+        }
+        match data_dir {
+            Some(d) => (
+                Some(strip_verbatim(&d.join("config"))),
+                Some(strip_verbatim(&d.join("logs"))),
+            ),
+            None => (None, None),
+        }
+    };
     let has_ui = |root: &std::path::Path| {
         root.join("src").join("ui").join("agent.html").is_file()
     };
@@ -1148,6 +1194,8 @@ fn resolve_host_entry_with(
     let work_dir = project_root
         .map(strip_verbatim)
         .unwrap_or_else(|| resource_dir.map(strip_verbatim).unwrap_or_else(|| std::path::PathBuf::from(".")));
+    // 装版路径注入（`data_dir` = app_data_dir）：<data>/config 与 <data>/logs。
+    let (cfg_dir, log_dir) = injected_dirs(true);
     if let Some(res) = resource_dir {
         let script = res.join("host").join("main.mjs");
         if script.is_file() && has_ui(res) {
@@ -1164,11 +1212,10 @@ fn resolve_host_entry_with(
                 },
                 // 设计稿 §8.3：走 `:1130` 之后的 return → Installed（**必须**）
                 distribution: sidecar::Distribution::Installed,
-                // 批 N（PM 裁定③ 2026-11-06）：**路径注入字段一律 None** ——
-                // `STUDIO_CONFIG_DIR` / `STUDIO_LOG_DIR` 的注入属段 2，必须与段 3（首启迁移）
-                // 同批发，否则老用户记忆/会话会「看起来消失」。批 N 只传形态。
-                config_dir: None,
-                log_dir: None,
+                // 批 N+1 段 2（PM 裁定③）：路径注入 —— 必须与段 3 首启迁移**同批**，
+                // 否则老用户配置/记忆「看起来消失」。`data_dir = None`（dev/单测未给）→ 两个 None。
+                config_dir: cfg_dir.clone(),
+                log_dir: log_dir.clone(),
             };
         }
         if script.is_file() {
@@ -1187,8 +1234,8 @@ fn resolve_host_entry_with(
                     if p.is_file() { Some(strip_verbatim(&p)) } else { None }
                 },
                 distribution: sidecar::Distribution::Installed,
-                config_dir: None,
-                log_dir: None,
+                config_dir: cfg_dir.clone(),
+                log_dir: log_dir.clone(),
             };
         }
     }
@@ -1201,8 +1248,9 @@ fn resolve_host_entry_with(
 fn resolve_host_entry(
     resource_dir: Option<&std::path::Path>,
     project_root: Option<&std::path::Path>,
+    data_dir: Option<&std::path::Path>,
 ) -> sidecar::HostEntry {
-    resolve_host_entry_with(!cfg!(debug_assertions), resource_dir, project_root)
+    resolve_host_entry_with_data_dir(!cfg!(debug_assertions), resource_dir, project_root, data_dir)
 }
 
 fn main() {
@@ -1271,6 +1319,9 @@ fn main() {
             // 提到块外：主窗口与 bot 窗口（base_script）都要用它找
             // `<resource_dir>/inject/entry.js`，否则安装版会借到开发树的产物。
             let resource_dir = app.path().resource_dir().ok();
+            // 段 2 的数据根：主窗 WebView2 profile 与 HostEntry 的 config/log 注入都用它，
+            // 在 setup 顶层声明一次 → 两处同源（不会出现「work_dir 一个根、profile 另一个根」）。
+            let app_data_dir = app.path().app_data_dir().ok();
             // 自动更新：注册状态 + 启动后 60s 一次性检查（失败静默，见 updater.rs）
             updater::init_state(app.handle());
             updater::spawn_startup_check(app.handle().clone());
@@ -1307,8 +1358,13 @@ fn main() {
                     "[studio] project_root: {:?} resource_dir: {:?}",
                     project_root, resource_dir
                 );
-                let host_entry =
-                    resolve_host_entry(resource_dir.as_deref(), project_root.as_deref());
+                // 段 2：装版的路径注入以 `app_data_dir()` 为根（<data>/config、<data>/logs）。
+                // 装配入口同源 → 不会出现「work_dir 一个根、config_dir 另一个根」。
+                let host_entry = resolve_host_entry(
+                    resource_dir.as_deref(),
+                    project_root.as_deref(),
+                    app_data_dir.as_deref(),
+                );
                 match &host_entry {
                     sidecar::HostEntry::Bundled { script, resource_root, work_dir, node, distribution, config_dir, log_dir } => {
                         eprintln!("[studio] host entry: bundled {:?}", script);
@@ -1371,10 +1427,21 @@ fn main() {
                 main_builder = main_builder.initialization_script(&init_script);
             }
 
-            // ⚠️ 装版主窗独立 WebView2 `data_directory` 属**段 2**（设计稿 §8.1 手段②）。
-            // PM 裁定③（2026-11-06）：段 2 必须与段 3（首启迁移）同批发版 → **批 N 不启用**，
-            // 否则装版换新 profile = 用户要重新登录一次，而迁移/回退链还没就位。
-            // 批 N 的装版行为必须逐字节不变，故这里只保留决策注释、不调用 data_directory。
+            // 主窗 WebView2 `data_directory`：**PM 裁定五（2026-11-06）明确撤销，不要启用**。
+            //
+            // 曾按段 2 实现过，裁撤理由（三条，全部成立）：
+            //   ① `%LOCALAPPDATA%\com.deepseek.studio\EBWebView` 是 Tauri/WebView2 的
+            //      **标准落点**（本机 26 个应用实测都在 local 的 identifier 目录）；
+            //   ② 我们的 `<data>` = `app_data_dir()` = `%APPDATA%\com.deepseek.studio`
+            //      （**Roaming**）—— 把 86 MB 且持续增长的浏览器缓存搬进漫游目录，
+            //      域环境下会被同步，**比现状更差**；
+            //   ③ 顺带免掉「老用户升级后要重新登录一次」这个可见回归与首启拷贝延迟。
+            //
+            // 收敛目标是「**配置与业务数据**离开 `~/.config` 与 roaming 根」，
+            // webview 缓存本就在 local，**不在收敛目标内**（见设计稿 §8.6）。
+            // 替代待办记 §9：NSIS 卸载器清理 `%LOCALAPPDATA%\com.deepseek.studio`（卸载残留）。
+            //
+            // ⚠️ 谁要重新打开这条，先读上面三条 —— 别只看到「目录 ② 没被治」就再写一遍。
 
             // 应用保存的窗口大小和位置
             if let (Some(w), Some(h)) = (win_state.width, win_state.height) {
@@ -1797,35 +1864,140 @@ mod tests {
         assert_eq!(sidecar::Distribution::Dev.as_env(), "dev");
     }
 
-    /// 批 N 不变量（PM 裁定③，2026-11-06）：**路径注入推迟到批 N+1**。
+    /// 批 N+1 段 2（PM 裁定③ 2026-11-06）：装版**必须**注入两个路径 env，值 = `<data>/config`
+    /// 与 `<data>/logs`。
     ///
-    /// 两个路径字段必须存在（编译器强制每个构造点填），但**批 N 的构造点一律 `None`** ——
-    /// 段 2（Rust 注入 `STUDIO_CONFIG_DIR` / `STUDIO_LOG_DIR`）必须与段 3（首启迁移）同批发，
-    /// 否则老用户记忆/会话会「看起来消失」。这条用例防止有人批 N 期间顺手把注入打开。
+    /// 这条替换了批 N 的 `batch_n_does_not_inject_paths`（那条锁的是「本批不许注入」，
+    /// 本批正是要注入 → 过时断言，按群纪律第 4 条「删过时断言必须补真回归断言」换成反向断言）。
     #[test]
-    fn batch_n_does_not_inject_paths() {
-        // dev 分支：Tsx 回退 → Dev
-        match resolve_host_entry_with(false, None, None) {
-            sidecar::HostEntry::Tsx { distribution, .. } => {
-                assert_eq!(distribution, sidecar::Distribution::Dev);
-            }
-            _ => panic!("project_root 为 None 时应回退 tsx"),
-        }
-
-        // 装版分支：形态 Installed，但两个路径字段恒 None
-        let tmp = fresh_tmp("batch-n");
+    fn batch_n1_injects_config_and_log_dirs_when_data_dir_given() {
+        let tmp = fresh_tmp("n1-inject");
         let res = tmp.join("res");
         make_resource_root(&res, true);
         let data = tmp.join("appdata");
         std::fs::create_dir_all(&data).expect("appdata");
 
-        match resolve_host_entry_with(true, Some(res.as_path()), Some(data.as_path())) {
-            sidecar::HostEntry::Bundled { distribution, config_dir, log_dir, .. } => {
+        match resolve_host_entry_with_data_dir(
+            true,
+            Some(res.as_path()),
+            Some(data.as_path()),
+            Some(data.as_path()),
+        ) {
+            sidecar::HostEntry::Bundled { distribution, config_dir, log_dir, work_dir, .. } => {
                 assert_eq!(distribution, sidecar::Distribution::Installed);
-                assert!(config_dir.is_none(), "批 N 不得注入 STUDIO_CONFIG_DIR（段 2 属批 N+1）");
-                assert!(log_dir.is_none(), "批 N 不得注入 STUDIO_LOG_DIR（段 2 属批 N+1）");
+                assert_eq!(
+                    config_dir.as_deref(),
+                    Some(data.join("config").as_path()),
+                    "装版必须注入 STUDIO_CONFIG_DIR = <data>/config"
+                );
+                assert_eq!(
+                    log_dir.as_deref(),
+                    Some(data.join("logs").as_path()),
+                    "装版必须注入 STUDIO_LOG_DIR = <data>/logs"
+                );
+                // 两个注入目录必须与 work_dir 同一个数据根（否则「config 在 A、trace 在 B」）
+                assert_eq!(work_dir, data, "work_dir 应等于同一个 app_data_dir");
             }
             sidecar::HostEntry::Tsx { .. } => panic!("装版不应回退 tsx"),
+        }
+    }
+
+    /// 段 2 的**反向**断言：dev 形态（不经 Rust 装版分支）**一个路径都不许注入** ——
+    /// 开发期行为必须逐字节不变（这也是批 N 那条不变量的真正内核，保留下来）。
+    #[test]
+    fn batch_n1_dev_never_injects_paths_even_with_data_dir() {
+        let tmp = fresh_tmp("n1-dev-noinject");
+        let root = tmp.join("repo");
+        // dev 分支的两个条件：仓库内产物 `<root>/src-tauri/host/main.mjs` **且** `<root>/src/ui/agent.html`
+        touch_file(&root.join("src-tauri").join("host").join("main.mjs"));
+        touch_file(&root.join("src").join("ui").join("agent.html"));
+        let data = tmp.join("appdata");
+        std::fs::create_dir_all(&data).expect("appdata");
+
+        // dev 分支 + 显式给了 data_dir：仍然不许注入
+        match resolve_host_entry_with_data_dir(
+            false,
+            None,
+            Some(root.as_path()),
+            Some(data.as_path()),
+        ) {
+            sidecar::HostEntry::Bundled { distribution, config_dir, log_dir, .. } => {
+                assert_eq!(distribution, sidecar::Distribution::Dev);
+                assert!(config_dir.is_none(), "dev 不得注入 STUDIO_CONFIG_DIR");
+                assert!(log_dir.is_none(), "dev 不得注入 STUDIO_LOG_DIR");
+            }
+            sidecar::HostEntry::Tsx { .. } => panic!("仓库内宿主单文件存在时应走 Bundled(dev)"),
+        }
+
+        // 未给 data_dir 的装版（单测/老调用点）：两个字段仍为 None，等价于批 N 行为
+        let res = tmp.join("res");
+        make_resource_root(&res, true);
+        match resolve_host_entry_with(true, Some(res.as_path()), Some(data.as_path())) {
+            sidecar::HostEntry::Bundled { config_dir, log_dir, .. } => {
+                assert!(config_dir.is_none());
+                assert!(log_dir.is_none());
+            }
+            sidecar::HostEntry::Tsx { .. } => panic!("装版不应回退 tsx"),
+        }
+    }
+
+    /// PM 裁定③ 追加要求：`window_state_path` 改认 env 后，**两形态各一条单测**。
+    ///
+    /// 装版：认 `STUDIO_CONFIG_DIR`（与 Node 侧同目录，用户文件夹里只有一处 deepseek-studio）；
+    /// dev：无人注入 → 回落 `dirs::config_dir()/deepseek-studio`，**行为逐字节不变**。
+    #[test]
+    fn window_state_path_uses_env_when_injected() {
+        let data = std::path::PathBuf::from("X:\\data");
+        let injected = data.join("config");
+        let got = window_state_path_with(Some(injected.to_str().unwrap()), Some(&data));
+        assert_eq!(got, injected.join("window-state.json"));
+    }
+
+    #[test]
+    fn window_state_path_dev_falls_back_to_config_dir() {
+        let fallback = std::path::PathBuf::from("X:\\roaming");
+        // 无注入 / 空串 / 纯空白：一律回落（空白 env 视为未设，与 Node 侧 resolveConfigDir 同口径）
+        for env_val in [None, Some(""), Some("   ")] {
+            let got = window_state_path_with(env_val, Some(&fallback));
+            assert_eq!(
+                got,
+                fallback.join("deepseek-studio").join("window-state.json"),
+                "dev 形态必须保持旧落点（env_val={:?}）",
+                env_val
+            );
+        }
+    }
+
+    /// 可观测性（卡片 D 条）：注入的 env 名与值必须能被 Rust 侧描述出来 ——
+    /// `spawn_child` 把这一行写进 `sidecar-<ms>.log`，装版真机上「注入了什么」才可核。
+    #[test]
+    fn host_entry_describe_reports_injected_envs() {
+        let tmp = fresh_tmp("n1-describe");
+        let res = tmp.join("res");
+        make_resource_root(&res, true);
+        let data = tmp.join("appdata");
+        std::fs::create_dir_all(&data).expect("appdata");
+
+        let entry = resolve_host_entry_with_data_dir(
+            true,
+            Some(res.as_path()),
+            Some(data.as_path()),
+            Some(data.as_path()),
+        );
+        let text = entry.describe();
+        assert!(text.contains("entry=bundled"), "{text}");
+        assert!(text.contains("STUDIO_DISTRIBUTION=installed"), "{text}");
+        assert!(text.contains("STUDIO_CONFIG_DIR=Some("), "{text}");
+        assert!(text.contains("STUDIO_LOG_DIR=Some("), "{text}");
+        // dev 侧描述必须显式写两个 None（而不是省略），否则真机上分不清「没注入」和「没打印」
+        match resolve_host_entry_with(false, None, None) {
+            tsx @ sidecar::HostEntry::Tsx { .. } => {
+                let d = tsx.describe();
+                assert!(d.contains("STUDIO_DISTRIBUTION=dev"), "{d}");
+                assert!(d.contains("STUDIO_CONFIG_DIR=None"), "{d}");
+                assert!(d.contains("STUDIO_LOG_DIR=None"), "{d}");
+            }
+            _ => panic!("dev 无 project_root 时应回退 tsx"),
         }
     }
 

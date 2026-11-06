@@ -13,7 +13,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { resolveConfigDir } from '../shared/distribution';
+import { resolveConfigDir, isInstalledDistribution } from '../shared/distribution';
 
 export interface SkillInfo {
   /** 技能 ID（目录名） */
@@ -33,21 +33,23 @@ export interface SkillInfo {
  *   3. ~/.agents/skills（通用/Codex 技能根，存在则用）
  *   4. `<STUDIO_CONFIG_DIR>`/skills（本项目默认；缺省 `~/.config/deepseek-studio/skills`）
  *
- * **第 ③ 位保持无条件命中**（PM 裁定③ 批 N 口径，2026-11-06）：装版「跳过第 ③ 位」
- * 属 D 组，随**批 N+1（段 2 + 段 3 同批）**一起改 —— 那一批才有 `STUDIO_CONFIG_DIR` 注入，
- * 在此之前单独切 ③ 位会让 dev 行为与装版行为同时变，违背「批 N 零行为变化」。
- * 本批只做第 ④ 位接 `STUDIO_CONFIG_DIR`（**无人注入该 env 时逐字节等价于旧行为**）。
+ * **第 ③ 位只在 dev 命中**（批 N+1，D 组，设计稿 §8.4）：
+ * `~/.agents/skills` 是**开发者/Codex 的通用技能根**，装版用户机上没有它、也不该去猜它 ——
+ * 装版跳过 ③ 位，直接用 ④ `<STUDIO_CONFIG_DIR>/skills`。dev 行为逐字节不变。
+ * 依据：判错代价不对称（装版误命中 ③ = 用户技能目录被指到别的工具的地盘）。
  */
 export function resolveSkillsDir(explicit?: string): string {
   const trimmed = explicit?.trim();
   if (trimmed) return trimmed;
   const envDir = process.env.STUDIO_SKILLS_DIR?.trim();
   if (envDir) return envDir;
-  const agentsDir = path.join(os.homedir(), '.agents', 'skills');
-  try {
-    if (fs.existsSync(agentsDir)) return agentsDir;
-  } catch {
-    // 访问失败则回落默认
+  if (!isInstalledDistribution()) {
+    const agentsDir = path.join(os.homedir(), '.agents', 'skills');
+    try {
+      if (fs.existsSync(agentsDir)) return agentsDir;
+    } catch {
+      // 访问失败则回落默认
+    }
   }
   return path.join(resolveConfigDir(), 'skills');
 }
@@ -147,11 +149,16 @@ export function scanSkills(skillsDir?: string): SkillInfo[] {
  * 确保技能目录存在（不存在则创建空目录）。
  * 不写入任何示例技能——目录内容应完全来自用户，避免"假技能"混进列表。
  *
- * PM 裁定③（2026-11-06）：**「装版不建」属 D 组，随批 N+1 落地**（与段 2 + 段 3 同批，
- * 那时才有 `STUDIO_CONFIG_DIR` 注入）。本批保持原语义 → 批 N 零行为变化。
+ * **装版不建**（批 N+1，D 组，设计稿 §8.4）：装版首启不得在 `<config>/skills` 下凭空
+ * 出现一个空目录（用户视角「我什么都没配，凭什么多一个目录」）。
+ * 因此**只有显式传入 `skillsDir`（面板「添加技能目录」）时才创建**；
+ * 装版缺省路径只返回、不落盘。dev 行为逐字节不变。
  */
 export function ensureSkillsDir(skillsDir?: string): string {
-  const dir = skillsDir ?? defaultSkillsDir();
+  const explicit = skillsDir?.trim();
+  const dir = explicit || defaultSkillsDir();
+  // 装版 + 非显式请求 → 只解析不建目录（显式请求是用户在面板上的明确动作，照旧创建）
+  if (!explicit && isInstalledDistribution()) return dir;
   try {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   } catch {

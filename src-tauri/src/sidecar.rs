@@ -378,6 +378,60 @@ pub enum HostEntry {
     },
 }
 
+impl HostEntry {
+    /// 形态字符串（日志/单测用）。
+    pub fn distribution(&self) -> Distribution {
+        match self {
+            HostEntry::Bundled { distribution, .. } => *distribution,
+            HostEntry::Tsx { distribution, .. } => *distribution,
+        }
+    }
+
+    /// 装版注入的配置目录（dev / 未注入恒为 `None`）。
+    pub fn config_dir(&self) -> Option<&std::path::Path> {
+        match self {
+            HostEntry::Bundled { config_dir, .. } => config_dir.as_deref(),
+            HostEntry::Tsx { .. } => None,
+        }
+    }
+
+    /// 装版注入的日志目录（dev / 未注入恒为 `None`）。
+    ///
+    /// **`SidecarSupervisor` 的 `crash_log_path` 取这里**（批 N+1，卡片 §3）：
+    /// 不再回落父进程 env —— Rust 2024 多线程下 `set_var` 会 panic，且父进程 env
+    /// 与「子进程实际被注入什么」可能不一致（那正是本轮要消灭的第二套真相）。
+    pub fn log_dir(&self) -> Option<&std::path::Path> {
+        match self {
+            HostEntry::Bundled { log_dir, .. } => log_dir.as_deref(),
+            HostEntry::Tsx { .. } => None,
+        }
+    }
+
+    /// 一行可读的注入描述，**写进 sidecar 日志文件**。
+    ///
+    /// 为什么要有它：装版是 GUI 进程、没有控制台，Rust 侧的 `eprintln!` 全部丢失，
+    /// 于是「装版到底注入了什么」在真机上**不可观测**（2026-11-06 装版实测的观察 2）。
+    /// 本函数把同样的信息交给 `spawn_child` 写进 `sidecar-<ms>.log`，与宿主自己的
+    /// stdout 是**同一份文件**，真机一眼可核。
+    pub fn describe(&self) -> String {
+        match self {
+            HostEntry::Bundled { script, work_dir, distribution, config_dir, log_dir, .. } => format!(
+                "entry=bundled script={:?} work_dir={:?} STUDIO_DISTRIBUTION={} STUDIO_CONFIG_DIR={:?} STUDIO_LOG_DIR={:?}",
+                script,
+                work_dir,
+                distribution.as_env(),
+                config_dir,
+                log_dir
+            ),
+            HostEntry::Tsx { project_root, distribution } => format!(
+                "entry=tsx project_root={:?} STUDIO_DISTRIBUTION={} STUDIO_CONFIG_DIR=None STUDIO_LOG_DIR=None",
+                project_root,
+                distribution.as_env()
+            ),
+        }
+    }
+}
+
 /// 找不到可用 Node.js 时的专用退出码（TD-04）。
 pub const EXIT_NODE_MISSING: i32 = 21;
 /// 打包版找不到宿主单文件时的专用退出码（TD-04）。
@@ -514,12 +568,18 @@ impl SidecarSupervisor {
         shutdown_requested: Arc<AtomicBool>,
         child_pid: Arc<AtomicU32>,
     ) -> Self {
-        // 批 N（2026-11-06 PM 裁定③）：**路径注入（`STUDIO_CONFIG_DIR` / `STUDIO_LOG_DIR`）
-        // 随段 2 一起推迟到批 N+1** —— 因为段 2 必须与段 3（首启迁移）同批，
-        // 否则老用户记忆/会话会「看起来消失」。本批 `log_dir` 恒为 `None`，
-        // 故这里保持原有回落链，行为逐字节不变。
-        let crash_log_path = std::env::var("STUDIO_LOG_DIR")
-            .ok()
+        // 批 N+1 段 2（PM 裁定③）：`crash_log_path` 取 **`HostEntry` 携带的 `log_dir`**
+        // （由 main.rs 从 `app_data_dir()` 推出来并注入子进程），与 `STUDIO_LOG_DIR`
+        // 是**同一个来源** —— 消灭「Rust 一套、Node 一套」的第二套真相。
+        //
+        // 明确**不读父进程 env**（旧实现的 `std::env::var("STUDIO_LOG_DIR")` 已删）：
+        // ① Rust 2024 多线程下 `set_var` 会 panic，父进程 env 不可控；
+        // ② 父进程 env 与子进程实际被注入的值可能不一致 —— 那正是本批要修的东西。
+        //
+        // dev（`Tsx` / 未注入）回落 `dirs::config_dir()/deepseek-studio/logs`，
+        // **与批 N 行为逐字节一致**。
+        let crash_log_path = host_entry
+            .log_dir()
             .map(PathBuf::from)
             .or_else(|| dirs::config_dir().map(|d| d.join("deepseek-studio").join("logs")));
         if let Some(ref p) = crash_log_path {
@@ -568,9 +628,19 @@ impl SidecarSupervisor {
                 // 安装版 resource_dir() 与开发树仓库根**目录结构同构**，宿主无须区分两种形态。
                 c.env("STUDIO_RESOURCE_ROOT", resource_root);
                 // 设计稿 §8.3：形态由 Rust 单点判定后传下去，Node 只读不算（避免第二套推断）。
-                // 批 N：**只注入形态**；`STUDIO_CONFIG_DIR` / `STUDIO_LOG_DIR` 随段 2 推迟到批 N+1
-                // （段 2 必须与段 3 首启迁移同批，否则老用户数据会「看起来消失」）。
                 c.env("STUDIO_DISTRIBUTION", distribution.as_env());
+                // 段 2（批 N+1）：路径注入 —— 与段 3 首启迁移**同批**（PM 裁定③）。
+                // 注进去之后装版读写 <data>/config 与 <data>/logs；老目录的东西由
+                // `config-migration.ts` 在宿主首行搬过去，源文件保留不删。
+                // dev 走 Tsx 分支、不经过这里 → 开发期行为逐字节不变。
+                let cfg_dir = self.host_entry.config_dir().map(|p| p.to_path_buf());
+                let log_dir_inject = self.host_entry.log_dir().map(|p| p.to_path_buf());
+                if let Some(ref d) = cfg_dir {
+                    c.env("STUDIO_CONFIG_DIR", d);
+                }
+                if let Some(ref d) = log_dir_inject {
+                    c.env("STUDIO_LOG_DIR", d);
+                }
                 // 工作目录（可写）≠ 资源根（可能只读）：logs/trace 走 process.cwd()。
                 //
                 // 目录必须**先建出来**：安装版首次运行时 app_data_dir 还不存在，
@@ -631,6 +701,19 @@ impl SidecarSupervisor {
             {
                 Ok(f) => {
                     let cloned = f.try_clone();
+                    // 批 N+1（可观测性）：Rust 侧把「注入了什么」**写进同一份日志文件**。
+                    // 装版无控制台，下面的 eprintln! 全部丢失；只有落进文件才可核。
+                    // 写在 child 启动前，故这段是文件里第一块内容，顺序稳定、便于 grep。
+                    if let Ok(mut head) = f.try_clone() {
+                        use std::io::Write;
+                        let _ = writeln!(head, "[studio] {}", self.host_entry.describe());
+                        let _ = writeln!(
+                            head,
+                            "[studio] sidecar log: {}",
+                            path.display()
+                        );
+                        let _ = head.flush();
+                    }
                     cmd.stdout(Stdio::from(f));
                     match cloned {
                         Ok(f2) => {

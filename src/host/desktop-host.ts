@@ -35,6 +35,7 @@ import { AGENT_SENTINEL, type AgentLoopEvent } from './agent-loop';
 import { createAgentChannel, type AgentChannel } from './agent-channel';
 import { pickFolderViaDialog } from './folder-picker';
 import { resolveConfigDir } from '../shared/distribution';
+import { resolveLogDir, resolveStudioDataDir } from '../shared/distribution';
 import { createWebEngine } from './engine/web-engine';
 import { createApiEngine } from './engine/api-engine';
 import { createBotRegistry, SessionAllowlist } from './bot/registry';
@@ -978,6 +979,14 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
                 mcpServers: controller.listServerIds(),
                 skillsDir: resolveSkillsDir(),
                 configPath: defaultConfigPath(),
+                // C1 可观测性缺口的面板侧闭环（PM 裁定十 2026-11-06）：面板要显示**真实路径**，
+                // 不再逐字硬编码模板串（`<用户配置目录>/deepseek-studio/logs/` 那种）。
+                // 装版这三个值来自 Rust 注入的 env；dev 下 configDir/logDir 是回落值、
+                // dataDir 为 null（未注入 → 无可信数据根，面板据此显示「不可用」）。
+                configDir: resolveConfigDir(),
+                logDir: resolveLogDir().dir,
+                logDirSource: resolveLogDir().source,
+                dataDir: resolveStudioDataDir(),
               },
             };
           },
