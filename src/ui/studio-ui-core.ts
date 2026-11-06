@@ -99,7 +99,7 @@ declare global {
   interface Window {
     /**
      * Tauri 命令桥：打开工作台窗口（独立 origin `127.0.0.1:8760` 的独立 webview）。
-     * 由 `src/desktop/entry.ts`（Core 域）注入；本模块**只调用、不修改**。
+     * 由 `src/desktop/entry.ts`（UI 域）注入；本模块**只调用、不修改**。
      */
     __studioOpenWorkbench?: () => void;
   }

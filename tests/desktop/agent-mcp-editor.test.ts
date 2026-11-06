@@ -276,3 +276,103 @@ describe('负控：判据能咬住缺口', () => {
     expect(/\$\s*<[^>]*>\(\s*'btn-mcp'\s*\)/.test(broken)).toBe(true);
   });
 });
+
+describe('工作台 MCP 编辑器：测试连接反馈（P1 2026-11-06）', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** 已填好名称/命令的表单（collectConfig 可过校验）。 */
+  function openFilledForm(): { testBtn: HTMLButtonElement; status: HTMLElement } {
+    fetchMock.mockResolvedValue(okResponse({}));
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    mountMcpEditor({ root, token: 'tok-t', origin: 'http://127.0.0.1:8760' });
+    (root.querySelector('#btn-mcp-add') as HTMLButtonElement).click();
+    const form = root.querySelector('#mcp-editor-form') as HTMLElement;
+    const inputs = Array.from(form.querySelectorAll('input[type="text"]')) as HTMLInputElement[];
+    inputs[0]!.value = 'fs';
+    inputs[1]!.value = 'npx';
+    const testBtn = Array.from(form.querySelectorAll('button'))
+      .find((b) => (b.textContent ?? '').includes('测试连接')) as HTMLButtonElement;
+    const status = root.querySelector('#mcp-editor-status') as HTMLElement;
+    return { testBtn, status };
+  }
+
+  /** 真 fetch 同形：尊重 signal，abort 后 reject（宿主长期不回包 = pending）。 */
+  function pendingSignalRespectingFetch(): void {
+    fetchMock.mockImplementation((_url: string, init?: RequestInit) =>
+      new Promise((resolve, reject) => {
+        const signal = (init as { signal?: AbortSignal } | undefined)?.signal;
+        if (signal) {
+          signal.addEventListener('abort', () => {
+            const err = new Error('The operation was aborted.');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        }
+        // 宿主不回包：不主动 resolve。
+        void resolve;
+      }),
+    );
+  }
+
+  it('点「测试连接」立即 loading 态；到 15s 客户端上限宿主未回包 → 可见超时提示（含三查项）且按钮还原', async () => {
+    vi.useFakeTimers();
+    const { testBtn, status } = openFilledForm();
+    pendingSignalRespectingFetch();
+    testBtn.click();
+    // 点击即有界面反应（此前「无任何反应」的修复点）
+    expect(testBtn.disabled).toBe(true);
+    expect(testBtn.textContent).toBe('测试中…');
+    expect(status.textContent).toBe('');
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(status.textContent).toContain('测试超时');
+    expect(status.textContent).toContain('请检查服务器 URL');
+    // 按钮还原（原 label + 可点）
+    expect(testBtn.disabled).toBe(false);
+    expect(testBtn.textContent).toBe('测试连接');
+  });
+
+  it('状态机单调锁（mock 忽略 signal）：已报超时后，迟到的成功响应不再覆盖「测试超时」文案', async () => {
+    // 本用例的 fetch 是 **mock 忽略 signal**：abort 后不 reject，我们手动在 15s 之后 resolve，
+    // 模拟「宿主迟到的回包」。断言对象是**面板状态机**（文案不被二次改写），不是 socket。
+    // 两态读数：修前 RED = 旧实现无超时机制、该形态请求会永远挂着无反馈；
+    // 若只加 loading 态而没有 timedOut 单调锁，迟到的成功会覆盖超时提示。修后 GREEN = 文案停在「测试超时」。
+    vi.useFakeTimers();
+    let resolveLate: (v: unknown) => void = () => {};
+    const { testBtn, status } = openFilledForm();
+    // pending mock 必须在 openFilledForm() **之后**设：该 helper 内部先 mockResolvedValue（列表刷新用），
+    // 若先设 pending 会被它冲掉 → 「测试连接」的 fetch 立即 resolve，永远走不到超时分支（本例修前踩的坑）。
+    fetchMock.mockImplementation(() => new Promise((resolve) => { resolveLate = resolve; }));
+    testBtn.click();
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(status.textContent).toContain('测试超时');
+    // 迟到的「成功」到达 → 不得改写状态机
+    resolveLate(okResponse({}));
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(status.textContent).toContain('测试超时');
+    expect(status.textContent).not.toContain('连接成功');
+    expect(testBtn.disabled).toBe(false);
+  });
+
+  it('校验失败给可见提示（未填名称 → 「请填写服务器名称」），不是静默返回', () => {
+    fetchMock.mockResolvedValue(okResponse({}));
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    mountMcpEditor({ root, token: 'tok-v', origin: 'http://127.0.0.1:8760' });
+    (root.querySelector('#btn-mcp-add') as HTMLButtonElement).click();
+    const form = root.querySelector('#mcp-editor-form') as HTMLElement;
+    const testBtn = Array.from(form.querySelectorAll('button'))
+      .find((b) => (b.textContent ?? '').includes('测试连接')) as HTMLButtonElement;
+    testBtn.click();
+    return new Promise<void>((done) => setTimeout(() => {
+      const status = root.querySelector('#mcp-editor-status') as HTMLElement;
+      expect(status.textContent).toBe('请填写服务器名称');
+      expect(testBtn.disabled).toBe(false);
+      done();
+    }, 0));
+  });
+});

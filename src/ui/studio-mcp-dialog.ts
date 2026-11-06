@@ -26,7 +26,7 @@
  * 纪律：
  *   - 本文件**不 import** `callHostTool` 的写类调用，只保留 `mcp.get`（读掩码值）。
  *   - 「去工作台编辑」按钮走**已有** Tauri 命令 `open_workbench`
- *     （`src/desktop/entry.ts` 注入 `window.__studioOpenWorkbench`，Core 域，只调不改），
+ *     （`src/desktop/entry.ts` 注入 `window.__studioOpenWorkbench`，UI 域，只调不改），
  *     **不新开任何凭据面**。
  */
 

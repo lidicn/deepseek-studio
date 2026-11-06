@@ -334,6 +334,21 @@ function isPrefixCloseEnough(prefix: string, full: string): boolean {
 }
 
 /**
+ * P1 凭据守卫（2026-11-06 UI 卡）：`input[type="password"]` 一律不进入两条预热路径。
+ *
+ * 文档级 `input` 捕获此前只按标签名（TEXTAREA/INPUT/contenteditable）过滤、不看 `type`：
+ * 用户在密码框打字时（a）skills 预热会白触发 `skill.list` 刷新（行为泄漏）；
+ * （b）memory select 预热 `draftOf` **读 `.value`** → 草稿达到 6 字阈值即把密码明文
+ * 作为草稿送宿主 `memory.select`（flag 默认关着所以没外泄；flag 一开即凭据泄漏）。
+ * `draftOf` 全文件只有一个调用点（memory 的 `onInput`），两个 `onInput` 在此设防即覆盖读值路径。
+ */
+function isCredentialInput(target: HTMLElement | null): boolean {
+  if (!target || target.tagName !== 'INPUT') return false;
+  const type = (target as HTMLInputElement).type;
+  return typeof type === 'string' && type.toLowerCase() === 'password';
+}
+
+/**
  * 同步取一个已 settle 的预取结果（不给 promise 加状态位，用 WeakMap 记录最后一次 settle 的值）。
  *
  * 用途：abort 路径必须同步补发（proto.abort → 立即 origSend 再 origAbort，
@@ -3271,6 +3286,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       const tag = target.tagName;
       // 只管输入类元素：textarea / input / contenteditable。
       if (tag !== 'TEXTAREA' && tag !== 'INPUT' && !target.isContentEditable) return;
+      // 凭据守卫：密码框不参与预热（不触发 skill.list 刷新）。
+      if (isCredentialInput(target)) return;
       scheduleSkillsPrewarm();
     };
     document.addEventListener('input', onInput, true);
@@ -3313,6 +3330,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       const tag = target.tagName;
       // 只管输入类元素：textarea / input / contenteditable。
       if (tag !== 'TEXTAREA' && tag !== 'INPUT' && !target.isContentEditable) return;
+      // 凭据守卫：密码框不参与预热（draftOf 读值 → 密码明文不进 memory.select 草稿）。
+      if (isCredentialInput(target)) return;
       scheduleMemorySelectWarmup(draftOf(target));
     };
     document.addEventListener('input', onInput, true);

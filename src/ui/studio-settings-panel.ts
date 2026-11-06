@@ -172,8 +172,8 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   generalTab.dataset.tabPanel = 'general';
   generalTab.innerHTML = `
     <div class="studio-info-row"><span class="studio-info-label">版本</span><span class="studio-info-value" data-settings-version></span></div>
-    <div class="studio-info-row"><span class="studio-info-label">日志路径</span><span class="studio-info-value">sidecar 日志：&lt;用户配置目录&gt;/deepseek-studio/logs/ · 宿主 trace：&lt;运行数据目录&gt;/logs/trace/（随 OS/安装方式变化，实际路径见启动日志「[studio] sidecar runtime log: …」行）</span></div>
-    <div class="studio-info-row"><span class="studio-info-label">配置路径</span><span class="studio-info-value">~/.config/deepseek-studio/</span></div>
+    <div class="studio-info-row"><span class="studio-info-label">日志路径</span><span class="studio-info-value" data-settings-logpath>加载中…</span></div>
+    <div class="studio-info-row"><span class="studio-info-label">配置路径</span><span class="studio-info-value" data-settings-configpath>加载中…</span></div>
     <div class="studio-info-row"><span class="studio-info-label">宿主端口</span><span class="studio-info-value">8760</span></div>
   `;
   // 版本行：构建期注入的真值（runtimeAppVersion 读 `__STUDIO_APP_VERSION__`，dev 树为 unknown）。
@@ -357,14 +357,31 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
 
   async function loadSkills(): Promise<void> {
     const dir = (skillsDirInput as HTMLInputElement).value.trim();
-    const result = await callHostTool('skill.list', dir ? { dir } : {});
+    let result: { ok: boolean; data?: unknown } | null = null;
+    try {
+      result = await callHostTool('skill.list', dir ? { dir } : {});
+    } catch {
+      result = null; // 真拉取失败（宿主不可达/未就绪）：落到下方 fail-visible 提示
+    }
+    if (!result) {
+      if (!Array.isArray(globalState.skills) || globalState.skills.length === 0) {
+        skillsList.replaceChildren();
+      }
+      // 保留现有列表 + 可见提示（不静默、不抛）：旧值还在就继续显示，同时明说这次没刷到。
+      if (!skillsList.querySelector('[data-skills-load-error]')) {
+        skillsList.appendChild(el('div', { className: 'studio-form-hint', attrs: { 'data-skills-load-error': '1' }, style: { color: '#c0392b' }, text: '技能列表获取失败（宿主不可达或尚未就绪），可点击「扫描」重试' }));
+      }
+      return;
+    }
     if (result.ok && result.data) {
       const data = result.data as { dir?: string; skills: Array<{ id: string; name: string; description: string }> };
       // 回填解析后的真实目录，让用户看到扫描的是哪里。
       if (typeof data.dir === 'string' && data.dir) (skillsDirInput as HTMLInputElement).value = data.dir;
       globalState.skills = data.skills ?? [];
-      renderSkillsList();
+      renderSkillsList(); // 成功重渲会 replaceChildren，顺带清掉旧提示行
+      return;
     }
+    // ok:false / 无 data：保留现有列表（既有语义，不强制出错态）。
   }
   skillsScanBtn.addEventListener('click', () => void loadSkills());
   skillsDirRow.appendChild(skillsDirInput);
@@ -419,21 +436,39 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
 
   /** 从宿主拉一次生效中列表。RPC 失败时保留现有缓存，不清空界面。 */
   async function reloadActive(): Promise<void> {
-    const r = await callHostTool('memory.list', {});
-    const rows = r.ok && r.data && typeof r.data === 'object'
-      ? (r.data as { memories?: unknown }).memories
-      : undefined;
+    let rows: unknown;
+    try {
+      const r = await callHostTool('memory.list', {});
+      rows = r.ok && r.data && typeof r.data === 'object'
+        ? (r.data as { memories?: unknown }).memories
+        : undefined;
+    } catch {
+      rows = undefined; // 保留缓存（fail-visible：不静默也不抛，下方提示行可见）
+      markMemoryLoadFailed('生效中记忆列表获取失败（宿主不可达），当前显示的是上次缓存');
+    }
     if (Array.isArray(rows)) globalState.memories = rows as MemoryRowView[];
     if (memoryMode === 'active') renderMemories();
   }
 
   async function reloadArchived(): Promise<void> {
-    const r = await callHostTool('memory.listArchived', {});
-    const rows = r.ok && r.data && typeof r.data === 'object'
-      ? (r.data as { memories?: unknown }).memories
-      : undefined;
-    archivedRows = Array.isArray(rows) ? (rows as MemoryRowView[]) : [];
+    let rows: unknown;
+    try {
+      const r = await callHostTool('memory.listArchived', {});
+      rows = r.ok && r.data && typeof r.data === 'object'
+        ? (r.data as { memories?: unknown }).memories
+        : undefined;
+    } catch {
+      // 宿主不可达：归档区没有旧缓存可留 → 显式空表 + 可见提示（不静默、不抛）。
+      markMemoryLoadFailed('已归档记忆列表获取失败（宿主不可达）');
+    }
+    archivedRows = Array.isArray(rows) ? (rows as MemoryRowView[]) : archivedRows;
     if (memoryMode === 'archived') renderMemories();
+  }
+
+  /** fail-visible：记忆区拉取失败的可见提示行（去重，成功拉取后由 renderMemories 的 replaceChildren 清掉）。 */
+  function markMemoryLoadFailed(message: string): void {
+    if (memoryList.querySelector('[data-memory-load-error]')) return;
+    memoryList.appendChild(el('div', { className: 'studio-form-hint', attrs: { 'data-memory-load-error': '1' }, style: { color: '#c0392b' }, text: message }));
   }
 
   function renderMemories(): void {
@@ -505,8 +540,8 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   const diagnosticsTab = el('div', { className: 'studio-tab-content' });
   diagnosticsTab.dataset.tabPanel = 'diagnostics';
   diagnosticsTab.innerHTML = `
-    <div class="studio-info-row"><span class="studio-info-label">日志路径</span><span class="studio-info-value">sidecar 日志：&lt;用户配置目录&gt;/deepseek-studio/logs/ · 宿主 trace：&lt;运行数据目录&gt;/logs/trace/（实际路径见启动日志「[studio] sidecar runtime log: …」行）</span></div>
-    <div class="studio-info-row"><span class="studio-info-label">配置路径</span><span class="studio-info-value">~/.config/deepseek-studio/</span></div>
+    <div class="studio-info-row"><span class="studio-info-label">日志路径</span><span class="studio-info-value" data-settings-logpath>加载中…</span></div>
+    <div class="studio-info-row"><span class="studio-info-label">配置路径</span><span class="studio-info-value" data-settings-configpath>加载中…</span></div>
     <p class="studio-form-hint">旧外部集成入口已归档；安全执行审计和聊天室审计会议仍保留。</p>
   `;
   tabContents['diagnostics'] = diagnosticsTab;
@@ -539,17 +574,74 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   const unsubscribeControls = controls.subscribe(syncControls);
   syncControls();
 
+  // 日志/配置路径行（2026-11-06 卡③）：`settings.get` 取真值，不再显示模板串。
+  // 三分支：真值（logDir/configDir/dataDir 有值）→ 直接显示；
+  //   logDirSource === 'fallback' → 真值 + 「（回落值，非注入）」标注；
+  //   dataDir === null（dev 形态未注入数据根）→ 宿主 trace 行显「不可用」。
+  // 取不到 settings.get（宿主不可达/字段缺失）→ 显「不可用」，不回填任何假路径。
+  // 宿主 trace 的**路径**不在 UI 侧拼装（不把宿主目录知识复制进面板）；traceDir 真值字段归 Core 后续小卡。
+  async function fillPathRows(): Promise<void> {
+    // fail-visible（2026-11-06 第 9 次闸修复）：任何取不到 settings.get 的路径（无桥 /
+    // sendToolCall reject / ok:false / ok:true 但无 data / data 非对象）一律渲染「不可用」文案——
+    // 失败要可见（值行显不可用），不静默、也不得向外抛（旧实现在「ok:true 无 data」时
+    // info === undefined → `info.logDir` 裸解引用 TypeError；`void` 调用点无 catch → unhandled rejection）。
+    let info: Partial<{
+      logDir: string;
+      logDirSource: 'env' | 'fallback';
+      configDir: string;
+      dataDir: string | null;
+    }> = {};
+    try {
+      const r = await callHostTool('settings.get', {});
+      // 守卫补全：ok===true **且 data 是对象（非 null/数组/字符串）** 才取 data，否则回「不可用」。
+      if (r && r.ok && r.data !== null && typeof r.data === 'object' && !Array.isArray(r.data)) {
+        info = r.data as Partial<{
+          logDir: string;
+          logDirSource: 'env' | 'fallback';
+          configDir: string;
+          dataDir: string | null;
+        }>;
+      }
+    } catch {
+      // 异常路径（桥 sendToolCall reject 等）：落到下方「不可用」文案，不再向外抛。
+      info = {};
+    }
+    const logValue =
+      typeof info.logDir === 'string' && info.logDir.length > 0
+        ? info.logDir + (info.logDirSource === 'fallback' ? '（回落值，非注入）' : '')
+        : '不可用';
+    const traceValue =
+      typeof info.dataDir === 'string' && info.dataDir.length > 0
+        ? `宿主 trace 在数据根下（${info.dataDir}）`
+        : '宿主 trace：不可用（当前形态未注入数据根）';
+    const cfgValue = typeof info.configDir === 'string' && info.configDir.length > 0 ? info.configDir : '不可用';
+    const logText = `sidecar 日志：${logValue} · ${traceValue}`;
+    for (const tab of [generalTab, diagnosticsTab]) {
+      const logEl = tab.querySelector('[data-settings-logpath]');
+      if (logEl) logEl.textContent = logText;
+      const cfgEl = tab.querySelector('[data-settings-configpath]');
+      if (cfgEl) cfgEl.textContent = cfgValue;
+    }
+  }
+  // fillPathRows 内部已全捕获（永不 reject）；.catch 是防 unhandled rejection 的保险丝。
+  void fillPathRows().catch(() => { /* unreachable：内部 try/catch 已兜底 */ });
+
   async function loadMcp(): Promise<void> {
     // 单独再拉一次带 configs 的列表（settings.get 只给 id 列表）。
-    const mcp = await callHostTool('mcp.list', {});
-    if (mcp.ok && mcp.data) {
-      const md = mcp.data as {
-        servers?: string[];
-        configs?: Array<{ id: string; transport: 'stdio' | 'http' | 'sse'; url?: string; command?: string; args?: string[] }>;
-      };
-      if (Array.isArray(md.servers)) globalState.mcpServers = [...md.servers];
-      if (Array.isArray(md.configs)) globalState.mcpConfigs = md.configs;
-      renderMcpServers();
+    try {
+      const mcp = await callHostTool('mcp.list', {});
+      if (mcp.ok && mcp.data) {
+        const md = mcp.data as {
+          servers?: string[];
+          configs?: Array<{ id: string; transport: 'stdio' | 'http' | 'sse'; url?: string; command?: string; args?: string[] }>;
+        };
+        if (Array.isArray(md.servers)) globalState.mcpServers = [...md.servers];
+        if (Array.isArray(md.configs)) globalState.mcpConfigs = md.configs;
+        renderMcpServers();
+      }
+    } catch {
+      // fail-visible：宿主不可达/未就绪时在 mcp tab 显式提示，保留已有列表，不吞也不抛。
+      mcpError.textContent = 'MCP 列表获取失败（宿主不可达或尚未就绪）';
     }
   }
 
@@ -561,7 +653,9 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
     policyHint.textContent = '';
     mcpError.textContent = '';
     renderMcpServers();
-    void controls.refresh();
+    // controls store 的 refresh 无内部 catch（宿主 reject 时会 reject）：调用点兜底，
+    // 保留旧快照（控制区停在 loading/旧值，可见），不把 unhandled rejection 丢给页面。
+    void controls.refresh().catch(() => { /* 旧快照保留；下次成功 refresh 恢复 */ });
     void loadMcp();
     void loadSkills();
     // M10-5：面板打开就从宿主拉一次，别只等广播（否则打开早于首帧广播时永远空）。

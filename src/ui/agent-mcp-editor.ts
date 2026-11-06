@@ -143,15 +143,22 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
 
   let servers: McpServerConfigView[] = [];
   let editingId: string | null = null;
+  // P1 测试连接反馈（2026-11-06 卡）：宿主侧 test 无超时，目标不可达时请求可长期 in-flight，
+  // 此前「点测试无任何反应」= 界面上没有任何加载态、也没有客户端兜底。
+  // 客户端上限：N 秒必须给出可见反馈（loading 文案 → 超时提示，提示里写清该查什么）。
+  // 放在 mountMcpEditor 闭包内（**不是模块级**）：同页挂两个编辑器实例不得互相串台。
+  const MCP_TEST_TIMEOUT_MS = 15_000;
+  let testBtnRef: HTMLButtonElement | null = null;
 
   function setStatus(text: string, tone: 'ok' | 'err' | '' = ''): void {
     status.textContent = text;
     status.className = `mcp-editor-status${tone ? ` is-${tone}` : ''}`;
   }
 
-  async function request(method: string, path: string, body?: unknown): Promise<{ ok: boolean; status: number; data: unknown }> {
+  async function request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<{ ok: boolean; status: number; data: unknown }> {
     const res = await fetch(`${origin}${path}`, {
       method,
+      signal,
       headers: {
         Authorization: `Bearer ${token}`,
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
@@ -272,6 +279,7 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
 
     const actions = el('div', { className: 'mcp-editor-actions' });
     const testBtn = el('button', { className: 'btn btn-ghost', attrs: { type: 'button' }, text: '测试连接' });
+    testBtnRef = testBtn;
     const cancelBtn = el('button', { className: 'btn btn-ghost', attrs: { type: 'button' }, text: '取消' });
     const saveBtn = el('button', { className: 'btn btn-primary', attrs: { type: 'button' }, text: '保存' });
     actions.appendChild(testBtn);
@@ -385,9 +393,30 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
     }
   }
 
-  async function testServer(): Promise<void> {
+  async function testServer(timeoutMs: number = MCP_TEST_TIMEOUT_MS): Promise<void> {
     const collected = collectConfig();
+    // 校验失败：collectConfig 已在每个分支 setStatus 可见报错，这里直接返回（非静默）。
     if (!collected) return;
+    // P1（2026-11-06 卡）：加载态 + 客户端超时。宿主侧 test 对不可达目标可能长期 in-flight，
+    // 此前点「测试连接」后界面无任何反应。现在：
+    //   - 点击即把按钮置为「测试中…」并禁用（可见 loading 态）；
+    //   - 到点（默认 15s）宿主仍未回包 → 给可见超时提示（写明该查 URL/网络/服务是否在听）；
+    //   - 状态机单调：一旦已报超时，迟到的响应/abort 引起的 reject **都不再改写**，
+    //     避免「超时提示」与「迟到成功提示」互相覆盖；
+    //   - 无论超时还是正常完成，按钮都还原（存原 label，不硬写回文案）。
+    // 单测注入小 `timeoutMs` + fake timer，不依赖真实 15s。
+    const originalLabel = testBtnRef ? (testBtnRef.textContent ?? '') : '';
+    let timedOut = false;
+    if (testBtnRef) {
+      testBtnRef.disabled = true;
+      testBtnRef.textContent = '测试中…';
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      setStatus(`测试超时（${Math.round(timeoutMs / 1000)}s）：请检查服务器 URL、网络可达性，以及该地址上的服务是否在监听。`, 'err');
+    }, timeoutMs);
     try {
       // PM 定的口径（2026-11-02）：**body 可选 `{ config }`** ——
       //   - 有 body ⇒ 测这份配置（用户「改了再测」是真实需求，不测就保存心里没底）
@@ -396,10 +425,18 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
       // `id` 已在 URL 路径里，body 不重复带。
       const r = await request('POST', `${MCP_SERVERS_ENDPOINT}/${encodeURIComponent(collected.id)}/test`, {
         config: collected.config,
-      });
+      }, controller.signal);
+      if (timedOut) return; // 已报超时：迟到响应不再改写状态机
       setStatus(r.ok ? '连接成功' : `连接失败（HTTP ${r.status}）`, r.ok ? 'ok' : 'err');
     } catch (e) {
+      if (timedOut) return; // 已报超时：abort 引起的 reject 不再改写状态机
       setStatus(`连接失败：${e instanceof Error ? e.message : String(e)}`, 'err');
+    } finally {
+      window.clearTimeout(timer);
+      if (testBtnRef) {
+        testBtnRef.disabled = false;
+        testBtnRef.textContent = originalLabel;
+      }
     }
   }
 
@@ -424,6 +461,7 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
 
   function closeForm(): void {
     editingId = null;
+    testBtnRef = null;
     form.style.display = 'none';
     form.replaceChildren();
     fields = null;
