@@ -656,6 +656,21 @@ impl SidecarSupervisor {
                 let cfg_dir = self.host_entry.config_dir().map(|p| p.to_path_buf());
                 let log_dir_inject = self.host_entry.log_dir().map(|p| p.to_path_buf());
                 if let Some(ref d) = cfg_dir {
+                    // ⚠️ 2026-11-06 真机 P1：**注入 env 不等于目录存在**。
+                    //
+                    // 原来只注入 `STUDIO_CONFIG_DIR` 而不建目录 ⇒ 宿主首行的首启迁移
+                    // （`config-migration.ts`）检查新配置目录时必然 `skipped-new-dir-missing`，
+                    // 用户的 `mcp-servers.json` 永远搬不过来（实测：新目录里只有宿主后来自己
+                    // 写 `config.json` 时顺手建出来的目录，**迁移跑在它前面**）。
+                    // 时间戳为证：`migration.log` 22:54:00.942 判「目录不存在」，
+                    // `config/` 目录 mtime 22:54:01（宿主写 config.json 时创建）。
+                    //
+                    // 修法：在这里建出来，让「我注入了 STUDIO_CONFIG_DIR」这个契约成真。
+                    // **刻意不改成让迁移自己 mkdir** —— 那会把 `skipped-new-dir-missing`
+                    // 这条异常信号永久消音，下次真出问题就再也看不见。
+                    if let Err(e) = std::fs::create_dir_all(d) {
+                        eprintln!("[studio] 无法创建配置目录 {:?}: {}", d, e);
+                    }
                     c.env("STUDIO_CONFIG_DIR", d);
                 }
                 if let Some(ref d) = log_dir_inject {

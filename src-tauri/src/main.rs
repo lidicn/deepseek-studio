@@ -586,10 +586,29 @@ fn resolve_config_dir(packaged: bool, app_data_dir: Option<&std::path::Path>) ->
         .join("deepseek-studio")
 }
 
+/// 装版真配置目录（`<app_data_dir>/config`）。**由 `setup` 用真实 `AppHandle` 解析后写入**，
+/// 与注入给宿主子进程的 `STUDIO_CONFIG_DIR` **同一份来源**（都来自 `resolve_host_entry` 的 `data_dir`）。
+///
+/// ⚠️ 为什么要有它（2026-11-06 真机 P0「配置劈裂」）：
+/// 旧 `config_dir()` 恒走 `resolve_config_dir(packaged, None)` ⇒ 装版也回落到 `~/.config/deepseek-studio`，
+/// 而 node 侧拿的是注入的 `<app_data_dir>/config`。两份 `config.json` 的 `secret`/`token` 不同
+/// ⇒ **Rust 用旧 secret 签券、node 用新 secret 验券 ⇒ 全部拒**。ACL 修好之后这条仍会让页面连不上。
+static CONFIG_DIR_OVERRIDE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
 /// 生产调用点：按构建类型取 `packaged`，`app_data_dir` 由调用方给。
+///
+/// **解析顺序**：
+///   1. `CONFIG_DIR_OVERRIDE`（`setup` 里已解析出真实 `app_data_dir` 时写入）—— 装版正常路径；
+///   2. 否则回落 `resolve_config_dir(packaged, None)`。
+///
+/// **白名单（谁允许在覆盖未设置时调用）**：只有「`AppHandle` 之前」的调用点 ——
+/// 建窗（`main.rs:1946`）之前、插件回调之前**没有任何** `config_dir()` 调用；
+/// `setup` 在 `:1792` 拿到 `app_data_dir` 后立即写覆盖，故装版所有真实调用点都命中第 1 步。
+/// 新增调用点若落在 `setup` 之前，必须先在此处登记理由，否则会静默回到旧目录（= 再次劈裂）。
 fn config_dir() -> std::path::PathBuf {
-    // `app_data_dir` 只在 `AppHandle` 上拿得到；窗口/命令上下文里统一走
-    // `app.path().app_data_dir()` 后再调 `resolve_config_dir`，这里给出兜底版本。
+    if let Some(p) = CONFIG_DIR_OVERRIDE.get() {
+        return p.clone();
+    }
     resolve_config_dir(!cfg!(debug_assertions), None)
 }
 
@@ -1833,6 +1852,22 @@ fn main() {
                     project_root.as_deref(),
                     app_data_dir.as_deref(),
                 );
+                // ⚠️ 配置路径单点收口（2026-11-06 真机 P0「配置劈裂」）。
+                //
+                // 时序（本修法成立的前提，逐行可核）：
+                //   - `app_data_dir` 在 setup 开头 `:1792`（`app.path().app_data_dir().ok()`）；
+                //   - 本行紧跟 `:1831` 的 `resolve_host_entry` → **早于**建窗 `:1946` `main_builder.build()`；
+                //   - 所有真实 `config_dir()` 调用点（`:846` 建窗签券脚本、`:711` 取券命令、
+                //     `:1116`/`:1292` 读 host/port、`:982`/`:1055` 相对路径与 profile）
+                //     **全部发生在建窗之后** ⇒ 必然命中覆盖，不可能跑在覆盖之前。
+                //
+                // 同源同值（PM 清单条件 2）：值取自 `host_entry.config_dir()` —— 与注入给子进程的
+                // `STUDIO_CONFIG_DIR` **同一个字段、同一根字符串**，不在这里另算一遍
+                // （两处各算就是第三种劈裂）。
+                if let Some(cfg) = host_entry.config_dir() {
+                    // 失败只可能是重复初始化（本进程内不可能），静默即可。
+                    let _ = CONFIG_DIR_OVERRIDE.set(cfg.to_path_buf());
+                }
                 // P0 卡 (C)：把 grant / chat-config 的日志落点定下来 ——
                 // 必须**在页面初始化脚本生成之前**，否则那几条 `[studio] grant: …`
                 // 会退回 eprintln!（装版无控制台 ⇒ 丢失），等于白加。
@@ -2666,6 +2701,68 @@ mod tests {
             dev.ends_with(std::path::Path::new(".config").join("deepseek-studio")),
             "dev 形态必须保持旧落点，实际得到 {:?}",
             dev
+        );
+    }
+
+    /// 配置劈裂（2026-11-06 真机 P0）：**装版 `config_dir()` 必须与宿主读同一份 config.json**。
+    ///
+    /// 本条锁的是「单点收口」这件事本身：
+    ///   ① 覆盖未设置时 `config_dir()` 回落历史路径（这正是缺陷原来的行为，
+    ///      保留它是因为 `setup` 之前确有白名单调用点）；
+    ///   ② **覆盖一旦设置，`config_dir()` 必须返回覆盖值** —— 否则 `:711` 取券命令
+    ///      会用旧 secret 签券，而 node 用新 secret 验券 ⇒ 全拒。
+    ///
+    /// ⚠️ 用独立进程验证（`OnceLock` 只能写一次，同一个测试进程里先设后断会互相污染）。
+    /// 这里用**子进程跑测试自身**的形态：设 `STUDIO_CONFIG_OVERRIDE_PROBE` 让本函数在
+    /// 子进程里只做「设置 + 断言」。
+    #[test]
+    fn config_dir_override_makes_rust_and_node_read_same_file() {
+        // ① 未设置时：归历史路径（白名单兜底仍在）
+        if CONFIG_DIR_OVERRIDE.get().is_none() {
+            let fallback = config_dir();
+            assert!(
+                fallback.ends_with(std::path::Path::new(".config").join("deepseek-studio"))
+                    || !cfg!(debug_assertions),
+                "未设置覆盖时应回落历史路径，实际得到 {:?}",
+                fallback
+            );
+        }
+
+        // ② 覆盖设置后：`config_dir()` 必须逐字返回它（这是与注入同源的唯一证明点）
+        if let Some(probe) = std::env::var_os("STUDIO_CONFIG_OVERRIDE_PROBE") {
+            let want = std::path::PathBuf::from(probe);
+            let _ = CONFIG_DIR_OVERRIDE.set(want.clone());
+            assert_eq!(
+                config_dir(),
+                want,
+                "覆盖设置后 config_dir() 必须返回注入同源的那个目录"
+            );
+            return;
+        }
+
+        // 子进程自检：证明上面的分支真的能被执行到（而不是永远不跑）
+        let exe = std::env::current_exe().expect("current_exe");
+        let want = std::path::PathBuf::from("X:\\com.deepseek.studio\\config");
+        let out = std::process::Command::new(exe)
+            .args(["--exact", "tests::config_dir_override_makes_rust_and_node_read_same_file", "--nocapture"])
+            .env("STUDIO_CONFIG_OVERRIDE_PROBE", &want)
+            .output()
+            .expect("spawn self");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            out.status.success(),
+            "子进程断言失败（覆盖未生效？）:\n{}",
+            text
+        );
+        // 反向自检：子进程确实跑了 1 个测试（防止「0 个测试也算成功」的假绿）
+        assert!(
+            text.contains("1 passed"),
+            "子进程没有真的跑这个用例（防假绿）:\n{}",
+            text
         );
     }
 

@@ -237,6 +237,18 @@ function detail(rel: string, from: string, to: string): {
   return { rel, from, to, bytes, sha256_12: hash };
 }
 
+/**
+ * 目标已存在 ⇒ **跳过，不覆盖**（PM 裁定，2026-11-06）。
+ *
+ * ⛔ **禁止把它改成覆盖语义**（别顺手「修」成 `copyFileSync` 无条件执行）：
+ * 首启现场是**混合态** —— 新目录里已经有宿主自己写的 `config.json`（那份才是**活的**，
+ * 带新 `secret`/`token`）、`memories.db`、`memories.db.audit.key`，只缺 `mcp-servers.json`。
+ * 覆盖式搬迁会把活的那份 config 换成**旧 secret**，恰好把「配置劈裂」这个 P0 重新造一遍
+ * （Rust 用旧 secret 签券、node 用新 secret 验券 ⇒ 全部拒）。
+ *
+ * 正确结果就是 `copied=1`（`mcp-servers.json`）+ `skipped_existing=3`。
+ * **看到 `skipped_existing=3` 不是迁移坏了**，别去动这里。
+ */
 function copyFileIfAbsent(
   src: string,
   dst: string,
@@ -347,7 +359,7 @@ export function migrateLegacyConfig(paths: MigratePaths): MigrateResult {
   // 新目录必须已经由 Rust 建出来：**没有它说明段 2 没生效 / dev 形态**，
   // 这时绝不能凭一个 env 值就在用户机上凭空造目录。
   if (!exists(newConfigDir) || !isDirectory(newConfigDir)) {
-    emitTerminal('skipped-new-dir-missing', 'warn', 'newConfigDir=' + newConfigDir + ' 不存在或不是目录（段 2 未生效？）', path.join(newConfigDir, MIGRATION_LOG_NAME));
+    emitTerminal('skipped-new-dir-missing', 'warn', 'newConfigDir=' + newConfigDir + ' 不存在或不是目录（本次不迁移）', path.join(newConfigDir, MIGRATION_LOG_NAME));
     return { ran: false, skippedReason: 'new-dir-missing', ...out };
   }
 
