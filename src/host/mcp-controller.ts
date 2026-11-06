@@ -113,7 +113,7 @@ export function maskMcpServerSecrets(cfg: McpServerConfig): McpServerConfig {
  *
  * 口径：
  *   - 入参值 === `****` 且磁盘上该 key 有原值 → **保留原值**（不改）；
- *   - 入参值 === `****` 且磁盘上该 key 不存在 → 保留 `****`（无处可还原，如实记录）；
+ *   - 入参值 === `****` 且磁盘上该 key 不存在 → **拒写**（`ok:false`，详见 `mergeMaskedSecretsChecked`）；
  *   - 入参值是别的值（含空串 = 用户主动清空）→ **用入参值**（用户确实改了）。
  */
 export function mergeMaskedSecrets(
@@ -126,32 +126,54 @@ export function mergeMaskedSecrets(
   throw new Error(`unresolved-mask: ${r.detail}`);
 }
 
-/** env / headers 的逐键还原（R2-02 原有语义，保持不变）。 */
+/** env / headers 的逐键还原（R2-02 原有语义）。
+ *
+ * P2 小卡（2026-11-06）：下列两种情况**收集**到 `issues` 里由调用方**拒写**，
+ * 而不是把 `****` 当值写回磁盘 —— 理由见 `mergeMaskedSecretsChecked` 的文档。
+ * `issues` 省略时（兼容旧签名）行为退化为「原样保留掩码」，仅供只读场景使用。
+ */
 function mergeEnvHeaders(
   incoming: McpServerConfig,
   existing: McpServerConfig | null | undefined,
+  issues?: string[],
 ): McpServerConfig {
   if (!existing) return incoming;
   const restore = (
     next: Record<string, string> | undefined,
     prev: Record<string, string> | undefined,
+    field: 'env' | 'headers',
   ): Record<string, string> | undefined => {
     if (!next) return next;
     const out: Record<string, string> = {};
     for (const [k, v] of Object.entries(next)) {
-      if (v === MCP_SECRET_MASK && prev && Object.prototype.hasOwnProperty.call(prev, k)) {
-        // 掩码占位 → 还原成磁盘上的原值（不覆盖用户真实密钥）。
-        out[k] = prev[k] as string;
-      } else {
+      if (v === MCP_SECRET_MASK) {
+        if (prev && Object.prototype.hasOwnProperty.call(prev, k)) {
+          // 掩码占位 → 还原成磁盘上的原值（不覆盖用户真实密钥）。
+          out[k] = prev[k] as string;
+          continue;
+        }
+        // P2 小卡：磁盘上没有这个 key ⇒ **无处可还原**。
+        //
+        // 旧行为是把字面 `****` 当值写进磁盘 —— 那不是「如实记录」，是**造了一个假凭据**：
+        // 之后它被当真值使用，认证必失败，而日志里看不出这是掩码残留
+        // （用户只会看到「密钥无效」，然后一遍遍重填）。
+        // 现在：记进 issues，由 checked 版本返回 `ok:false` 拒写（fail-closed）。
+        if (issues) {
+          // F3（PM 复核）：detail 会经 `desktop-host.ts:786-789` 打日志并**返回给模型**，
+          // 所以必须写「下一步该做什么」——只说「不能还原」，模型只会重试同一个请求。
+          issues.push(`${field}.${k} 是掩码但磁盘上没有该键可还原；请在表单里重新填写 ${field}.${k} 的真实值后再保存`);
+        }
         out[k] = v;
+        continue;
       }
+      out[k] = v;
     }
     return out;
   };
   return {
     ...incoming,
-    ...(incoming.env ? { env: restore(incoming.env, existing.env) } : {}),
-    ...(incoming.headers ? { headers: restore(incoming.headers, existing.headers) } : {}),
+    ...(incoming.env ? { env: restore(incoming.env, existing.env, 'env') } : {}),
+    ...(incoming.headers ? { headers: restore(incoming.headers, existing.headers, 'headers') } : {}),
   };
 }
 
@@ -170,9 +192,16 @@ export function mergeMaskedSecretsChecked(
   incoming: McpServerConfig,
   existing: McpServerConfig | null | undefined,
 ): MergeMaskedResult {
-  const base = mergeEnvHeaders(incoming, existing);
+  const issues: string[] = [];
+  // P2 小卡（2026-11-06）：env/headers 里「掩码但磁盘无该键」原本会把字面 `****`
+  // 写回磁盘当值 —— 那不是如实记录，是造了一个**假凭据**（之后认证必失败，
+  // 日志看不出是掩码残留）。现在收集成 issue 由本函数统一**拒写**（fail-closed）。
+  const base = mergeEnvHeaders(incoming, existing, issues);
   const ua = mergeUrlAndArgsChecked(incoming, existing ?? undefined);
   if (!ua.ok) return { ok: false, error: 'unresolved-mask', detail: ua.detail };
+  if (issues.length > 0) {
+    return { ok: false, error: 'unresolved-mask', detail: issues.join('；') };
+  }
   return { ok: true, config: { ...base, ...ua.patch } };
 }
 
