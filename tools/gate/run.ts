@@ -55,6 +55,10 @@ const blockingSteps: Step[] = [
   // 只许出现在 resolve_config_dir 函数体（唯一入口）/ 注释 / 单测断言——P1 路径漂移（grant 脚本
   // 硬编码旧路径逃出 env 注入）的回归守卫。先红后绿已证：b147ca5 红 3 处 / HEAD 绿。
   { name: 'rust-path-guard', cmd: 'npx tsx tools/audit/rust-path-guard.ts' },
+  // bundle.resources ↔ main.ts 契约一致性（C 卡，20261106）：main.ts 里 resourceRoot 派生的
+  // 字面量 join 必须全部出现在 tauri.conf.json bundle.resources——缺条目 = dev 能跑、装版 500
+  // （与 P0 竞态同族：两形态路径解析不同）。先红已证：当前树红 3 条（mcp-settings 壳三件）。
+  { name: 'resource-contract-guard', cmd: 'npx tsx tools/audit/resource-contract-guard.ts' },
 ];
 
 /** 信息级：红了照常合，输出进 logs/gate-info.log。 */
