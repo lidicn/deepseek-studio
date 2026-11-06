@@ -426,3 +426,82 @@ describe('裁定二十六：7 条终局必须各有可 grep 的一行（fail-vis
     expect(logs.join('\n')).not.toContain('[studio-migration]');
   });
 });
+
+describe('裁定三十八：权威落点 = 5 条可行 + 2 条不可行（有意不落）', () => {
+  it('failed 在 cfg 可解析时，migration.log 里能 grep 到 level=error failed', () => {
+    const data = path.join(root, 'data3');
+    const newCfg = path.join(data, 'config');
+    fs.mkdirSync(newCfg, { recursive: true });
+    const err = Object.assign(new Error('EACCES: denied'), {
+      code: 'EACCES',
+      stack: 'Error: EACCES\n    at migrate (config-migration.ts:1:1)',
+    });
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const badEnv = {
+        STUDIO_DISTRIBUTION: 'installed',
+        STUDIO_CONFIG_DIR: newCfg,
+        get STUDIO_LOG_DIR(): string {
+          throw err;
+        },
+      } as unknown as NodeJS.ProcessEnv;
+      runStartupMigration(badEnv, path.join(root, 'home'));
+    } finally {
+      spy.mockRestore();
+    }
+    const log = fs.readFileSync(path.join(newCfg, MIGRATION_LOG_NAME), 'utf8');
+    expect(log).toContain('level=error failed');
+    expect(log).toContain('code=EACCES');
+  });
+
+  it('skipped-already-migrated 落 migration.log（离线可查「这台机器迁移过没有」）', () => {
+    migrateLegacyConfig({ legacyConfigDir: legacy, newConfigDir: next });
+    const before = fs.readFileSync(path.join(next, MIGRATION_LOG_NAME), 'utf8');
+    expect(before).not.toContain('skipped-already-migrated');
+
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      migrateLegacyConfig({ legacyConfigDir: legacy, newConfigDir: next });
+    } finally {
+      spy.mockRestore();
+    }
+    const after = fs.readFileSync(path.join(next, MIGRATION_LOG_NAME), 'utf8');
+    expect(after).toContain('skipped-already-migrated');
+  });
+
+  it('skipped-env-pair 两处都落 migration.log（cfg 可解析时）', () => {
+    const data = path.join(root, 'data4');
+    const newCfg = path.join(data, 'config');
+    fs.mkdirSync(newCfg, { recursive: true });
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      // 第二条分支：两 env 都在但父目录不一致 → resolveStudioDataDir=null
+      runStartupMigration(
+        {
+          STUDIO_DISTRIBUTION: 'installed',
+          STUDIO_CONFIG_DIR: newCfg,
+          STUDIO_LOG_DIR: path.join(root, 'elsewhere', 'logs'),
+        } as NodeJS.ProcessEnv,
+        path.join(root, 'home'),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    const log = fs.readFileSync(path.join(newCfg, MIGRATION_LOG_NAME), 'utf8');
+    expect(log).toContain('skipped-env-pair');
+  });
+
+  it('两条不可行分支（no-new-dir / same-dir）**有意不落** migration.log', () => {
+    const data = path.join(root, 'data5');
+    const newCfg = path.join(data, 'config');
+    fs.mkdirSync(newCfg, { recursive: true });
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      migrateLegacyConfig({ legacyConfigDir: legacy, newConfigDir: '' });
+      migrateLegacyConfig({ legacyConfigDir: newCfg, newConfigDir: newCfg });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fs.existsSync(path.join(newCfg, MIGRATION_LOG_NAME))).toBe(false);
+  });
+});

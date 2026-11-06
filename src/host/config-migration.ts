@@ -54,6 +54,15 @@ export type MigrationTerminal =
  *      可离线取证、不依赖宿主是否在跑。
  *
  * 统一前缀 `[studio-migration]`、行内 `level=` 表严重度 —— 便于真机 grep。
+ *
+ * **哪几条有权威落点（PM 裁定三十八 的 B 子集，2026-11-06）**：
+ *   - 落 `migration.log`：`ran` / `skipped-new-dir-missing` / `skipped-already-migrated` /
+ *     `skipped-env-pair` / `failed` —— 这 5 条都能解析出一个可信的 `<newConfigDir>`。
+ *   - **只走 sidecar 日志（不可行）**：`skipped-no-new-dir`（新配置目录根本不存在，没处落）、
+ *     `skipped-same-dir`（新旧同目录、无事可做）—— 硬写只能写到一个猜测位置，
+ *     **比不写更糟**。这两条没有 `appendTo` 是**有意的**，不是漏传。
+ *     （`already-migrated` 与 `failed` 恰恰是「这台机器迁移过没有、为什么没跑」最需要
+ *     离线取证的两条，所以它们必须在。）
  */
 export function emitTerminal(
   terminal: MigrationTerminal,
@@ -338,14 +347,14 @@ export function migrateLegacyConfig(paths: MigratePaths): MigrateResult {
   // 新目录必须已经由 Rust 建出来：**没有它说明段 2 没生效 / dev 形态**，
   // 这时绝不能凭一个 env 值就在用户机上凭空造目录。
   if (!exists(newConfigDir) || !isDirectory(newConfigDir)) {
-    emitTerminal('skipped-new-dir-missing', 'warn', 'newConfigDir=' + newConfigDir + ' 不存在或不是目录（段 2 未生效？）');
+    emitTerminal('skipped-new-dir-missing', 'warn', 'newConfigDir=' + newConfigDir + ' 不存在或不是目录（段 2 未生效？）', path.join(newConfigDir, MIGRATION_LOG_NAME));
     return { ran: false, skippedReason: 'new-dir-missing', ...out };
   }
 
   const logPath = path.join(newConfigDir, MIGRATION_LOG_NAME);
   const seen = readLogGeneration(logPath);
   if (seen !== null && seen >= GENERATION) {
-    emitTerminal('skipped-already-migrated', 'info', 'gen=' + GENERATION + ' log=' + logPath);
+    emitTerminal('skipped-already-migrated', 'info', 'gen=' + GENERATION + ' log=' + logPath, logPath);
     return { ran: false, skippedReason: 'already-migrated', ...out, logPath };
   }
 
@@ -456,6 +465,7 @@ export function runStartupMigration(
         'skipped-env-pair',
         'warn',
         `CONFIG=${fmt(env.STUDIO_CONFIG_DIR)} LOG=${fmt(env.STUDIO_LOG_DIR)} —— 装版形态但两 env 不成对，本次不迁移`,
+        cfg ? path.join(cfg, MIGRATION_LOG_NAME) : undefined,
       );
       return null;
     }
@@ -466,6 +476,7 @@ export function runStartupMigration(
         'skipped-env-pair',
         'warn',
         `CONFIG=${cfg} LOG=${logDirRaw} —— 两 env 父目录不一致或同值（resolveStudioDataDir=null），本次不迁移`,
+        path.join(cfg, MIGRATION_LOG_NAME),
       );
       return null;
     }
@@ -505,12 +516,29 @@ export function runStartupMigration(
     // `first_frame` 指向出错行；**不打全栈**（装版一行一帧足够定位）。
     const err = e as NodeJS.ErrnoException;
     const firstFrame = (err.stack ?? '').split('\n')[1]?.trim() ?? '(none)';
+    // failed 的权威落点：cfg 能解析出来就落它（离线可取证）；解析不出来就没落点。
+    const failedLogTarget = resolveFailureLogTarget(env);
     emitTerminal(
       'failed',
       'error',
       `gen=${GENERATION} code=${err.code ?? '(none)'} error=${err.message ?? String(e)} first_frame=${firstFrame}`,
+      failedLogTarget,
     );
     return null;
+  }
+}
+
+/**
+ * catch 分支里能拿到的权威落点（失败时 env 可能本身就是出错源，故单独兜一层）。
+ *
+ * 拿不到就返回 `undefined` —— `emitTerminal` 会退回只走 stdout，不会凭猜测造路径。
+ */
+function resolveFailureLogTarget(env: NodeJS.ProcessEnv): string | undefined {
+  try {
+    const cfg = env.STUDIO_CONFIG_DIR?.trim();
+    return cfg ? path.join(cfg, MIGRATION_LOG_NAME) : undefined;
+  } catch {
+    return undefined;
   }
 }
 

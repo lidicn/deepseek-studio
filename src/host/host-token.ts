@@ -256,6 +256,85 @@ function randomJti(): string {
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
+/**
+ * 一次性 jti 记账的容量口径（PM 裁定三十三 3，2026-11-06）。
+ *
+ * 为什么需要上界：批 N+1 之后「一个窗口一张券」变成「一次连接一张券」（P0 卡 (A)），
+ * 不设上界就是**单调增长的 Set** —— 今天已经抓过四次「看着有上界、实际一直在涨」。
+ *
+ * 三条口径：
+ *   1. 每次记账顺带清扫**已过期**的 jti（`exp` 在 `now` 之前）；
+ *   2. 硬上界 1024：超出时按**最旧 exp** 淘汰；
+ *   3. 触到硬上界**必须打一行 `level=warn`**（不许静默淘汰）。
+ */
+export const JTI_HARD_CAP = 1024;
+
+/** `verifyBootstrapGrant` 只需要 has/add，故用最小接口（`Set<string>` 天然兼容）。 */
+export interface JtiRegistry {
+  has(jti: string): boolean;
+  add(jti: string, expMs?: number): unknown;
+}
+
+/** 有界的一次性 jti 记账（过期清扫 + 硬上界 + 触顶告警）。 */
+export class BoundedJtiSet implements JtiRegistry {
+  private readonly map = new Map<string, number>();
+  private warned = false;
+  constructor(
+    private readonly cap: number = JTI_HARD_CAP,
+    private readonly log: (line: string) => void = (l) => console.log(l),
+    private readonly now: () => number = () => Date.now(),
+  ) {}
+
+  has(jti: string): boolean {
+    return this.map.has(jti);
+  }
+
+  add(jti: string, expMs?: number): void {
+    const expiry = typeof expMs === 'number' ? expMs : this.now() + 60_000;
+    this.pruneExpired();
+    this.map.set(jti, expiry);
+    if (this.map.size > this.cap) {
+      this.evictOldest();
+      if (!this.warned) {
+        this.warned = true;
+        this.log(
+          `[host-token] level=warn jti-cap-reached cap=${this.cap} size=${this.map.size} —— 按最旧 exp 淘汰（不是静默丢弃）`,
+        );
+      }
+    }
+  }
+
+  /** 清掉 `exp <= now` 的条目；返回清除数量（供单测断言「真的清了」）。 */
+  pruneExpired(): number {
+    const now = this.now();
+    let removed = 0;
+    for (const [jti, exp] of this.map) {
+      if (exp <= now) {
+        this.map.delete(jti);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  /** 淘汰最旧 exp 的一条（只应在上界触发时调用）。 */
+  private evictOldest(): void {
+    let oldestJti: string | null = null;
+    let oldestExp = Infinity;
+    for (const [jti, exp] of this.map) {
+      if (exp < oldestExp) {
+        oldestExp = exp;
+        oldestJti = jti;
+      }
+    }
+    if (oldestJti !== null) this.map.delete(oldestJti);
+  }
+
+  get size(): number {
+    return this.map.size;
+  }
+}
+
 export interface VerifyBootstrapResult {
   readonly ok: boolean;
   readonly claims?: BootstrapGrantClaims;
@@ -265,7 +344,7 @@ export interface VerifyBootstrapResult {
 export async function verifyBootstrapGrant(
   authority: HostTokenAuthority,
   presented: string | null,
-  usedJtis: Set<string>,
+  usedJtis: JtiRegistry,
   expectedAud: string,
   now: () => number = () => Date.now(),
 ): Promise<VerifyBootstrapResult> {
@@ -289,6 +368,6 @@ export async function verifyBootstrapGrant(
   if (typeof claims.exp === 'number' && now() > claims.exp) return { ok: false, reason: 'expired' };
   if (claims.aud !== expectedAud) return { ok: false, reason: 'aud-mismatch' };
   if (usedJtis.has(claims.jti)) return { ok: false, reason: 'consumed' };
-  usedJtis.add(claims.jti);
+  usedJtis.add(claims.jti, typeof claims.exp === 'number' ? claims.exp : undefined);
   return { ok: true, claims };
 }

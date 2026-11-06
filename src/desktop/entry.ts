@@ -19,6 +19,7 @@ import { createChatReadCapability } from '../capabilities/chat-read';
 import { createChatInsertCapability } from '../capabilities/chat-insert';
 import { createChatSendCapability } from '../capabilities/chat-send';
 import { createHostClient, type HostClient } from './host-client';
+import { acquireGrant } from './grant-acquire';
 import { installMainWorldInterceptor, setInterceptorTraceSink, configureMemorySelect } from '../inject/main-world-interceptor';
 import { installTraceReportHandle } from '../inject/main-world-interceptor';
 import {
@@ -49,16 +50,31 @@ const DEFAULT_HOST_URL = 'ws://127.0.0.1:8760/studio';
  *
  * 导出纯函数以便单测锁定 aud 对齐（别让页端/宿主两处 aud 口径漂移）。
  */
+/** WS `?aud=` 与 Rust 签发口径的**唯一**页端来源（main 窗 `main`、bot 窗 `bot:<id>`，
+ *  与 main.rs:issue_bootstrap_grant_rs 的 audience 逐字一致）。 */
+export function hostAudience(botId: string): string {
+  return botId === 'main' ? 'main' : `bot:${botId}`;
+}
+
 export function resolveHostUrl(
   bootstrapGrant: string | undefined,
   botId: string,
   fallback: string = DEFAULT_HOST_URL,
 ): string {
-  const aud = botId === 'main' ? 'main' : `bot:${botId}`;
+  const aud = hostAudience(botId);
   return bootstrapGrant
     ? `${fallback}?token=${encodeURIComponent(bootstrapGrant)}&aud=${encodeURIComponent(aud)}`
     : fallback;
 }
+
+/**
+ * 裁定三十二 fail-visible：取券状态横幅（仅主窗非登录页挂载）。
+ * 退避期「正在等待宿主就绪…」/ 失败「宿主凭据不可用」——**静默裸连判红**（台账 §七 负控）。
+ */
+const GRANT_BANNER_CSS =
+  'position:fixed;right:12px;bottom:12px;z-index:2147483646;max-width:340px;padding:8px 12px;' +
+  'font:12px/1.5 system-ui,-apple-system,sans-serif;color:#5b4300;background:#fff8e1;' +
+  'border:1px solid #f0c36d;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.15);';
 
 /**
  * W2（20261023 用户定调的窗口设计）：主窗口 = 主 bot。
@@ -155,15 +171,56 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
   // 不装 chromeShims——DeepSeek 反爬会检测 window.chrome 判定扩展环境拒登（见 v0.29 修复）。
   const capabilities = dedupeById([...defaultCapabilities(), ...(options.capabilities ?? [])]);
   const executable = capabilities as unknown as ExecutableCapability[];
-  // TD-02：注入页连 /studio 不再带宿主全权 token（config.token 永不进页面）。
-  // Rust 侧注入 window.__studioGrant（60s/一次性/仅 ws-connect/绑 audience，main.rs:load_host_grant_script），
-  // 页面连接时带 ?token=<grant>&aud=<同值>（主窗 aud=main，bot 窗 aud=bot:<id>）；
-  // host 侧 verifyGrant+consumeGrant 一次性消费。读不到 grant 时保持旧 URL——仅 dev 允许无凭据
-  // 起宿主（生产无 grant 即拒，设计稿 §6 fail-closed）。
+  // TD-02 + P0 卡 (A) 页端半（2026-11-06 裁定四十一）：每次连接/重连前**现取**宿主 URL
+  // （Rust 注入闭包 `__studioRequestGrant` 现签 60s/一次性/绑 aud 的 grant；不试旧券、不缓存）。
+  // 静态 `__studioGrant`（旧构建/dev 注入）只作为 fallbackUrl 保留；闭包缺失（dev 形态）时
+  // acquireGrant 立即回落（零等待、零提示），行为与改前逐位一致。
+  // 回落路径必须 fail-visible（裁定三十二）：取券耗尽/不可重试 → 主窗可见横幅，静默裸连判红。
   const bootstrapGrant = (globalThis as { __studioGrant?: string }).__studioGrant;
-  const hostUrl = options.hostUrl ?? resolveHostUrl(bootstrapGrant, botId);
+  const fallbackUrl = options.hostUrl ?? resolveHostUrl(bootstrapGrant, botId);
+  const aud = hostAudience(botId);
+  const locationPathname = typeof location !== 'undefined' ? location.pathname : '';
+  const isLoginPage = locationPathname.includes('/login') || locationPathname.includes('/signin');
+  const bannerEnabled =
+    typeof globalThis.document !== 'undefined' && botId === 'main' && !isLoginPage;
+  const grantBannerRef: { el: HTMLElement | null } = { el: null };
+  const setGrantBanner = (message: string | null): void => {
+    if (!bannerEnabled) return;
+    let el = grantBannerRef.el;
+    if (!message) {
+      el?.remove();
+      grantBannerRef.el = null;
+      return;
+    }
+    if (!el) {
+      el = document.createElement('div');
+      el.style.cssText = GRANT_BANNER_CSS;
+      (document.body ?? document.documentElement).appendChild(el);
+      grantBannerRef.el = el;
+    }
+    if (el.textContent !== message) el.textContent = message;
+  };
   const host = createHostClient({
-    url: hostUrl,
+    url: fallbackUrl,
+    urlResolver: (): Promise<string> =>
+      acquireGrant({
+        aud,
+        onState: (state) => {
+          // 裁定三十六：退避期间必须可见（「正在等待宿主就绪…」），不许静默等 15s
+          if (state === 'start') setGrantBanner('正在等待宿主就绪…（获取连接凭据）');
+        },
+      }).then((r) => {
+        if (r.grant) {
+          setGrantBanner(null);
+          return resolveHostUrl(r.grant, botId, fallbackUrl);
+        }
+        if (r.attempts > 0) {
+          // attempts>0 = 真进过按需取券且回落：可见原因（各错误枚举不共用一条提示）。
+          setGrantBanner(`宿主凭据不可用，agent 能力离线（原因：${r.lastError}）。重连时会自动重试取券。`);
+        }
+        // dev 形态（attempts===0）：不提示——裸连在 dev 是合法形态（设计稿 §6 fail-closed 只约束生产）。
+        return fallbackUrl;
+      }),
     capabilities: executable,
     reportError: options.reportError,
     botId,
@@ -249,7 +306,6 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
       };
       scheduleUpdateCheck();
     }
-    const isLoginPage = location.pathname.includes('/login') || location.pathname.includes('/signin');
     if (!isBotWindow && !isLoginPage) {
       // Studio 常驻主视图：覆盖 DeepSeek 内容区，但动态避让原生侧栏和 composer。
       // 登录页与 bot 操作窗口不挂载；无法创建 DOM 的测试桩环境也跳过。

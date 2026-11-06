@@ -33,6 +33,13 @@ export const DEFAULT_TOOL_CALL_TIMEOUT_MS = 75_000;
 
 export interface HostClientOptions {
   url: string;
+  /**
+   * P0 卡 (A) 页端半（2026-11-06 裁定四十一）：**每一轮**连接/重连前现取一次宿主 URL
+   * （内部走 `grant-acquire`：Rust 注入闭包现签 60s 一次性 grant + 裁定三十六退避）。
+   * 不传 = 行为与改前逐位一致（固定 `url`）。有了它，重连不再复用上一轮的旧 URL/旧券
+   * （L2/H1：一次性券被重放/过期 → 每次重连必然被拒，1288 拒/0 接受 的结构性根因）。
+   */
+  urlResolver?: () => Promise<string>;
   capabilities: ReadonlyArray<ExecutableCapability>;
   /** 页面 origin（默认 location.origin 或 https://chat.deepseek.com）。 */
   origin?: string;
@@ -310,45 +317,60 @@ export function createHostClient(options: HostClientOptions): HostClient {
     handle(msg);
   }
 
-  function connectWs(): void {
-    if (stopped) return;
-    const make: WebSocketFactory =
-      options.wsFactory ?? ((url: string) => new (globalThis.WebSocket as new (u: string) => WebSocketLike)(url));
-    const socket = make(options.url);
-    ws = socket;
-    socket.onopen = () => {
-      backoff = 500;
-      // v0.24：上报本页所属 botId，宿主据此把工具派发/同意闸门路由到本窗口。
-      // v0.31：同时上报账号身份指纹（localStorage.userToken 派生），宿主据此做
-      // 同账号双窗口去重——两窗口登同一 DeepSeek 账号 → 同指纹 → 第二个 fail-closed。
-      send({ type: 'hello', origin, sessionId: crypto.randomUUID(), botId: options.botId, accountFingerprint: readAccountFingerprint() });
-      for (const callback of connectedCallbacks) {
-        try {
-          callback();
-        } catch (error) {
-          options.reportError?.('host-client connected callback failed', error);
+  // P0 卡 (A)：一轮「取 URL → 开 WS」可以是异步的（取券 + 裁定三十六退避）。
+  // 重连定时器与当前轮的异步等待会重叠：roundActive 期间到期的 timer 直接跳过，
+  // 当前轮结束后由 onclose/定时器接力下一轮（每轮都是新 URL，不复用旧券）。
+  let roundActive = false;
+
+  async function connectWsRound(): Promise<void> {
+    if (stopped || roundActive) return;
+    roundActive = true;
+    try {
+      if (stopped) return;
+      const url = options.urlResolver ? await options.urlResolver() : options.url;
+      if (stopped) return;
+      const make: WebSocketFactory =
+        options.wsFactory ?? ((u: string) => new (globalThis.WebSocket as new (u: string) => WebSocketLike)(u));
+      const socket = make(url);
+      ws = socket;
+      socket.onopen = () => {
+        backoff = 500;
+        // v0.24：上报本页所属 botId，宿主据此把工具派发/同意闸门路由到本窗口。
+        // v0.31：同时上报账号身份指纹（localStorage.userToken 派生），宿主据此做
+        // 同账号双窗口去重——两窗口登同一 DeepSeek 账号 → 同指纹 → 第二个 fail-closed。
+        send({ type: 'hello', origin, sessionId: crypto.randomUUID(), botId: options.botId, accountFingerprint: readAccountFingerprint() });
+        for (const callback of connectedCallbacks) {
+          try {
+            callback();
+          } catch (error) {
+            options.reportError?.('host-client connected callback failed', error);
+          }
         }
-      }
-    };
-    socket.onmessage = (ev: { data: unknown }) => onMessage(ev.data);
-    socket.onclose = () => {
-      ws = null;
-      failAllPending('disconnected');
-      if (!stopped) scheduleReconnect();
-    };
-    socket.onerror = () => {
-      try {
-        socket.close();
-      } catch {
-        /* ignore */
-      }
-    };
+      };
+      socket.onmessage = (ev: { data: unknown }) => onMessage(ev.data);
+      socket.onclose = () => {
+        ws = null;
+        failAllPending('disconnected');
+        if (!stopped) scheduleReconnect();
+      };
+      socket.onerror = () => {
+        try {
+          socket.close();
+        } catch {
+          /* ignore */
+        }
+      };
+    } finally {
+      roundActive = false;
+    }
   }
 
   function scheduleReconnect(): void {
     const delay = backoff;
     backoff = Math.min(backoff * 2, maxBackoff);
-    reconnectTimer = setTimeout(connectWs, delay);
+    reconnectTimer = setTimeout(() => {
+      void connectWsRound();
+    }, delay);
   }
 
   return {
@@ -407,7 +429,7 @@ export function createHostClient(options: HostClientOptions): HostClient {
         };
         globalThis.addEventListener('storage', tokenStorageHandler);
       }
-      connectWs();
+      void connectWsRound();
     },
     log(text: string) {
       send({ type: 'log', text });

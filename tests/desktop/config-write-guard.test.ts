@@ -20,6 +20,14 @@
  * **局限（明确写死，别假装完备）**：文本级启发式，抓不到 `writeFileSync` 的别名、
  * 动态属性访问、或把路径拼进另一个模块再传入的间接写入。它拦的是「同一处直接裸写」
  * 这个已经出现过两次的具体形状，不是通用规则。
+ *
+ * **已知洞（PM 裁定三十七 ①，2026-11-06 —— 明写以免被当成完备）**：
+ * `ATOMIC_HINTS` 含 `'renameSync('`，判定窗口是 `writeFileSync(` 前后各 ±400 字符
+ * ⇒ **不校验 `renameSync` 是否出现在该 `writeFileSync` 【之后】，也不校验它 rename 的
+ * 目标是否与这次写入的落点【同源】** ⇒ 一处真裸写只要 400 字符内存在**任何无关的**
+ * `renameSync(` 就会被免罪。这个洞正打在「抓第三处裸写」的靶心上。
+ * 收紧口径已立 P2 卡（不在本批）：要求 `renameSync(` 出现在该 `writeFileSync` **之后**、
+ * 且其第二实参与写入落点标识符同源，窗口收紧到 ±200。
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -180,5 +188,82 @@ describe('config.json 直写静态守卫（第三处裸写必须被拦住）', (
       },
     ];
     expect(scanSourceForRawConfigWrites(fake)).toEqual([]);
+  });
+});
+
+/**
+ * 追加守卫（PM 裁定三十九 四 → 升级为机器判据，2026-11-06）：
+ * `src-tauri/src/main.rs` 的 `grant_log` 函数体必须**逐次 O_APPEND**。
+ *
+ * 为什么够格立回归用例：Core 实跑判别实验证明「按偏移定位 / 带缓冲的写方」与
+ * node 的 `'a'` 并发时会**整段覆盖**对方行（实测丢 236 / 1143 行）；两个 O_APPEND
+ * 写方并发则 4000/4000 零污染。一旦有人把 `append(true)` 改成 `set_len` / `seek` /
+ * 先取 `metadata().len()` 再写，共用同一份 sidecar 日志就不再安全 —— 这条守卫把
+ * 那个形态钉死。
+ */
+export function scanAppendOnlyWriter(source: string, fnName: string): string[] {
+  const problems: string[] = [];
+  const start = source.indexOf(`fn ${fnName}(`);
+  if (start < 0) return [`找不到函数 ${fnName}`];
+  // 函数体：从签名后的第一个 '{' 起，按大括号配平截取
+  const braceStart = source.indexOf('{', start);
+  if (braceStart < 0) return [`${fnName} 没有函数体`];
+  let depth = 0;
+  let end = braceStart;
+  for (let i = braceStart; i < source.length; i++) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  const body = source.slice(braceStart, end + 1);
+  if (body.trim().length < 20) problems.push(`${fnName} 函数体为空（守卫读错位置会假绿）`);
+  if (!body.includes('.append(true)')) problems.push(`${fnName} 未使用 .append(true)（必须逐次 O_APPEND）`);
+  for (const bad of ['set_len', '.seek(', 'metadata()', 'len()']) {
+    if (body.includes(bad)) problems.push(`${fnName} 出现定位/截断写法 ${bad} —— 会退化成覆盖并发行`);
+  }
+  return problems;
+}
+
+describe('grant_log 必须逐次 O_APPEND（裁定三十九 四）', () => {
+  const MAIN_RS = path.join(REPO_ROOT, 'src-tauri', 'src', 'main.rs');
+
+  it('真实源码：grant_log 只用 append(true)，无 set_len/seek/len 定位写法', () => {
+    const src = fs.readFileSync(MAIN_RS, 'utf8');
+    expect(src.length).toBeGreaterThan(10_000); // 反假绿：确实读到了文件
+    expect(scanAppendOnlyWriter(src, 'grant_log')).toEqual([]);
+  });
+
+  it('负控：改成定位写法的假源码必须红', () => {
+    const fake = [
+      'fn grant_log(line: &str) {',
+      '    let mut f = std::fs::OpenOptions::new().open(p).unwrap();',
+      '    let cur = f.metadata().unwrap().len();',
+      '    f.seek(std::io::SeekFrom::Start(cur)).unwrap();',
+      '    writeln!(f, "{}", line).unwrap();',
+      '}',
+    ].join('\n');
+    const problems = scanAppendOnlyWriter(fake, 'grant_log');
+    expect(problems.length).toBeGreaterThan(0);
+    expect(problems.join('\n')).toContain('.append(true)');
+  });
+
+  it('负控二：只 set_len 截断也必须红', () => {
+    const fake = ['fn grant_log(line: &str) {', '    f.set_len(0).ok();', '    write!(f, "{}", line);', '}'].join('\n');
+    expect(scanAppendOnlyWriter(fake, 'grant_log').length).toBeGreaterThan(0);
+  });
+
+  it('正控：只 append(true) 的假源码通过', () => {
+    const fake = [
+      'fn grant_log(line: &str) {',
+      '    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(p)?;',
+      '    writeln!(f, "{}", line)?;',
+      '}',
+    ].join('\n');
+    expect(scanAppendOnlyWriter(fake, 'grant_log')).toEqual([]);
   });
 });

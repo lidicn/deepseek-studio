@@ -471,26 +471,34 @@ struct ChatRoomEntry {
 /// 读 config.json → 构造注入脚本片段 `window.__studioChatConfig = {...};`。
 /// 缺文件/无 token/无 chatRooms → 返回空串（聊天室 UI 不挂载，向后兼容）。
 fn load_studio_chat_config_script() -> String {
-    let home = match dirs::home_dir() {
-        Some(h) => h,
-        None => return String::new(),
-    };
-    let cfg_path = home
-        .join(".config")
-        .join("deepseek-studio")
-        .join("config.json");
+    let cfg_path = config_dir().join("config.json");
     let s = match std::fs::read_to_string(&cfg_path) {
         Ok(s) => s,
-        Err(_) => return String::new(),
+        Err(e) => {
+            // 与 grant 同一个失败模式（P0 卡 (C) 覆盖的第 9 处族）：读不到就回空串 =
+            // 聊天室 UI 静默不挂载。至少留一行，别让「少了一块功能」无迹可查。
+            grant_log(&format!(
+                "[studio] chat-config: no-config-file code={:?} path={}",
+                e.kind(),
+                cfg_path.display()
+            ));
+            return String::new();
+        }
     };
     let cfg: StudioConfig = match serde_json::from_str(&s) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[studio] WARN: config.json parse failed: {}", e);
+            grant_log(&format!("[studio] chat-config: parse-failed err={} path={}", e, cfg_path.display()));
             return String::new();
         }
     };
     if cfg.token.is_empty() || cfg.chat_rooms.is_empty() {
+        grant_log(&format!(
+            "[studio] chat-config: disabled token_empty={} rooms={} path={}",
+            cfg.token.is_empty(),
+            cfg.chat_rooms.len(),
+            cfg_path.display()
+        ));
         return String::new();
     }
     let room = &cfg.chat_rooms[0];
@@ -510,6 +518,256 @@ fn load_studio_chat_config_script() -> String {
     format!("window.__studioChatConfig = {};\n", payload)
 }
 
+/// 进程内的 sidecar 日志落点（P0 卡 (C)，2026-11-06）。
+///
+/// 为什么需要它：装版是 GUI 进程、**无控制台** → 本文件里所有 `eprintln!` 在装版下
+/// 直接丢弃（`sidecar.rs` 的 stderr 只在 `try_clone` 成功时才接进日志文件）。
+/// 而「grant 为什么没签出来」正是 P0 现场最需要的一条信息，必须**直写文件**。
+///
+/// 设置时机：`main` 里计算 `host_entry` 之后、建窗之前（与实际打开的那份日志同一路径）。
+/// 未设置时（单测 / 无 sidecar 场景）自动降级为 `eprintln!`，不让日志通路成为崩溃点。
+static SIDECAR_LOG_PATH: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+
+/// 设置/清除 sidecar 日志落点。
+fn set_sidecar_log_path(p: Option<std::path::PathBuf>) {
+    if let Ok(mut g) = SIDECAR_LOG_PATH.lock() {
+        *g = p;
+    }
+}
+
+/// 写一行到 sidecar 日志文件（**直写 + flush**，不依赖 stdout/stderr 重定向）。
+///
+/// **共用哪份文件**（裁定三十九 2026-11-06）：优先用 `sidecar::current_log_file()`
+/// —— 即宿主自己的 `sidecar-<ms>.log`，做到「取证单点」。只有在 sidecar 尚未 spawn
+/// （拿不到路径）时，才退回 `SIDECAR_LOG_PATH`（`main` 里算的兜底路径）。
+///
+/// ⚠️ **只能用 append(true) 打开**：判别实验（Core 实跑，4000 行并发）证明
+/// 两个 O_APPEND 写方并发零丢失；而「按偏移定位 / 带缓冲」的写方会**整段覆盖**
+/// 并发行（实测丢 236 / 1143 行）。谁改成先算长度再写，这条安全就没了。
+/// 失败时退回 `eprintln!` —— 装版下会丢，但不能因为写日志失败而 panic。
+fn grant_log(line: &str) {
+    let path = sidecar::current_log_file().or_else(|| {
+        SIDECAR_LOG_PATH.lock().ok().and_then(|g| g.clone())
+    });
+    let wrote = match path {
+        Some(p) => std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&p)
+            .and_then(|mut f| {
+                use std::io::Write;
+                writeln!(f, "{}", line)?;
+                f.flush()
+            })
+            .is_ok(),
+        None => false,
+    };
+    if !wrote {
+        eprintln!("{}", line);
+    }
+}
+
+/// 解析配置目录（P0 卡 (B)：**全仓唯一入口**，不许再出现 `.join(".config")` 字面量）。
+///
+/// - 装版（`packaged`）且拿到了 `app_data_dir` → `<app_data_dir>/config`
+///   —— 与批 N+1 注入给宿主的 `STUDIO_CONFIG_DIR` **同一个落点**（`main.rs` 的
+///   `resolve_host_entry_with_data_dir` 就是这么推的）。两者必须同源，否则 Rust 读
+///   旧路径、宿主写新路径，装版永远签不出 grant（推断风险面，待 v0.14.8 真机坐实）。
+/// - dev / 拿不到 `app_data_dir` → `~/.config/deepseek-studio`（历史行为，逐字节不变）。
+fn resolve_config_dir(packaged: bool, app_data_dir: Option<&std::path::Path>) -> std::path::PathBuf {
+    if packaged {
+        if let Some(d) = app_data_dir {
+            return d.join("config");
+        }
+    }
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".config")
+        .join("deepseek-studio")
+}
+
+/// 生产调用点：按构建类型取 `packaged`，`app_data_dir` 由调用方给。
+fn config_dir() -> std::path::PathBuf {
+    // `app_data_dir` 只在 `AppHandle` 上拿得到；窗口/命令上下文里统一走
+    // `app.path().app_data_dir()` 后再调 `resolve_config_dir`，这里给出兜底版本。
+    resolve_config_dir(!cfg!(debug_assertions), None)
+}
+
+/// P0 卡 (A)：签发速率限制与 jti 记账（**每个窗口**一份，随窗口销毁回收）。
+///
+/// 为什么必须限流：本命令把「读一次静态 grant」变成「可无限现签」，虽然是 60s /
+/// 一次性 / 绑 aud / 仅 ws-connect（不削弱 TD-02），但**可无限续签是实质变化**，
+/// 必须给上界。口径（PM 裁定三十三 2）：
+///   - 同一窗口两次签发间隔 ≥ 1s；
+///   - 单窗口生命周期上限 200 张；
+///   - 超限返回 `rate-limited` 并写一行 `level=warn` 可 grep 日志。
+///
+/// key 用 **`window.label()`** 而不是 `aud`：`aud` 是字符串，`bot:<id>` 在多窗场景会撞
+/// （多窗口虽已封盘，key 选错是埋雷，而现在改是零成本）。
+#[derive(Debug, Default)]
+struct GrantRateEntry {
+    last_ms: u64,
+    count: u32,
+}
+
+static GRANT_RATE: Mutex<Option<std::collections::HashMap<String, GrantRateEntry>>> = Mutex::new(None);
+
+/// 限流常量（单测直接引用，避免测试与实现各写一份魔数）。
+const GRANT_MIN_INTERVAL_MS: u64 = 1_000;
+const GRANT_MAX_PER_WINDOW: u32 = 200;
+
+/// 限流检查 + 记账（**纯函数**，便于单测；不碰全局）。
+///
+/// 返回 `Ok(())` 表示放行，`Err("rate-limited")` 表示拒签。
+fn grant_rate_check(
+    map: &mut std::collections::HashMap<String, GrantRateEntry>,
+    label: &str,
+    now_ms: u64,
+) -> Result<(), &'static str> {
+    let e = map.entry(label.to_string()).or_default();
+    // 首次：last_ms == 0 视为没签发过
+    if e.last_ms != 0 && now_ms.saturating_sub(e.last_ms) < GRANT_MIN_INTERVAL_MS {
+        return Err("rate-limited");
+    }
+    if e.count >= GRANT_MAX_PER_WINDOW {
+        return Err("rate-limited");
+    }
+    e.last_ms = now_ms;
+    e.count += 1;
+    Ok(())
+}
+
+/// 窗口销毁时清掉它的计数（**没有回收的「上界」= 看着有保护、实际单调增长**）。
+fn grant_rate_forget(map: &mut std::collections::HashMap<String, GrantRateEntry>, label: &str) -> bool {
+    map.remove(label).is_some()
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// (A) 的返回形状：**可辨识联合**（裁定三十三 一）。
+///
+/// 不能用「`ok: bool` + 一堆可选字段」—— 那种形状让 `ok:true` 但字段缺失成为可能，
+/// 正是 `fillPathRows` 那个坑的同族。`#[serde(untagged)]` + 两个结构体让序列化后
+/// 恰好是 `{ok:true,grant,expMs}` 或 `{ok:false,error}`，没有多余字段。
+#[derive(serde::Serialize)]
+struct GrantReplyOk {
+    ok: bool,
+    grant: String,
+    #[serde(rename = "expMs")]
+    exp_ms: u64,
+}
+
+#[derive(serde::Serialize)]
+struct GrantReplyErr {
+    ok: bool,
+    error: &'static str,
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum GrantReply {
+    Ok(GrantReplyOk),
+    Err(GrantReplyErr),
+}
+
+/// P0 卡 (A)：页面**每次连接/重连前**调用，现签一张 60s/一次性/绑 aud 的券。
+///
+/// 一次解决三件事：① 首启竞态（建窗时 config 可能还没写出来）；② 重连复用死券；
+/// ③ TTL 过短。
+#[tauri::command]
+fn studio_request_grant(window: tauri::WebviewWindow, aud: String) -> GrantReply {
+    let trimmed = aud.trim();
+    let bad_aud = trimmed.is_empty()
+        || (trimmed != "main" && !trimmed.starts_with("bot:"));
+    if bad_aud {
+        grant_log(&format!("[studio] grant: bad-aud aud={}", trimmed));
+        return GrantReply::Err(GrantReplyErr { ok: false, error: "bad-aud" });
+    }
+
+    let label = window.label().to_string();
+    let allowed = {
+        let mut guard = GRANT_RATE.lock().ok();
+        match guard.as_mut() {
+            Some(slot) => {
+                let map = slot.get_or_insert_with(std::collections::HashMap::new);
+                grant_rate_check(map, &label, now_ms())
+            }
+            None => Err("rate-limited"),
+        }
+    };
+    if allowed.is_err() {
+        grant_log(&format!(
+            "[studio] level=warn grant: rate-limited label={} aud={}",
+            label, trimmed
+        ));
+        return GrantReply::Err(GrantReplyErr { ok: false, error: "rate-limited" });
+    }
+
+    let cfg_path = config_dir().join("config.json");
+    let s = match std::fs::read_to_string(&cfg_path) {
+        Ok(s) => s,
+        Err(e) => {
+            grant_log(&format!(
+                "[studio] grant: no-config-file aud={} code={:?} path={}",
+                trimmed,
+                e.kind(),
+                cfg_path.display()
+            ));
+            return GrantReply::Err(GrantReplyErr { ok: false, error: "no-config" });
+        }
+    };
+    let cfg: StudioConfig = match serde_json::from_str(&s) {
+        Ok(c) => c,
+        Err(e) => {
+            grant_log(&format!(
+                "[studio] grant: parse-failed aud={} err={} path={}",
+                trimmed,
+                e,
+                cfg_path.display()
+            ));
+            // 配置损坏对页面来说等同「没有可用配置」
+            return GrantReply::Err(GrantReplyErr { ok: false, error: "no-config" });
+        }
+    };
+    if cfg.secret.is_empty() {
+        grant_log(&format!("[studio] grant: empty-secret aud={} path={}", trimmed, cfg_path.display()));
+        return GrantReply::Err(GrantReplyErr { ok: false, error: "no-secret" });
+    }
+    match issue_bootstrap_grant_rs(&cfg.secret, trimmed, 60_000) {
+        Some(grant) => {
+            grant_log(&format!("[studio] grant: ok aud={} expMs=60000 label={}", trimmed, label));
+            GrantReply::Ok(GrantReplyOk { ok: true, grant, exp_ms: 60_000 })
+        }
+        None => {
+            grant_log(&format!("[studio] grant: sign-failed aud={} path={}", trimmed, cfg_path.display()));
+            GrantReply::Err(GrantReplyErr { ok: false, error: "sign-failed" })
+        }
+    }
+}
+
+/// P0 卡 (A)：注入**取券闭包** `window.__studioRequestGrant(aud)`，取代建窗时烤死的静态券。
+///
+/// 安全性（裁定三十三 修正 1）：远端页面**拿不到裸 `invoke`** —— 闭包在 init script 里
+/// 捕获 `__TAURI_INTERNALS__`，页面只能调这一个函数，且 Rust 侧仍逐次校验 aud 并限流。
+fn grant_request_closure_script() -> String {
+    // 与既有 `__studioOpenWorkbench` 同一套路（`src/desktop/entry.ts` 用 `__TAURI_INTERNALS__`）。
+    "(function(){\n\
+      try {\n\
+        var internals = window.__TAURI_INTERNALS__;\n\
+        if (!internals || typeof internals.invoke !== 'function') { return; }\n\
+        window.__studioRequestGrant = function (aud) {\n\
+          return internals.invoke('studio_request_grant', { aud: String(aud || '') });\n\
+        };\n\
+      } catch (e) { /* 取券闭包注入失败 → 页面按 fail-visible 提示，不静默 */ }\n\
+    })();\n"
+        .to_string()
+}
+
 /// TD-02：把**短期一次性 bootstrap grant** 注入 `window.__studioGrant`（不再注入 config.token）。
 ///
 /// 背景：原实现注入 `window.__studioHostToken = <config.token>`，外部页面（chat.deepseek.com）
@@ -523,36 +781,69 @@ fn load_studio_chat_config_script() -> String {
 /// claims = { iss, jti, aud, scope:"ws-connect", iat, exp }（exp/iat 为毫秒 epoch）。
 ///
 /// audience：bot 窗口传 "bot:<id>"，主窗传 "main"——页面连接时须带 `?aud=<同值>` 才过得验证。
-fn load_host_grant_script(audience: &str) -> String {
-    let home = match dirs::home_dir() {
-        Some(h) => h,
-        None => return String::new(),
-    };
-    let cfg_path = home
-        .join(".config")
-        .join("deepseek-studio")
-        .join("config.json");
-    let s = match std::fs::read_to_string(&cfg_path) {
+    // （保留原文档注释）
+fn load_host_grant_script_with(cfg_path: &std::path::Path, audience: &str) -> String {
+    let s = match std::fs::read_to_string(cfg_path) {
         Ok(s) => s,
-        Err(_) => return String::new(),
+        Err(e) => {
+            // 终局 1/4：文件不存在 / 读不了。**首启竞态的第一现场** ——
+            // 建窗时宿主可能还没写出 config.json（2026-11-06 实测：建窗 12:19:14，
+            // config.json 12:19:15 才创建），此分支就是「grant 恒空」的直接原因。
+            grant_log(&format!(
+                "[studio] grant: no-config-file aud={} code={:?} path={}",
+                audience,
+                e.kind(),
+                cfg_path.display()
+            ));
+            return String::new();
+        }
     };
     let cfg: StudioConfig = match serde_json::from_str(&s) {
         Ok(c) => c,
-        Err(_) => return String::new(),
+        Err(e) => {
+            grant_log(&format!(
+                "[studio] grant: parse-failed aud={} err={} path={}",
+                audience,
+                e,
+                cfg_path.display()
+            ));
+            return String::new();
+        }
     };
     // 旧版 config 可能无 secret（只补了 token）→ 无 secret 就无法签 grant，
     // 此时退回空串（页面裸连；生产由 host 侧 fail-closed，dev 允许 loopback）。
     if cfg.secret.is_empty() {
+        grant_log(&format!(
+            "[studio] grant: empty-secret aud={} path={}",
+            audience,
+            cfg_path.display()
+        ));
         return String::new();
     }
     let grant = match issue_bootstrap_grant_rs(&cfg.secret, audience, 60_000) {
         Some(g) => g,
-        None => return String::new(),
+        None => {
+            grant_log(&format!(
+                "[studio] grant: sign-failed aud={} path={}",
+                audience,
+                cfg_path.display()
+            ));
+            return String::new();
+        }
     };
+    grant_log(&format!(
+        "[studio] grant: ok aud={} expMs=60000 path={}",
+        audience,
+        cfg_path.display()
+    ));
     format!(
         "window.__studioGrant = {};\n",
         serde_json::to_string(&grant).unwrap()
     )
+}
+
+fn load_host_grant_script(audience: &str) -> String {
+    load_host_grant_script_with(&config_dir().join("config.json"), audience)
 }
 
 /// TD-02：Rust 侧签发 bootstrap grant（与 host-token.ts 的 signRaw 同算法）。
@@ -636,10 +927,8 @@ fn bot_windows_path() -> std::path::PathBuf {
     // 20261017 用户明确要求把这里清成 {"bots":[]}，启动只留主窗口；bot 窗口改为
     // 按需（主 bot 用聊天室时）再拉起。home/.config 下那份是更早的残留（含
     // frontend/backend-expert），照它开窗会违背该决定 —— 故此处不得回退到它。
-    dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("deepseek-studio")
-        .join("bot-windows.json")
+    // (B) 路径同源：bot-windows.json 跟统一解析走（封盘路线，不补装版兜底）
+    config_dir().join("bot-windows.json")
 }
 
 #[allow(dead_code)]
@@ -689,7 +978,8 @@ fn resolve_data_dir(raw: &str) -> Option<std::path::PathBuf> {
     } else if trimmed == "~" || trimmed.starts_with("~/") {
         base.join(trimmed.trim_start_matches("~/"))
     } else {
-        base.join("deepseek-studio").join(trimmed)
+        // (B) 相对路径基址跟统一解析走
+        config_dir().join(trimmed)
     };
     Some(path)
 }
@@ -762,8 +1052,7 @@ fn plan_bot_windows(
         // 显式 dataDir 优先；缺失/非法 → 派生 profiles/<botId>，绝不共享主 profile。
         let data_dir = match entry.data_dir.as_deref().and_then(resolve_data_dir) {
             Some(d) => d,
-            None => match dirs::config_dir()
-                .map(|b| b.join("deepseek-studio").join("profiles").join(&bot_id))
+            None => match Some(config_dir().join("profiles").join(&bot_id))
             {
                 Some(d) => d,
                 None => {
@@ -820,13 +1109,10 @@ fn sanitize_window_label(raw: &str) -> String {
 /// W1：工作台窗口 URL（`http://host:port/agent`），与 sidecar 读同一份 config.json 的
 /// host/port；缺文件/解析失败回落 127.0.0.1:8760。不 panic。
 fn workbench_url() -> String {
-    let (host, port) = dirs::home_dir()
-        .map(|h| {
-            h.join(".config")
-                .join("deepseek-studio")
-                .join("config.json")
-        })
-        .and_then(|p| std::fs::read_to_string(p).ok())
+    // (B) 路径同源：与 grant / 宿主读**同一个** config.json（装版 = <app_data_dir>/config）
+    let (host, port) = std::fs::read_to_string(config_dir().join("config.json"))
+        .ok()
+        .as_deref()
         .and_then(|s| serde_json::from_str::<StudioConfig>(&s).ok())
         .map(|c| {
             (
@@ -1287,6 +1573,7 @@ fn main() {
             open_workbench,
             focus_main_window,
             open_bot_window,
+            studio_request_grant,
             updater::updater_check,
             updater::updater_install,
             updater::updater_progress
@@ -1365,6 +1652,26 @@ fn main() {
                     project_root.as_deref(),
                     app_data_dir.as_deref(),
                 );
+                // P0 卡 (C)：把 grant / chat-config 的日志落点定下来 ——
+                // 必须**在页面初始化脚本生成之前**，否则那几条 `[studio] grant: …`
+                // 会退回 eprintln!（装版无控制台 ⇒ 丢失），等于白加。
+                // 落点与 sidecar 自己那份日志同目录（`HostEntry::log_dir()` 优先，
+                // dev 回落 `dirs::config_dir()/deepseek-studio/logs`），文件名带 pid + ms，
+                // 不会与 `sidecar-<ms>.log` 撞名。
+                {
+                    let log_dir = host_entry
+                        .log_dir()
+                        .map(std::path::PathBuf::from)
+                        .or_else(|| {
+                            dirs::config_dir().map(|d| d.join("deepseek-studio").join("logs"))
+                        });
+                    if let Some(dir) = log_dir {
+                        let _ = std::fs::create_dir_all(&dir);
+                        set_sidecar_log_path(Some(
+                            dir.join(format!("studio-main-{}.log", std::process::id())),
+                        ));
+                    }
+                }
                 match &host_entry {
                     sidecar::HostEntry::Bundled { script, resource_root, work_dir, node, distribution, config_dir, log_dir } => {
                         eprintln!("[studio] host entry: bundled {:?}", script);
@@ -1416,8 +1723,10 @@ fn main() {
                 // v0.28：主窗口注入聊天室配置（token + roomId + members），供聊天室 UI 连 /agent-ws。
                 // 无配置时返回空串，不影响入口脚本。仅主窗口注入（bot 窗口不需要聊天室）。
                 let chat_config_script = load_studio_chat_config_script();
-                // TD-02：主窗注入 bootstrap grant（aud=main），不再注入 config.token。
-                let grant_script = load_host_grant_script("main");
+                // P0 卡 (A)（PM 裁定四十一）：**不再在建窗时烤一张 60s 券**（它 60s 就过期，
+                // 而页面往往更晚才连 —— 这正是「1288 拒 / 0 accepted」的直接成因）。
+                // 改为注入取券闭包：页面每次连接/重连前现取。
+                let grant_script = grant_request_closure_script();
                 let init_script = format!(
                     "{}{}{}",
                     chat_config_script,
@@ -1577,6 +1886,18 @@ fn main() {
                         "[studio] bot window {:?} closed (state/sidecar untouched)",
                         label
                     );
+                    // P0 卡 (A) 配套：窗口销毁 → 清掉它的取券限流计数。
+                    // **没有回收的「上界」= 看着有保护、实际单调增长**（今天抓过四次）。
+                    if let Ok(mut g) = GRANT_RATE.lock() {
+                        if let Some(map) = g.as_mut() {
+                            if grant_rate_forget(map, &label) {
+                                grant_log(&format!(
+                                    "[studio] grant: rate-reset label={} (window destroyed)",
+                                    label
+                                ));
+                            }
+                        }
+                    }
                     return;
                 }
                 // 退出流程已经启动：放行后续的关闭请求（例如 destroy 触发的重入）。
@@ -1954,6 +2275,149 @@ mod tests {
     }
 
     #[test]
+    /// P0 卡 (A)：限流口径（裁定三十三 2）—— 同窗口 1s 间隔 + 单窗口 200 张上限。
+    ///
+    /// 这是本命令引入的**新暴露面**：原本页面只能读到一张静态券，现在可无限现签。
+    #[test]
+    fn grant_rate_limit_enforces_interval_and_cap() {
+        let mut map: std::collections::HashMap<String, GrantRateEntry> =
+            std::collections::HashMap::new();
+        // 首次放行
+        assert!(grant_rate_check(&mut map, "main", 10_000).is_ok());
+        // 间隔 < 1s → 拒
+        assert_eq!(grant_rate_check(&mut map, "main", 10_500), Err("rate-limited"));
+        // 间隔 ≥ 1s → 放行
+        assert!(grant_rate_check(&mut map, "main", 11_000).is_ok());
+        // 不同窗口互不影响（key = window.label()）
+        assert!(grant_rate_check(&mut map, "bot:S1", 11_000).is_ok());
+        // 单窗口上限：把计数推到上限
+        let mut m2: std::collections::HashMap<String, GrantRateEntry> = std::collections::HashMap::new();
+        for i in 0..GRANT_MAX_PER_WINDOW as u64 {
+            assert!(grant_rate_check(&mut m2, "main", 100_000 + i * GRANT_MIN_INTERVAL_MS).is_ok());
+        }
+        let over = grant_rate_check(&mut m2, "main", 100_000 + GRANT_MAX_PER_WINDOW as u64 * GRANT_MIN_INTERVAL_MS);
+        assert_eq!(over, Err("rate-limited"), "超过单窗口上限必须拒签");
+    }
+
+    /// **负控（PM 点名要求）**：窗口销毁后该 label 的计数条目必须真的消失 ——
+    /// 只断言「size ≤ 上限」不算（那正是「看着有上界、实际单调增长」的那个反模式）。
+    #[test]
+    fn grant_rate_entries_are_dropped_when_window_destroyed() {
+        let mut map: std::collections::HashMap<String, GrantRateEntry> =
+            std::collections::HashMap::new();
+        assert!(grant_rate_check(&mut map, "main", 1_000).is_ok());
+        assert!(grant_rate_check(&mut map, "bot:S1", 1_000).is_ok());
+        assert_eq!(map.len(), 2);
+
+        assert!(grant_rate_forget(&mut map, "bot:S1"), "销毁必须真的删掉条目");
+        assert_eq!(map.len(), 1);
+        assert!(!map.contains_key("bot:S1"), "该 label 的条目必须消失");
+        // 已销毁的 label 再次取券视为新窗口（计数从零开始）
+        assert!(grant_rate_check(&mut map, "bot:S1", 1_010).is_ok());
+        // 不存在的 label：forget 返回 false，不 panic
+        assert!(!grant_rate_forget(&mut map, "nope"));
+    }
+
+    /// (A) 的返回形状必须是**可辨识联合**（裁定三十三 一）：成功分支字段齐、失败分支只有 error。
+    #[test]
+    fn grant_reply_shape_is_discriminated_union() {
+        let ok = serde_json::to_string(&GrantReply::Ok(GrantReplyOk {
+            ok: true,
+            grant: "a.b".to_string(),
+            exp_ms: 60_000,
+        }))
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&ok).unwrap();
+        assert_eq!(v["ok"], serde_json::json!(true));
+        assert_eq!(v["grant"], serde_json::json!("a.b"));
+        assert_eq!(v["expMs"], serde_json::json!(60000));
+        assert!(v.get("error").is_none(), "成功分支不得出现 error 字段");
+
+        let err = serde_json::to_string(&GrantReply::Err(GrantReplyErr {
+            ok: false,
+            error: "no-config",
+        }))
+        .unwrap();
+        let v2: serde_json::Value = serde_json::from_str(&err).unwrap();
+        assert_eq!(v2["ok"], serde_json::json!(false));
+        assert_eq!(v2["error"], serde_json::json!("no-config"));
+        assert!(v2.get("grant").is_none(), "失败分支不得出现 grant 字段（禁可选字段形态）");
+    }
+
+    /// (A)：建窗时**不再**烤静态券；注入的是取券闭包（页面每连接现取）。
+    #[test]
+    fn build_uses_request_closure_not_static_grant() {
+        let script = grant_request_closure_script();
+        assert!(script.contains("__studioRequestGrant"), "必须注入取券闭包");
+        assert!(script.contains("studio_request_grant"), "闭包应调用该命令");
+        // 关键：不得再注入静态 __studioGrant（那正是「60s 后必死」的成因）
+        assert!(
+            !script.contains("__studioGrant"),
+            "不得在建窗时注入静态券（P0 卡 (A) 已去掉）"
+        );
+    }
+    /// P0 卡 (B)：**配置目录唯一入口** —— 装版走 `<app_data_dir>/config`（与批 N+1
+    /// 注入给宿主的 `STUDIO_CONFIG_DIR` 同源），dev 走 `~/.config/deepseek-studio`。
+    ///
+    /// 这条是「全新安装页面通道永久死」那条**推断风险面**的守门断言：一旦有人把
+    /// `load_host_grant_script` 改回硬编码 `~/.config`，装版就读不到宿主写的 config，
+    /// 本用例会红（装版分支必须等于 data_dir/config）。
+    #[test]
+    fn config_dir_is_single_source_for_installed_and_dev() {
+        let data = std::path::PathBuf::from("X:\\appdata\\com.deepseek.studio");
+        // 装版：<app_data_dir>/config
+        assert_eq!(
+            resolve_config_dir(true, Some(&data)),
+            data.join("config"),
+            "装版必须与宿主 STUDIO_CONFIG_DIR 同源（<app_data_dir>/config）"
+        );
+        // 装版但拿不到 app_data_dir：回落历史路径（不 panic、不造目录）
+        let fallback = resolve_config_dir(true, None);
+        assert!(fallback.ends_with(std::path::Path::new(".config").join("deepseek-studio")));
+        // dev：永远是历史路径，**不受 app_data_dir 影响**
+        let dev = resolve_config_dir(false, Some(&data));
+        assert!(
+            dev.ends_with(std::path::Path::new(".config").join("deepseek-studio")),
+            "dev 形态必须保持旧落点，实际得到 {:?}",
+            dev
+        );
+    }
+
+    /// P0 卡 (C)：`load_host_grant_script` 的四条失败分支**不许静默** ——
+    /// 每条都要在日志里留下可 grep 的一行（首启竞态就是 `no-config-file` 那支）。
+    #[test]
+    fn grant_script_logs_each_failure_branch() {
+        let tmp = fresh_tmp("grant-branches");
+        let log_path = tmp.join("studio-main-test.log");
+        set_sidecar_log_path(Some(log_path.clone()));
+        let read_log = || std::fs::read_to_string(&log_path).unwrap_or_default();
+
+        // ① no-config-file（首启竞态：建窗时 config.json 还没写出来）
+        let missing = tmp.join("nope").join("config.json");
+        assert!(load_host_grant_script_with(&missing, "main").is_empty());
+        assert!(read_log().contains("grant: no-config-file aud=main"), "{}", read_log());
+
+        // ② parse-failed
+        let broken = tmp.join("broken.json");
+        std::fs::write(&broken, "{not json").unwrap();
+        assert!(load_host_grant_script_with(&broken, "main").is_empty());
+        assert!(read_log().contains("grant: parse-failed aud=main"), "{}", read_log());
+
+        // ③ empty-secret
+        let no_secret = tmp.join("nosecret.json");
+        std::fs::write(&no_secret, r#"{"token":"t","secret":""}"#).unwrap();
+        assert!(load_host_grant_script_with(&no_secret, "main").is_empty());
+        assert!(read_log().contains("grant: empty-secret aud=main"), "{}", read_log());
+
+        // ④ ok：有 secret → 真的签出券，且日志写 ok
+        let good = tmp.join("good.json");
+        std::fs::write(&good, r#"{"token":"t","secret":"s3cr3t-value"}"#).unwrap();
+        let script = load_host_grant_script_with(&good, "main");
+        assert!(script.contains("window.__studioGrant"), "应生成注入脚本，实际 {:?}", script);
+        assert!(read_log().contains("grant: ok aud=main"), "{}", read_log());
+
+        set_sidecar_log_path(None);
+    }
     fn window_state_path_dev_falls_back_to_config_dir() {
         let fallback = std::path::PathBuf::from("X:\\roaming");
         // 无注入 / 空串 / 纯空白：一律回落（空白 env 视为未设，与 Node 侧 resolveConfigDir 同口径）

@@ -549,6 +549,26 @@ fn console_command(program: &str) -> Command {
 
 // ── 监管主体 ───────────────────────────────────────────────────────────
 
+/// 当前 sidecar 日志文件路径（`spawn_child` 打开日志时写入）。
+///
+/// 用途：`main.rs` 的 `grant_log()` 要**直写同一份文件**（裁定三十九：取证单点）。
+/// 父进程与子进程并发 append 是安全的 —— 前提是两边都走 O_APPEND，
+/// 见 `spawn_child` 里那段注释的实验读数。
+static CURRENT_LOG_FILE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+
+/// 记录当前日志文件（`None` = 清理，例如侧车被停）。
+pub fn set_current_log_file(p: Option<std::path::PathBuf>) {
+    if let Ok(mut g) = CURRENT_LOG_FILE.lock() {
+        *g = p;
+    }
+}
+
+/// 取当前日志文件（`None` = 还没 spawn 过 / 已停）。
+pub fn current_log_file() -> Option<std::path::PathBuf> {
+    CURRENT_LOG_FILE.lock().ok().and_then(|g| g.clone())
+}
+
+
 pub struct SidecarSupervisor {
     state: SidecarState,
     child: Option<Child>,
@@ -700,6 +720,13 @@ impl SidecarSupervisor {
                 .open(&path)
             {
                 Ok(f) => {
+                    // 裁定三十九（2026-11-06）：父进程的 grant / chat-config 日志
+                    // **与宿主共用这一份文件**（取证单点：今天整条 P0 是从一份日志读出来的）。
+                    // 判别实验（Core 实跑）：两个 O_APPEND 写方并发 4000/4000 行、零污染；
+                    // 而「按偏移定位/带缓冲」的写方会整段覆盖并发行（实测丢 236 / 1143 行）。
+                    // ⇒ 共用安全的前提是：本文件与 `main.rs::grant_log` **都必须每次 write 走
+                    // O_APPEND（`append(true)` / Node fd `'a'`）**，改成摇长度再写就退化。
+                    set_current_log_file(Some(path.clone()));
                     let cloned = f.try_clone();
                     // 批 N+1（可观测性）：Rust 侧把「注入了什么」**写进同一份日志文件**。
                     // 装版无控制台，下面的 eprintln! 全部丢失；只有落进文件才可核。

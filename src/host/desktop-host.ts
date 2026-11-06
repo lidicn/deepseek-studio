@@ -13,7 +13,7 @@ import { createApiServer, type ApiServer, type RateLimitOptions, type McpServerC
 import { createBearerAuthenticator } from '../api/auth';
 import { createFakeOfficialBackend } from '../api/official-backend';
 import { createPlatformDesktop, type PlatformDesktop } from './platform-desktop';
-import { createSecretRing, verifyBootstrapGrant, verifyWsQueryToken, type SecretRing } from './host-token';
+import { createSecretRing, verifyBootstrapGrant, verifyWsQueryToken, BoundedJtiSet, type SecretRing } from './host-token';
 import { createEchoCapability } from '../capabilities/echo';
 import { createChatReadCapability } from '../capabilities/chat-read';
 import { createChatInsertCapability } from '../capabilities/chat-insert';
@@ -459,7 +459,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   });
 
   // TD-02：bootstrap grant 一次性消费键（jti）。host 进程级内存，重启清空（grant 60s 过期兜底）。
-  const usedBootstrapJtis = new Set<string>();
+  // P0 卡 (A)（PM 裁定三十三 3）：一次性 jti 从无界 Set 改成有界记账 ——
+  // 过期清扫 + 1024 硬上界 + 触顶 level=warn，避免「一次连接一张券」后单调增长。
+  const usedBootstrapJtis = new BoundedJtiSet();
 
   const capabilities = new Map<string, ContentCapabilityController>();
   capabilities.set('echo', createEchoCapability());
