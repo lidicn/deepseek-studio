@@ -5,7 +5,9 @@
  * DCD 裁定 §1.4（20261017）：gate 分两级。
  *
  * 阻塞级（红了必合）：typecheck → vitest → eval-golden → boundary → contract →
- *   coverage → empty-files → doc-drift → e2e-replay。任一步失败立即停止。
+ *   coverage → empty-files → doc-drift → e2e-replay。任一阻塞步失败即停后续阻塞步
+ *   （0.14.11 卡 A：不再立即 process.exit——信息级照跑、END 照落、最后 exit(1)，
+ *   红闸也给出完整画面）。
  *   20261031 门禁接线：eval-golden（40 条契约 golden）、doc-drift（文档↔代码引用校验，
  *   重写版）、e2e-replay（带断言的离线回放）入闸；CI（.github/workflows/ci.yml）自此
  *   只跑 npm run gate，不再维护平行步骤清单。
@@ -21,6 +23,7 @@ import { execSync } from 'node:child_process';
 import { resolve, dirname, join } from 'node:path';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { stepLine } from './step-line';
 
 interface Step {
   name: string;
@@ -97,18 +100,21 @@ function main(): void {
 
   const stepElapsed = (t0: number) => ((Date.now() - t0) / 1000).toFixed(1);
 
-  // 阻塞级
+  // 阻塞级（0.14.11 卡 A：首红不再立即 process.exit——记下失败步、break 停后续阻塞步，
+  // 但六枚信息级照跑、END 照落、最后 process.exit(1)；红闸也给出完整画面）
+  let blockingRed: { name: string; secs: string } | null = null;
   for (const step of blockingSteps) {
     console.log(`\n=== [阻塞] ${step.name} ===`);
     const t0 = Date.now();
     try {
       execSync(step.cmd, { cwd: root, stdio: 'inherit' });
       console.log(`✅ [${step.name}] 通过`);
-      progress(`[PASS] ${step.name}  ${stepElapsed(t0)}s`);
+      progress(stepLine('PASS', step.name, stepElapsed(t0), ''));
     } catch {
       console.error(`\n❌ [阻塞] [${step.name}] 失败：请检查上方输出`);
-      progress(`[FAIL] ${step.name}  ${stepElapsed(t0)}s  —— 阻塞，闸终止`);
-      process.exit(1);
+      blockingRed = { name: step.name, secs: stepElapsed(t0) };
+      progress(stepLine('FAIL', step.name, blockingRed.secs, '阻塞，闸终止'));
+      break;
     }
   }
 
@@ -125,13 +131,13 @@ function main(): void {
       out = execSync(step.cmd, { cwd: root, encoding: 'utf8' });
       console.log(`ℹ️ [${step.name}] 通过`);
       infoLines.push(`[${step.name}] PASS\n${out}`);
-      progress(`[PASS] ${step.name}  ${stepElapsed(t0)}s  (信息级)`);
+      progress(stepLine('PASS', step.name, stepElapsed(t0), '(信息级)'));
     } catch (e) {
       const err = e as { stdout?: string; stderr?: string };
       out = (err.stdout || '') + (err.stderr || '');
       console.log(`ℹ️ [${step.name}] 红（信息级，不阻塞）：见 logs/gate-info.log`);
       infoLines.push(`[${step.name}] FAIL\n${out}`);
-      progress(`[FAIL] ${step.name}  ${stepElapsed(t0)}s  (信息级，不阻塞)`);
+      progress(stepLine('FAIL', step.name, stepElapsed(t0), '(信息级，不阻塞)'));
     }
   }
 
@@ -146,11 +152,17 @@ function main(): void {
   const infoSummary = infoReds.length > 0
     ? `信息级红 ${infoReds.length} 枚：${infoReds.join(' / ')}`
     : '信息级全过';
-  console.log(`\n✅ 阻塞级全过（${blockingSteps.length} 步阻塞 + ${infoSteps.length} 步信息，${elapsed}s）`);
+  // 0.14.11 卡 B：END 行 exit= 取真实码，不许字面量（红闸退出 1 时日志不再谎报 exit=0）
+  const exitCode = blockingRed ? 1 : 0;
+  if (blockingRed) {
+    console.log(`\n🛑 阻塞级红 1 枚：${blockingRed.name}（信息级画面见上）`);
+  } else {
+    console.log(`\n✅ 阻塞级全过（${blockingSteps.length} 步阻塞 + ${infoSteps.length} 步信息，${elapsed}s）`);
+  }
   console.log(`📊 ${infoSummary}`);
-  progress(`=== gate END @ ${new Date().toISOString()} exit=0 total=${elapsed}s ===  ${infoSummary}`);
-  process.exit(0);
+  const endTail = blockingRed ? `阻塞级红：${blockingRed.name}；${infoSummary}` : infoSummary;
+  progress(`=== gate END @ ${new Date().toISOString()} exit=${exitCode} total=${elapsed}s ===  ${endTail}`);
+  process.exit(exitCode);
 }
 
 main();
-
