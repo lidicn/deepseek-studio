@@ -20,6 +20,8 @@ import path from 'node:path';
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const CONTROLLER = path.join(REPO_ROOT, 'src', 'host', 'mcp-controller.ts');
 const MAIN_TS = path.join(REPO_ROOT, 'src', 'api', 'main.ts');
+// 0.14.11 tree-kill 单一来源化：范式本体已上提到共享实现，本文件的结构断言随之改锚。
+const TREE_KILL = path.join(REPO_ROOT, 'src', 'shared', 'tree-kill.ts');
 
 function walkTs(dirPath: string, out: string[] = []): string[] {
   for (const name of fs.readdirSync(dirPath)) {
@@ -33,19 +35,22 @@ function walkTs(dirPath: string, out: string[] = []): string[] {
 
 describe('QD-R23 #1 · MCP 子进程收尸', () => {
   const controllerSrc = fs.readFileSync(CONTROLLER, 'utf8');
+  const treeKillSrc = fs.readFileSync(TREE_KILL, 'utf8');
   const mainSrc = fs.readFileSync(MAIN_TS, 'utf8');
 
   it('装置自检：两个被测文件都读到了真内容（防路径写错导致全绿）', () => {
     expect(controllerSrc.length).toBeGreaterThan(10_000);
     expect(mainSrc.length).toBeGreaterThan(2_000);
     // 关键符号必须存在，否则下面的断言是在空跑
-    expect(controllerSrc).toContain('export function killProcessTree(');
+    // 0.14.11：本体在共享实现里，controller 只保留 re-export（下面 ① 会断两处都不再自带副本）
+    expect(treeKillSrc).toContain('export function killProcessTree(');
+    expect(controllerSrc).toContain("export { killProcessTree } from '../shared/tree-kill';");
     expect(mainSrc).toContain('function installOrphanGuard(');
   });
 
   it('① tree-kill：MCP 的 kill 都走 killProcessTree（不再有裸 kill 留下 cmd 的孙子）', () => {
-    // 装置自检：范式本体必须在用 taskkill /T
-    expect(controllerSrc).toMatch(/spawn\('taskkill', \['\/PID', String\(pid\), '\/T', '\/F'\]/);
+    // 装置自检：范式本体必须在用 taskkill /T（本体已在 src/shared/tree-kill.ts）
+    expect(treeKillSrc).toMatch(/spawnFn\('taskkill', \['\/PID', String\(pid\), '\/T', '\/F'\]/);
     // 四处历史裸 kill 全部消失
     expect(controllerSrc).not.toMatch(/\bproc\.kill\(\)/);
     expect(controllerSrc).not.toMatch(/conn\.process\?\.kill\(\)/);
@@ -59,12 +64,13 @@ describe('QD-R23 #1 · MCP 子进程收尸', () => {
     // 上面那几条断言全绿、缺陷却回来了。必须直接断函数体的名义：
     //   · 函数内**不得出现任何 `child.kill()` 之外的提前返回**（除 taskkill 失败回落外）
     //   · `taskkill` 必须是函数体的**第一条实际动作**（在 `child.kill()` 回落之前）
-    const bodyStart = controllerSrc.indexOf('export function killProcessTree(');
+    // 0.14.11：断言对象由 controller 本地副本改为共享实现（唯一的本体所在）。
+    const bodyStart = treeKillSrc.indexOf('export function killProcessTree(');
     expect(bodyStart).toBeGreaterThan(-1);
-    const bodyEnd = controllerSrc.indexOf('\n}\n', bodyStart);
-    const body = controllerSrc.slice(bodyStart, bodyEnd);
-    const taskkillIdx = body.indexOf("spawn('taskkill'");
-    const fallbackIdx = body.indexOf('child.kill();');
+    const bodyEnd = treeKillSrc.indexOf('\n}\n', bodyStart);
+    const body = treeKillSrc.slice(bodyStart, bodyEnd);
+    const taskkillIdx = body.indexOf("spawnFn('taskkill'");
+    const fallbackIdx = body.indexOf('safeKill(child);');
     expect(taskkillIdx, '函数体内必须调 taskkill').toBeGreaterThan(-1);
     // taskkill 必须在回落之前（顺序反了 = 先裸杀，树杀形同虚设）
     expect(taskkillIdx).toBeLessThan(fallbackIdx);
@@ -108,5 +114,28 @@ describe('QD-R23 #1 · MCP 子进程收尸', () => {
     // main.ts 的 beforeExit 必须同时覆盖两条腿
     expect(mainSrc).toContain('disconnectAll()');
     expect(mainSrc).toContain('killAllAdHocChildren()');
+  });
+
+  // 0.14.11 tree-kill 单一来源化：上面几条都是**源码文本**断言，只能证明「写到哪了」，
+  // 不能证明「行为对不对」。这一条直接对共享实现做行为断言：参数面 + 两条回落腿。
+  it('⑤ 共享 tree-kill 的行为面：taskkill /T 参数、三属性、两条回落腿', async () => {
+    const { killProcessTree } = await import('../../src/shared/tree-kill');
+    const calls: Array<{ cmd: string; args: string[]; opts: Record<string, unknown> }> = [];
+    const fakeSpawn = (cmd: string, args: string[], opts: Record<string, unknown>) => {
+      calls.push({ cmd, args, opts });
+      return { on: () => undefined } as never;
+    };
+    const child = { pid: 4321, kill: () => true };
+
+    killProcessTree(child, fakeSpawn as never);
+    if (process.platform === 'win32') {
+      expect(calls).toHaveLength(1);
+      expect(calls[0].cmd).toBe('taskkill');
+      // `/T` 是树杀的**唯一**凭据：丢了它就退化成只杀直接子进程，而本用例的其他断言全绿
+      expect(calls[0].args).toEqual(['/PID', '4321', '/T', '/F']);
+      expect(calls[0].opts).toMatchObject({ stdio: 'ignore', shell: false, windowsHide: true });
+    } else {
+      expect(calls).toHaveLength(0);
+    }
   });
 });

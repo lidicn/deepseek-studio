@@ -15,6 +15,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { isWorkspaceConfigured, type WorkspaceContext } from '../host/workspace';
 import { tokenizeCommandString } from '../shared/command-tokens';
+import { killProcessTree } from '../shared/tree-kill';
 import type { CapabilityContext, ExecutableCapability, ExecuteResult } from './types';
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -368,28 +369,9 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
         // R1-03：终止整棵进程树。Windows 下裸 child.kill() 只杀直接子进程，
         // powershell -Command 派生的 git/node/python 等孙进程会成为孤儿持续占用资源；
         // 用 taskkill /T /F 连子树一起终止。非 Windows 回落 child.kill()。
-        const killTree = (): void => {
-          if (process.platform === 'win32' && child.pid != null) {
-            try {
-              const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
-                stdio: 'ignore',
-                shell: false,
-                windowsHide: true,
-              });
-              killer.on('error', () => {
-                try { child.kill(); } catch { /* 已经退出：忽略 */ }
-              });
-              return;
-            } catch {
-              // taskkill 不可用时回落直接 kill
-            }
-          }
-          try {
-            child.kill();
-          } catch {
-            // 已经退出：忽略
-          }
-        };
+        // 0.14.11：实现上提到 `src/shared/tree-kill.ts`（与 MCP 收尸共用全仓唯一一份；
+        // 原先此处的内联副本与 `mcp-controller.ts` 的 `killProcessTree` 是两份并行实现）。
+        const killTree = (): void => killProcessTree(child);
 
         child.stdout?.on('data', (buf: Buffer) => {
           const r = appendCapped(stdout, buf.toString('utf8'), maxOutputBytes);

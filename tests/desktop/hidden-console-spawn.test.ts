@@ -40,17 +40,37 @@ function callBlock(source: string, marker: string, endMarker: string, occurrence
   return rest.slice(0, end);
 }
 
-/** host 运行时里会拉子进程的 TS 站点（审计清单，逐个必须 windowsHide）。 */
-const TS_SITES: Array<{ file: string; marker: string; end: string; occurrence?: number; label: string }> = [
+/**
+ * 剥掉注释行后的源码 —— **本文件的计数/存在性判据一律只看代码，不看注释**。
+ *
+ * 为什么必须统一：`windowsHide` 计数那条曾经把注释文本也算进去，于是「在头注释里解释
+ * 为什么要这个属性」反而让守卫变红（2026-11-07 真发生：为了迁就判据去改文档措辞）。
+ * 同族第 27 枚——**判据的读数面必须与它想表达的东西同口径**；否则下一个人加注释就莫名判红，
+ * 而且没人会怀疑「写文档」能弄坏一条安全断言。
+ *
+ * 只剥整行注释（`//`、JSDoc 的 `*` 起始行），不处理行尾注释 —— 本文件涉及的两个属性
+ * 在选项对象里，行尾注释不参与计数，简化处理不会放过任何真漏。
+ */
+function codeOnly(source: string): string {
+  return source
+    .split('\n')
+    .filter((line) => {
+      const t = line.trim();
+      return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+    })
+    .join('\n');
+}
+
+/** host 运行时里会拉子进程的 TS 站点（审计清单，逐个必须 windowsHide）。 */const TS_SITES: Array<{ file: string; marker: string; end: string; occurrence?: number; label: string }> = [
   { file: 'src/capabilities/shell.ts', marker: 'spawn(argv[0], argv.slice(1), {', end: '});', label: 'shell 能力主进程' },
-  { file: 'src/capabilities/shell.ts', marker: "spawn('taskkill'", end: '});', label: 'shell 能力收尸 taskkill' },
+  // 0.14.11 tree-kill 单一来源化：shell 的收尸 taskkill 与 MCP 的收尸 taskkill 合并为
+  // `src/shared/tree-kill.ts` 一处（原两条 site 各自指向本地副本，现各留一条并指向共享实现）。
+  { file: 'src/shared/tree-kill.ts', marker: "spawnFn('taskkill'", end: '});', label: 'shared 收尸 taskkill（shell／MCP 共用同一处）' },
   { file: 'src/capabilities/test-runner.ts', marker: 'const child = spawn(argv[0], argv.slice(1), {', end: '});', label: 'test-runner' },
   { file: 'src/host/sandbox-executor.ts', marker: 'execFile(pythonCmd, [scriptPath], {', end: '}, (error,', label: 'sandbox python' },
   { file: 'src/host/automation.ts', marker: 'exec(task.payload.command!', end: ', (err,', label: 'automation shell 任务' },
   { file: 'src/host/mcp-controller.ts', marker: 'const proc = spawn(config.command, config.args ?? [], {', end: '});', occurrence: 1, label: 'mcp connectStdio' },
   { file: 'src/host/mcp-controller.ts', marker: 'const proc = spawn(config.command, config.args ?? [], {', end: '});', occurrence: 2, label: 'mcp testConnection' },
-  // QD-R23 #1（PM 10:40 批复①）：MCP 收尸用 taskkill 也是拉子进程的站点，必须一并隐藏窗口。
-  { file: 'src/host/mcp-controller.ts', marker: "spawn('taskkill'", end: '});', label: 'mcp 收尸 taskkill' },
   { file: 'src/host/folder-picker.ts', marker: "spawnFn('powershell.exe'", end: '});', label: '原生目录选择 powershell' },
 ];
 
@@ -93,7 +113,8 @@ describe('子进程不弹控制台：TS host 侧', () => {
     const src = read('src/host/mcp-controller.ts');
     const markers = [...src.matchAll(/\bspawn\(/g)].map((m) => m.index ?? 0);
     // 装置自检：确实扫到了 spawn 调用（否则下面的循环是在空跑）
-    expect(markers.length).toBeGreaterThanOrEqual(3);
+    // 0.14.11：收尸 taskkill 上提到 src/shared/tree-kill.ts ⇒ 本文件剩 2 处（connectStdio／testConnection）。
+    expect(markers.length).toBeGreaterThanOrEqual(2);
     let checked = 0;
     for (const idx of markers) {
       const block = src.slice(idx, src.indexOf('});', idx) + 3);
@@ -104,12 +125,16 @@ describe('子进程不弹控制台：TS host 侧', () => {
   });
   it('清单完整性：host 运行时凡是引 child_process 的文件都在审计清单里，且 windowsHide 数与 spawn 数一致', () => {
     const expected: Record<string, number> = {
-      'src/capabilities/shell.ts': 2,
+      // 0.14.11 tree-kill 单一来源化：shell 2→1（收尸 taskkill 搬走），mcp-controller 3→2（同），
+      // 共享实现 src/shared/tree-kill.ts 新增 1。三个数之和不变（4 → 4），说明是「搬家」不是「减少」。
+      'src/capabilities/shell.ts': 1,
       'src/capabilities/test-runner.ts': 1,
       'src/host/sandbox-executor.ts': 1,
       'src/host/automation.ts': 1,
-      // QD-R23 #1：2 → 3（connectStdio / testConnection / 收尸 taskkill）
-      'src/host/mcp-controller.ts': 3,
+      'src/host/mcp-controller.ts': 2,
+      // 共享实现 2 处：① 注入点的类型签名 `TaskkillSpawn`（把三个属性写进类型，调用方漏掉就编译不过）
+      // ② `killProcessTree` 里真正的 spawn 选项对象。两处都不是「实现副本」，是有意为之。
+      'src/shared/tree-kill.ts': 2,
       'src/host/folder-picker.ts': 1,
       'src/host/native-consent.ts': 1,
     };
@@ -129,9 +154,27 @@ describe('子进程不弹控制台：TS host 侧', () => {
     // 新增任何引 child_process 的文件都必须先进清单（否则本断言红 → 逼一次人工审计）
     expect(found.sort()).toEqual(Object.keys(expected).sort());
     for (const [file, count] of Object.entries(expected)) {
-      const hits = read(file).match(/windowsHide:\s*true/g) ?? [];
+      // 0.14.11：与 taskkill 存在性那条**同一口径** —— 都用 codeOnly() 剥注释后再数。
+      const hits = codeOnly(read(file)).match(/windowsHide:\s*true/g) ?? [];
       expect(hits.length, `${file} 的 windowsHide 数应为 ${count}`).toBe(count);
     }
+  });
+
+  // 0.14.11 tree-kill 单一来源化（PM 卡硬要求）：「两处都不再有本地副本」。
+  // 只断「共享实现里有 taskkill」不够 —— 在任一处留一份本地 taskkill 副本，那种写法会
+  // 悄悄复活「两份并行实现」的原缺陷，而上面的 windowsHide 计数可能仍然对得上。
+  it('tree-kill 单一来源：shell.ts 与 mcp-controller.ts 都不得再自带 taskkill 实现', () => {
+    const sharedSrc = read('src/shared/tree-kill.ts');
+    // 装置自检：共享实现本体在场（否则下面的 not.toContain 是在空跑）
+    expect(sharedSrc).toContain("spawnFn('taskkill'");
+    for (const file of ['src/capabilities/shell.ts', 'src/host/mcp-controller.ts']) {
+      const src = read(file);
+      const code = codeOnly(src);
+      expect(code, `${file} 仍自带 taskkill 实现（应改为引用 src/shared/tree-kill.ts）`).not.toContain('taskkill');
+      expect(code, `${file} 必须引用共享实现`).toContain("from '../shared/tree-kill'");
+    }
+    // shell 侧调用面：原来的内联闭包必须改成对共享函数的一行委托
+    expect(read('src/capabilities/shell.ts')).toMatch(/const killTree = \(\): void => killProcessTree\(child\);/);
   });
 });
 

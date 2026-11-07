@@ -16,6 +16,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { isInstalledDistribution } from '../shared/distribution';
+import { killProcessTree } from '../shared/tree-kill';
 import { writeFileAtomicSync } from '../shared/atomic-write';
 
 /**
@@ -36,45 +37,9 @@ export function killAllAdHocChildren(): void {
   }
 }
 
-/**
- * QD-R23 #1：终止**整棵**子进程树。
- *
- * 为什么不能裸 `child.kill()`：本文件的 MCP 服务器一律 `shell: isCmdBatch` 起
- * （`.cmd` / `.bat` 必须经 `cmd.exe`）⇒ 杀掉的只是 `cmd.exe`，真正的 `npx`/`node`
- * 成为孤儿继续活着（`qd-r23-d2` 已证孙进程存活 2s+；用户的 TVPilot 就是这种形态）。
- *
- * 范式抄自本仓 `src/capabilities/shell.ts:370-388` 的 `killTree()`（PM 卡指定）：
- * win32 且有 pid ⇒ `taskkill /PID <pid> /T /F`（`/T` 连子树）；其余情况回落 `child.kill()`。
- * `killer.on('error')` 也回落 —— taskkill 不存在/被拦时不能把收尸整个丢掉。
- */
-export function killProcessTree(child: ChildProcess | null | undefined): void {
-  if (!child) return;
-  const pid = child.pid;
-  if (process.platform === 'win32' && pid != null) {
-    try {
-      const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
-        stdio: 'ignore',
-        shell: false,
-        windowsHide: true,
-      });
-      killer.on('error', () => {
-        try {
-          child.kill();
-        } catch {
-          /* 已退出：忽略 */
-        }
-      });
-      return;
-    } catch {
-      // taskkill 不可用 ⇒ 落到下面的直接 kill
-    }
-  }
-  try {
-    child.kill();
-  } catch {
-    /* 已退出：忽略 */
-  }
-}
+// 0.14.11：killProcessTree 已上提到 src/shared/tree-kill.ts（全仓唯一实现），此处只负责
+// 登记表遍历；对外仍从本文件 re-export，api/main.ts 的调用面因此不变。
+export { killProcessTree } from '../shared/tree-kill';
 
 export interface McpServerConfig {
   /** 启动命令（如 npx、python、uvx），stdio 传输时必填 */
