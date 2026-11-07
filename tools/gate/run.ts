@@ -138,8 +138,17 @@ function main(): void {
   appendFileSync(logFile, infoLines.join('\n'), 'utf8');
 
   const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+  // 信息级红名单固定一行（PM 20261107：判断 symbols/upstream-drift 等是在收敛还是在漂）
+  // 从步头解出名字，不依赖 infoSteps/infoLines 下标配对（防 continue 跳步导致静默错位）
+  const infoReds = infoLines.slice(1)
+    .map((l) => /^\[([^\]]+)\] FAIL/.exec(l)?.[1])
+    .filter((n): n is string => !!n);
+  const infoSummary = infoReds.length > 0
+    ? `信息级红 ${infoReds.length} 枚：${infoReds.join(' / ')}`
+    : '信息级全过';
   console.log(`\n✅ 阻塞级全过（${blockingSteps.length} 步阻塞 + ${infoSteps.length} 步信息，${elapsed}s）`);
-  progress(`=== gate END @ ${new Date().toISOString()} exit=0 total=${elapsed}s ===`);
+  console.log(`📊 ${infoSummary}`);
+  progress(`=== gate END @ ${new Date().toISOString()} exit=0 total=${elapsed}s ===  ${infoSummary}`);
   process.exit(0);
 }
 
