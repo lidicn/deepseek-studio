@@ -1235,6 +1235,128 @@ mod td_tests {
         }
     }
 
+    /// 测试串行锁（裁定五十九 **缺陷 A**）。
+    ///
+    /// 两个 td05 用例的语义都是「**8760 被无关进程占着**」，而 `HEALTH_PORT = 8760` 是
+    /// **产品常量**（换端口就测不到那个场景）⇒ 只能串行。cargo 默认并行会把两个用例
+    /// 同时丢到 8760 上，谁先 bind 成功后者的前置断言就随机红。
+    ///
+    /// 成对证据（同一棵树、同一天，只差并行/串行）：
+    ///   - 并行：`logs/pm-cargo-01410.log`（09:07:00）`45 passed; 1 failed`
+    ///   - 串行：`logs/pm-cargo-01410-serial.log`（09:11:48）`46 passed; 0 failed`
+    ///
+    /// ⚠️ **中毒必须可恢复**：用例 panic 会让 Mutex 中毒；若这里写 `.lock().unwrap()`，
+    /// 后面那个用例会**因中毒再 panic 一次** —— 修好 A 之后 B 的 panic 会把无辜用例一起拖红。
+    /// `unwrap_or_else(|e| e.into_inner())` 把中毒的守卫取回来，锁照常可用。
+    /// **不许「简化」回 `unwrap()`。**
+    static TD05_PORT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn td05_port_guard() -> std::sync::MutexGuard<'static, ()> {
+        TD05_PORT_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 8760 当前是否有进程在应答（HTTP 探活；**不看 netstat 状态字段** —— 裁定五十六 D4）。
+    fn port_8760_accepting() -> bool {
+        probe_health()
+    }
+
+    /// 8760 的监听者 pid（**仅用于诊断文案**）。
+    ///
+    /// ⚠️ **两条实测教训（2026-11-07，Core 用 python 假服务在 8760 上验证时撞到）**：
+    ///   1. `netstat -ano` 在**浏览器/非提权会话**里对别人的监听套接字常给出 **`pid=0`**，
+    ///      只有本会话自己起的进程才稳定给出真 pid；
+    ///   2. 所以**绝不能拿 pid 当「占用与否」的判据** —— 占用与否一律由 `probe_health()`
+    ///      （真实 HTTP 探活）决定（裁定五十六 D4 的同一精神：状态/pid 列不是判据，探活才是）。
+    /// 本函数只负责让**文案**尽量有信息；拿不到就写 `unknown`，不假装知道。
+    #[cfg(windows)]
+    fn port_8760_owner_pid() -> Option<u32> {
+        let needle = format!(":{}", HEALTH_PORT);
+        let out = console_command("netstat").args(["-ano"]).output().ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if !trimmed.contains("LISTENING") || !trimmed.contains(&needle) {
+                continue;
+            }
+            if let Some(pid) = trimmed.split_whitespace().last() {
+                if let Ok(p) = pid.parse::<u32>() {
+                    // pid=0 = netstat 拿不到归属进程（见上），如实当「未知」。
+                    return if p == 0 { None } else { Some(p) };
+                }
+            }
+        }
+        None
+    }
+
+    #[cfg(not(windows))]
+    fn port_8760_owner_pid() -> Option<u32> {
+        None
+    }
+
+    /// 入口 fail-fast（裁定五十九 第四条；**不 skip、不 kill**）。
+    ///
+    /// **出处＝私聊 PM 的驳回裁定**（2026-11-07 09:2x，Core 与私聊 PM 的往来，
+    /// 群 PM 未参与这一条）：Core 先提「bind 失败时若是外部进程占用就 skip」→
+    /// 私聊 PM 判「不加」，给了三条理由与替代做法「fail-fast + 可诊断文案」→
+    /// Core 采纳。台账户归属核准见 PM-LOG 09:3x 那条。
+    /// （写清可反查的出处：写「某 PM 裁定」却反查不到的，比不写更糟。）
+    ///
+    /// 为什么不是「检测到占用就 skip」：
+    ///   ① 8760 是产品常量，被占本身就是「装版起不来」的真危害 —— 静默跳过＝把这个冲突藏起来，
+    ///      而它正是 QD-R23 #1 那类孤儿进程问题的现场形态；
+    ///   ② 串行锁只在**本进程内**有效，跨进程冲突是**真实环境状态**，测试无权判定它是噪声；
+    ///   ③ 所以：**红，但红得可诊断** —— 文案带 owner pid 与下一步动作，读的人一步定位。
+    ///
+    /// 为什么不是「检测到占用就 kill」：测试无权杀用户进程（杀是产品的行为，不是测试的）。
+    fn assert_8760_free_or_die(stage: &str) {
+        if port_8760_accepting() {
+            let pid = port_8760_owner_pid()
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            panic!(
+                "8760 已被外部进程占用（pid={}，阶段={}）—— 请先停掉 Studio 实例或残留假服务再跑本测试",
+                pid, stage
+            );
+        }
+    }
+
+    /// 假服务的 RAII guard（裁定五十九 **缺陷 B**）。
+    ///
+    /// 为什么必须是 RAII：旧实现靠「`assert!` 之后再 `fake.kill()`」，
+    /// **一旦前置断言 panic，kill 永远执行不到** ⇒ python 假服务**残留占住 8760** ⇒
+    /// 用户下次启动 Studio 撞 `EADDRINUSE`。真机实测过：pid 26556 / created 09:07:00 /
+    /// 命令行含 `bind(('127.0.0.1',8760))` / 清理前 8760 探活 200。
+    /// `Drop` 在 panic 展开时照样执行 —— 这是 Rust 里唯一能覆盖 panic 路径的形态。
+    /// 与 QD-R23 #1（MCP 子进程收尸）同族：子进程在失败路径上不被清理。
+    struct Fake8760 {
+        child: Option<Child>,
+    }
+
+    impl Fake8760 {
+        /// `None` = 环境无 python（沿用旧行为：调用方打印 skip 并返回）。
+        fn spawn() -> Option<Self> {
+            spawn_fake_8760().map(|c| Self { child: Some(c) })
+        }
+    }
+
+    impl Drop for Fake8760 {
+        fn drop(&mut self) {
+            if let Some(mut c) = self.child.take() {
+                let _ = c.kill();
+                // 必须 wait：只 kill 不 wait 会留僵尸，端口也可能迟迟不释放。
+                let _ = c.wait();
+                // 等端口真的空出来（最多 2s）：kill 之后 listener 释放不是瞬时的。
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while Instant::now() < deadline {
+                    if !port_8760_accepting() {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+    }
+
     /// 起一个「占住 8760 并应答 HTTP 200」的假服务，返回它的子进程。
     /// 这里用 python（若不可用则跳过该断言，避免污染环境）。
     #[cfg(windows)]
@@ -1278,10 +1400,14 @@ mod td_tests {
 
     #[test]
     fn td05_alive_child_and_port_ok_is_healthy() {
+        // 串行（缺陷 A）：8760 是产品常量，两个用例必须排队，否则并行互抢端口。
+        let _port = td05_port_guard();
+        assert_8760_free_or_die("td05_alive_child_and_port_ok_is_healthy 入口");
+
         // 用一个真实存活子进程替换「我们的宿主」，并让 probe_health 依赖的
         // 8760 由假服务应答；两者都在 => 健康。
-        let mut fake = match spawn_fake_8760() {
-            Some(c) => c,
+        let fake = match Fake8760::spawn() {
+            Some(f) => f,
             None => {
                 eprintln!("[skip] 环境无 python，跳过 td05 端口应答类断言");
                 return;
@@ -1291,8 +1417,8 @@ mod td_tests {
         let healthy = is_healthy(&mut holder);
         let _ = holder.kill();
         let _ = holder.wait();
-        let _ = fake.kill();
-        let _ = fake.wait();
+        // 假服务由 guard 的 Drop 收尸（含 panic 路径）——这里不手写 kill。
+        drop(fake);
         assert!(healthy, "子进程存活 + 端口 200 应答 → 应判健康");
     }
 
@@ -1300,8 +1426,11 @@ mod td_tests {
     fn td05_dead_child_but_port_answered_is_unhealthy() {
         // 缺陷场景：我们的子进程已退出，但 8760 被无关进程（假服务）应答。
         // 旧逻辑（纯 probe）会误判健康；新逻辑要求子进程存活 → 必须 false。
-        let mut fake = match spawn_fake_8760() {
-            Some(c) => c,
+        let _port = td05_port_guard();
+        assert_8760_free_or_die("td05_dead_child_but_port_answered_is_unhealthy 入口");
+
+        let fake = match Fake8760::spawn() {
+            Some(f) => f,
             None => {
                 eprintln!("[skip] 环境无 python，跳过 td05 端口应答类断言");
                 return;
@@ -1311,14 +1440,54 @@ mod td_tests {
         assert!(probe_health(), "假服务应在 8760 应答 200（前置）");
         let mut dead = spawn_exited();
         let healthy = is_healthy(&mut dead);
-        let _ = fake.kill();
-        let _ = fake.wait();
+        // 收尸交给 guard：旧实现在这句之前 panic 就会漏掉 kill（缺陷 B，真机残留过）。
+        drop(fake);
         assert!(!healthy, "子进程已退出但端口仍被应答 → 必须判不健康（旧逻辑会误判）");
+    }
+
+    /// 裁定五十九 缺陷 B 的**负控**：前置断言 panic 之后，假服务必须已被清理。
+    ///
+    /// 判据用 **HTTP 探活**（裁定五十六 D4：不看 netstat 状态字段）。
+    /// 这条用例本身必须绿——它验的是「失败路径也会清理」，不是「失败」。
+    #[test]
+    fn td05_fake_server_cleaned_up_even_when_assertion_panics() {
+        let _port = td05_port_guard();
+        assert_8760_free_or_die("td05_fake_server_cleaned_up_even_when_assertion_panics 入口");
+
+        // 装置自检①：环境无 python 就没法测这条，明说跳过（不静默通过）。
+        if Fake8760::spawn().is_none() {
+            eprintln!("[skip] 环境无 python，跳过 guard 清理负控");
+            return;
+        }
+        // 上一步的 guard 已 drop，端口应已归还；确认基线干净。
+        assert!(!port_8760_accepting(), "装置自检：负控开始时 8760 必须是空闲的");
+
+        // 静音 panic 输出：这里**故意** panic 一次，不该污染测试日志。
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let res = std::panic::catch_unwind(|| {
+            let _guard = Fake8760::spawn();
+            assert!(_guard.is_some(), "装置自检：假服务必须在 panic 前起来");
+            panic!("故意 panic：验证 guard 在失败路径上收尸");
+        });
+        std::panic::set_hook(prev_hook);
+
+        // 装置自检②：确实 panic 过（否则这条测的是「没 panic」的路径，等于空跑）
+        assert!(res.is_err(), "装置自检：必须真的 panic 过");
+
+        // 验收：panic 展开后 8760 必须不再应答（guard 的 Drop 生效）。
+        assert!(
+            !port_8760_accepting(),
+            "panic 路径未清理子进程：8760 仍被应答（残留会占住端口 → 用户启动 Studio 撞 EADDRINUSE）"
+        );
     }
 
     #[test]
     fn td05_dead_child_and_no_port_is_unhealthy() {
-        // 子进程已退出 + 端口无人应答 → 不健康。
+        // 这个用例**不碰 8760**，但它断言「端口无应答」——若别的用例正占着 8760，
+        // 它同样会红（并行 flaky 的另一面）。故一并在锁内、并在入口要求端口干净。
+        let _port = td05_port_guard();
+        assert_8760_free_or_die("td05_dead_child_and_no_port_is_unhealthy 入口");
         let mut dead = spawn_exited();
         let healthy = is_healthy(&mut dead);
         assert!(!healthy, "子进程已退出 + 端口无应答 → 不健康");
