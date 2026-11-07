@@ -44,8 +44,10 @@ jobs:
       # 版本一致性：tag 必须等于 package.json / tauri.conf.json 的 version（Gate 判据 3：版本号不许手写）
       - name: Verify tag matches version
         shell: pwsh
+        env:
+          TAG_NAME: ${{ github.ref_name }}
         run: |
-          $tag = "${{ github.ref_name }}".TrimStart('v')
+          $tag = $env:TAG_NAME.TrimStart('v')
           $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $conf = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
           Write-Host "tag=$tag package=$pkg tauri=$conf"
@@ -110,8 +112,13 @@ jobs:
       #    签名取安装包的 .sig（签的是安装包字节）；url 的 basename 必须与上传后的资产名一字不差。
       - name: Compose latest.json
         shell: pwsh
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           $ErrorActionPreference = 'Stop'
+          $tag = $env:TAG_NAME
           $conf = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
           $version = $conf.version
           $nsis = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" -File | Select-Object -First 1
@@ -122,10 +129,25 @@ jobs:
           $platform = @{
             "windows-x86_64" = @{
               signature = (Get-Content $sig -Raw).Trim()
-              url = "${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/$($nsis.Name)"
+              url = "$env:SERVER_URL/$env:REPOSITORY/releases/download/$tag/$($nsis.Name)"
             }
           }
-          $latest = @{ version = $version; notes = "Release ${{ github.ref_name }}"; pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"); platforms = $platform }
+          # notes 取自 Release 正文文件（方案 A，裁定六十：文件只放用户可见正文，
+          # 维护者操作说明另放 docs/发版操作-<tag>.md —— 人机混写会被截断推上用户弹窗）。
+          # fail-closed（两态）：文件不存在 **或** 存在但内容纯空白 → 都回落泛化串，notes 永不为空。
+          # 截断：先按 UTF-16 code unit 截 500，若劈开代理对回退 1 位（emoji 边界不产出孤立代理）。
+          $notesFile = "docs/release-notes-$tag.md"
+          $notes = "Release $tag"
+          if (Test-Path $notesFile) {
+            $body = (Get-Content $notesFile -Raw).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($body)) { $notes = $body }
+          }
+          if ($notes.Length -gt 500) {
+            $cut = 500
+            if ([char]::IsHighSurrogate($notes[$cut - 1])) { $cut = $cut - 1 }
+            $notes = $notes.Substring(0, $cut) + '…'
+          }
+          $latest = @{ version = $version; notes = $notes; pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"); platforms = $platform }
           ($latest | ConvertTo-Json -Depth 6) | Set-Content -Path "src-tauri/target/release/latest.json" -Encoding UTF8
           Get-Content "src-tauri/target/release/latest.json"
 
@@ -159,6 +181,8 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           $ErrorActionPreference = 'Stop'
           # 诊断通道：闸的任何失败都写 ::error:: 注解（公开 API 可读；job logs 需管理员令牌）
@@ -166,8 +190,8 @@ jobs:
             Write-Host "::error::[preflight-gate] $($_.Exception.Message)"
             break
           }
-          $tag = '${{ github.ref_name }}'
-          $repo = '${{ github.repository }}'
+          $tag = $env:TAG_NAME
+          $repo = "$env:REPOSITORY"
           $headers = @{
             Authorization = "Bearer $env:GH_TOKEN"
             Accept = 'application/vnd.github+json'
@@ -229,9 +253,11 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          $tag = '${{ github.ref_name }}'
-          $repo = '${{ github.repository }}'
+          $tag = $env:TAG_NAME
+          $repo = "$env:REPOSITORY"
           $headers = @{
             Authorization = "Bearer $env:GH_TOKEN"
             Accept = 'application/vnd.github+json'

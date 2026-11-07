@@ -46,9 +46,28 @@ describe('P1-2：latest.json 的 url 必须与 GitHub 实际资产名一字不�
     const compose = step(release, 'Compose latest.json');
     expect(compose).toContain('bundle/nsis/*.exe');
     expect(compose).toContain("if ($nsis.Name -match ' ') { throw");
-    expect(compose).toContain('/releases/download/${{ github.ref_name }}/$($nsis.Name)');
+    // 20261107 注入面收口：url 改走 env 通道（SERVER_URL/REPOSITORY/TAG_NAME），
+    // basename 仍来自最终产物名、路径仍含 tag（P1-2 原意不变）
+    expect(compose).toContain('url = "$env:SERVER_URL/$env:REPOSITORY/releases/download/$tag/$($nsis.Name)"');
+    // 注入回归锁（20261107）：run: 块内不许 ${{ }} 插值（单引号可进 tag 名 ⇒ 插值即代码执行）；
+    // env:/with: 数据通道合法，不算违规。
+    const runStart = compose.indexOf('run: |');
+    expect(runStart, 'compose 无 run: 块').toBeGreaterThanOrEqual(0);
+    expect(compose.slice(runStart), 'compose run: 块内出现 ${{ 插值').not.toContain('${{');
     // 旧写法（拿 productName / 配置里的名字拼 url）不许回来
     expect(compose).not.toContain('productName');
+  });
+
+  it('compose/Preflight/Delete-draft/Verify-tag 四步的 run: 脚本体内零插值（20261107 注入回归锁）', () => {
+    // run: 块内不许有 ${{ }}（单引号可进 tag 名 ⇒ 插值即代码执行）；
+    // env:/with: 数据通道合法（GH_TOKEN 等），不算违规。
+    for (const name of ['Verify tag matches version', 'Compose latest.json', 'Preflight gate (G1/G2/G5)', 'Delete draft on failure (fail-closed)']) {
+      const body = step(release, name);
+      const runStart = body.indexOf('run: |');
+      expect(runStart, `step '${name}' 无 run: 块`).toBeGreaterThanOrEqual(0);
+      const runBody = body.slice(runStart);
+      expect(runBody, `step '${name}' 的 run: 块内出现 \${{ 插值`).not.toContain('${{');
+    }
   });
 
   it('步骤顺序：归一化 → compose → 建 draft → 前置闸', () => {
