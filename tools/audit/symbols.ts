@@ -5,6 +5,7 @@
  * M3 删纠偏后，以下符号必须 0 命中（除白名单注释）：
  *   MAX_NUDGES / RAW_TOOL_TAG_RE / stripRawToolTags / MAX_LOOPS
  * shouldNudge 允许定义存在但调用必须 0。
+ * 残留性质：待办报警、非缺陷——老红常驻靠计数变化暴露新增，勿当缺陷去清。
  *
  * 用法：npx tsx tools/audit/symbols.ts
  * 退出码：0=全清零  1=有残留
