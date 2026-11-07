@@ -17,6 +17,8 @@ import { generatePairingCode } from './agent-lan-access';
 // C1 P0-2：配置加载抽到独立模块（纯函数、无副作用、路径可注入 → 可安全单测）。
 import { loadConfig } from './config-loader';
 import { runStartupMigration } from '../host/config-migration';
+// QD-R23 #1：退出前收尸需要 controller 的 disconnectAll 与临时子进程登记表。
+import { getMcpController, killAllAdHocChildren } from '../host/mcp-controller';
 import { resolveConfigDir, resolveStudioDistribution } from '../shared/distribution';
 import { isQueryOnly as isQueryOnlyRun } from './cli-args';
 // TD-04：资源根解析（安装版靠 STUDIO_RESOURCE_ROOT，开发树回退 import.meta.url）。
@@ -35,18 +37,41 @@ type GuardDeps = {
   clearInterval: typeof clearInterval;
   on: (sig: 'SIGTERM' | 'SIGBREAK', fn: () => void) => void;
   log?: (msg: string) => void;
+  /**
+   * QD-R23 #1：**退出前收尸**（可选，故现有适配器不改也能编译）。
+   *
+   * 为什么挂在这里而不是在 `mcp-controller` 里自己 `process.on`：
+   * 本函数是**注入式**的（`STUDIO_TEST` 走假适配器），在 controller 里直接注册
+   * 进程级监听会破坏可注入设计、让测试没法断言「退出前确实收了一次尸」。
+   *
+   * 已批的运行期行为变化（PM 裁定）：父进程消失（孤儿防护触发）或收到
+   * SIGTERM/SIGBREAK 时，宿主会**主动 tree-kill 全部 MCP 子进程**再退出；
+   * 原行为是什么都不做、让子进程被系统自然孤立（`.cmd` 起的 MCP 就此变孤儿）。
+   */
+  beforeExit?: () => void;
 };
 function installOrphanGuard(d: GuardDeps, intervalMs = 2_000): () => void {
   const ppid0 = d.getPpid();
+  // 统一出口：孤儿防护与信号处理两条腿都必须先收尸再退（QD-R23 #1）。
+  const exitWithCleanup = (): void => {
+    try {
+      d.beforeExit?.();
+    } catch (e) {
+      // 收尸失败不能把退出流程堵住（否则宿主更难退出），但必须留痕。
+      d.log?.(`[deepseek-studio] 退出前收尸失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+    d.exit(0);
+  };
   const timer = d.setInterval(() => {
     if (d.getPpid() !== ppid0 || !d.alive(ppid0)) {
       d.log?.(`[deepseek-studio] 父进程 ${ppid0} 消失，孤儿防护触发 self-exit`);
-      d.exit(0);
+      exitWithCleanup();
     }
   }, intervalMs);
   const stop = () => d.clearInterval(timer);
   for (const sig of ['SIGTERM', 'SIGBREAK'] as const) {
-    d.on(sig, () => { stop(); d.exit(0); });
+    // QD-R23 #1：信号腿同样先收尸再退（原来只 stop() + exit(0)，MCP 子进程全留成孤儿）。
+    d.on(sig, () => { stop(); exitWithCleanup(); });
   }
   return stop;
 }
@@ -61,6 +86,17 @@ if (!process.env.STUDIO_TEST) {
     setInterval, clearInterval,
     on: (sig, fn) => { process.on(sig, fn); },
     log: (m) => console.warn(m),
+    // QD-R23 #1：退出前收尸 —— 两条腿（孤儿防护 / SIGTERM·SIGBREAK）都走这里。
+    // `disconnectAll()` 覆盖已建连接；`killAllAdHocChildren()` 覆盖 testConnection
+    // 那些**从不进 connections map** 的 `__test__` 子进程（PM 实测的那条缺口）。
+    beforeExit: () => {
+      try {
+        getMcpController().disconnectAll();
+      } catch (e) {
+        console.warn(`[deepseek-studio] disconnectAll 失败：${e instanceof Error ? e.message : String(e)}`);
+      }
+      killAllAdHocChildren();
+    },
   }, 500);
 }
 // ── 孤儿防护结束 ────────────────────────────────────────────────────────

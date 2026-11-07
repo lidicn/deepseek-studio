@@ -49,6 +49,8 @@ const TS_SITES: Array<{ file: string; marker: string; end: string; occurrence?: 
   { file: 'src/host/automation.ts', marker: 'exec(task.payload.command!', end: ', (err,', label: 'automation shell 任务' },
   { file: 'src/host/mcp-controller.ts', marker: 'const proc = spawn(config.command, config.args ?? [], {', end: '});', occurrence: 1, label: 'mcp connectStdio' },
   { file: 'src/host/mcp-controller.ts', marker: 'const proc = spawn(config.command, config.args ?? [], {', end: '});', occurrence: 2, label: 'mcp testConnection' },
+  // QD-R23 #1（PM 10:40 批复①）：MCP 收尸用 taskkill 也是拉子进程的站点，必须一并隐藏窗口。
+  { file: 'src/host/mcp-controller.ts', marker: "spawn('taskkill'", end: '});', label: 'mcp 收尸 taskkill' },
   { file: 'src/host/folder-picker.ts', marker: "spawnFn('powershell.exe'", end: '});', label: '原生目录选择 powershell' },
 ];
 
@@ -85,13 +87,29 @@ describe('子进程不弹控制台：TS host 侧', () => {
     expect(captured!.opts.shell).toBe(false); // 安全红线不变
   });
 
+  // QD-R23 #1（PM 10:40 批复①）：**正向**断言 —— 计数相等只能说明"数量对"，
+  // 不能说明"每一处都带了"。逐个 spawn( 调用块核，任何一处漏 windowsHide 立刻红。
+  it('无遗漏：mcp-controller 里每一个 spawn( 调用块都带 windowsHide: true', () => {
+    const src = read('src/host/mcp-controller.ts');
+    const markers = [...src.matchAll(/\bspawn\(/g)].map((m) => m.index ?? 0);
+    // 装置自检：确实扫到了 spawn 调用（否则下面的循环是在空跑）
+    expect(markers.length).toBeGreaterThanOrEqual(3);
+    let checked = 0;
+    for (const idx of markers) {
+      const block = src.slice(idx, src.indexOf('});', idx) + 3);
+      expect(block, `第 ${idx} 字符处的 spawn( 调用块缺 windowsHide: true`).toContain('windowsHide: true');
+      checked += 1;
+    }
+    expect(checked).toBe(markers.length);
+  });
   it('清单完整性：host 运行时凡是引 child_process 的文件都在审计清单里，且 windowsHide 数与 spawn 数一致', () => {
     const expected: Record<string, number> = {
       'src/capabilities/shell.ts': 2,
       'src/capabilities/test-runner.ts': 1,
       'src/host/sandbox-executor.ts': 1,
       'src/host/automation.ts': 1,
-      'src/host/mcp-controller.ts': 2,
+      // QD-R23 #1：2 → 3（connectStdio / testConnection / 收尸 taskkill）
+      'src/host/mcp-controller.ts': 3,
       'src/host/folder-picker.ts': 1,
       'src/host/native-consent.ts': 1,
     };

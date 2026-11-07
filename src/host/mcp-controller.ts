@@ -18,6 +18,64 @@ import * as os from 'node:os';
 import { isInstalledDistribution } from '../shared/distribution';
 import { writeFileAtomicSync } from '../shared/atomic-write';
 
+/**
+ * QD-R23 #1：**不在 `connections` map 里的**临时子进程（`testConnection` 的 `__test__` 连接）。
+ *
+ * 为什么必须单独登记（PM 实测，比原卡更硬）：`git grep '__test__' -- src` 只命中
+ * `testConnection` 里那**一处赋值**，该 `conn` **从未 `connections.set()`** ⇒ 就算把
+ * `disconnectAll()` 接到退出钩子上，**测过一次的连接仍在兜底之外**，只能靠 finally 那条腿，
+ * 而那条腿原来是裸 `kill()`（`.cmd` 起的 MCP 只杀 `cmd.exe`，`npx` 真进程成孤儿）。
+ */
+const adHocChildren = new Set<ChildProcess>();
+
+/** 收走所有登记在册的临时子进程（tree-kill）。供孤儿防护 / 退出钩子调用。 */
+export function killAllAdHocChildren(): void {
+  for (const c of [...adHocChildren]) {
+    killProcessTree(c);
+    adHocChildren.delete(c);
+  }
+}
+
+/**
+ * QD-R23 #1：终止**整棵**子进程树。
+ *
+ * 为什么不能裸 `child.kill()`：本文件的 MCP 服务器一律 `shell: isCmdBatch` 起
+ * （`.cmd` / `.bat` 必须经 `cmd.exe`）⇒ 杀掉的只是 `cmd.exe`，真正的 `npx`/`node`
+ * 成为孤儿继续活着（`qd-r23-d2` 已证孙进程存活 2s+；用户的 TVPilot 就是这种形态）。
+ *
+ * 范式抄自本仓 `src/capabilities/shell.ts:370-388` 的 `killTree()`（PM 卡指定）：
+ * win32 且有 pid ⇒ `taskkill /PID <pid> /T /F`（`/T` 连子树）；其余情况回落 `child.kill()`。
+ * `killer.on('error')` 也回落 —— taskkill 不存在/被拦时不能把收尸整个丢掉。
+ */
+export function killProcessTree(child: ChildProcess | null | undefined): void {
+  if (!child) return;
+  const pid = child.pid;
+  if (process.platform === 'win32' && pid != null) {
+    try {
+      const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        stdio: 'ignore',
+        shell: false,
+        windowsHide: true,
+      });
+      killer.on('error', () => {
+        try {
+          child.kill();
+        } catch {
+          /* 已退出：忽略 */
+        }
+      });
+      return;
+    } catch {
+      // taskkill 不可用 ⇒ 落到下面的直接 kill
+    }
+  }
+  try {
+    child.kill();
+  } catch {
+    /* 已退出：忽略 */
+  }
+}
+
 export interface McpServerConfig {
   /** 启动命令（如 npx、python、uvx），stdio 传输时必填 */
   readonly command: string;
@@ -1070,7 +1128,7 @@ export class McpController {
       } catch { /* ignore */ }
       // BUG-036：连接失败后 MCP server 子进程泄漏 —— cleanup 必须收尸。
       // 进程已退出时 kill 无害；这是 exit / error / 初始化失败三条腿的公共出口。
-      try { proc.kill(); } catch { /* 已退出 */ }
+      killProcessTree(proc); // QD-R23 #1：tree-kill（.cmd 起的 MCP 只杀 cmd 会留孤儿）
       this.connections.delete(serverId);
     };
 
@@ -1362,7 +1420,7 @@ export class McpController {
     const conn = this.connections.get(serverId);
     if (!conn) return;
     try {
-      conn.process?.kill();
+      killProcessTree(conn.process);
     } catch {
       // 忽略
     }
@@ -1420,6 +1478,8 @@ export class McpController {
       });
 
       spawnedProc = proc;
+      // QD-R23 #1：登记进收尸可达集合（__test__ 从不进 connections map）
+      adHocChildren.add(proc);
       const conn: McpServerConnection = {
         process: proc,
         id: '__test__',
@@ -1484,7 +1544,7 @@ export class McpController {
       });
 
       if (!initResult.result) {
-        proc.kill();
+        killProcessTree(proc); // QD-R23 #1：同上，tree-kill
         return { ok: false, error: 'initialize failed' };
       }
 
@@ -1511,7 +1571,8 @@ export class McpController {
       // 原实现只有两条显式 kill 路径（initialize 失败 / 正常结束），
       // 超时与异常分支会把 MCP server 进程留在后台泄漏。
       if (spawnedProc) {
-        try { spawnedProc.kill(); } catch { /* 已退出 */ }
+        adHocChildren.delete(spawnedProc); // 已收尸 ⇒ 从登记表移除，防集合长期膨胀
+        killProcessTree(spawnedProc);
       }
     }
   }

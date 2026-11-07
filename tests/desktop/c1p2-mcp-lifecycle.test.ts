@@ -28,6 +28,8 @@ const state = vi.hoisted(() => ({
   spawned: [] as unknown[],
   /** A-4 用：假子进程（不依赖真实 I/O 时序） */
   fakeChild: null as null | (() => unknown),
+  /** QD-R23 #1：与 spawned 一一对应，记 argv[0]，供按「是不是 taskkill」过滤（PM 10:40 批复②） */
+  argv0: [] as string[],
 }));
 
 vi.mock('node:child_process', async (importOriginal) => {
@@ -39,10 +41,12 @@ vi.mock('node:child_process', async (importOriginal) => {
       if (state.fakeChild) {
         const fake = state.fakeChild();
         state.spawned.push(fake);
+        state.argv0.push(String(args[0] ?? ""));
         return fake as unknown as ReturnType<typeof actual.spawn>;
       }
       const child = actual.spawn(...args);
       state.spawned.push(child);
+      state.argv0.push(String(args[0] ?? ""));
       return child;
     },
   };
@@ -147,6 +151,7 @@ function makeFakeChild(): ChildProcess {
 
 beforeEach(() => {
   state.spawned.length = 0;
+  state.argv0.length = 0;
   state.fakeChild = null;
 });
 
@@ -211,14 +216,25 @@ describeWin('组 A · A-2 BUG-036 · connect 失败路径必须收尸', () => {
   });
 });
 
+/**
+ * QD-R23 #1（PM 10:40 批复②）：MCP 子进程的 spawn 次数 —— **排除收尸用的 taskkill**。
+ *
+ * 为什么必须过滤：`disconnectAll()` 会 tree-kill 每台服务器（`.cmd` 起的 MCP 只杀
+ * `cmd.exe` 会留孤儿），而本文件的 spawn mock 会把它也记进 `state.spawned`。
+ * A-3 要验的是「并发去重：两个不同 serverId 各 spawn 一次」，**不是「总 spawn 数 == 2」**
+ * —— 后者会被收尸干扰。放宽成 `>=2`/`<3` 会失去区分力（见本文件顶部纪律），所以按 argv[0] 过滤。
+ */
+function mcpSpawnCount(): number {
+  return state.argv0.filter((a) => a !== 'taskkill').length;
+}
 describeWin('组 A · A-3 BUG-027 · 并发 connect 去重', () => {
   it('并发 connect 同一 serverId：只 spawn 一次，两次拿到同一连接实例', async () => {
     const ctl = new McpController(writeConfig({ dup: stdioServer(FIXTURE_RESPONDER) }));
-    const before = state.spawned.length;
+    const mcpSpawnBefore = mcpSpawnCount();
     const [a, b] = await Promise.all([ctl.connect('dup'), ctl.connect('dup')]);
     expect(a).not.toBeNull();
     expect(b).toBe(a);
-    expect(state.spawned.length - before).toBe(1);
+    expect(mcpSpawnCount() - mcpSpawnBefore).toBe(1);
     ctl.disconnectAll();
   });
 
@@ -228,9 +244,9 @@ describeWin('组 A · A-3 BUG-027 · 并发 connect 去重', () => {
       d1: stdioServer(FIXTURE_RESPONDER),
       d2: stdioServer(FIXTURE_RESPONDER),
     }));
-    const before = state.spawned.length;
+    const mcpSpawnBefore = mcpSpawnCount();
     await Promise.all([ctl.connect('d1'), ctl.connect('d2')]);
-    expect(state.spawned.length - before).toBe(2);
+    expect(mcpSpawnCount() - mcpSpawnBefore).toBe(2);
     ctl.disconnectAll();
   });
 });
