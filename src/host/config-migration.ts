@@ -27,6 +27,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { resolveStudioDataDir, resolveStudioDistribution, isInstalledDistribution } from '../shared/distribution';
+import { writeFileAtomicSync } from '../shared/atomic-write';
 
 /** 迁移代际：改了搬迁清单就 +1（老机器上会再跑一次增量）。 */
 export const GENERATION = 1;
@@ -437,9 +438,10 @@ export function migrateLegacyConfig(paths: MigratePaths): MigrateResult {
       ...out.errors.map((e) => `error ${e.path}: ${e.error}`),
       '',
     ].join('\n');
-    const tmp = `${logPath}.tmp`;
-    fs.writeFileSync(tmp, body, 'utf8');
-    fs.renameSync(tmp, logPath);
+    // 原子写：收敛到 `writeFileAtomicSync`（P2 收紧卡）。与前面三处 config 类写入不同的是
+    // 这里写的是 **migration.log**（追加式审计日志，非用户配置）——等价性单独核过：
+    // 原实现同样是「同目录 tmp → rename 覆盖」，没有追加语义；收敛后只多了「失败清 tmp」。
+    writeFileAtomicSync(logPath, body, { encoding: 'utf-8', mode: 0o644 });
   } catch (e) {
     out.errors.push({ path: logPath, error: String(e) });
   }

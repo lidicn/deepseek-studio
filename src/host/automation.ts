@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { resolveConfigDir } from '../shared/distribution';
+import { writeFileAtomicSync } from '../shared/atomic-write';
 
 // ── 类型定义 ───────────────────────────────────────────────────────────
 
@@ -152,10 +153,9 @@ export function createAutomationManager(options?: {
   function saveTasks() {
     ensureDir();
     try {
-      // 原子写：先写 .tmp 再 rename，避免崩溃留下半截 JSON
-      const tmp = `${tasksFile}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify([...tasks.values()], null, 2), 'utf-8');
-      fs.renameSync(tmp, tasksFile);
+      // 原子写：收敛到 `writeFileAtomicSync`（P2 收紧卡）。原来手写 `${tasksFile}.tmp` 是
+      // 确定性文件名 —— 同一路径两写并发会互相覆写 tmp；helper 的 tmp 带 pid+计数器。
+      writeFileAtomicSync(tasksFile, JSON.stringify([...tasks.values()], null, 2), { encoding: 'utf-8', mode: 0o644 });
     } catch (err) {
       console.warn(`[automation] failed to save tasks: ${err}`);
     }
@@ -177,11 +177,9 @@ export function createAutomationManager(options?: {
   function saveLogs() {
     ensureDir();
     try {
-      // 只保留最近 500 条；原子写避免崩溃半截
+      // 只保留最近 500 条；原子写避免崩溃半截（收敛到 helper，同 saveTasks）
       const trimmed = logs.slice(-500);
-      const tmp = `${logsFile}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(trimmed, null, 2), 'utf-8');
-      fs.renameSync(tmp, logsFile);
+      writeFileAtomicSync(logsFile, JSON.stringify(trimmed, null, 2), { encoding: 'utf-8', mode: 0o644 });
     } catch (err) {
       console.warn(`[automation] failed to save logs: ${err}`);
     }

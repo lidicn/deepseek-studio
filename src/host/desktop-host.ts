@@ -110,7 +110,7 @@ import {
   type MutableWorkspaceContext,
   type WorkspaceContext,
 } from './workspace';
-import { statSync, existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { statSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { createShellCapability } from '../capabilities/shell';
 import { createFileTools } from '../capabilities/file';
 import { createFileEditCapability } from '../capabilities/edit-engine';
@@ -1048,10 +1048,10 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
               const id = name.toLowerCase().replace(/[^a-z0-9]/g, '-');
               if (!projects.find((p) => p.id === id)) {
                 projects.push({ id, name, path: projectPath });
-                // 原子写：tmp + rename，避免崩溃半截损坏 projects.json
-                const tmp = `${configPath}.tmp`;
-                writeFileSync(tmp, JSON.stringify(projects, null, 2), 'utf8');
-                renameSync(tmp, configPath);
+                // 原子写：收敛到 `writeFileAtomicSync`（同目录 tmp／同 mode／失败清 tmp／EXDEV 语义
+                // 只有一份实现）。原来这里是手写 `${configPath}.tmp` —— 确定性文件名，同一路径
+                // 两次并发写会互相覆写 tmp、rename 出别人的内容（P2 收紧卡）。
+                writeFileAtomicSync(configPath, JSON.stringify(projects, null, 2), { encoding: 'utf-8', mode: 0o644 });
               }
               if (!existsSync(projectPath)) mkdirSync(projectPath, { recursive: true });
               return { ok: true, data: { id, name, path: projectPath } };
