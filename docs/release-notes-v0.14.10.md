@@ -1,13 +1,3 @@
-# v0.14.10 发布说明（Release 正文草稿 · 供 Publish 时粘贴）
-
-> 用途：GitHub → Releases → v0.14.10 → 编辑页 → 把下面「正文」整段贴进 **Release description** → 勾 **Set as the latest release** → Publish。
-> 背景：v0.14.8 的 Release 正文为空（`body_len=0`），导致安全口径披露与已知问题都没有公开记录。本稿补齐。
-> 注意：更新弹窗上显示的仍是 `Release v0.14.10` 这句泛化串——它来自 `latest.json.notes`（`release.yml:128` 硬编码），**不读 Release 正文**。让弹窗显示正文需改 workflow，已排 v0.14.11。
-
----
-
-## 正文（从这里开始复制）
-
 ### 本版本修复了「聊天页连不上宿主」这个致命问题
 
 v0.14.8 装版后，聊天页里所有工具调用都返回 `no-host`、审批档位保存失败、MCP 配置读不到、技能扫不出来。**根因已定位并在本版修复。**
