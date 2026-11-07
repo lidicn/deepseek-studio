@@ -203,4 +203,36 @@ describe('凭据守卫：password 输入框不进入打字预热（P1 2026-11-06
       handle.stop();
     }
   });
+
+  it('flag 开态 + 密码框 ⇒ 密码值不出现在任何 memory.select payload（payload 级零泄漏，补零发送断言的缺口）', async () => {
+    const mod = await import('../../src/inject/main-world-interceptor');
+    const { handle, sender } = await installWith(mod, true);
+    // 推「不新鲜」：让两条预热路径都真正可发（同负控口径），断的才是凭据守卫本身。
+    mod.__setSkillsFreshnessClockForTests(() => 1e15);
+    try {
+      const baseSkills = countCalls(sender, 'skill.list');
+      const baseSelect = countCalls(sender, 'memory.select');
+
+      const canary = 'pw-leak-canary-8x'; // 15 字 > 6 字阈值；本用例独有字符串，全仓不与其他数据重合
+      const input = document.createElement('input');
+      input.type = 'password';
+      document.body.appendChild(input);
+      typeInto(input, canary);
+      await sleep(750); // > 600ms 预热静默窗口：守卫若回归，此刻正是明文密码经 draftOf 进 memory.select 的时机
+
+      // 判据 1/2（零发送）：两条预热路径在密码框上都不发
+      expect(countCalls(sender, 'skill.list') - baseSkills).toBe(0);
+      expect(countCalls(sender, 'memory.select') - baseSelect).toBe(0);
+      // 判据 3（payload 级，flag 开态）：即便「发了」的最坏形态下，任何 memory.select 的 params
+      // 里也不得出现密码值 —— 只断言计数为 0 会漏「走了别的路径但计数恰好为 0」的变形实现。
+      const selectReqs = sender.mock.calls
+        .map((c: unknown[]) => c[0] as TestToolCallRequest | undefined)
+        .filter((r): r is TestToolCallRequest => !!r && r.invocationName === 'memory.select');
+      const leaked = selectReqs.slice(baseSelect).some((r) => JSON.stringify(r.params ?? {}).includes(canary));
+      expect(leaked).toBe(false);
+    } finally {
+      mod.__resetSkillsFreshnessForTests();
+      handle.stop();
+    }
+  });
 });
