@@ -167,6 +167,21 @@ jobs:
           ($latest | ConvertTo-Json -Depth 6) | Set-Content -Path "src-tauri/target/release/latest.json" -Encoding UTF8
           Get-Content "src-tauri/target/release/latest.json"
 
+      # v0.14.12：draft 步前置断言——notes 文件必须存在且非空白。
+      # action-gh-release@v2 对 body_path 缺文件只 warn 不 fail（函数 ap catch ENOENT → console.warn → 回退 body 空），
+      # 我们从不设 body ⇒ Release body 静默空、CI 全绿。自家 throw 才能真正 fail-closed。
+      - name: Verify notes file exists
+        shell: pwsh
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $f = "docs/release-notes-$env:TAG_NAME.md"
+          if (-not (Test-Path $f)) { throw "notes file not found: $f" }
+          $body = (Get-Content $f -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($body)) { throw "notes file is blank: $f" }
+          Write-Host "notes file OK: $f ($($body.Length) chars)"
+
       # fail-safe：先建 **draft** Release（Gate 判据 4）
       - name: Create draft release
         id: create_release
@@ -176,6 +191,7 @@ jobs:
           name: ${{ github.ref_name }}
           draft: true
           prerelease: false
+          body_path: docs/release-notes-${{ github.ref_name }}.md
           files: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/nsis/*.exe.sig
@@ -220,6 +236,10 @@ jobs:
             Where-Object { $_.tag_name -eq $tag -and $_.draft } | Select-Object -First 1
           if (-not $rel) { throw "draft release for tag $tag not found" }
           Write-Host "release id=$($rel.id) draft=$($rel.draft) assets=$($rel.assets.Count)"
+          # v0.14.12：draft body 非空断言（fail-closed 落点＝本步失败走 Delete draft on failure，
+          # 删的是草稿、公开链一根毛都没动；且在点 Publish 之前就报红）。
+          if ([string]::IsNullOrWhiteSpace($rel.body)) { throw "draft release body is empty — body_path did not take effect" }
+          Write-Host "draft body length=$($rel.body.Length)"
 
           $latest = Get-Content 'src-tauri/target/release/latest.json' -Raw | ConvertFrom-Json
           $plat = $latest.platforms.'windows-x86_64'

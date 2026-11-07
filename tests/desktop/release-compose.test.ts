@@ -308,3 +308,49 @@ describe('0.14.11 卡：notes 管线行为判据（与 release.yml 同配方的 
     expect(out[out.length - 1]).toBe('…');
   });
 });
+
+describe('v0.14.12 卡：Release body 从 notes 文件补齐（body_path + 前置断言 + G4-body）', () => {
+  it('draft 步 with: 含 body_path 指向 release-notes 文件（正向锁；负控＝删该行必红）', () => {
+    const draft = step(release, 'Create draft release');
+    expect(draft).toContain('body_path: docs/release-notes-${{ github.ref_name }}.md');
+  });
+
+  it('draft 步之前有 notes 文件前置断言：Test-Path + 纯空白 throw（fail-closed，不靠第三方 action）', () => {
+    const verify = step(release, 'Verify notes file exists');
+    expect(verify).toContain('Test-Path');
+    expect(verify).toContain('IsNullOrWhiteSpace');
+    expect(verify).toContain('throw');
+  });
+
+  it('Verify notes 步的 run: 块零插值（与既有注入锁同判据，新增步也必须合规）', () => {
+    const body = step(release, 'Verify notes file exists');
+    const runStart = body.indexOf('run: |');
+    expect(runStart, 'Verify notes file exists 无 run: 块').toBeGreaterThanOrEqual(0);
+    expect(body.slice(runStart), 'Verify notes file exists 的 run: 块内出现 ${{ 插值').not.toContain('${{');
+  });
+
+  it('步骤顺序：compose → verify notes → 建 draft → 前置闸（新增步不落位即红）', () => {
+    const order = [
+      'Compose latest.json',
+      'Verify notes file exists',
+      'Create draft release',
+      'Preflight gate',
+    ].map((label) => {
+      const i = release.indexOf(`- name: ${label}`);
+      expect(i, `missing step: ${label}`).toBeGreaterThanOrEqual(0);
+      return i;
+    });
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
+  it('body 断言落位：draft 侧正向锁（Preflight gate 含 body 非空 throw）＋published 侧反向锁（公开链闸永不因正文空回退）', () => {
+    // 正向：body 非空断言在 release.yml 的 Preflight gate——本步失败走 Delete draft on failure，
+    // 删的是草稿、公开链不受影响，且在点 Publish 之前就报红（fail-closed 正确落点）。
+    const gate = step(release, 'Preflight gate (G1/G2/G5)');
+    expect(gate).toContain('IsNullOrWhiteSpace($rel.body)');
+    expect(gate).toContain('throw "draft release body is empty');
+    // 反向：release-published.yml 不得因 body 空而 throw——该 job 失败会触发 Revert to draft，
+    // 把已发布、验签全过的正式版撤下公开口（升级全员中断），与"少一段说明"不成比例。
+    expect(published).not.toContain('throw "Release body is empty');
+  });
+});

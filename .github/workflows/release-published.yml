@@ -82,6 +82,15 @@ jobs:
           }
           if ($urlName -match ' ') { throw "manifest url asset name contains a space: '$urlName'" }
 
+          # 2.5) G4-body 可见性（不杀伤）：body 空只 Write-Warning 不 throw——本 job 失败会触发
+          #      Revert to draft，把已发布、验签全过的正式版撤下公开口（升级全员中断），
+          #      与"页面上少一段说明"不成比例。真正的 fail-closed 断言在 release.yml 的 Preflight gate
+          #      （失败走 Delete draft on failure，删的是草稿、公开链不受影响）。
+          if ([string]::IsNullOrWhiteSpace($rel.body)) {
+            Write-Warning "Release body is empty — body_path did not take effect (fail-closed assertion lives in release.yml Preflight gate)"
+          }
+          Write-Host "Release body length=$($rel.body.Length)"
+
           # 3) G4：公开 url 可达（302/200），带重试（GitHub 资产生效有延迟：3 次 × 10s）
           $reachable = $false
           for ($attempt = 1; $attempt -le 3; $attempt++) {
