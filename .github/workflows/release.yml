@@ -142,9 +142,25 @@ jobs:
             $body = (Get-Content $notesFile -Raw).Trim()
             if (-not [string]::IsNullOrWhiteSpace($body)) { $notes = $body }
           }
+          # 0.14.11 卡：notes 进更新弹窗前剥 markdown 标记（弹窗 textContent 纯文本、不解析 HTML）。
+          # 顺序锁死：剥 → 度量 $notes.Length（序列化前）→ 截 500 内最近「。」→ 序列化。
+          # 剥：标题号 ^#{1,6}、反引号、** 粗体号；压连续空行。剥后纯空白 ⇒ 回落泛化串（fail-closed 不丢）。
+          if ($notes -ne "Release $tag") {
+            $notes = $notes -replace '(?m)^[ \t]*#{1,6}[ \t]*', ''
+            $notes = $notes -replace '`', ''
+            $notes = $notes -replace '\*\*', ''
+            $notes = $notes -replace '(\r?\n){3,}', "`n`n"
+            $notes = $notes.Trim()
+            if ([string]::IsNullOrWhiteSpace($notes)) { $notes = "Release $tag" }
+          }
+          # 截断：先按 500 截（代理对回退 1 位），再退到 500 内最近的「。」（<200 退回硬切）。
+          # 上限 501（含省略号）：LastIndexOf('。', $cut-1) 从 499 回扫、idx 可达 499 → cut=500 → Substring(0,500)+'…'＝501。
+          # 两分支均加「…」（硬切与句号截断两种出口都留截断痕迹、1 字符成本；与 overflow:auto 滚动条并存，不冲突）。
           if ($notes.Length -gt 500) {
             $cut = 500
             if ([char]::IsHighSurrogate($notes[$cut - 1])) { $cut = $cut - 1 }
+            $idx = $notes.LastIndexOf('。', $cut - 1)
+            if ($idx -ge 200) { $cut = $idx + 1 }
             $notes = $notes.Substring(0, $cut) + '…'
           }
           $latest = @{ version = $version; notes = $notes; pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"); platforms = $platform }

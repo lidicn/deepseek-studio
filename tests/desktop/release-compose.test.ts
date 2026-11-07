@@ -171,3 +171,140 @@ describe('P3-1：UpdateInfo 载荷必须是 camelCase', () => {
     expect(updater).toContain('current_version: String');
   });
 });
+
+describe('0.14.11 卡：notes 剥 markdown ＋ 截最近句号（弹窗 textContent 纯文本）', () => {
+  it('含 markdown 剥离：反引号／粗体号（标题号由行为判据 (b) 覆盖、不锁源码写法）', () => {
+    const compose = step(release, 'Compose latest.json');
+    expect(compose).toContain("-replace '`', ''");
+    expect(compose).toContain("-replace '\\*\\*'");
+  });
+
+  it('截到 500 内最近「。」，<200 退回硬切（负控 #3：先比较后截取、-1 不进 Substring）', () => {
+    const compose = step(release, 'Compose latest.json');
+    expect(compose).toContain("LastIndexOf('。'");
+    expect(compose).toContain('if ($idx -ge 200)');
+    expect(compose).toContain('$cut = $idx + 1');
+  });
+
+  it('剥后纯空白 ⇒ 回落泛化串（fail-closed 不丢，负控 #2）', () => {
+    const compose = step(release, 'Compose latest.json');
+    const stripStart = compose.indexOf('if ($notes -ne');
+    expect(stripStart, 'strip block not found').toBeGreaterThanOrEqual(0);
+    expect(compose.slice(stripStart)).toContain('IsNullOrWhiteSpace($notes)');
+  });
+});
+
+describe('0.14.11 卡：notes 管线行为判据（与 release.yml 同配方的 JS 内嵌管线）', () => {
+  // 同构锁的锚：PIPELINE 的每个字面量同时出现在 release.yml 的 PowerShell（加 (?m) 前缀／-replace 包裹）
+  // 和本测试的 JS 复刻（new RegExp 构建）里。产物一动、同构锁红；复刻一动、行为判据红。
+  const PIPELINE = {
+    heading: '^[ \\t]*#{1,6}[ \\t]*',   // PowerShell 侧为 (?m)^[ \t]*#{1,6}[ \t]*（(?m) 由 /m 标志提供）
+    backtick: '`',
+    bold: '\\*\\*',
+    newlines: '(\\r?\\n){3,}',
+    periodCheck: 'if ($idx -ge 200)',
+    cutAdjust: '$cut = $idx + 1',
+    ellipsis: "+ '…'",
+  };
+
+  function stripNotes(body: string): string {
+    let s = body;
+    s = s.replace(new RegExp(PIPELINE.heading, 'gm'), '');
+    s = s.replace(new RegExp(PIPELINE.backtick, 'g'), '');
+    s = s.replace(new RegExp(PIPELINE.bold, 'g'), '');
+    s = s.replace(new RegExp(PIPELINE.newlines, 'g'), '\n\n');
+    s = s.trim();
+    if (!s || /^\s*$/.test(s)) return '';
+    if (s.length > 500) {
+      let cut = 500;
+      const code = s.charCodeAt(cut - 1);
+      if (code >= 0xD800 && code <= 0xDBFF) cut--;
+      const idx = s.lastIndexOf('。', cut - 1);
+      if (idx >= 200) cut = idx + 1;
+      return s.substring(0, cut) + '…';
+    }
+    return s;
+  }
+
+  // 产物侧字面量清单：与 PIPELINE 无引用关系、独立写死，只用来比对 compose。
+  // 作用：红态②只改 PIPELINE ⇒ (b) 红、本锁仍绿——两枚证据各归各的（第 24 枚：判据精确到要证的那层）。
+  // 等价表达声明：(?m)（.NET 单行模式前缀）≡ JS /m 标志——锁只咬主体串、不咬语法糖，
+  // 否则下次有人为过锁去改产物。PS 单引号串里的 \t 交给 .NET 解释成 TAB，JS 源里的 \\t 同为 TAB，语义同构。
+  const ARTIFACT = {
+    heading: '(?m)^[ \\t]*#{1,6}[ \\t]*',
+    backtick: "-replace '`', ''",
+    bold: "-replace '\\*\\*'",
+    newlines: "-replace '(\\r?\\n){3,}'",
+    periodCheck: 'if ($idx -ge 200)',
+    cutAdjust: '$cut = $idx + 1',
+    ellipsis: "+ '…'",
+  };
+
+  it('同构锁①：ARTIFACT ⊂ compose（锁产物——翻 release.yml 红、翻 PIPELINE 不红）', () => {
+    const compose = step(release, 'Compose latest.json');
+    expect(compose).toContain(ARTIFACT.heading);
+    expect(compose).toContain(ARTIFACT.backtick);
+    expect(compose).toContain(ARTIFACT.bold);
+    expect(compose).toContain(ARTIFACT.newlines);
+    expect(compose).toContain(ARTIFACT.periodCheck);
+    expect(compose).toContain(ARTIFACT.cutAdjust);
+    expect(compose).toContain(ARTIFACT.ellipsis);
+  });
+
+  it('同构锁②：PIPELINE ≡ ARTIFACT（锁副本不漂——只翻 PIPELINE 就红）', () => {
+    // 等价表达：ARTIFACT.heading 含 (?m) 前缀（.NET 形态），PIPELINE.heading 是 JS 正则主体（/m 由 flag 提供）——
+    // 两者主体串逐字相同；PS 单引号串 \t 与 JS \\t 同为 TAB，语义同构。
+    expect(ARTIFACT.heading).toBe(`(?m)${PIPELINE.heading}`);
+    expect(ARTIFACT.backtick).toBe(`-replace '${PIPELINE.backtick}', ''`);
+    expect(ARTIFACT.bold).toBe(`-replace '${PIPELINE.bold}'`);
+    expect(ARTIFACT.newlines).toBe(`-replace '${PIPELINE.newlines}'`);
+    expect(ARTIFACT.periodCheck).toBe(PIPELINE.periodCheck);
+    expect(ARTIFACT.cutAdjust).toBe(PIPELINE.cutAdjust);
+    expect(ARTIFACT.ellipsis).toBe(PIPELINE.ellipsis);
+  });
+
+  it('(a) 剥净 markdown 标记：零 #／零反引号／零 **', () => {
+    const sample = '### 标题\n\n正文含 `code` 与 **bold** 标记。句号结尾。';
+    const out = stripNotes(sample);
+    expect(out).not.toMatch(/#/);
+    expect(out).not.toMatch(/`/);
+    expect(out).not.toMatch(/\*\*/);
+  });
+
+  it('(b) 标题前的空行仍在（①机器锁：[ \\t]* 绿、\\s* 红）', () => {
+    const sample = '前文。\n\n### 标题\n\n后文。';
+    const out = stripNotes(sample);
+    // [ \t]* 版：标题行前空行保留 ⇒ 输出含 \n\n标题
+    // \s* 版：空行被吃 ⇒ 输出只有 \n标题（红）
+    expect(out).toContain('\n\n标题');
+  });
+
+  // 分工注（群 PM 15:3x 实测）：(c) 样本里 `###` 直接接在重复段后、不在行首，
+  // (?m)^[ \t]*#{1,6}[ \t]* 不匹配它 ⇒ (c) 不走标题剥离路径、(a) 才走——两枚分工不同，
+  // 勿以为 (c) 顺带验了剥标题。
+  it('(c) 截句分支末两字符＝「。」＋「…」、长度钉 499；硬切分支末字符＝「…」、长度钉 501', () => {
+    // 截句分支：正文 >500 且 500 内有「。」≥200（样本固定 ⇒ 长度确定，toBe 比上界强——第 24 枚同族）
+    const long = '引言。' + '填充文本。'.repeat(100) + '### 标题\n\n`code` **bold** 末句。';
+    const out = stripNotes(long);
+    expect(out.length).toBe(499);   // stripped 524 → idx=497 → cut=498 → +…＝499
+    expect(out[out.length - 2]).toBe('。');
+    expect(out[out.length - 1]).toBe('…');
+
+    // 硬切分支：正文 >500 且 500 内无「。」≥200（'A'.repeat(600) 无代理对 ⇒ 无回退，钉 501）
+    const noPeriod = 'A'.repeat(600);
+    const hard = stripNotes(noPeriod);
+    expect(hard.length).toBe(501);  // 500 + …
+    expect(hard[hard.length - 1]).toBe('…');
+  });
+
+  it('(c+) 最坏情况：idx 落 499（。恰在 $cut-1 位）⇒ 输出恰 501、末三「a。…」（上限 501 的机器锁）', () => {
+    // 上界推导：LastIndexOf('。', $cut-1=499) 可命中 idx=499 → cut=500 → Substring(0,500)+'…'＝501
+    // （不是 500：搜索起点就是 499、idx 可达 499）。样本固定 ⇒ toBe 钉死。
+    const worst = 'a'.repeat(499) + '。' + 'b'.repeat(120);  // 620 字符，。在 idx=499
+    const out = stripNotes(worst);
+    expect(out.length).toBe(501);
+    expect(out[out.length - 3]).toBe('a');
+    expect(out[out.length - 2]).toBe('。');
+    expect(out[out.length - 1]).toBe('…');
+  });
+});
