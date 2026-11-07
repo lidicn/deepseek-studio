@@ -46,6 +46,12 @@ yuanbao-audit/src-tauri/target/
 # QD 台账第 11/16 条：仓根一次性调试件统一罩面（只仓根，不递归）。
 # 历史上散落 .diag/.port/.proc/.status/.tail/.p*/*-out/*-log/vitest-*/tc-*/gate-* 等 60+ 枚。
 /*.txt
+# 73 枚：仓根 JSON 兜底——cr.json/ci.json 两席都栽过"后台脚本 -o 相对名 + cwd 仓库根"同形态；
+# *.txt/*.log 有罩、json 没有，纪律会忘、ignore 不会。豁免三枚正经理跟踪件。
+/*.json
+!package.json
+!package-lock.json
+!tsconfig.json
 # 20261105 脱敏批：调试输出残留（.out 与命名前缀形态）同样不入库——它们含本机用户名/绝对路径痕迹。
 *.out
 vitest-*.txt
