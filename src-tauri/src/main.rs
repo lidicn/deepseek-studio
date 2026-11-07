@@ -1964,7 +1964,24 @@ fn main() {
             //
             // 收敛目标是「**配置与业务数据**离开 `~/.config` 与 roaming 根」，
             // webview 缓存本就在 local，**不在收敛目标内**（见设计稿 §8.6）。
-            // 替代待办记 §9：NSIS 卸载器清理 `%LOCALAPPDATA%\com.deepseek.studio`（卸载残留）。
+            // 原「替代待办记 §9：NSIS 卸载器清理 `%LOCALAPPDATA%\com.deepseek.studio`（卸载残留）」
+            // 定向已改，2026-11-07 静态取证后分两条：
+            //
+            //   (1) **卸载器默认就不删这个数据根，属设计保留、不是残留缺陷。**
+            //       生成态 `installer.nsi` 里 `RmDir /r "$APPDATA\${BUNDLEID}"` 与
+            //       `RmDir /r "$LOCALAPPDATA\${BUNDLEID}"` 位于「用户勾选 Delete app data ∧ 非更新模式」
+            //       双重门之内（勾选框无 BST_CHECKED ⇒ 默认不勾；passive/静默走 `SkipIfPassive`
+            //       整页跳过 ⇒ 变量空）。因此升级与普通卸载都不会清它，用户的登录态
+            //       （`EBWebView\Default\Network\Cookies`／`Local Storage`／`IndexedDB\…`）得以保留。
+            //
+            //   (2) **真正的升级陷阱在另一处：安装位置记忆键。**
+            //       `HKCU\Software\deepseek\<productName>` 的默认值记录了上次的 `$INSTDIR`
+            //       （安装时无条件写），而它的删除动作只在上述勾选分支内 ⇒ **普通卸载不会清**。
+            //       ⇒ 任何用装版做过测试的机器，安装包会「跟随旧路径」装回那个测试目录。
+            //       发版/测试前必须**显式清掉这个默认值**（只删值、保留 `Installer Language`），
+            //       再让新包落到常规安装目录。
+            //
+            // 结论：不要把 (1) 当缺陷去修（改了就是删用户数据），也不要指望卸载器处理 (2)。
             //
             // ⚠️ 谁要重新打开这条，先读上面三条 —— 别只看到「目录 ② 没被治」就再写一遍。
 
