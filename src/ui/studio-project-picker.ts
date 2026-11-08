@@ -144,8 +144,12 @@ export function createProjectPicker(): { container: HTMLElement; open: () => voi
   const projectList = el('div', { className: 'studio-picker-list' });
   body.appendChild(projectList);
 
-  // 卡①：粘贴路径创建项目。装版下 `folder.pick`（原生对话框）不可用，旧行为「关面板＋
-  // emit ui:new-project → 重新打开同一空面板」是死循环且无输入入口；文本路径是唯一可靠入口。
+  // 卡①：粘贴路径创建项目。三条可证事实（2026-11-08 复核口径）：
+  // ① Tauri 侧未注册 dialog 插件；② 宿主另有原生选择器（src/host/folder-picker.ts，
+  //    页面「打开文件夹」按钮走 WS pick-folder 在用）；③ 但本按钮走的 folder.pick 工具
+  //    未接入它、仅 STUDIO_PICK_FOLDER 回退 ⇒ 本入口请粘贴绝对路径；文本路径是当前唯一可靠入口。
+  // 是否把 folder.pick 接到 pickFolderViaDialog() 属行为改动（#37 批），定案前不得声称「装版没有原生目录选择器」。
+  // 旧行为「关面板＋emit ui:new-project → 重新打开同一空面板」是死循环且无输入入口。
   // 不写死任何默认项目/默认路径（2026-11-05 门禁 ui-display-truth 口径同样适用）。
   const createForm = el('div', { className: 'studio-picker-create-form', attrs: { 'data-studio-create-form': '1' } });
   createForm.hidden = true;
@@ -222,7 +226,10 @@ export function createProjectPicker(): { container: HTMLElement; open: () => voi
       return;
     }
     // folder.pick 失败必须可见（原实现在这里静默什么都不发生，用户以为按钮坏了）：
-    // 装版无原生对话框且未设 STUDIO_PICK_FOLDER ⇒ 该调用必失败，给用户可执行的下一步。
+    // 三条可证事实：① Tauri 侧未注册 dialog 插件；② 宿主另有原生选择器（src/host/folder-picker.ts，
+    // 页面「打开文件夹」走 WS pick-folder 在用）；③ 本按钮走的 folder.pick 工具未接入它、
+    // 仅 STUDIO_PICK_FOLDER 回退 ⇒ 给用户可执行的下一步（粘贴绝对路径）。
+    // 是否把 folder.pick 接到 pickFolderViaDialog() 属行为改动（#37 批），定案前不得声称「装版没有原生目录选择器」。
     pickerHint.hidden = false;
     pickerHint.textContent = '未能取到文件夹（装版暂不支持系统文件夹对话框）。请改用上方「创建新项目（粘贴路径）」，粘贴目录路径创建。';
   });

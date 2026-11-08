@@ -39,8 +39,10 @@ function makeBridge(initial: Project[] = []) {
           return { ok: true, data: { id, ...p } };
         }
         case 'folder.pick':
-          // 装版形态：无原生对话框、未设 STUDIO_PICK_FOLDER ⇒ 必败（desktop-host.ts:1107 原 error 文案）
-          return { ok: false, error: 'folder.pick requires Tauri dialog; set STUDIO_PICK_FOLDER env var as fallback' };
+          // 装版形态：folder.pick 未接入原生目录选择器、未设 STUDIO_PICK_FOLDER ⇒ 必败。
+          // 本桩用自带短串（不抄宿主真串）：宿主错误串的行为锁在 tests/desktop/host-side-tools.test.ts；
+          // 本桩只验「失败可见提示」路径，不验错误文案（宿主文案口径变化时本桩不跟变、不假同步）。
+          return { ok: false, error: 'folder.pick unavailable' };
         case 'workspace.set':
           return { ok: true, data: { root: String(req.params?.root ?? '') } };
         case 'settings.get':
