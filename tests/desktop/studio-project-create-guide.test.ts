@@ -39,7 +39,7 @@ function makeBridge(initial: Project[] = []) {
           return { ok: true, data: { id, ...p } };
         }
         case 'folder.pick':
-          // 装版形态：folder.pick 未接入原生目录选择器、未设 STUDIO_PICK_FOLDER ⇒ 必败。
+          // 桩模拟"取不到文件夹"失败面（#38 接线后宿主＝env 优先→回落原生选择器；取消/超时/无 GUI 均返失败）：
           // 本桩用自带短串（不抄宿主真串）：宿主错误串的行为锁在 tests/desktop/host-side-tools.test.ts；
           // 本桩只验「失败可见提示」路径，不验错误文案（宿主文案口径变化时本桩不跟变、不假同步）。
           return { ok: false, error: 'folder.pick unavailable' };
@@ -158,7 +158,10 @@ describe('项目选择器：粘贴路径创建（卡①）', () => {
     expect(calls.some((c) => c.invocationName === 'folder.pick')).toBe(true);
     const hint = picker.container.querySelector<HTMLElement>('.studio-picker-hint')!;
     expect(hint.hidden).toBe(false);
-    expect(hint.textContent).toContain('装版暂不支持系统文件夹对话框');
+    // R′（#39）：文案改如实（#38 接线后失败原因＝取消/超时/无 GUI，非"装版不支持"）；
+    // 旧断言「装版暂不支持系统文件夹对话框」随文案改，按纪律④补负断言堵假话回流
+    expect(hint.textContent).toContain('未能取到文件夹');
+    expect(hint.textContent).not.toContain('暂不支持');
     expect(hint.textContent).toContain('粘贴');
     expect(hint.textContent).toContain('创建新项目（粘贴路径）');
   });
