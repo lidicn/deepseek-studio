@@ -1102,10 +1102,11 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         //   ① Tauri 侧未注册 dialog 插件（Cargo.toml／Cargo.lock／main.rs／capabilities 四路 0 命中）；
         //   ② 宿主另有原生选择器：src/host/folder-picker.ts（powershell.exe + FolderBrowserDialog，
         //      windowsHide、180s 超时），已挂在 WS 消息 pick-folder 上，页面「打开文件夹」在用
-        //      （src/ui/agent-panel.ts:237 → src/host/agent-channel.ts:330 → 本文件:1262）；
-        //   ③ 但本 folder.pick 工具未接入它，当前只读 STUDIO_PICK_FOLDER（自动化回退）。
-        //   ⇒ 是否把本工具接到 pickFolderViaDialog()（会引入模型可触发的 GUI 模态、最长 180s 阻塞）
-        //     属行为改动，已按 PM-LOG L65/L68（2026-11-05）裁定排入 #37 批；定案前不得声称"装版没有原生目录选择器"。
+        //      （src/ui/agent-panel.ts:237 → src/host/agent-channel.ts:330 → 本文件 pickFolder）；
+        //   ③ 本工具按 PM-LOG L65/L68（2026-11-05）裁定接到同一个 pickFolderViaDialog()：
+        //      **env 优先**（STUDIO_PICK_FOLDER 命中即用，既有自动化/测试口径不变）⇒ 未设回落原生对话框
+        //      ⇒ 两者都拿不到（用户取消／180s 超时／对话框不可用）返 ok:false，不崩、不静默成功。
+        //   代价（已知）：模型可触发 GUI 模态、最长阻塞 180s；不改 WS 协议、UI 零改动。
         'folder.pick': {
           id: 'folder.pick',
           async execute(): Promise<ExecuteResult> {
@@ -1113,11 +1114,23 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             if (envPath && existsSync(envPath)) {
               return { ok: true, data: { path: envPath } };
             }
+            // 未设/无效 env ⇒ 回落原生选择器（与「打开文件夹」按钮同一条实现，同一条安全红线）。
+            // 选择器自身已把取消/超时/spawn 失败折成 null；这里再兜一层 try/catch，保证工具不会把异常
+            // 抛给调用方（fail-closed：拿不到就是 ok:false，不静默成功）。
+            let picked: string | null = null;
+            try {
+              picked = await pickFolderViaDialog();
+            } catch {
+              picked = null;
+            }
+            if (typeof picked === 'string' && picked.trim().length > 0) {
+              return { ok: true, data: { path: picked.trim() } };
+            }
             return {
               ok: false,
               error:
-                'folder.pick 未接入原生目录选择器：宿主另有 PowerShell 选择器（页面「打开文件夹」走 WS pick-folder 已在用），' +
-                '本工具目前仅支持 STUDIO_PICK_FOLDER 自动化回退。请改用页端「创建新项目（粘贴路径）」并提供绝对路径。',
+                'folder.pick 未取到文件夹：原生选择器未返回路径（用户取消、超时 180s 或对话框不可用）。' +
+                '请重试，或改用页端「创建新项目（粘贴路径）」并粘贴绝对路径。',
             };
           },
         },
