@@ -424,6 +424,44 @@ async function listMemoryBroadcastRows(): Promise<
   }));
 }
 
+/**
+ * 判定一次 consent 是否属「高风险」（决定确认框走**原生框**还是页内模态）。
+ *
+ * **只认事实字段，不认形态/时效/展示字段**（2026-11-08 语义挪用修复，用户拍板）：
+ *   - 越界（`outside`）——事实；
+ *   - 命中硬拒（`hardRule` 非空）——事实；
+ *   - 要发对话级放行（`allowConversation`）——事实；
+ *   - 命中风险模式（`riskFlags` 非空）——事实（policy 层原始风险 id，**未翻译**）。
+ *
+ * 删掉的两条同族病灶（都是拿「形态/时效」当判据）：
+ *   1. `hideAllowSession === false` —— **UI 按钮显隐开关**（要不要渲「本会话允许」按钮）。
+ *   2. `allowedGrantScopes.includes(...)` —— **长时效授权不构成高风险**，它只决定「这次同意
+ *      给多久」；且 shell.exec/python.exec 的 grantScopes 恒含 `session` ⇒ 该判据恒真。
+ *
+ * R2-01 的原意是「**高风险决议不得由页面自答**」（防伪造），不是「凡支持长时效就要问」——
+ * 用 scope 名当风险判据既误读原意、又恒真。**`riskLabel`／`riskFlagLabels` 等展示字段亦不得进本函数。**
+ *
+ * 另注：本函数决定的是「**框型**」，**不决定弹不弹**——弹不弹由 `auth.decision === 'ask'` 决定
+ * （`ensureConsent` 只在那个分支里被调用；full 档 policy 层直接 allow，不进 ask）。
+ */
+function isHighRiskConsent(meta?: ConsentMeta): boolean {
+  if (!meta) return false;
+  if (meta.outside === true) return true;
+  if (typeof meta.hardRule === 'string' && meta.hardRule.length > 0) return true;
+  if (meta.allowConversation === true) return true;
+  if (Array.isArray(meta.riskFlags) && meta.riskFlags.length > 0) return true;
+  return false;
+}
+
+/**
+ * 判据的行为级测试入口（2026-11-08，Studio-PM 裁决 Option B）。
+ *
+ * **如实说清它的成本**：这确实新增了一个 export——不是"零成本别名"。它存在的唯一理由是
+ * `isHighRiskConsent` 是模块级私有函数，测试无法直接调用；而「源码文本里有没有某串」
+ * 只证写出去了什么、证不了运行时判成什么。**它不改变任何生产调用路径**。
+ */
+export const isHighRiskConsentForTest = isHighRiskConsent;
+
 export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   // C3：tool run 事件追踪（Workbench UI 投影）
   const pendingRuns = new Map<string, { tool: string; botId: string; startedAt: number }>();
@@ -1846,6 +1884,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           // 用户在弹窗里看不到「这个要出工作区」的提示，却要为它逐次确认。
           outside: verdict?.outside === true || verdict?.reason === 'outside-workspace',
           riskFlagLabels: (verdict?.riskFlags ?? []).map(riskLabel),
+          // A5+：风险项 **id** 原样透传（未翻译）。`isHighRiskConsent` 只认这个事实字段，
+          // 不认 `riskLabel`／`riskFlagLabels` 这类展示字段（2026-11-08 语义挪用修复）。
+          riskFlags: [...(verdict?.riskFlags ?? [])],
         };
       }
       const decision = await ensureConsent(name, params, randomCallId(), consentMeta, botId, conversationId);
@@ -2006,22 +2047,6 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     return result.verdict === 'safe' && (result.reason === 'whitelist-hit' || result.reason === 'policy-allow');
   }
 
-  // ── R2-01：高风险授权判据 + 原生确认框摘要 ─────────────────────────
-  /**
-   * 判定一次 consent 是否属「高风险」（必须走宿主原生框，页面不得参与决议）。
-   * 判据（Studio-PM 裁决 §1）：allow-session / allow-conversation 可用（长时效）、
-   * 越界（outside）、命中硬拒邻近（hardRule）。
-   */
-  function isHighRiskConsent(meta?: ConsentMeta): boolean {
-    if (!meta) return false;
-    if (meta.outside === true) return true;
-    if (typeof meta.hardRule === 'string' && meta.hardRule.length > 0) return true;
-    if (meta.allowConversation === true) return true;
-    // 允许 long-lived grant（session）→ 高风险
-    if (Array.isArray(meta.allowedGrantScopes) && meta.allowedGrantScopes.includes('allow-session')) return true;
-    if (meta.hideAllowSession === false) return true;
-    return false;
-  }
 
   /** 从工具名 + params 生成一句关键参数摘要（命令行 / 目标路径，截断一行）。 */
   function consentSummary(_tool: string, params: unknown): string {

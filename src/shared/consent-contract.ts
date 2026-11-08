@@ -38,6 +38,14 @@ export interface ConsentMeta {
   modeLabel?: string;
   /** 命中的风险项中文标签（如「递归删除」「提权执行」）。 */
   riskFlagLabels?: readonly string[];
+  /**
+   * A5+：命中的风险项 **id**（如 `recursive-delete`），policy 层的原始事实，**未翻译**。
+   *
+   * 为什么与 `riskFlagLabels` 并存：标签是给人看的（`map(riskLabel)`，未知 id 会折成默认串），
+   * 拿它当逻辑判据＝把风险判定焊死在展示映射上。本字段专供宿主侧判定用（如
+   * `isHighRiskConsent` 判断「是否命中风险模式」），改 `riskLabel()` 的映射不得影响风险判定。
+   */
+  riskFlags?: readonly string[];
   /** 是否越出工作区（用于显示越界徽标）。 */
   outside?: boolean;
   /** A5：审计字段——本次调用的 approvalClass（透传，不做翻译）。 */

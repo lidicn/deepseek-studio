@@ -224,3 +224,72 @@ describe('A1 · 未登记的宿主能力必须 fail-closed', () => {
     expect(reg.isOriginAllowed('shell.exec', 'https://evil.example.com')).toBe(false);
   });
 });
+
+/**
+ * isHighRiskConsent 源码结构锁（2026-11-08 终版：四条判据，Gate 结构锁＋Core 行为真值表互补）。
+ *
+ * 背景：旧第 5 条把 UI 形态字段 hideAllowSession（按钮显隐开关，consent.ts:276-281）
+ * 当风险判据（语义挪用）；旧第 4 条 allowedGrantScopes.includes('allow-session') 是哑判据（恒不命中）。
+ * 终版四条判据：outside／hardRule／allowConversation／riskFlags 非空。
+ * 形态/展示/时效字段一律不得进判据。
+ *
+ * 本锁＝源码结构锁（文本取段＋正/负断言），与 Core 新文件的行为真值表互补：
+ * Gate 锁"结构有没有被改坏"（判据在/不在），Core 锁"运行时行为对不对"（真值表）。
+ */
+describe('A1 · isHighRiskConsent 源码结构锁（四条判据在、形态/展示字段不在）', () => {
+  const root = resolve(__dirname, '../..');
+  const hostSrc = readFileSync(resolve(root, 'src/host/desktop-host.ts'), 'utf8');
+  const contractSrc = readFileSync(resolve(root, 'src/shared/consent-contract.ts'), 'utf8');
+  const consentSrc = readFileSync(resolve(root, 'src/ui/consent.ts'), 'utf8');
+
+  /** 取出 isHighRiskConsent 函数体（花括号配平，不用 'return false;\n  }' 那个跨模块撞串） */
+  function extractFn(src: string): string {
+    const marker = 'function isHighRiskConsent(';
+    const start = src.indexOf(marker);
+    expect(start, 'isHighRiskConsent not found in desktop-host.ts').toBeGreaterThanOrEqual(0);
+    const rest = src.slice(start);
+    const open = rest.indexOf('{');
+    expect(open, 'isHighRiskConsent 函数体起始 { 未找到').toBeGreaterThanOrEqual(0);
+    let depth = 0;
+    let end = -1;
+    for (let i = open; i < rest.length; i++) {
+      if (rest[i] === '{') depth++;
+      else if (rest[i] === '}') {
+        depth--;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+    expect(end, 'isHighRiskConsent 函数体闭合 } 未找到').toBeGreaterThanOrEqual(0);
+    return rest.slice(0, end + 1);
+  }
+
+  const fn = extractFn(hostSrc);
+
+  it('锁① 四条正判据＋三条负断言＋ConsentMeta 字段锁', () => {
+    // 四条正判据（负控＝删任一条 ⇒ 对应 toContain 红）
+    expect(fn).toContain('meta.outside === true');
+    expect(fn).toContain('meta.hardRule');
+    expect(fn).toContain('meta.allowConversation === true');
+    expect(fn).toContain('meta.riskFlags');
+    // 负断言①：hideAllowSession（UI 形态字段）不得进判据（负控＝把旧第 5 条加回必红）
+    expect(fn, 'isHighRiskConsent 含 hideAllowSession——旧第 5 条（语义挪用）回流').not.toContain('hideAllowSession');
+    // 负断言②：riskLabel/riskFlagLabels（展示字段）不得进判据（负控＝加回必红）
+    expect(fn, 'isHighRiskConsent 含 riskLabel——展示字段进判据（本案病根）').not.toContain('riskLabel');
+    // 负断言③：哑值 'allow-session' 不得再用（负控＝改回哑值必红）
+    expect(fn, "isHighRiskConsent 含哑值 'allow-session'——哑判据回流").not.toContain("'allow-session'");
+    // ConsentMeta 须含 riskFlags 字段（防删回去）
+    expect(contractSrc, 'ConsentMeta 缺 riskFlags 字段').toMatch(/riskFlags\s*\??:/);
+  });
+
+  it('锁② hideAllowSession 语义链：源＝desktop-host.ts:1872 赋值、消费＝consent.ts 按钮显隐', () => {
+    // 源：desktop-host.ts:1872 赋值形态——从 grantScopes 派生（工具是否支持会话级放行）
+    expect(hostSrc).toContain("hideAllowSession: !allowed.includes('session')");
+    // 消费：consent.ts 用它决定是否渲染「本次会话允许」按钮（UI 渲染开关）
+    expect(consentSrc).toContain('meta?.hideAllowSession');
+    expect(consentSrc).toContain('ds-consent-allow-session');
+    // hideAllowSession=true（不支持 session）→ 只渲染 allowOnce + deny
+    expect(consentSrc).toContain('actions.append(btnAllowOnce, btnDeny)');
+    // hideAllowSession=false（支持 session）→ 渲染 allowOnce + deny + allowSession
+    expect(consentSrc).toContain('actions.append(btnAllowOnce, btnDeny, btnAllowSession)');
+  });
+});
