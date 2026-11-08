@@ -181,6 +181,41 @@ describe('三档策略在宿主链路上的行为', () => {
     expect(r.ok).toBe(false);
     expect(r.reason).toBe('consent-unavailable');
   });
+
+  it('folder.pick 失败文案行为锁：说对机制、给可执行下一步、假话与旧误导串不得回流', async () => {
+    // 2026-11-08 事实修正（群 PM 终版口径）。三条可证事实：
+    //   ① Tauri 侧未注册 dialog 插件（Cargo.toml／Cargo.lock／main.rs／capabilities 四路 0 命中）；
+    //   ② 宿主另有原生选择器 src/host/folder-picker.ts（powershell + FolderBrowserDialog），
+    //      已挂在 WS `pick-folder` 上、页面「打开文件夹」在用（agent-panel.ts:237 → agent-channel.ts:330）；
+    //   ③ 但 `folder.pick` 这个工具**未接入它**，只读 STUDIO_PICK_FOLDER。
+    // 首版审计曾据 ① 推论出"装版没有原生目录选择器"，那是**结论范围错**（只扫了平台 API 名、
+    // 没按能力语义扫 src/host）——本锁用负断言把那个假话钉死，防它回流。
+    //
+    // 本锁是**行为级**的：真调工具，断言**进 tool result、模型可见**的那串。
+    // 判据必须"有牙"：正向 toContain 要核过"改坏了会不会红"——原来那枚
+    // `toContain('原生目录选择器')` 在新旧两种串里都绿（"未接入原生目录选择器"里也有这六个字），
+    // 属零效力断言，已撤；真正有效的是下面三条。
+    const prev = process.env.STUDIO_PICK_FOLDER;
+    delete process.env.STUDIO_PICK_FOLDER; // 复现"未设 env 回退"的现场
+    try {
+      const host = await startHost({ policyMode: 'auto' });
+      const r = await host.invokeTool('folder.pick', {});
+      expect(r.ok).toBe(false);
+      expect(typeof r.reason).toBe('string');
+      const err = String(r.reason ?? '');
+      // 正断言①：说对机制——是"工具未接入"，不是"能力不存在"（负控＝改成"不可用/没有"即红）
+      expect(err).toContain('未接入');
+      // 正断言②：必须给可执行下一步（粘贴绝对路径），不许只说"不可用"（负控＝删掉这半句即红）
+      expect(err).toContain('绝对路径');
+      // 负控①：旧误导串回流 ⇒ 红（指错原因 + 给了不可执行的下一步）
+      expect(err).not.toContain('requires Tauri dialog');
+      // 负控②：假话回流 ⇒ 红（负控复现＝把"没有原生目录选择器"塞回错误串，本行必红）
+      expect(err).not.toContain('没有原生目录选择器');
+    } finally {
+      if (prev === undefined) delete process.env.STUDIO_PICK_FOLDER;
+      else process.env.STUDIO_PICK_FOLDER = prev;
+    }
+  });
 });
 
 describe('文件能力受工作区约束', () => {

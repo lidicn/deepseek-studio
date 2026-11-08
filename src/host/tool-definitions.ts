@@ -421,11 +421,14 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     allowedOrigins: [DEEPSEEK_ORIGIN],
     approvalClass: 'none',
   },
-  // v1.1：选择文件夹（配置管理，自动放行；需 Tauri dialog 或环境变量回退）。
+  // v1.1：选择文件夹（配置管理，自动放行）。**本工具未接入原生选择器**：宿主另有
+  // PowerShell 选择器（folder-picker.ts，页面「打开文件夹」走 WS pick-folder 在用），
+  // 本工具仅 STUDIO_PICK_FOLDER 回退（2026-11-08 复核）。
   {
     id: 'folder.pick',
     title: '选择文件夹',
-    description: '弹出文件夹选择对话框（需 Tauri dialog；Node 宿主回退到 STUDIO_PICK_FOLDER 环境变量）。',
+    description:
+      '选择目标文件夹（本工具未接入原生选择器；页端「打开文件夹」走 WS pick-folder，本工具仅 STUDIO_PICK_FOLDER 回退；请优先粘贴绝对路径）',
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],

@@ -281,6 +281,42 @@ describe('A1 · isHighRiskConsent 源码结构锁（四条判据在、形态/展
     expect(contractSrc, 'ConsentMeta 缺 riskFlags 字段').toMatch(/riskFlags\s*\??:/);
   });
 
+  it('锁①b highRiskAllowedDecisions 同族清扫：哑判据不得回流', () => {
+    // 2026-11-08 同族清扫（Core）：原实现用 `meta.allowedGrantScopes.includes('allow-session')`
+    // 决定是否给 `allow-session` —— 把 **ConsentDecision 值**（'allow-session'）当 **GrantScope 名**
+    // （'session'）在找，结构上恒不命中（consent-contract.ts:16 vs :83）。与 isHighRiskConsent 旧第
+    // 4/5 条同型：拿「时效/形态」字段当判据。已删，且**不做** includes('session') 的"修好"——那等于
+    // 让原生框发会话级授权，与 native-consent.ts:16-17「长时效必须回页端模态走 nonce」冲突。
+    const marker = 'function highRiskAllowedDecisions(';
+    const start = hostSrc.indexOf(marker);
+    expect(start, 'highRiskAllowedDecisions not found in desktop-host.ts').toBeGreaterThanOrEqual(0);
+    const rest = hostSrc.slice(start);
+    const open = rest.indexOf('{');
+    let depth = 0;
+    let end = -1;
+    for (let i = open; i < open + 4000 && i < rest.length; i++) {
+      if (rest[i] === '{') depth++;
+      else if (rest[i] === '}') {
+        depth--;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+    expect(end, 'highRiskAllowedDecisions 函数体闭合 } 未找到').toBeGreaterThanOrEqual(0);
+    const body = rest.slice(0, end + 1);
+
+    // 基线：恒给「允许一次 / 拒绝」
+    expect(body).toContain("['allow-once', 'deny']");
+    // 事实字段仍在（allowConversation 不是挪用，保留）
+    expect(body).toContain('meta.allowConversation === true');
+    expect(body).toContain("out.push('allow-conversation')");
+    // 负控①：哑判据回流 ⇒ 红（把 includes('allow-session') 加回必红）
+    expect(body, '哑判据回流：又把 ConsentDecision 值当 GrantScope 名在 allowedGrantScopes 里找')
+      .not.toContain('allowedGrantScopes');
+    // 负控②：任何 'allow-session' 决策项不得再出现在本函数体（负控＝加回必红）
+    expect(body, "highRiskAllowedDecisions 又给出 'allow-session'（长时效不得回原生框）")
+      .not.toContain("'allow-session'");
+  });
+
   it('锁② hideAllowSession 语义链：源＝desktop-host.ts:1872 赋值、消费＝consent.ts 按钮显隐', () => {
     // 源：desktop-host.ts:1872 赋值形态——从 grantScopes 派生（工具是否支持会话级放行）
     expect(hostSrc).toContain("hideAllowSession: !allowed.includes('session')");

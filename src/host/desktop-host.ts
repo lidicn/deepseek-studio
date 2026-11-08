@@ -1098,7 +1098,14 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             }
           },
         },
-        // v1.1：选择文件夹（Node 宿主无法弹原生对话框，返回 STUDIO_PICK_FOLDER 环境变量或 not-supported）。
+        // v1.1：选择文件夹。三条可证事实（2026-11-08 复核，群 PM 推翻首版审计）：
+        //   ① Tauri 侧未注册 dialog 插件（Cargo.toml／Cargo.lock／main.rs／capabilities 四路 0 命中）；
+        //   ② 宿主另有原生选择器：src/host/folder-picker.ts（powershell.exe + FolderBrowserDialog，
+        //      windowsHide、180s 超时），已挂在 WS 消息 pick-folder 上，页面「打开文件夹」在用
+        //      （src/ui/agent-panel.ts:237 → src/host/agent-channel.ts:330 → 本文件:1262）；
+        //   ③ 但本 folder.pick 工具未接入它，当前只读 STUDIO_PICK_FOLDER（自动化回退）。
+        //   ⇒ 是否把本工具接到 pickFolderViaDialog()（会引入模型可触发的 GUI 模态、最长 180s 阻塞）
+        //     属行为改动，已按 PM-LOG L65/L68（2026-11-05）裁定排入 #37 批；定案前不得声称"装版没有原生目录选择器"。
         'folder.pick': {
           id: 'folder.pick',
           async execute(): Promise<ExecuteResult> {
@@ -1106,7 +1113,12 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             if (envPath && existsSync(envPath)) {
               return { ok: true, data: { path: envPath } };
             }
-            return { ok: false, error: 'folder.pick requires Tauri dialog; set STUDIO_PICK_FOLDER env var as fallback' };
+            return {
+              ok: false,
+              error:
+                'folder.pick 未接入原生目录选择器：宿主另有 PowerShell 选择器（页面「打开文件夹」走 WS pick-folder 已在用），' +
+                '本工具目前仅支持 STUDIO_PICK_FOLDER 自动化回退。请改用页端「创建新项目（粘贴路径）」并提供绝对路径。',
+            };
           },
         },
       },
@@ -2068,14 +2080,23 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     return oneLine.slice(0, 100) + '…';
   }
 
-  /** 原生框可用的决策项：高风险仍允许「允许一次 / 拒绝」，长时效授权按 meta 是否允许。 */
+  /**
+   * 原生框可用的决策项：基线恒为「允许一次 / 拒绝」。
+   *
+   * **长时效一律不回原生框**，必须回页端模态走 nonce（原生框不显档位、不显 canonicalTarget，
+   * 用户无法判断同意范围；见 `native-consent.ts:16-17`）。Windows MessageBox 实现只有 Yes/No
+   * （`native-consent.ts:50`），即 `allowedDecisions` 里的 `allow-conversation` 只对**能渲染多按钮**
+   * 的注入实现（`options.nativeConsent`）有意义；不传 `meta` 时连它也不给。
+   *
+   * 2026-11-08 同族清扫：原实现用 `meta.allowedGrantScopes.includes('allow-session')` 决定是否给
+   * `allow-session`——那是把 **ConsentDecision 值**（`allow-session`）当 **GrantScope 名**（`session`）
+   * 在找，结构上恒不命中（`consent-contract.ts:16` vs `:83`）。与 `isHighRiskConsent` 旧第 4/5 条
+   * 同型：拿「时效/形态」字段当判据。此处直接删，不做 `includes('session')` 的"修好"——那等于让
+   * 原生框发会话级授权，与上面「长时效必须走页端 nonce」的设计冲突。
+   */
   function highRiskAllowedDecisions(meta?: ConsentMeta): ConsentDecision[] {
     const out: ConsentDecision[] = ['allow-once', 'deny'];
-    if (meta) {
-      const allowed = Array.isArray(meta.allowedGrantScopes) ? meta.allowedGrantScopes : [];
-      if (allowed.includes('allow-session')) out.push('allow-session');
-      if (meta.allowConversation === true) out.push('allow-conversation');
-    }
+    if (meta && meta.allowConversation === true) out.push('allow-conversation');
     return out;
   }
 

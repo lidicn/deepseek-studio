@@ -157,6 +157,7 @@ describe('R2-01 高风险 → 宿主原生确认框（不发给页面）', () =>
   it('高风险工具走 nativeConsent 注入桩：页面收不到 consent-required，决议来自 native', async () => {
     let nativeCalled = 0;
     let lastSummary = '';
+    let lastDecisions: readonly string[] = [];
     const host = createDesktopHost({
       config: { host: '127.0.0.1', port: 0, token: 't' },
       secret: 's',
@@ -165,6 +166,7 @@ describe('R2-01 高风险 → 宿主原生确认框（不发给页面）', () =>
       nativeConsent: async (req) => {
         nativeCalled += 1;
         lastSummary = req.summary;
+        lastDecisions = req.allowedDecisions;
         return 'deny';
       },
     });
@@ -183,6 +185,14 @@ describe('R2-01 高风险 → 宿主原生确认框（不发给页面）', () =>
       // pending 最终按 deny 结算（不是挂到超时）
       await wait(200);
       expect(pending.settled).toBe(true);
+      // 行为锁（2026-11-08 同族清扫）：原生框拿到的决策项基线只有「允许一次 / 拒绝」，
+      // 且**不含** 'allow-session'——旧实现用 allowedGrantScopes.includes('allow-session')
+      // （ConsentDecision 值当 GrantScope 名找）恒定不命中；改回即与本断言冲突。
+      expect(lastDecisions).toContain('allow-once');
+      expect(lastDecisions).toContain('deny');
+      expect(lastDecisions).not.toContain('allow-session');
+      // 正控：带 conversationId ⇒ allowConversation 事实为真 ⇒ 对话级放行项应出现
+      expect(lastDecisions).toContain('allow-conversation');
       void lastSummary; // summary 已生成（可为空字符串，取决于 params 形状）
     } finally {
       page.ws.close();
