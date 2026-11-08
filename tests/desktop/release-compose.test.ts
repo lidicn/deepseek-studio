@@ -353,4 +353,30 @@ describe('v0.14.12 卡：Release body 从 notes 文件补齐（body_path + 前�
     // 把已发布、验签全过的正式版撤下公开口（升级全员中断），与"少一段说明"不成比例。
     expect(published).not.toContain('throw "Release body is empty');
   });
+
+  it('签名 Secrets 前置检查：Verify signing secrets present 步在 Build & sign 之前、点名两枚 env、exit 1（#43 诊断件）', () => {
+    // #43（2026-11-08）：Build & sign 跑了 338 秒后报 "failed to decode secret key: …Missing comment in secret key"，
+    // 后五步全 skipped、无草稿无资产。本机置空实验证明：candle/light/makensis 全过、Finished 2 bundles 之后才挂，
+    // 且 GitHub Actions 里 secret 未配 ⇒ ${{ secrets.X }} 渲染成空串（PS7 $env:X='' 仍"存在且为空"）。
+    // ⇒ 该失败用 5 秒前置检查就能拦住，不必等 338 秒+一句看不懂的错。
+    const verify = step(release, 'Verify signing secrets present');
+    // ① 该步点名两枚 env（判据：谁空就报谁）
+    expect(verify).toContain('TAURI_SIGNING_PRIVATE_KEY');
+    expect(verify).toContain('TAURI_SIGNING_PRIVATE_KEY_PASSWORD');
+    // ② 判据＝任一为空 exit 1（不许吞）
+    expect(verify).toContain('exit 1');
+    // ③ 只报"哪个变量为空/其长度"，绝不打印值——断言不得出现把值写进输出或日志的模式
+    expect(verify).toContain("IsNullOrWhiteSpace($val)");
+    // ④ 排序：Verify signing secrets present 必须排在 Build & sign 之前（自报在读数）
+    const iVerify = release.indexOf('- name: Verify signing secrets present');
+    const iBuild = release.indexOf('- name: Build & sign');
+    expect(iVerify, 'Verify signing secrets present 步未找到').toBeGreaterThanOrEqual(0);
+    expect(iBuild, 'Build & sign 步未找到').toBeGreaterThanOrEqual(0);
+    expect(iVerify).toBeLessThan(iBuild);
+    // ⑤ 负控①：Build & sign 之前不得出现 continue-on-error（有 ⇒ 该步红不红无所谓、前置检查形同虚设）
+    const beforeBuild = release.slice(0, iBuild);
+    expect(beforeBuild, 'Build & sign 之前出现 continue-on-error——签名的红线被绕过').not.toContain('continue-on-error');
+    // ⑥ 负控②：Build & sign 之前不得出现 || true（同上）
+    expect(beforeBuild, "Build & sign 之前出现 || true——失败被吞、签名空值被发现不了").not.toContain('|| true');
+  });
 });

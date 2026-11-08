@@ -69,6 +69,39 @@ jobs:
       - name: Fetch bundled node
         run: node src-tauri/fetch-node.mjs
 
+      # v0.14.12 诊断件（#43）：签名 Secrets 前置检查——空值 5 秒内自报，不烧 338 秒再抛看不懂的错。
+      # GitHub Actions 里 secret 未配时 ${{ secrets.X }} 渲染成空串（PS7 $env:X='' 仍"存在且为空"），
+      # tauri 拿到空串后走 decode 分支、在 Finished 2 bundles 之后才报
+      # "failed to decode secret key: …Missing comment in secret key"——本步把诊断提到构建之前。
+      # 判据：只报"哪个变量为空/其长度"，绝不打印值、绝不打印前缀字符。
+      - name: Verify signing secrets present
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vars = @{
+            'TAURI_SIGNING_PRIVATE_KEY'          = $env:TAURI_SIGNING_PRIVATE_KEY
+            'TAURI_SIGNING_PRIVATE_KEY_PASSWORD' = $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          }
+          foreach ($name in $vars.Keys) {
+            $val = $vars[$name]
+            if ([string]::IsNullOrWhiteSpace($val)) {
+              Write-Error "Signing secret '${name}' is empty or not injected (length=$($val.Length)). This is the most likely cause of 'failed to decode secret key' after Finished 2 bundles."
+              exit 1
+            }
+            Write-Host "[signing-check] ${name}: present, length=$($val.Length)"
+          }
+          # 诊断行（不含秘密）：runner OS / ref / 三向版本号 / bundle.targets / 缓存目录是否存在
+          Write-Host "[signing-check] runner=$env:RUNNER_OS ref=$env:GITHUB_REF_NAME"
+          Write-Host "[signing-check] pkg=$((Get-Content package.json -Raw | ConvertFrom-Json).version) tauri=$((Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version)"
+          $conf = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          Write-Host "[signing-check] bundle.targets=$($conf.bundle.targets -join ',')"
+          $wixExists = Test-Path 'src-tauri/target/release/wix'
+          $nsisExists = Test-Path 'src-tauri/target/release/nsis'
+          Write-Host "[signing-check] wix_cached=$wixExists nsis_cached=$nsisExists"
+
       # 构建 + 签名（createUpdaterArtifacts=true 会产出 .sig）
       - name: Build & sign
         shell: pwsh
