@@ -126,3 +126,41 @@ describe('folder.pick → 原生选择器接线（env 优先 / 未设回落 / �
     expect(r.ok).toBe(false);
   });
 });
+
+describe('卡 R · description 载体级锁（模型可见契约必须与本实现一致）', () => {
+  // 86 枚的核心：锁必须锁**载体**，不能只锁某一处字符串。
+  // 上一版的 `:117 not.toContain('未接入')` 只覆盖工具**错误串**，覆盖不到
+  // `DEFAULT_TOOL_DEFINITIONS` 里 `folder.pick.description`（模型可见契约字面）——
+  // 于是 #38 接线后 description 还写着"未接入原生选择器"，白挂了一小时，没有任何断言会红。
+  // 本锁直接取定义对象上的 `description` 字段来断言，改错载体必红。
+  it('folder.pick.description 含"原生目录选择器"、不含"未接入/暂不支持"假否定句', async () => {
+    const { DEFAULT_TOOL_DEFINITIONS } = await import('../../src/host/tool-definitions');
+    const def = DEFAULT_TOOL_DEFINITIONS.find((d) => d.id === 'folder.pick');
+    expect(def, 'DEFAULT_TOOL_DEFINITIONS 里没有 folder.pick').toBeDefined();
+    const description = String(def?.description ?? '');
+    // 正断言：如实说明它现在会弹宿主原生选择器（载体本身）
+    expect(description).toContain('原生目录选择器');
+    // 正断言：env 优先这条既有口径仍被交代
+    expect(description).toContain('STUDIO_PICK_FOLDER');
+    // 负控①：假否定句"未接入"不得回流（#38 之后它已成假话）
+    expect(description).not.toContain('未接入');
+    // 负控②：早期版本"装版不支持/暂不支持"也不得回流
+    expect(description).not.toContain('暂不支持');
+    expect(description).not.toContain('不支持系统文件夹对话框');
+  });
+
+  it('description 与错误串口径一致：两处都不许出现旧偏导串', async () => {
+    const { DEFAULT_TOOL_DEFINITIONS } = await import('../../src/host/tool-definitions');
+    const description = String(
+      DEFAULT_TOOL_DEFINITIONS.find((d) => d.id === 'folder.pick')?.description ?? '',
+    );
+    pickMock.mockResolvedValue(null);
+    const host = await startHost();
+    const r = await host.invokeTool('folder.pick', {});
+    const err = String(r.reason ?? '');
+    for (const stale of ['requires Tauri dialog', '没有原生目录选择器']) {
+      expect(description).not.toContain(stale);
+      expect(err).not.toContain(stale);
+    }
+  });
+});

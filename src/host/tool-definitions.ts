@@ -421,14 +421,16 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     allowedOrigins: [DEEPSEEK_ORIGIN],
     approvalClass: 'none',
   },
-  // v1.1：选择文件夹（配置管理，自动放行）。**本工具未接入原生选择器**：宿主另有
-  // PowerShell 选择器（folder-picker.ts，页面「打开文件夹」走 WS pick-folder 在用），
-  // 本工具仅 STUDIO_PICK_FOLDER 回退（2026-11-08 复核）。
+  // v1.1：选择文件夹（配置管理，自动放行）。**已接入宿主原生目录选择器**（#38 起）：
+  // `STUDIO_PICK_FOLDER` 命中即用（自动化口径）⇒ 未设/无效回落 `pickFolderViaDialog()`
+  // （PowerShell FolderBrowserDialog，windowsHide、180s 超时，取消/超时/spawn 失败返失败）
+  // ⇒ 两者都拿不到才报错。页端另有「打开文件夹」走同一条实现的 WS `pick-folder`。
+  // description 是**模型可见契约字面**，必须与 desktop-host 里的实现一致（2026-11-08 反向陈旧清扫）。
   {
     id: 'folder.pick',
     title: '选择文件夹',
     description:
-      '选择目标文件夹（本工具未接入原生选择器；页端「打开文件夹」走 WS pick-folder，本工具仅 STUDIO_PICK_FOLDER 回退；请优先粘贴绝对路径）',
+      '弹出宿主原生目录选择器取一个文件夹路径（STUDIO_PICK_FOLDER 命中时直接用它、不弹框；未设/无效则弹原生目录选择器，用户取消或 180s 超时返失败）。页端另有「打开文件夹」走 WS pick-folder；自动化场景请优先用绝对路径',
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
