@@ -204,7 +204,7 @@ export function createProjectPicker(): { container: HTMLElement; open: () => voi
       return;
     }
     // 创建成功：宿主已写 projects.json，刷新列表让新项目出现（判据①），表单清空可连建
-    globalEvents.emit('ui:project-created', { id: name, name, path: p });
+    // 「ui:project-created」死事件已删（#38 卡 A：全仓无监听方；侧栏项目区刷新走 ui:projects-updated 活链）
     await loadProjects();
     pathInput.value = '';
     nameInput.value = '';
@@ -221,7 +221,8 @@ export function createProjectPicker(): { container: HTMLElement; open: () => voi
       const folderPath = (result.data as { path: string }).path;
       const name = folderPath.split(/[\\/]/).filter(Boolean).pop() ?? '新项目';
       await callHostTool('project.create', { name, path: folderPath });
-      globalEvents.emit('ui:project-created', { id: name, name, path: folderPath });
+      // 与粘贴路径同形：宿主重读并 emit「ui:projects-updated」刷新侧栏（「ui:project-created」死事件已删，#38 卡 A）
+      await loadProjects();
       close();
       return;
     }

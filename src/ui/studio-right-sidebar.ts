@@ -58,6 +58,7 @@ const sidebarStyles = `
   .studio-right-item-name { font-size: 12px; color: #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .studio-right-item-meta { font-size: 10px; color: #999; margin-top: 1px; }
   .studio-right-empty { padding: 12px 16px; font-size: 12px; color: #bbb; }
+  .studio-right-hint { margin: 8px 12px 0; padding: 6px 10px; font-size: 12px; color: #3370ff; background: #f0f5ff; border-radius: 4px; word-break: break-all; }
   .studio-task-item {
     display: flex; align-items: center; gap: 8px; padding: 6px 16px;
   }
@@ -155,6 +156,44 @@ export function createRightSidebar(): { container: HTMLElement; toggle: HTMLElem
   toggle.appendChild(icon(Icons.chevronRight, 14));
   toggle.addEventListener('click', () => { isOpen ? hide() : show(); });
 
+  // 「ui:open-file」死事件已删（#38 卡 A：全仓无监听方、点击零反应）；默认取值＝点击复制该文件
+  // 绝对路径＋可见提示（回退口径＝若出资人要"用系统程序真打开"，另开卡走 shell.exec 单独定档）。
+  const artifactHint = el('div', { className: 'studio-right-hint' });
+  artifactHint.hidden = true;
+  artifactSection.appendChild(artifactHint);
+
+  async function copyPathToClipboard(text: string): Promise<boolean> {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch {
+      /* 非安全上下文/被拒 → 走回退 */
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+
+  let hintTimer = 0;
+  function showHint(msg: string): void {
+    artifactHint.textContent = msg;
+    artifactHint.hidden = false;
+    window.clearTimeout(hintTimer);
+    hintTimer = window.setTimeout(() => { artifactHint.hidden = true; }, 2000);
+  }
+
   function renderArtifacts(): void {
     artifactList.replaceChildren();
     if (artifacts.length === 0) {
@@ -177,7 +216,10 @@ export function createRightSidebar(): { container: HTMLElement; toggle: HTMLElem
       info.appendChild(metaEl);
       row.appendChild(iconEl);
       row.appendChild(info);
-      row.addEventListener('click', () => globalEvents.emit('ui:open-file', item.path));
+      row.addEventListener('click', async () => {
+        const ok = await copyPathToClipboard(item.path);
+        showHint(ok ? `路径已复制：${item.path}` : '复制失败（剪贴板不可用）');
+      });
       artifactList.appendChild(row);
     }
     artifactTitle.querySelector('#artifact-count')!.textContent = String(artifacts.length);

@@ -78,7 +78,9 @@ export function createInputBar(): { container: HTMLElement } {
   localToggle.addEventListener('click', () => {
     globalState.localToolsEnabled = !globalState.localToolsEnabled;
     localToggle.classList.toggle('active', globalState.localToolsEnabled);
-    globalEvents.emit('ui:local-tools-toggled', globalState.localToolsEnabled);
+    // 死事件已删（#38 卡 A）：'ui:local-tools-toggled' 全仓无监听方（2026-11-08 卡 Q 只读扫描：
+    // emit=1/on=0），真实效果由 globalState.localToolsEnabled 承载，emit 是零效果噪音；
+    // 要恢复须带真接收方。
   });
   bar.appendChild(localToggle);
 
@@ -112,7 +114,8 @@ export function createInputBar(): { container: HTMLElement } {
       globalState.policyMode = chosen;
       modeBtn.querySelector('.studio-bar-label')!.textContent = label;
       modeDropdown.style.display = 'none';
-      globalEvents.emit('ui:policy-changed', chosen);
+      // 死事件已删（#38 卡 A）：'ui:policy-changed' 全仓无监听方（2026-11-08 卡 Q 扫描 emit=1/on=0），
+      // 真实效果由 globalState.policyMode 承载；要恢复须带真接收方。
       // 更新选中状态
       modeDropdown.querySelectorAll('.studio-mode-option').forEach((o) => o.classList.remove('selected'));
       option.classList.add('selected');

@@ -112,13 +112,23 @@ export function createSkillsPanel(): { container: HTMLElement; open: () => void;
   const refreshBtn = el('button', { className: 'studio-btn' }, [icon(Icons.refresh, 14), el('span', { text: '刷新' })]);
   refreshBtn.addEventListener('click', loadSkills);
   const openDirBtn = el('button', { className: 'studio-btn' }, [icon(Icons.folder, 14), el('span', { text: '打开目录' })]);
+  const openDirHint = el('p', { className: 'studio-form-hint' });
+  openDirHint.hidden = true;
   openDirBtn.addEventListener('click', async () => {
     // 打开上次扫描到的真实目录（skill.list 回传的 dir），缺省回落项目默认目录。
     const target = skillsDir || '%USERPROFILE%\\.config\\deepseek-studio\\skills';
-    await callHostTool('shell.exec', { command: `explorer "${target}"` });
+    const r = await callHostTool('shell.exec', { command: `explorer "${target}"` });
+    // 失败必须可见（879e7ac 范式）：原实现结果不消费、拒绝/报错时界面毫无反应。
+    if (!r.ok) {
+      openDirHint.textContent = `打开目录失败：${r.error ?? '未知错误'}`;
+      openDirHint.hidden = false;
+    } else {
+      openDirHint.hidden = true;
+    }
   });
   footer.appendChild(refreshBtn);
   footer.appendChild(openDirBtn);
+  footer.appendChild(openDirHint);
   panel.appendChild(footer);
 
   overlay.appendChild(panel);
