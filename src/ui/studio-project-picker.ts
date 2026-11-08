@@ -48,6 +48,19 @@ const pickerStyles = `
   .studio-picker-action-btn:hover { background: #f5f7ff; color: #4D6BFE; }
   .studio-picker-empty { text-align: center; padding: 40px 20px; color: #aaa; font-size: 13px; }
   .studio-picker-hint { margin: 0 0 10px; font-size: 12px; color: #b42318; }
+  .studio-picker-guide {
+    display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px;
+    border: 1px solid #ffe08a; background: #fffbe6; border-radius: 8px; margin-bottom: 12px;
+  }
+  .studio-picker-guide-text { flex: 1; font-size: 12px; color: #664d03; line-height: 1.5; }
+  .studio-picker-guide-skip {
+    border: none; background: transparent; color: #b42318; cursor: pointer;
+    font-size: 12px; padding: 2px 8px; border-radius: 4px; flex-shrink: 0;
+  }
+  .studio-picker-guide-skip:hover { background: #fff1d6; }
+  .studio-picker-create-form { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+  .studio-picker-create-form .studio-input { width: 100%; box-sizing: border-box; }
+  .studio-picker-create-form-btns { display: flex; gap: 8px; align-items: center; }
 `;
 
 export interface ProjectInfo {
@@ -77,6 +90,26 @@ export function createProjectPicker(): { container: HTMLElement; open: () => voi
 
   // Body
   const body = el('div', { className: 'studio-modal-body' });
+
+  // 首启引导（卡②）：工作区根未设置时先说清「工作区是什么」，给出「下面创建/选择项目」
+  // 的入口提示与一次「跳过」（本会话不再显示；设上工作区后自动复位）。
+  // 不给工作区设任何默认值（安装目录子目录之类＝允许 AI 自改写，路线决定已否决）。
+  const guide = el('div', { className: 'studio-picker-guide', attrs: { 'data-studio-workspace-guide': '1' } }, [
+    el('span', {
+      className: 'studio-picker-guide-text',
+      text: '工作区＝AI 能读写哪个目录：文件类工具默认只能在它里面读写。下面创建一个项目并选中它，或去「Studio 设置 → 工作区与项目」直接粘贴目录路径。',
+    }),
+    el('button', { className: 'studio-picker-guide-skip', text: '跳过', attrs: { 'data-studio-guide-skip': '1' } }),
+  ]);
+  guide.hidden = true;
+  const syncGuide = (): void => {
+    guide.hidden = Boolean(globalState.workspaceRoot) || globalState.workspaceGuideDismissed === true;
+  };
+  guide.querySelector('.studio-picker-guide-skip')!.addEventListener('click', () => {
+    globalState.workspaceGuideDismissed = true;
+    syncGuide();
+  });
+  body.appendChild(guide);
 
   // Mode toggle
   const modeToggle = el('div', { className: 'studio-picker-mode-toggle' });
@@ -110,6 +143,29 @@ export function createProjectPicker(): { container: HTMLElement; open: () => voi
   // Project list
   const projectList = el('div', { className: 'studio-picker-list' });
   body.appendChild(projectList);
+
+  // 卡①：粘贴路径创建项目。装版下 `folder.pick`（原生对话框）不可用，旧行为「关面板＋
+  // emit ui:new-project → 重新打开同一空面板」是死循环且无输入入口；文本路径是唯一可靠入口。
+  // 不写死任何默认项目/默认路径（2026-11-05 门禁 ui-display-truth 口径同样适用）。
+  const createForm = el('div', { className: 'studio-picker-create-form', attrs: { 'data-studio-create-form': '1' } });
+  createForm.hidden = true;
+  const pathInput = el('input', { className: 'studio-input', attrs: { placeholder: '粘贴项目目录路径，如 D:\\dev\\my-project', 'data-studio-path-input': '1' } });
+  const nameInput = el('input', { className: 'studio-input', attrs: { placeholder: '项目名（默认取路径末段，可改）', 'data-studio-name-input': '1' } });
+  let nameTouched = false;
+  nameInput.addEventListener('input', () => { nameTouched = true; });
+  const lastSeg = (p: string): string => p.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() ?? '';
+  pathInput.addEventListener('input', () => {
+    // 用户没手动填过名字时，名字跟随路径末段自动补（填过就不再覆盖）。
+    if (!nameTouched) nameInput.value = lastSeg(pathInput.value);
+  });
+  const createBtn = el('button', { className: 'studio-btn primary sm', text: '创建', attrs: { 'data-studio-create-btn': '1' } });
+  const cancelCreateBtn = el('button', { className: 'studio-btn sm', text: '收起', attrs: { 'data-studio-cancel-create': '1' } });
+  const formBtns = el('div', { className: 'studio-picker-create-form-btns' }, [createBtn, cancelCreateBtn]);
+  createForm.appendChild(pathInput);
+  createForm.appendChild(nameInput);
+  createForm.appendChild(formBtns);
+  body.appendChild(createForm);
+
   const pickerHint = el('p', { className: 'studio-picker-hint', text: '' });
   pickerHint.hidden = true;
   body.appendChild(pickerHint);
@@ -118,17 +174,44 @@ export function createProjectPicker(): { container: HTMLElement; open: () => voi
   const actions = el('div', { className: 'studio-picker-actions' });
   const newProjectBtn = el('button', { className: 'studio-picker-action-btn' }, [
     icon(Icons.plus, 16),
-    el('span', { text: '创建新项目' }),
+    el('span', { text: '创建新项目（粘贴路径）' }),
   ]);
+  // 展开内联创建表单（不再关面板 emit ui:new-project 造成空面板死循环）；
+  // 下方 `ui:new-project` 监听保留——侧边栏「新项目」按钮仍用它开面板。
   newProjectBtn.addEventListener('click', () => {
-    close();
-    globalEvents.emit('ui:new-project');
+    createForm.hidden = !createForm.hidden;
+    pickerHint.hidden = true;
+    if (!createForm.hidden) pathInput.focus();
+  });
+  cancelCreateBtn.addEventListener('click', () => { createForm.hidden = true; });
+  createBtn.addEventListener('click', async () => {
+    const p = pathInput.value.trim().replace(/[\\/]+$/, '');
+    if (!p) {
+      pickerHint.hidden = false;
+      pickerHint.textContent = '请先粘贴项目目录路径。';
+      return;
+    }
+    const name = nameInput.value.trim() || lastSeg(p) || '新项目';
+    pickerHint.hidden = true;
+    const r = await callHostTool('project.create', { name, path: p });
+    if (!r.ok) {
+      pickerHint.hidden = false;
+      pickerHint.textContent = `创建失败：${r.error ?? '未知错误'}`;
+      return;
+    }
+    // 创建成功：宿主已写 projects.json，刷新列表让新项目出现（判据①），表单清空可连建
+    globalEvents.emit('ui:project-created', { id: name, name, path: p });
+    await loadProjects();
+    pathInput.value = '';
+    nameInput.value = '';
+    nameTouched = false;
   });
   const fromFolderBtn = el('button', { className: 'studio-picker-action-btn' }, [
     icon(Icons.folder, 16),
     el('span', { text: '通过本地文件夹创建项目' }),
   ]);
   fromFolderBtn.addEventListener('click', async () => {
+    pickerHint.hidden = true;
     const result = await callHostTool('folder.pick', {});
     if (result.ok && result.data) {
       const folderPath = (result.data as { path: string }).path;
@@ -136,7 +219,12 @@ export function createProjectPicker(): { container: HTMLElement; open: () => voi
       await callHostTool('project.create', { name, path: folderPath });
       globalEvents.emit('ui:project-created', { id: name, name, path: folderPath });
       close();
+      return;
     }
+    // folder.pick 失败必须可见（原实现在这里静默什么都不发生，用户以为按钮坏了）：
+    // 装版无原生对话框且未设 STUDIO_PICK_FOLDER ⇒ 该调用必失败，给用户可执行的下一步。
+    pickerHint.hidden = false;
+    pickerHint.textContent = '未能取到文件夹（装版暂不支持系统文件夹对话框）。请改用上方「创建新项目（粘贴路径）」，粘贴目录路径创建。';
   });
   actions.appendChild(newProjectBtn);
   actions.appendChild(fromFolderBtn);
@@ -209,6 +297,7 @@ export function createProjectPicker(): { container: HTMLElement; open: () => voi
         const saved = (result.data as { root?: string } | undefined)?.root ?? p.path;
         globalState.currentProject = p.id;
         globalState.workspaceRoot = saved;
+        globalState.workspaceGuideDismissed = false; // 工作区已设：首启引导跳过态复位
         globalEvents.emit('ui:project-switched', p);
         globalEvents.emit('ui:workspace-changed', saved);
         close();
@@ -222,6 +311,7 @@ export function createProjectPicker(): { container: HTMLElement; open: () => voi
     overlay.style.display = 'flex';
     searchQuery = '';
     (searchInput as HTMLInputElement).value = '';
+    syncGuide();
     loadProjects();
   }
 

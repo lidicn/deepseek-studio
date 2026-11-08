@@ -31,6 +31,12 @@ export interface UIState {
   /** v1.9：每台 MCP 服务器的真实传输配置（列表展示与编辑回填用）。 */
   mcpConfigs: Array<{ id: string; transport: 'stdio' | 'http' | 'sse'; url?: string; command?: string; args?: string[] }>;
   memories: Array<{ id: string; type: string; name: string; content: string }>;
+  /**
+   * 首启引导（工作区未设时的一行说明＋跳过）本会话跳过标记：
+   * 「跳过」置 true ⇒ 本次会话内不再显示；工作区设上（workspaceRoot 非空）时由各面板重置回 false。
+   * 只活在页面会话里（不写宿主 config）——「不再显示」的范围＝本次会话。
+   */
+  workspaceGuideDismissed: boolean;
 }
 
 export type EventHandler = (payload: unknown) => void;
@@ -76,6 +82,7 @@ export const globalState: UIState = {
   mcpServers: [],
   mcpConfigs: [],
   memories: [],
+  workspaceGuideDismissed: false,
 };
 
 let hostBridge: StudioHostBridge | null = null;

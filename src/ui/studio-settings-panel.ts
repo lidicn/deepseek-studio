@@ -92,6 +92,11 @@ const panelStyles = `
   .studio-memory-name { font-size: 13px; font-weight: 500; color: #333; margin-bottom: 2px; }
   .studio-memory-text { font-size: 12px; color: #666; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .studio-empty-state { text-align: center; padding: 40px 20px; color: #aaa; font-size: 13px; }
+  .studio-workspace-guide {
+    display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px;
+    border: 1px solid #ffe08a; background: #fffbe6; border-radius: 8px; margin-bottom: 12px;
+  }
+  .studio-workspace-guide-text { flex: 1; font-size: 12px; color: #664d03; line-height: 1.5; }
 `;
 
 export interface StudioSettingsPanelOptions {
@@ -185,6 +190,22 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   // Workspace tab
   const workspaceTab = el('div', { className: 'studio-tab-content' });
   workspaceTab.dataset.tabPanel = 'workspace';
+  // 首启引导（卡②）：装版用户面对裸文本框不知道「工作区是什么、该填什么」。
+  // 工作区根未设时：一句话说清概念＋指向下方两个已有入口（选择项目／粘贴路径保存）＋可跳过。
+  // 不给工作区设任何默认值（默认到安装目录子目录＝允许 AI 改宿主自己的代码，路线决定已否决）。
+  const wsGuide = el('div', { className: 'studio-workspace-guide', attrs: { 'data-studio-workspace-guide': '1' } }, [
+    el('p', { className: 'studio-workspace-guide-text', text: '工作区＝AI 能读写哪个目录：文件读写与命令执行默认限制在这个目录里。你可以选一个项目，或在下方输入框粘贴目录路径后点「保存」。暂不使用可跳过（本会话不再提示）。' }),
+    el('button', { className: 'studio-btn sm', text: '跳过', attrs: { 'data-studio-guide-skip': '1' } }),
+  ]);
+  wsGuide.hidden = true;
+  const syncWsGuide = (): void => {
+    wsGuide.hidden = Boolean(globalState.workspaceRoot) || globalState.workspaceGuideDismissed === true;
+  };
+  wsGuide.querySelector('[data-studio-guide-skip]')!.addEventListener('click', () => {
+    globalState.workspaceGuideDismissed = true;
+    syncWsGuide();
+  });
+  workspaceTab.appendChild(wsGuide);
   const workspaceRow = el('div', { className: 'studio-workspace-row' });
   const workspaceInput = el('input', { className: 'studio-input studio-workspace-input', attrs: { value: globalState.workspaceRoot ?? '', placeholder: '工作区根目录路径，如 /path/to/project' } });
   const workspaceSaveBtn = el('button', { className: 'studio-btn primary sm', text: '保存' });
@@ -196,6 +217,8 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
       const saved = controls.getSnapshot().workspaceRoot ?? root;
       (workspaceInput as HTMLInputElement).value = saved;
       globalState.workspaceRoot = saved;
+      globalState.workspaceGuideDismissed = false; // 工作区已设：首启引导跳过态复位
+      syncWsGuide();
       workspaceHint.textContent = '已保存到配置文件，重启后仍然生效。';
       workspaceSaveBtn.textContent = '已保存';
       setTimeout(() => { workspaceSaveBtn.textContent = '保存'; }, 1500);
@@ -572,6 +595,7 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
     (workspaceInput as HTMLInputElement).value = snapshot.workspaceRoot ?? '';
     globalState.workspaceRoot = snapshot.workspaceRoot;
     globalState.policyMode = snapshot.policyMode;
+    syncWsGuide(); // 快照刷新后（open 时 refresh / 保存后）重算首启引导显隐
     policyOptions.querySelectorAll<HTMLElement>('.studio-policy-option').forEach((option) => {
       option.classList.toggle('selected', option.dataset.mode === snapshot.policyMode);
     });
