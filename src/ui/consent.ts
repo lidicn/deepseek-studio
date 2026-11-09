@@ -192,6 +192,13 @@ const CSS = `
 @keyframes ds-consent-pop { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 `;
 
+/**
+ * K3（2026-11-09）：导出页内模态的视觉 CSS（单一真源）。
+ * 审批窗口（src/ui/consent-panel.ts）注入同一份样式、共用同一套类名——
+ * 「复用卡 I 的视觉组件、不重写一套样式」的物理保证就在这里。
+ */
+export const CONSENT_MODAL_CSS = CSS;
+
 function ensureStyles(): void {
   if (globalThis.document.getElementById(STYLE_ID)) return;
   const style = globalThis.document.createElement('style');
@@ -556,7 +563,12 @@ export function getRawToolName(request: ConsentRequest): string { return request
  * 组装风险徽标行。用户看到的信息必须能回答三个问题：
  * 「这是什么等级」「为什么需要我批准」「是否触碰工作区之外」。
  */
-function buildBadges(meta: ConsentMeta | undefined, highRisk: boolean): HTMLElement | null {
+/**
+ * K3（2026-11-09）：徽标行构造导出（原为模块内部函数）。
+ * 审批窗口复用本函数拼「高风险 / 风险 / 档位 / 工作区外 / 风险项」徽标行，
+ * 保证窗口与页内模态的徽标逻辑单一真源。
+ */
+export function buildBadges(meta: ConsentMeta | undefined, highRisk: boolean): HTMLElement | null {
   if (!meta && !highRisk) return null;
   const items: { text: string; level: 'info' | 'warn' | 'danger' | 'high-risk' }[] = [];
   if (highRisk) items.push({ text: '高风险', level: 'high-risk' });

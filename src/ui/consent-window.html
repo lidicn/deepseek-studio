@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DeepSeek++ Studio · 需要确认</title>
+  <link rel="stylesheet" href="/consent.css" />
+</head>
+<body>
+  <!--
+    K3（审批重设计 v1，2026-11-09）审批窗口页面壳 —— **零秘密**：
+      - 不内嵌 token，也不留 `__STUDIO_TOKEN__` 占位符等服务端替换
+        （本页响应体必须与磁盘文件逐字节相同，服务端绝不做替换）。
+      - token / origin 由 Rust init script 注入本窗（K1）：
+        `window.__STUDIO_TOKEN__`（全权宿主 token）与 `window.__STUDIO_API_ORIGIN__`。
+      - 数据面：`fetch` + 该 token，只打 `/v1/consent/pending` / `/v1/consent/reply`（K2）；
+        秘密面仍落在统一 Bearer 闸 + 回环 Origin 闸之内；壳拿不到 token 就什么都读不到。
+    资源同源相对路径引用（/consent.js 由宿主路由服务，实际文件是 dist/consent-panel.js）。
+  -->
+  <main id="consent-root" class="consent-window-root"></main>
+  <script src="/consent.js"></script>
+</body>
+</html>

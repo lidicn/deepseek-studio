@@ -15,6 +15,7 @@
     "allow-updater-install",
     "allow-updater-progress",
     "allow-studio-request-grant",
-    "allow-studio-open-mcp-settings"
+    "allow-studio-open-mcp-settings",
+    "allow-studio-open-consent-window"
   ]
 }

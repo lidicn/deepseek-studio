@@ -1,0 +1,103 @@
+/* DeepSeek Studio · K3 审批窗口（/consent）页面壳样式（2026-11-09 审批重设计 v1）。
+ *
+ * 视觉语言分工（不重写一套样式）：
+ *   - 审批卡片本体（.ds-consent-*）复用卡 I 页内模态的类名与样式——面板运行时注入
+ *     src/ui/consent.ts 导出的 CONSENT_MODAL_CSS（单一真源，与页内模态同一套 DOM/视觉语言）；
+ *   - 本文件只提供**窗口壳**：页面底色、根布局（卡片居中）、等待/错误状态、
+ *     「将记住什么」确认块（.cw-*）。
+ * 颜色消费 --studio-* 变量（静态浅色兜底，与 agent.css / mcp-settings.css 的 :root 默认浅色逐值一致）
+ * ——独立窗口无主题切换器，固定浅色即可。
+ * 注意：闸里有 empty-files 步，本文件不得交成空文件。 */
+
+:root {
+  --studio-bg-page: #F7F8FA;
+  --studio-bg-panel: #FFFFFF;
+  --studio-bg-subtle: #F5F6F8;
+  --studio-text-primary: #16181D;
+  --studio-text-secondary: #5B6170;
+  --studio-text-weak: #6B7280;
+  --studio-border: rgba(16, 24, 40, 0.08);
+  --studio-primary-fill: #4D6BFE;
+  --studio-primary-hover: #3B5BDB;
+  --studio-primary-soft: rgba(77, 107, 254, 0.08);
+  --studio-success: #1F7A52;
+  --studio-warning: #8A5A00;
+  --studio-danger: #C43A3A;
+  --wb-radius: 10px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body { height: 100%; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  color: var(--studio-text-primary);
+  background: var(--studio-bg-page);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 根容器：卡片居中。整个窗口就是审批面，不需要遮罩（区别于页内模态的 fixed 全屏 overlay）。 */
+.consent-window-root {
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+
+/* ---------- 等待 / 错误 / 已处理状态（无卡片时） ---------- */
+.cw-state {
+  width: 100%;
+  text-align: center;
+  color: var(--studio-text-weak);
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 40px 12px;
+}
+.cw-state.is-error { color: var(--studio-danger); }
+
+/* ---------- 「将记住什么」确认块（本对话始终允许的两级确认，OpenCode permissionAlwaysLines 同族） ---------- */
+.cw-remembered {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--wb-radius);
+  background: var(--studio-bg-subtle);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--studio-text-secondary);
+}
+.cw-remembered-title {
+  font-weight: 600;
+  color: var(--studio-text-primary);
+  margin-bottom: 4px;
+  font-size: 12.5px;
+}
+.cw-remembered-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+/* 形状规则（颜色仍走 CONSENT_MODAL_CSS 的 .ds-consent-* 类，单一真源） */
+.cw-remembered-actions button {
+  border: none;
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: transform 80ms ease, filter 80ms ease;
+}
+.cw-remembered-actions button:hover { filter: brightness(1.05); }
+.cw-remembered-actions button:active { transform: scale(0.97); }
+
+/* ---------- 无 nonce 提示（fail-closed：回执无法绑定到这次请求，只能拒） ---------- */
+.cw-invalid-note {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--studio-warning);
+  line-height: 1.5;
+}

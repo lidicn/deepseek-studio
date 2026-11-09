@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod consent_window;
 mod sidecar;
 mod updater;
 
@@ -1773,6 +1774,7 @@ fn main() {
             focus_main_window,
             open_bot_window,
             studio_open_mcp_settings,
+            consent_window::studio_open_consent_window,
             studio_request_grant,
             updater::updater_check,
             updater::updater_install,
@@ -1812,6 +1814,11 @@ fn main() {
             // 自动更新：注册状态 + 启动后 60s 一次性检查（失败静默，见 updater.rs）
             updater::init_state(app.handle());
             updater::spawn_startup_check(app.handle().clone());
+            // K1（2026-11-09 审批重设计阶段一）：审批窗的后台轮询。
+            // 放在这里而不是 command 里：它要「宿主说有 pending 就自己开窗」，
+            // 没有 IPC 入口——node→Rust 没有上行 RPC，所以只能 Rust 主动轮询
+            // （`GET /v1/consent/pending`，200ms）。token 空时不起线程（端到端必然 401）。
+            consent_window::spawn_poller(app.handle().clone());
                 // v0.12：受监管 sidecar 启动
             if std::env::var("STUDIO_DISABLE_HOST").is_err() {
                 // TD-04(a)：包内 bundled node.exe 优先。先算出候选，再决定是否探活。
