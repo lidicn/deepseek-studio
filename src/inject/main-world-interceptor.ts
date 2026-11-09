@@ -2554,6 +2554,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       // QD-R8-01：terminate 是「循环正常结束」的第三条退出路径。此前直接 return，
       // 既不复位状态栏也不收尾消息 —— 与普通回合同一种「永停执行中」。
       interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'terminate', triggered: false });
+      // #55：此处无原因是设计（finished:true＝正常结束；挂 appendError 会把正常收场渲成「执行未完成」错误卡，见设计稿 §6.2）
       finishStepFlow();
       loopDepth = 0;
       interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: true, stopReason: 'terminate' });
@@ -3043,15 +3044,17 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               autoContinueTimer = setTimeout(() => { autoContinueTimer = null; void autoContinueWithPow(); }, delay);
               interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'continuation-truncated', triggered: true });
             } else if (loopDepth >= MAX_LOOP) {
+              // #55：N 快照（取在 L3063 复位之前；语义＝下界实数：触顶时刻「已算完、未送回模型」条数，在途未回的不计）
+              const undelivered = pending.length;
               // 达工具续跑步数上限：正常结束。
-              d('auto-continue reached MAX_LOOP, stop');
+              d(`auto-continue reached MAX_LOOP, stop; undelivered=${undelivered}`);
               interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'loop-depth-max', triggered: false });
               // C1-F5：达上限时若正文里还留着工具调用原文，单独记一笔，别和「正常收尾」混同。
               const maxLoopScan = scanRawToolText(reply);
               if (maxLoopScan.blocks > 0) {
                 d(`max-loop end with unexecuted tool text: names=${maxLoopScan.names.join(',')}`);
               }
-              interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'max-loop' });
+              interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'max-loop', undelivered });
               const cleanReply = stripRawToolText(reply).trim();
               if (!hadTools && cleanReply) {
                 try { chatUI?.finishAssistantMessage({ fallbackText: cleanReply, recordFinal: true }); } catch { /* ignore */ }
@@ -3059,7 +3062,13 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               } else {
                 try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
               }
-              finishStepFlow();
+              // #55：MAX_LOOP 触顶收尾带原因（用户可见）；N＝下界实数，N>0 写实数、N=0 落不带数回退句；同一 N 已进 d() 与上方 turn.end trace
+              finishStepFlow({
+                code: 'max-loop',
+                message: undelivered > 0
+                  ? `工具续跑达 ${MAX_LOOP} 轮上限，已暂停本批续跑；有 ${undelivered} 条工具结果已执行、本轮未及送回模型，可重试或拆分任务。`
+                  : `工具续跑达 ${MAX_LOOP} 轮上限，已暂停本批续跑；可重试或拆分任务。`,
+              });
               loopDepth = 0;
             } else {
               // 成功轮次重置错误预算；否则一次历史 429 会让后续正常轮次过早进入 fatal。
@@ -3101,7 +3110,11 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                   // 修复轮后仍不完整：抑制半截回复，明确以协议修复失败收尾。
                   try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
                   d('auto-continue protocol repair failed: suppress incomplete reply');
-                  finishStepFlow();
+                  // #55：协议修复失败收尾带原因（用户可见）
+                  finishStepFlow({
+                    code: 'protocol-repair-failed',
+                    message: '模型回复不完整且修复失败，本轮结果已丢弃，请重试或换个说法。',
+                  });
                   interceptorTrace.record({
                     t: 'turn.end',
                     turnId: traceTurnId,

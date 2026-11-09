@@ -100,6 +100,8 @@ export interface StudioTurnEndEvent extends BaseTraceEvent {
   /** true = 正常拿到最终答复；false = 被截断/中断。 */
   readonly finished: boolean;
   readonly stopReason: string;
+  /** #55：stopReason==='max-loop' 时 N＝下界实数：仅计已执行且未送回的结果，在途未回不计；取数时点在 `loopDepth` 复位之前。其余 stopReason 不带此字段。 */
+  readonly undelivered?: number;
 }
 
 /** W0：续跑轮 readyState===4 哨兵观测。 */
@@ -325,7 +327,7 @@ function renderDetailLines(group: TurnGroup): string[] {
         lines.push(`continuation.decision: ${event.reason} -> triggered=${String(event.triggered)}`);
         break;
       case 'turn.end':
-        lines.push(`turn.end stopReason=${event.stopReason} finished=${String(event.finished)}`);
+        lines.push(`turn.end stopReason=${event.stopReason} finished=${String(event.finished)}${event.undelivered !== undefined ? ` undelivered=${event.undelivered}` : ''}`);
         break;
       default:
         break;
