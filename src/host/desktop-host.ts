@@ -96,6 +96,7 @@ import {
   isOutside,
   type PolicyMode,
 } from './policy';
+import { buildPolicyParams, resolveSpawnTarget } from './mcp-spawn-target';
 import { checkHardDeny, routeConsent } from './consent-router';
 import { FULL_MODE_ALLOW_REASON } from '../shared/policy-contract';
 import {
@@ -382,6 +383,25 @@ function mcpConfigFromDto(config: McpServerConfigDto): McpServerConfig {
     cwd: typeof config.cwd === 'string' ? config.cwd : undefined,
     headers: config.headers && typeof config.headers === 'object' ? { ...config.headers } : undefined,
   };
+}
+
+/**
+ * K7（2026-11-09）：取**已存**的 MCP server 配置，取不到／抛错一律折成 `null`。
+ *
+ * 为什么不在授权管线里直接调 `getMcpController().getServerConfig(id)`：
+ * `getMcpController()` 首次调用会同步读盘并解析 JSON（`refreshConfigIfChanged` → `reload`），
+ * 配置损坏时可能抛。这段代码在授权管线里、早于治理闸门，抛出去会把一条本该被拒绝的调用
+ * 变成"整条链崩"。折成 `null` ⇒ `resolveSpawnTarget` 给 `{cwd:null}` ⇒ 本格不判定、
+ * 走原口径；真正的 fail-closed 在能力层（它自己会报错）。
+ */
+function safeMcpServerConfig(serverId: string): { cwd?: string | null } | null {
+  if (!serverId) return null;
+  try {
+    return getMcpController().getServerConfig(serverId);
+  } catch (e) {
+    console.warn(`[mcp] level=warn spawn-target-unresolved serverId=${serverId} err=${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
 }
 
 /**
@@ -859,11 +879,15 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
             const serverId = String(params.serverId ?? '');
             if (!serverId) return { ok: false, error: 'serverId is required' };
-            const configPath = process.env.STUDIO_CONFIG_DIR
-              ? path.join(process.env.STUDIO_CONFIG_DIR, 'mcp-servers.json')
-              : path.join(os.homedir(), '.config', 'deepseek-studio', 'mcp-servers.json');
-            const result = removeMcpServer(serverId, configPath);
-            if (result.ok) getMcpController().reload();
+            // K9（2026-11-09）：**删的那份必须就是控制器读的那份**。
+            // 原实现按 `STUDIO_CONFIG_DIR ?? ~/.config` 自己推导，不认 `STUDIO_MCP_CONFIG`
+            // 这条 override（`mcp-controller.ts` 的 `defaultConfigPath()` 认得）⇒
+            // 一旦设了 override，`mcp.remove` 会去改另一个文件（读 A 写 B）。
+            // 现在走 `controller.configFilePath`，与设置窗（`remove(id)`）同口径；
+            // 且只取一次控制器实例，取路径 / 删除 / reload 用的是同一个对象。
+            const controller = getMcpController();
+            const result = removeMcpServer(serverId, controller.configFilePath);
+            if (result.ok) controller.reload();
             return result.ok ? { ok: true } : { ok: false, error: result.error };
           },
         },
@@ -1643,11 +1667,12 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         const controller = getMcpController();
         // 用控制器自己的配置路径（与 saveServer 同一份），
         // 不用模块级 removeMcpServer 的默认路径推导（会读错文件）。
-        const configPath = (controller as unknown as { configPath?: string }).configPath
-          ?? (process.env.STUDIO_CONFIG_DIR
-            ? path.join(process.env.STUDIO_CONFIG_DIR, 'mcp-servers.json')
-            : path.join(os.homedir(), '.config', 'deepseek-studio', 'mcp-servers.json'));
-        const r = removeMcpServer(id, configPath);
+        // K9（2026-11-09）：改用 `configFilePath` 只读访问器——原先这里靠
+        // `as unknown as { configPath?: string }` 强转读私有字段，而 `configPath`
+        // 由构造函数保证恒为字符串（`mcp-controller.ts` `L895`／`L900`），
+        // 所以下面原地的 `?? STUDIO_CONFIG_DIR` 推导是**永远走不到的死分支**，已删。
+        // （此处曾按 `STUDIO_CONFIG_DIR` 推导，现由 `controller.configFilePath` 统一。）
+        const r = removeMcpServer(id, controller.configFilePath);
         if (r.ok) controller.reload();
         return r;
       },
@@ -1861,10 +1886,49 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     const wsRoot = mutableWorkspace.current?.root ?? null;
     const workspaceHash = wsRoot ? createHash('sha1').update(wsRoot).digest('hex').slice(0, 12) : '';
     const governed = isFileTool(name) || isSearchTool(name) || isProcessTool(name) || EXECUTION_TOOLS.includes(name);
+    // ── K7（2026-11-09）：MCP 的 **spawn 落点**从哪儿来 ──────────────────────
+    //
+    // 为什么必须在**这里**而不是在各 handler 里：handler 是经 `routeExecution`（下面
+    // `routeExecution(def, name, params, …)`）在授权**之后**才调的，而 `evaluatePolicy` 在上面一行。
+    // 往 handler 里塞 `spawnCwd`，策略层永远看不到它 —— 那会是一个"编译绿、判定永不生效"
+    // 的静默无效改动。落点必须在授权管线内、`paramsBag` 之后、`evaluatePolicy` 之前算出来。
+    //
+    // 两条信任边界（不是冗余，是两格）：
+    //   - `mcp.call` ⇒ **已存**配置（`McpController#getServerConfig`）；配置可在保存后被手改／迁移，
+    //     而它才是真正 spawn 的那一发 ⇒ 必须按"跑的时候"判；
+    //   - `mcp.save` ⇒ **本次要存**的配置（`params.config`，与 `L838` 落盘同一个值）；
+    //     这是唯一能提前告知用户的时刻。
+    // 判据只认解析结果，见 `mcp-spawn-target.ts` 文件头。
+    //
+    // ⚠️ 读配置要**不抛**：这里在授权管线里，早于治理闸门；`getMcpController()` 首次调用会
+    // 同步读盘并解析 JSON，配置损坏时可能抛。抛出去会让一条本该被拒绝的调用变成
+    // "整条链崩"，所以用 `safeMcpServerConfig` 兜成 `null` ⇒ `resolveSpawnTarget` 给
+    // `{cwd:null}` ⇒ 本格不判定、走原口径（fail-open 在这里是对的：落点解析失败不该
+    // 让**所有** MCP 调用变成不可用；真正的 fail-closed 在能力层，它自己会报错）。
+    const spawnSource: { cwd?: string | null } | null =
+      name === 'mcp.call'
+        ? safeMcpServerConfig(String(paramsBag.serverId ?? ''))
+        : name === 'mcp.save'
+          ? ((paramsBag.config ?? null) as { cwd?: string | null } | null)
+          : null;
+    const spawnTarget = resolveSpawnTarget(spawnSource);
+    // ⚠️ 硬约束（第 4 条）：**剔除而非覆盖** `cwd`／`workdir`。
+    //
+    // 为什么不能写 `{ ...paramsBag, spawnCwd }`：`paramsBag` 与 `params` 是**同一个对象**
+    // （`const paramsBag = (params ?? {}) as …` 是类型断言不是拷贝），调用方能在 `mcp.call`
+    // 的 params 里自带一个**区内** `cwd`；浅拷贝会把它带进来，而 `policy.ts` 的判据是
+    // "顶层优先"（`L411`）⇒ 越界会被判成不越界。今天之所以不炸，只是因为 `mcp.call`
+    // 不在 `PROCESS_TOOLS`、走不到那行 —— 那是**分支可达性的巧合，不是契约**。
+    // 剔除之后，"判定输入只能是解析结果"变成对象形状上的事实，不依赖任何分支走不走得到。
+    //
+    // 只作用于进 `evaluatePolicy` 的这一份对象；`checkHardDeny`／`whitelistHit`／
+    // `lookupGrant`／`resolveAuthorization`／`routeExecution` 一律继续吃**原** `paramsBag`
+    // （多一个字段会让 grant key 取值面改变、审计里的 `canonicalTarget` 指向错误目标）。
+    const policyParams: Record<string, unknown> = buildPolicyParams(name, paramsBag, spawnTarget);
     const verdict = governed
       ? evaluatePolicy({
           tool: name,
-          params: paramsBag,
+          params: policyParams,
           mode: policyMode,
           workspace: mutableWorkspace.current,
           // v0.9：额外可信目录（STUDIO_TRUSTED_DIRS 环境变量，分号分隔）。
@@ -2221,9 +2285,15 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     // 卡 J（2026-11-09，PM 裁 A′）：
     //   · **越界（meta.outside === true）→ 宿主侧确认，任何档位都不给页面决议权**。
     //     R2-01 不变量「**越界不得由页面自答**」**仍然活着**（提示注入最想拿的就是这一格）。
-    //     今天"宿主侧"＝原生框（node MessageBox）；C″（Rust 自绘宿主窗口）待出资人拍板，
-    //     获批后只需替换这一段实现，路由接口不变。
-    //   · **非越界的高风险 → 页内模态（主路径）**；页内不可用时才降级到原生框并写审计 `degraded`。
+    //     K2（2026-11-09，批 #48）起"宿主侧"**就是 C″**＝K1 那枚 Rust 独立审批窗口
+    //     （登记待决 + Rust 每 200ms 轮询拉起 + `POST /v1/consent/reply` 回执，见下方
+    //     `askHostSide` 的注释）。原文这句"C″ 待出资人拍板"是 K2 之前的旧语境残留：
+    //     C″ 已于 11-08 拍板、K2 落码，MessageBox 那条实现已被换掉。
+    //     ⚠️ **"已实现"≠"已验证"**：C″ 至今**真机弹出 0 次**（真机 CDP 取证挂在关装版之后），
+    //     别把这里的"已落码"读成"已在用户机器上验证可用"。
+    //   · **非越界的高风险 → 页内模态（主路径）**；页内不可用时降级到**宿主侧 C″**并写审计
+    //     `degraded`（**不是**原生框：降级方向在 K2 已翻转为"页内→宿主侧"，与旧版
+    //     "原生框失败→页内 nonce"方向相反；旧版那 3 枚日志事件只作可观测性证据）。
     //     ⇒ R2-01 原设计里「**高风险（除越界外）决议不得由页面自答**」已作废（台账有记录）；
     //       补偿防线＝nonce 一次性 + 常数时间比对 + 真实手势(isTrusted) + 渲染失败 fail-closed（卡 I）。
     //   · `isHighRiskConsent` 仍决定「要不要问」，不再决定「问在哪儿」；四条事实判据一字不动。

@@ -450,3 +450,24 @@ describe('v0.14.13 卡 E/F：打包工具预取＋发布正文显式 PATCH（#48
     expect(gate).toContain('$bodyActual');
   });
 });
+
+describe('CI-H（#50）：cargo-check job 前置产物步骤锁', () => {
+  // ci.yml 目前不被任何测试或 gate 步骤锁形状（tools/gate/run.ts:L12 与 acl-contract-guard.ts:L157
+  // 的命中都是注释文字、非断言）。这里用字符串定位锁住 cargo-check job 的四枚前置产物步骤，
+  // 不锁整行表达式、不锁全文件步数——判据＝四枚短标识符在 cargo-check job 段内存在。
+  const ci = read('.github/workflows/ci.yml');
+
+  it('cargo-check job 含 setup-node→npm ci→npm run build→fetch-node 四步前置（CI-H 根因：tauri-build 无条件 copy_resources 缺 gitignored 产物即 Err）', () => {
+    // 取 cargo-check job 段（从 "cargo-check:" 到文件尾）
+    const start = ci.indexOf('cargo-check:');
+    expect(start, 'cargo-check job not found').toBeGreaterThanOrEqual(0);
+    const jobBody = ci.slice(start);
+    // 四枚前置产物步骤的短标识符（不锁整行、不锁顺序——顺序由 YAML 缩进保证、由 push 远程验）
+    expect(jobBody).toContain('setup-node');
+    expect(jobBody).toContain('npm ci');
+    expect(jobBody).toContain('npm run build');
+    expect(jobBody).toContain('fetch-node.mjs');
+    // cargo check 本体仍在
+    expect(jobBody).toContain('cargo check --tests');
+  });
+});

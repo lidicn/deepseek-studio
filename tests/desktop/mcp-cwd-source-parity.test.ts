@@ -47,11 +47,28 @@ describe('① 策略层读 config.cwd（行为级）', () => {
     expect(v.outside).not.toBe(true);
   });
 
-  it('顶层 cwd 仍然优先（旧形状不回归）', () => {
+  it('mcp.test 的顶层 cwd 仍然优先（旧形状不回归）', () => {
+    // 本条测的是「顶层优先」这条契约，**只适用 `mcp.test`**——它的 `params.cwd` 就是
+    // 调用方要测的那个落点，顶层优先是对的。
+    // ⚠️ `mcp.call`／`mcp.save` 的反面锁见 `tests/desktop/mcp-spawn-target.test.ts`
+    // （那里要求"顶层 cwd 不得参与判定"，因为这两枚的落点在**持久化配置**里、
+    //  而 `params.cwd` 是调用方可写的）。别把本条读成全局契约去"统一" `policy.ts`。
     const v = policy('mcp.test', { config: { command: 'npm test', cwd: `${WS_ROOT}/a` }, cwd: outside });
     expect(v.outside).toBe(true);
   });
 });
+
+/** 取 `'tool.name': {` 到下一个同类 handler 键之间的实现片段（锁的射程＝所属处理段）。 */
+function handlerSlice(src: string, tool: string): string {
+  const keyRe = /^[ \t]*'([a-zA-Z]+\.[a-zA-Z]+)':\s*\{/gm;
+  const marks: { idx: number; name: string }[] = [];
+  let mm: RegExpExecArray | null;
+  while ((mm = keyRe.exec(src)) !== null) marks.push({ idx: mm.index, name: mm[1] });
+  const i = marks.findIndex((m) => m.name === tool);
+  if (i < 0) throw new Error(`找不到 ${tool} 的处理段`);
+  const end = i + 1 < marks.length ? marks[i + 1].idx : src.length;
+  return src.slice(marks[i].idx, end);
+}
 
 describe('② 能力层 spawn 落点取自 config.cwd（源码定位）', () => {
   it('mcp-controller 的两处 spawn 都用 config.cwd 作为 cwd', () => {
@@ -61,11 +78,20 @@ describe('② 能力层 spawn 落点取自 config.cwd（源码定位）', () => 
     expect(matches.length, 'mcp-controller 里应有 2 处 spawn 使用 config.cwd').toBeGreaterThanOrEqual(2);
   });
 
-  it('desktop-host 把 params.config.cwd 原样递给 controller（不重命名、不丢）', () => {
+  it('desktop-host 把 params.config.cwd 原样递给 controller（段内短标识符）', () => {
     const src = readFileSync(HOST, 'utf8');
-    const matches = src.match(/cwd:\s*typeof config\.cwd === 'string' \? config\.cwd : undefined/g) ?? [];
-    // mcp.test 与 mcp.save 各一处
-    expect(matches.length).toBeGreaterThanOrEqual(2);
+    // ── 锁写法修正（#50，2026-11-09）──
+    // 原实现锁的是**整行表达式**
+    //   `cwd:\s*typeof config\.cwd === 'string' \? config\.cwd : undefined`
+    // 它有两个失效方向：
+    //   · 太紧：等价改写（换可选链、三元拆行）就**假红**，下一个人会去"修"断言；
+    //   · 太松：写成全文件计数 `≥2` 时，别的 handler 也能满足它（假绿）。
+    // 现在只锁**短标识符 `config.cwd`**，且**锁在所属处理段内**——
+    // 段外命中不算，段内换写法也不会误红。
+    for (const tool of ['mcp.test', 'mcp.save']) {
+      const slice = handlerSlice(src, tool);
+      expect(slice, `${tool} 段内应把 config.cwd 递给 controller`).toContain('config.cwd');
+    }
   });
 });
 

@@ -608,6 +608,13 @@ interface McpServerConnection {
 }
 
 function defaultConfigPath(): string {
+  // ⚠️ K9（2026-11-09）：本函数有**三级**优先级，不是两级——
+  // ① `STUDIO_MCP_CONFIG`（下面的早期返回，整条路径 override）
+  // ② `STUDIO_CONFIG_DIR`（Rust 注入的装版配置目录）
+  // ③ 回落 `~/.config/deepseek-studio`
+  // 以下是 ②③ 两级的注释；当年「写 A 读 B」的坑就在 ②③ 口径不一致上。
+  // 下一个人要"修"优先级前先看这条 ①：只按 ②③ 理解会漏掉 override，
+  // 于是又造出"控制器读 A、某个调用方按 STUDIO_CONFIG_DIR 推导写 B"的分裂。
   if (process.env.STUDIO_MCP_CONFIG) return process.env.STUDIO_MCP_CONFIG;
   // 与 saveServer 保持同一口径：先看 STUDIO_CONFIG_DIR，再回落 ~/.config。
   // 原实现只认 STUDIO_MCP_CONFIG，导致 saveServer 写到 STUDIO_CONFIG_DIR、
@@ -979,6 +986,22 @@ export class McpController {
   listServerIds(): string[] {
     this.refreshConfigIfChanged();
     return Object.keys(this.servers);
+  }
+
+  /**
+   * K9（2026-11-09）：本实例实际读写的配置文件路径。
+   *
+   * 为什么要有这枚访问器：`configPath` 是 `private readonly`（`L895`／`L900`），
+   * 宿主要"删的就是控制器读的同一份"，原先只能靠
+   * `(controller as unknown as { configPath?: string })` 强转去读私有字段——
+   * 把类型系统的墙凿了个洞，还把坏示范复制到第二处。
+   *
+   * 判据是 **"写的那份必须是读的那份"**，不是"两边推导公式要一致"：
+   * `defaultConfigPath()` 认得 `STUDIO_MCP_CONFIG` 这条 override（`L611`），
+   * 而按 `STUDIO_CONFIG_DIR` 自行推导的调用方不认它 ⇒ 两者会指向不同文件。
+   */
+  get configFilePath(): string {
+    return this.configPath;
   }
 
   /**

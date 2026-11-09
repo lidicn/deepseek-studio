@@ -34,6 +34,22 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
+      # ── CI-H（20261109）：cargo check 会跑 src-tauri/build.rs，tauri-build 无条件复制
+      #    bundle.resources 的每个源文件（tauri-build-2.7.1/src/lib.rs:745-763 copy_resources），
+      #    缺一个就 Err 退出。resources map 里 5 枚是 gitignored 产物（host/main.mjs、node/node.exe、
+      #    dist/agent-panel.js、dist/mcp-settings-panel.js、dist/consent-panel.js），CI 全新 checkout
+      #    上必须先产出来——与 release.yml:L64-70 同形（那句原话「tauri CLI 校验 bundle.resources
+      #    早于 beforeBuildCommand」release 面有、CI 面此前没人搬过来，这就是首跑 failure 的根因）。
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # build:inject（esbuild.inject.mjs）产 entry.js＋dist/{agent-panel,mcp-settings-panel,consent-panel}.js
+      # build:host（esbuild.host.mjs）产 src-tauri/host/main.mjs
+      - run: npm run build
+      # fetch-node.mjs 拉 bundled node.exe 到 src-tauri/node/（release.yml:L69-70 同步）
+      - run: node src-tauri/fetch-node.mjs
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

@@ -466,6 +466,50 @@ export function evaluatePolicy(input: PolicyInput): PolicyVerdict {
     return { decision: 'deny', reason: 'mode-restricted', detail: tool };
   }
 
+  // ── K7（2026-11-09）：`mcp.call`／`mcp.save` 的 **spawn 落点**越界判定 ──
+  //
+  // 缺口形状：`mcp.call` 的 ask 有（always 类逐次问），但**问询里看不见 spawn 落点**；
+  // `mcp.save` 保存时**根本不问落点**。两处落点都在**已持久化／将要持久化的 server 配置**里
+  // （`config.cwd`），不在调用参数里 ⇒ `#49` 只修好了 `mcp.test` 那一格，这两枚仍不经过任何判定。
+  //
+  // 判据来源（唯一）：**`params.spawnCwd`**。它由 host 侧（`desktop-host.ts` 授权管线内）
+  // 解析后塞进"判定用对象"，策略层**不认识 MCP、也不自取配置**。
+  //
+  // ⚠️ 三条不许动的边界（动一条就把 #49 的修法变成绕过路径）：
+  //   1. **只认 `spawnCwd`**，不回落到顶层 `cwd`／`workdir`、也不回落到 `config.cwd`——
+  //      回落等于让调用方可写的 `params.cwd` 决定"越不越界"（`L411` 顶层优先，正好会被利用）；
+  //   2. **第三项 `spawnCwd` 必须非空**：`python.exec` 也在 `EXECUTION_TOOLS` 里，
+  //      带上这枚条件后它**被条件本身排除**（它的落点由宿主决定、模型无从指定），
+  //      将来谁给它加落点参数也是显式决定，而不是被一条为 `mcp.*` 写的分支悄悄接管；
+  //   3. **不写进 `PROCESS_TOOLS`**：`mcp.call`／`mcp.save` 没有命令文本，纳入进程类会撞
+  //      `missing-command` 误杀；这里只补"落点"这一维。
+  //
+  // 为什么放在 `L465` 之后、`python.exec` 分支之前：`mcp.call`／`mcp.save` 在非 workspace 档
+  // **唯一去处是文件末尾的 `not-governed allow`**——补在 `python.exec` 分支之后会被绕过，
+  // 补在 `L465` 之前会重复 workspace 档已有的硬拒。
+  //
+  // 同源不变量：「判定输入的落点 ＝ 能力层 `spawn` 实际使用的落点」（#49 是第一实例，
+  // 本分支是第二实例）。缺省落点（配置里没有 `cwd` ⇒ 子进程继承宿主进程 cwd）**不在此判定**，
+  // 那格挂 K8 等出资人拍板，本分支只处理**显式配置**的落点。
+  if (EXECUTION_TOOLS.includes(tool) && mode !== 'workspace') {
+    const spawnCwd = firstString(params, ['spawnCwd']);
+    if (spawnCwd) {
+      const outsideSpawn = Boolean(workspace && !workspace.contains(spawnCwd));
+      if (outsideSpawn) {
+        // workspace 档已在上面的硬拒里返回；这里只剩 auto / ask / full。
+        // full 档也如实判定（与文件类／检索类／进程类三处 full 档口径一致）：
+        // 越界事实进 `outside`，交由 `authorization.ts` 的 `!outsideRequested` 决定要不要问。
+        return {
+          decision: mode === 'full' ? 'allow' : 'require-consent',
+          reason: 'outside-workspace',
+          detail: spawnCwd,
+          outside: true,
+        };
+      }
+      // 区内：不产生询问，落到下面 python.exec / not-governed 的原口径。
+    }
+  }
+
   // C1 墨鉴 R15-002：python.exec 的代码文本此前**从不经过风险检测**。
   // 它不在 PROCESS_TOOLS 里 → 不进上面的 isProcessTool 分支 → detectRisks 从不调用；
   // 而 workspace 档只对 EXECUTION_TOOLS 硬拒，**auto 档直接落到下面的 not-governed allow**
