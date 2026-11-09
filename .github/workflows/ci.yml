@@ -21,3 +21,24 @@ jobs:
           node-version-file: .nvmrc
       - run: npm ci
       - run: npm run gate
+
+  # ── Rust 编译闸（20261109 卡 #49）：CI 只证"Rust 代码在 @stable 上能编译"，不证"与本机
+  #    rustc 1.99.1 同工具链"——台账与 job 名都带这句射程，别把 CI 绿读成"同工具链绿"。
+  #    与 gate job 并列、互不阻塞、不塞进 npm run gate（gate 的 15–17 分钟基线与"配置一致性
+  #    有闸、编译无闸"这条定字要保住）。首跑/二跑时长以 CI 实测为准、不采估算。
+  #    改前事实缺口：本文件之外 cargo/rust 命中 0（即 CI 从不编译 Rust，K1 那 4 枚 Rust 文件的
+  #    首次真编译在下一次 tag 的 release.yml）；本 job 即为补该缺口（20261109 卡 #49）。
+  #    只 cargo check --tests（编译含 #[cfg(test)] 代码、不执行）；不跑 cargo test
+  #    （td05 环境红会混淆 CI 收口）。
+  cargo-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
+      - name: cargo check --tests (@stable)
+        working-directory: src-tauri
+        run: cargo check --tests

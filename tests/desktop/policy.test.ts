@@ -298,3 +298,50 @@ describe('policy —— 风险模式识别', () => {
     expect(riskLabel('unknown-id')).toBe('unknown-id');
   });
 });
+
+// ── K2·#49（2026-11-09）：`mcp.test` 的 `config.cwd` 必须参与越界判定 ────────────
+//
+// 缺口形状：**同一个 `config` 对象里，`command` 参与判定、`cwd` 不参与。**
+// `commandText()` 读了嵌套 `config.command`，而 `cwd` 原来只看顶层；可
+// `desktop-host.ts` 把 cwd 塞在 `config.cwd`，能力层 `mcp-controller.ts` 的
+// `spawn(cmd, args, { cwd: config.cwd })` 照用不误 ⇒ 命令可见、落点不可见。
+describe('K2·#49 · mcp.test 的嵌套 config.cwd 参与越界判定', () => {
+  it('正控：区外 config.cwd ⇒ require-consent 且 outside === true', () => {
+    const v = evaluatePolicy({
+      tool: 'mcp.test',
+      params: { config: { command: 'npm test', cwd: 'C:/outside-project' } },
+      mode: 'auto',
+      workspace: ws(),
+    });
+    expect(v.decision).toBe('require-consent');
+    expect(v.outside).toBe(true);
+  });
+
+  it('负控：区内 config.cwd ⇒ 不产生越界询问（防做成"每次都弹"）', () => {
+    const v = evaluatePolicy({
+      tool: 'mcp.test',
+      params: { config: { command: 'npm test', cwd: `${wsRoot}/packages/a` } },
+      mode: 'auto',
+      workspace: ws(),
+    });
+    expect(v.decision).toBe('allow');
+    expect(v.outside).not.toBe(true);
+  });
+
+  it('口径一致：顶层 cwd 与嵌套 config.cwd 得到同一个越界结论', () => {
+    const top = evaluatePolicy({
+      tool: 'mcp.test',
+      params: { config: { command: 'npm test' }, cwd: 'C:/outside-project' },
+      mode: 'auto',
+      workspace: ws(),
+    });
+    const nested = evaluatePolicy({
+      tool: 'mcp.test',
+      params: { config: { command: 'npm test', cwd: 'C:/outside-project' } },
+      mode: 'auto',
+      workspace: ws(),
+    });
+    expect(nested.decision).toBe(top.decision);
+    expect(nested.outside).toBe(top.outside);
+  });
+});

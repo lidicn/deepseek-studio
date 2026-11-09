@@ -289,12 +289,28 @@ function commandText(params: Record<string, unknown>): string | null {
 }
 
 /**
+ * 从**嵌套 `config` 对象**里取字符串（K2·#49）。
+ *
+ * 与 `commandText()` 里那段"嵌套 config 形状（mcp.test 等）"分支**同一套口径**：
+ * `mcp.test` / `mcp.save` 的参数形状是 `{ config: { command, args, cwd, … } }`，
+ * 所以凡是要参与判定的字段，都必须两层都看。
+ *
+ * ⚠️ 为什么单独成一枚函数而不是内联：这枚缺口的历史成因正是"同一个 `config` 里
+ * 一个字段参与判定、另一个不参与"——把它收敛成一枚共用函数，下一个人想加新字段时
+ * 只有一个地方要看，不会再漏。
+ */
+function nestedConfigString(params: Record<string, unknown>, keys: readonly string[]): string | null {
+  const nested = params.config;
+  if (!nested || typeof nested !== 'object' || Array.isArray(nested)) return null;
+  return firstString(nested as Record<string, unknown>, keys);
+}
+
+/**
  * mcp.test 的 http/sse 形状：`{ config: { transport: 'http'|'sse', url } }`。
  * 返回非空 url 表示这是一次网络连接测试（无本地进程 / 无命令文本），
  * 供 evaluatePolicy 区分「缺命令」与「合法的 HTTP/SSE 测试」，避免 missing-command 误杀。
  */
-function mcpTestHttpUrl(params: Record<string, unknown>): string | null {
-  const nested = params.config;
+function mcpTestHttpUrl(params: Record<string, unknown>): string | null {  const nested = params.config;
   if (!nested || typeof nested !== 'object' || Array.isArray(nested)) return null;
   const n = nested as Record<string, unknown>;
   const transport = typeof n.transport === 'string' ? n.transport : 'stdio';
@@ -378,7 +394,21 @@ export function evaluatePolicy(input: PolicyInput): PolicyVerdict {
     if (!command && !mcpHttpUrl) return { decision: 'deny', reason: 'missing-command' };
 
     // 显式指定 cwd 且落在工作区外 → 视同越界文件访问。
-    const cwd = firstString(params, ['cwd', 'workdir']);
+    //
+    // ── K2·#49（2026-11-09）：**cwd 必须和 command 一样读嵌套 `config`** ──
+    // 缺口形状不是"策略层看不到嵌套"，而是 **同一个 `config` 对象里，一个字段参与判定、
+    // 另一个不参与**：`commandText()` 专门读了 `params.config.command`／`config.argv`
+    // （见上面那个函数的"嵌套 config 形状（mcp.test 等）"分支），而本行原来只看顶层
+    // `params.cwd`。可 `desktop-host.ts` 的 `mcp.test`（:816）与 `mcp.save`（:837）
+    // 恰恰把 cwd 塞在 **`config.cwd`** 里，能力层 `mcp-controller.ts:1061/1439`
+    // 的 `spawn(cmd, args, { cwd: config.cwd })` 照用不误 ⇒ **命令可见、落点不可见**。
+    //
+    // 现在两条读取口径一致：顶层优先，没有再看 `config.cwd`。
+    // 效果＝把 `mcp.test` 拉平到 `shell.exec` 的越界口径（区外 ⇒ `require-consent`，
+    // 且 `outsideRequested` 为真时 `authorization.ts` 的对话级放行与 grant **都不吃**它
+    // ⇒ 每一发都要新鲜人工确认）。**不新增任何权限**，只是把今天被静默跳过的那一格
+    // 接回 §1.4 硬规则 5。
+    const cwd = firstString(params, ['cwd', 'workdir']) ?? nestedConfigString(params, ['cwd', 'workdir']);
     const outsideCwd = cwd && workspace && !workspace.contains(cwd);
     // HTTP/SSE 连接测试没有命令文本，风险模式只作用于命令行，故此处 risks 为空。
     const risks = command ? detectRisks(command) : [];
