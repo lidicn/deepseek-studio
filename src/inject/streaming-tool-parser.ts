@@ -12,11 +12,18 @@
  * 项目严格 tsconfig 下编译。运行时行为与上游客流一致，且零浏览器扩展耦合。
  */
 
+import { normalizeInvocationName } from '../shared/tool-contract';
+
 export interface ParsedToolCall {
   readonly id: string;
+  /** T-4：规范名（别名在解析产出点已归一，如 mcpcall → mcp_call）；下游（闸门/去重签名/宿主映射）一律只见规范名。 */
   readonly invocationName: string;
   readonly params: Record<string, unknown>;
   readonly raw: string;
+  /** T-4：模型写的原始拼写（归一前）。仅别名命中（≠ invocationName）时带出。
+   *  注：trace 面不挂 rawName（StudioToolExecEvent 无此字段）——取证面现由本字段＋测试断言承担；
+   *  将来要挂 trace 属跨域件（studio-trace.ts 加字段＋拦截器三枚 tool.exec 记录点，与 #55 undelivered 同族），另行排批。 */
+  readonly rawName?: string;
 }
 
 export class StreamingToolCallParser {
@@ -107,6 +114,11 @@ export class StreamingToolCallParser {
 
   private make(name: string, body: string, raw: string): ParsedToolCall {
     let params: Record<string, unknown> = {};
+    // T-4：归一在解析产出点——模型原始拼写（mcpcall）出规范名（mcp_call），下游闸门/去重签名/宿主映射
+    // 只见规范名，「同参数两拼写执行两次」结构上产生不了第二个签名。原始拼写只在 open[1] 一瞬间存在，
+    // 别名命中时记入 rawName（取证面：没这笔，下次同类问题追不回模型原拼写）。
+    const invocationName = normalizeInvocationName(name);
+    const rawName = name === invocationName ? undefined : name;
     try {
       const parsed = JSON.parse(body);
       if (parsed && typeof parsed === 'object') params = parsed as Record<string, unknown>;
@@ -120,7 +132,7 @@ export class StreamingToolCallParser {
           if (parsed && typeof parsed === 'object') {
             params = parsed as Record<string, unknown>;
             // 修复成功，不标记 __invalid_json
-            return { id: this.genId(), invocationName: name, params, raw };
+            return { id: this.genId(), invocationName, ...(rawName !== undefined ? { rawName } : {}), params, raw };
           }
         } catch {
           // 修复后还是失败，继续走错误标记
@@ -128,7 +140,7 @@ export class StreamingToolCallParser {
       }
       params = { __invalid_json: true, __error: e instanceof Error ? e.message : String(e), __raw: body };
     }
-    return { id: this.genId(), invocationName: name, params, raw };
+    return { id: this.genId(), invocationName, ...(rawName !== undefined ? { rawName } : {}), params, raw };
   }
 
   private genId(): string {

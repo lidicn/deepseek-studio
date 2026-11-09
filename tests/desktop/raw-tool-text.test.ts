@@ -116,3 +116,21 @@ describe('raw-tool-text：续跑判定 reason', () => {
       .toBe('tool-text-unparsed');
   });
 });
+
+describe('raw-tool-text：T-4 别名匹配面（mcpcall 也是可识别工具标签）', () => {
+  it('mcpcall 完整标签被剥离，判定 tool-text-unparsed（不漏报 no-tools）', () => {
+    const raw = '<mcpcall>{"serverId":"TVPilot","tool":"tv_system_state","args":{}}</mcpcall>';
+    const scan = scanRawToolText(raw);
+    expect(scan.blocks).toBe(1);
+    expect(scan.names).toEqual(['mcpcall']);
+    expect(scan.clean.trim()).toBe('');
+    expect(continuationReasonForReply(raw)).toBe('tool-text-unparsed');
+  });
+
+  it('mcpcall 夹在散文里：只剥标签，散文保留', () => {
+    const raw = '我先看看状态。<mcpcall>{"serverId":"TVPilot","tool":"tv_system_state","args":{}}</mcpcall>看完了。';
+    const scan = scanRawToolText(raw);
+    expect(scan.blocks).toBe(1);
+    expect(scan.clean).toBe('我先看看状态。看完了。');
+  });
+});

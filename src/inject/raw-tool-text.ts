@@ -13,14 +13,14 @@
  *      命中就把 trace 记成 `tool-text-unparsed`，不再谎报 `no-tools`。
  *
  * 相比旧的正则（只认 `search_files` 等固定白名单 + 开标签不得带属性），这里：
- *   - 工具名取自 `SUPPORTED_INVOCATION_NAMES`（单一真相源，增删工具自动跟随）；
+ *   - 工具名取自 `MATCHABLE_INVOCATION_NAMES`（匹配面＝规范∪别名，T-4；增删工具/别名自动跟随，声明面仍只含规范名）；
  *   - 开标签允许属性（模型偶尔写 `<search_files operation="list">`）；
  *   - 闭合标签允许空白（`</search_files >`）；
  *   - 未闭合的尾部标签（流被截断）也认，标 `unclosed=true`；
  *   - 不碰普通文本里的 `<`（`a < b`、`</3`、非工具名标签原样保留）。
  */
 
-import { SUPPORTED_INVOCATION_NAMES } from '../shared/tool-contract';
+import { MATCHABLE_INVOCATION_NAMES } from '../shared/tool-contract';
 
 export interface RawToolTextScan {
   /** 剥离工具标签后的文本。 */
@@ -44,7 +44,7 @@ let cachedPairRe: RegExp | null = null;
 let cachedOpenRe: RegExp | null = null;
 
 function buildRegexes(): { pair: RegExp; open: RegExp } | null {
-  const names = [...SUPPORTED_INVOCATION_NAMES].filter(Boolean);
+  const names = [...MATCHABLE_INVOCATION_NAMES].filter(Boolean);
   if (names.length === 0) return null;
   const key = names.join('|');
   if (key === cachedKey && cachedPairRe && cachedOpenRe) {

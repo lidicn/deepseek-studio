@@ -3,6 +3,9 @@ import {
   SUPPORTED_INVOCATION_NAMES,
   MODEL_INVOCATION_DECLARED_NAMES,
   UI_ONLY_INVOCATION_NAMES,
+  INVOCATION_ALIASES,
+  MATCHABLE_INVOCATION_NAMES,
+  normalizeInvocationName,
   isSupportedUpstreamTool,
   mapUpstreamToolInvocation,
 } from '../../src/shared/tool-contract';
@@ -110,6 +113,79 @@ describe('G-01 permission surface: UI-only table must stay closed to the model',
       id: 'workspace.set',
       params: { root: 'E:/x' },
     });
+  });
+});
+
+describe('T-4 mcpcall alias: recognizable but never declarable', () => {
+  // 现场（装版 L23398）：模型吐 `<mcpcall>{"serverId":…}</mcpcall>`——JSON 是本仓模板形状，
+  // 标签名却是 DeepSeek 网页原生拼写。一名之差整链静默，故要收编别名。
+  // 但别名**不得**进声明面：SUPPORTED_INVOCATION_NAMES 与 MODEL_INVOCATION_DECLARED_NAMES
+  // 是同一句 Object.keys，混进去等于给模型多声明一个工具（撞 G-01 收窄）。
+  const aliasKeys = Object.keys(INVOCATION_ALIASES);
+  const sorted = (a: readonly string[]): string[] => [...a].sort();
+
+  it('别名表本身只收 mcpcall → mcp_call 一条', () => {
+    expect(aliasKeys).toEqual(['mcpcall']);
+    expect(INVOCATION_ALIASES.mcpcall).toBe('mcp_call');
+  });
+
+  it('可识别：isSupportedUpstreamTool(mcpcall) 为 true', () => {
+    expect(isSupportedUpstreamTool('mcpcall')).toBe(true);
+    // 规范名仍然为真（不因归一化而回退）
+    expect(isSupportedUpstreamTool('mcp_call')).toBe(true);
+  });
+
+  it('可执行：mcpcall 映射到规范 id mcp.call，参数形状完整', () => {
+    const mapped = mapUpstreamToolInvocation('mcpcall', {
+      serverId: 'TVPilot',
+      tool: 'tv_system_state',
+      args: {},
+    });
+    expect(mapped).not.toBeNull();
+    expect(mapped?.id).toBe('mcp.call');
+    expect(mapped?.params.serverId).toBe('TVPilot');
+    expect(mapped?.params.tool).toBe('tv_system_state');
+    expect(mapped?.params.args).toEqual({});
+    // 与规范名走同一条适配路径：两者映射结果必须逐格相等
+    expect(mapped).toEqual(
+      mapUpstreamToolInvocation('mcp_call', { serverId: 'TVPilot', tool: 'tv_system_state', args: {} }),
+    );
+  });
+
+  it('不可声明：两个 *_NAMES 都不含别名', () => {
+    for (const key of aliasKeys) {
+      expect(SUPPORTED_INVOCATION_NAMES).not.toContain(key);
+      expect(MODEL_INVOCATION_DECLARED_NAMES).not.toContain(key);
+      expect(UI_ONLY_INVOCATION_NAMES).not.toContain(key);
+    }
+  });
+
+  it('目录面零泄漏：能力提示词与续跑目录都不出现 mcpcall', () => {
+    expect(capabilityPromptText()).not.toContain('mcpcall');
+    expect(capabilityPromptToolNames()).not.toContain('mcpcall');
+    expect(catalogTextToolNames()).not.toContain('mcpcall');
+  });
+
+  it('匹配面 = 规范名 ∪ 别名（解析器与兜底共用这一个集合）', () => {
+    expect(MATCHABLE_INVOCATION_NAMES).toContain('mcp_call');
+    expect(MATCHABLE_INVOCATION_NAMES).toContain('mcpcall');
+    // 剔除式自证：匹配面必须严格大于声明面（否则别名压根没并进去）
+    expect(MATCHABLE_INVOCATION_NAMES.length).toBe(SUPPORTED_INVOCATION_NAMES.length + aliasKeys.length);
+  });
+
+  it('归一函数：别名→规范名，其余原样，且不吃原型链', () => {
+    expect(normalizeInvocationName('mcpcall')).toBe('mcp_call');
+    expect(normalizeInvocationName('mcp_call')).toBe('mcp_call');
+    expect(normalizeInvocationName('shell_exec')).toBe('shell_exec');
+    expect(normalizeInvocationName('constructor')).toBe('constructor');
+    expect(normalizeInvocationName('__proto__')).toBe('__proto__');
+    expect(isSupportedUpstreamTool('__proto__')).toBe(false);
+  });
+
+  it('自证有效性：把别名塞进声明面比较必然不相等', () => {
+    // 反向自证，防止上两条因取到空数组/未加载而假绿。
+    const table = [...SUPPORTED_INVOCATION_NAMES, ...aliasKeys];
+    expect(sorted(table)).not.toEqual(sorted(SUPPORTED_INVOCATION_NAMES));
   });
 });
 

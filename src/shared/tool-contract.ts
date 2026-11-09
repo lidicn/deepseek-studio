@@ -192,6 +192,50 @@ const UI_ONLY_TOOLS: Record<string, UpstreamToolMapping> = Object.assign(
 );
 
 /**
+ * T-4：**别名表**——模型原生拼写 → 规范 invocationName。
+ *
+ * 背景（装版现场，2026-11-09 22:3x）：模型输出 `<mcpcall>{"serverId":…,"tool":…,"args":{}}</mcpcall>`，
+ * JSON 载荷完全是本仓模板形状（interceptor L1189 教的 serverId/tool/args），但**标签名是
+ * DeepSeek 网页自家拼写**（无下划线）。四个消费方（streaming-tool-parser / raw-tool-text /
+ * forward 闸 / page-runtime 映射）全部从同一个名集取名 ⇒ 一名之差整链静默：
+ * 不解析、不执行、原文漏渲染、残留原文告警也不报。
+ *
+ * **关键约束**：别名**不得**进 `MODEL_INVOCATION_TOOLS`。因为 SUPPORTED_INVOCATION_NAMES
+ * 与 MODEL_INVOCATION_DECLARED_NAMES 是同一句 `Object.keys`（L211/L226）——把别名当键塞进去，
+ * 它会自动出现在能力提示词目录与续跑目录里，等于在模型声明面多开一个工具（撞 G-01 的收窄）。
+ * ⇒ 别名的资格是「**可识别、不可声明**」：匹配面用它，声明面永不含它。
+ *
+ * 归一化必须在**解析产出点**发生（streaming-tool-parser 构造 ParsedToolCall 时），
+ * 于是下游闸门/去重签名/宿主映射天然只见规范名——「同一参数两种拼写执行两次」不是被测出来的，
+ * 而是结构上产生不了第二个签名。
+ */
+export const INVOCATION_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  mcpcall: 'mcp_call',
+});
+
+/**
+ * T-4：**匹配面**名集 = 规范名 ∪ 别名。
+ *
+ * 只给「扫描文本里认得哪些标签」用（解析器的 names、raw-tool-text 的正则 alt）。
+ * **不要**拿它做声明面（工具目录/能力提示词）——那是 SUPPORTED_INVOCATION_NAMES 的职责。
+ */
+export const MATCHABLE_INVOCATION_NAMES: readonly string[] = [
+  ...Object.keys(MODEL_INVOCATION_TOOLS),
+  ...Object.keys(INVOCATION_ALIASES),
+];
+
+/**
+ * T-4：把模型可能写的原始拼写归一为规范 invocationName；非别名原样返回。
+ *
+ * 纯函数、无副作用。调用点应在**解析产出点**（parser）与**映射入口**（本模块两个查询函数）。
+ */
+export function normalizeInvocationName(invocationName: string): string {
+  return Object.prototype.hasOwnProperty.call(INVOCATION_ALIASES, invocationName)
+    ? INVOCATION_ALIASES[invocationName]
+    : invocationName;
+}
+
+/**
  * 全量映射表 = 模型可调 + 仅 UI。mapUpstreamToolInvocation 用它做映射，因此 UI 经
  * callHostTool 投递的 settings.get / workspace.set 等仍能正常执行；而解析链路
  * （SUPPORTED_INVOCATION_NAMES）只喂模型表，两者权限面在此分开。
@@ -228,18 +272,20 @@ export const MODEL_INVOCATION_DECLARED_NAMES: readonly string[] = Object.keys(MO
 export function isSupportedUpstreamTool(invocationName: string): boolean {
   // v2.0：只认模型可调表。UI 直调（settings.get / workspace.set 等）不经此闸门，
   // 它们由 UI 经 callHostTool 直接投递 WS，与页端解析链路完全隔离。
-  return Object.prototype.hasOwnProperty.call(MODEL_INVOCATION_TOOLS, invocationName);
+  // T-4：先归一别名（mcpcall → mcp_call）再查表；别名本身不在表内，故不会扩大声明面。
+  return Object.prototype.hasOwnProperty.call(MODEL_INVOCATION_TOOLS, normalizeInvocationName(invocationName));
 }
 
 /**
  * 把上游 invocationName + 原始参数映射为 Studio 工具调用。
  * 不受支持的 invocation 返回 null（调用方据此放行原始 XML 文本，不拦截）。
+ * T-4：同样先归一别名，保证授权/审计只见规范工具 id（`mcp.call`）而不是拼写变体。
  */
 export function mapUpstreamToolInvocation(
   invocationName: string,
   params: unknown,
 ): MappedToolCall | null {
-  const mapping = UPSTREAM_TO_STUDIO[invocationName];
+  const mapping = UPSTREAM_TO_STUDIO[normalizeInvocationName(invocationName)];
   if (!mapping) return null;
   const raw = params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
   return { id: mapping.id, params: mapping.adapt(raw) };

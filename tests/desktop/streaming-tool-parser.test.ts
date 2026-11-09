@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { StreamingToolCallParser } from '../../src/inject/streaming-tool-parser';
+import { scanRawToolText } from '../../src/inject/raw-tool-text';
+import { MATCHABLE_INVOCATION_NAMES } from '../../src/shared/tool-contract';
 
 describe('StreamingToolCallParser - JSON 容错', () => {
   it('正常 JSON 解析', () => {
@@ -107,5 +109,40 @@ describe('StreamingToolCallParser - 未闭合已知工具标签', () => {
     const r = p.feed('<shell_exec>{"command":"ls"}</shell_exec>');
     expect(r.calls).toHaveLength(1);
     expect(r.hasUnclosedToolTag).toBe(false);
+  });
+});
+
+describe('StreamingToolCallParser - T-4 别名匹配与归一（mcpcall → mcp_call）', () => {
+  it('别名开标签被识别：出规范名，rawName 记原始拼写', () => {
+    const p = new StreamingToolCallParser(MATCHABLE_INVOCATION_NAMES);
+    const r = p.feed('<mcpcall>{"serverId":"TVPilot","tool":"tv_system_state","args":{}}</mcpcall>');
+    expect(r.calls).toHaveLength(1);
+    expect(r.calls[0].invocationName).toBe('mcp_call');
+    expect(r.calls[0].rawName).toBe('mcpcall');
+    expect(r.calls[0].params).toEqual({ serverId: 'TVPilot', tool: 'tv_system_state', args: {} });
+    expect(r.clean).toBe('');
+  });
+
+  it('规范名开标签：不带 rawName（取证面只挂别名命中）', () => {
+    const p = new StreamingToolCallParser(MATCHABLE_INVOCATION_NAMES);
+    const r = p.feed('<mcp_call>{"serverId":"TVPilot","tool":"tv_system_state","args":{}}</mcp_call>');
+    expect(r.calls).toHaveLength(1);
+    expect(r.calls[0].invocationName).toBe('mcp_call');
+    expect(r.calls[0].rawName).toBeUndefined();
+  });
+
+  it('§4 现状锁：带属性开标签不被解析器识别、但被 raw-tool-text 兜底识别', () => {
+    // 依据：main-world-interceptor.ts:L1189 提示词教的是无属性 JSON-in-body 形态
+    // （调用方式：<mcp_call>{"serverId":"服务器名","tool":"工具名","args":{...}}</mcp_call>），故现状无害。
+    // 解析器开标签正则 ^<name> 不接受属性（streaming-tool-parser.ts feed 内），
+    // 兜底 alt 正则 <name(?:\s[^>]*)?> 接受（raw-tool-text.ts buildRegexes）——
+    // 谁将来在解析器侧支持属性形态，本枚必红。
+    const p = new StreamingToolCallParser(MATCHABLE_INVOCATION_NAMES);
+    const raw = '<mcp_call serverId="TVPilot">{"tool":"tv_system_state","args":{}}</mcp_call>';
+    const r = p.feed(raw);
+    expect(r.calls).toHaveLength(0);
+    const scan = scanRawToolText(raw);
+    expect(scan.blocks).toBe(1);
+    expect(scan.names).toEqual(['mcp_call']);
   });
 });

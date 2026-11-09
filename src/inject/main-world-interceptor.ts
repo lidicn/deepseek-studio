@@ -14,7 +14,7 @@
 import { StreamingToolCallParser, type ParsedToolCall } from './streaming-tool-parser';
 import { SseTextStreamExtractor } from './sse-text-extractor';
 import { DeepSeekSseFrameDecoder, framesSignalStreamCompletion } from './deepseek-sse-frame-decoder';
-import { isSupportedUpstreamTool, SUPPORTED_INVOCATION_NAMES } from '../shared/tool-contract';
+import { isSupportedUpstreamTool, MATCHABLE_INVOCATION_NAMES } from '../shared/tool-contract';
 import { shouldSkipAutoContinue } from '../shared/tool-result-format';
 import {
   buildContinuationPrompt,
@@ -1686,7 +1686,8 @@ function installFetchHook(
     }
     if (!response.body) return response;
 
-    const parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
+    // T-4：匹配面喂「规范∪别名」（MATCHABLE_INVOCATION_NAMES）；归一在解析产出点，下游只见规范名。
+    const parser = new StreamingToolCallParser(MATCHABLE_INVOCATION_NAMES);
     const sse = new SseTextStreamExtractor();
     // QD-R4-03：fetch 路径此前完全没有 frame decoder，无法判定完成哨兵。
     const frameDec = new DeepSeekSseFrameDecoder();
@@ -2087,7 +2088,7 @@ function installXhrHooks(
           let frameDec = xhr.__dsFrameDec as DeepSeekSseFrameDecoder | undefined;
           if (!sse || !parser || !frameDec) {
             sse = new SseTextStreamExtractor();
-            parser = new StreamingToolCallParser(SUPPORTED_INVOCATION_NAMES);
+            parser = new StreamingToolCallParser(MATCHABLE_INVOCATION_NAMES); // T-4：匹配面＝规范∪别名
             frameDec = new DeepSeekSseFrameDecoder();
             xhr.__dsSse = sse;
             xhr.__dsParser = parser;
