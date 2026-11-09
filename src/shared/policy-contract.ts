@@ -26,6 +26,31 @@ export const DEFAULT_POLICY_MODE: PolicyMode = 'auto';
  */
 export const FULL_MODE_STILL_ASKS: readonly string[] = ['memory.purge'];
 
+/**
+ * K2（2026-11-09）：**对话级放行的显式豁免表** —— 这些工具即使 `approvalClass === 'mode'`，
+ * 也**不**享受「本次对话始终允许」。
+ *
+ * ── 为什么需要它（而不是按 risk 判）──
+ * 曾考虑用 `def.risk !== 'privileged'` 当地板门判据，**但那是错的**（PM 2026-11-09 现读纠正）：
+ * `tool-definitions.ts` 里 mode 类六枚的 `risk` **全都是 `'privileged'`**，连 `file.read`
+ * 也是 —— 用 risk 当门会把地板门焊死，对话级放行永不生效。
+ *
+ * 所以门按 `approvalClass`（`cls === 'mode'`，见 `authorization.ts` 对话级放行那一步），
+ * 再叠**本表**做逐工具豁免。
+ *
+ * ── 为什么首批只有 `shell.exec` ──
+ * 一次点击之后：
+ *   - 「往工作区外写文件不再问」是可以谈的便利；
+ *   - 「**任意命令执行**不再问」是把 hard-deny 地板之外的全部命令面交给模型
+ *     —— hard-deny 只挡 disk-format／盘根递归删除／关机／敏感路径那几式，
+ *     `del /s`、`curl | sh`、改 `git config` 都在门外。
+ * `python.exec`／`mcp.save`／`mcp.remove` 是 `always` 类，已被 `cls === 'mode'` 挡住，不需列入。
+ *
+ * ⚠️ 这是**保守门 + 一行可回退的暂存态**：出资人拍板"跨工具免审是否放开／shell.exec 是否进来"
+ * 之后按纪律④翻转并留记录。删掉本表里的 `'shell.exec'` ⇒ 守门那枚测试必红。
+ */
+export const CONVERSATION_APPROVAL_EXEMPT: readonly string[] = ['shell.exec'];
+
 /** full 档下 always 类直接放行时写进审计的 reason 值（可追溯、可检索）。 */
 export const FULL_MODE_ALLOW_REASON = 'full-mode-allow';
 

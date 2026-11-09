@@ -227,7 +227,53 @@ export interface ApiServerOptions {
     jsPath: string;
     cssPath?: string;
   };
+  /**
+   * K2（2026-11-09）：`/consent` 页面**壳**（K1 独立审批窗里渲染的那一页）。
+   *
+   * 与 `mcpSettingsPage` **同型同闸**（回环客户端 + 回环 Origin + 零秘密、逐字节返回、
+   * 不做模板替换），差别只有路径段：`/consent`、`/consent.js`、`/consent.css`。
+   *
+   * 缺省 ⇒ 该路由整体不可用（fail-closed，落到统一 Bearer 闸返回 401）。
+   */
+  consentWindowPage?: {
+    htmlPath: string;
+    jsPath: string;
+    cssPath?: string;
+  };
+  /**
+   * K2：宿主侧审批队列（由 `desktop-host` 注入）。
+   *
+   * 提供后开放两条端点，**都在 `/v1/*` 的统一 Bearer 闸之后**（与 MCP 数据面同闸）：
+   *   - `GET  /v1/consent/pending` → `{ ok:true, pending: <view|null> }`
+   *   - `POST /v1/consent/reply`   → `{ ok:true, decision }` / `{ ok:false, code }`
+   *
+   * ⚠️ **无请求时必须回 `200 + pending:null`，不许 204/404/500**：
+   * K1 的轮询按"200 才算问到结论"判（`consent_window.rs` 的 `poll_pending`：非 200 ⇒
+   * `None` ⇒ 指数退避到 5s）。回 204 会让轮询长期停在 5 秒档，空闲后的第一次审批
+   * 要慢好几秒才弹窗——而且**不会让任何测试变红**（看起来一切正常）。
+   */
+  consentQueue?: {
+    pending(): ReadonlyArray<PendingConsentEntryShape>;
+    reply(input: { callId: unknown; decision: unknown; nonce: unknown }): ConsentReplyResult;
+  };
 }
+
+/**
+ * 待审批条目的形状（与 `src/host/consent-queue.ts` 的 `PendingConsentEntry` 结构对齐）。
+ *
+ * `view` 用 `unknown` 而不是 `Record<string, unknown>`：后者要求索引签名，
+ * 而队列侧给的是一个**具体接口**（`PendingConsentView`）。server 对 view 只做
+ * `{ ...view, nonce }` 序列化，不读字段，所以这里的类型只需要"可展开"。
+ */
+export interface PendingConsentEntryShape {
+  readonly view: unknown;
+  readonly nonce: string;
+}
+
+/** `/v1/consent/reply` 的处理结果（`server.ts` 与宿主队列共用同一份形状）。 */
+export type ConsentReplyResult =
+  | { readonly ok: true; readonly decision: string }
+  | { readonly ok: false; readonly code: string };
 
 export interface ApiServer {
   start(): Promise<void>;
@@ -712,10 +758,136 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         return;
       }
 
+      // —— K2（2026-11-09）：`/consent` 页面壳（K1 独立审批窗内渲染那一页）——
+      //
+      // 与上面 `/mcp-settings` **同型同闸、逐条同理由**（顶层导航不带 Authorization、
+      // Tauri 无加头钩子 ⇒ 硬塞进 Bearer 闸就永远 401）。所以这里只是把同一套
+      // 「回环客户端 + 回环 Origin + 零秘密 + 逐字节返回」复制一份到 `/consent` 段。
+      //
+      // ⚠️ 与 MCP 壳的唯一差别：这一页**会**用注入的 token 去读 `/v1/consent/pending`
+      // 与写 `/v1/consent/reply`——但 token 由 Tauri init script 注入（不在磁盘 HTML 里），
+      // 所以本路由返回的字节里仍然零秘密。
+      if (
+        options.consentWindowPage &&
+        req.method === 'GET' &&
+        (pathname === '/consent' || pathname === '/consent.js' || pathname === '/consent.css')
+      ) {
+        const loopbackOnly = decideAgentAccess(
+          { lanEnabled: false, pairingCode: '' },
+          clientHostOf(req.socket?.remoteAddress),
+          undefined,
+        );
+        if (!loopbackOnly.allowed) {
+          sendJson(403, {
+            error: { code: 'loopback_only', message: 'consent window page is loopback-only' },
+          });
+          return;
+        }
+        const pageOrigin = req.headers.origin;
+        if (pageOrigin !== undefined && !isLocalOrigin(pageOrigin)) {
+          sendJson(403, {
+            error: { code: 'origin_not_allowed', message: 'consent window page is loopback-origin-only' },
+          });
+          return;
+        }
+        try {
+          if (pathname === '/consent') {
+            const html = readFileSync(options.consentWindowPage.htmlPath, 'utf8');
+            res.writeHead(200, {
+              'Content-Type': 'text/html; charset=utf-8',
+              'Cache-Control': 'no-store',
+            });
+            res.end(html);
+          } else if (pathname === '/consent.css') {
+            if (!options.consentWindowPage.cssPath) {
+              sendJson(404, { error: { code: 'not_found', message: 'no consent window stylesheet' } });
+              return;
+            }
+            const css = readFileSync(options.consentWindowPage.cssPath, 'utf8');
+            res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8' });
+            res.end(css);
+          } else {
+            const js = readFileSync(options.consentWindowPage.jsPath, 'utf8');
+            res.writeHead(200, {
+              'Content-Type': 'text/javascript; charset=utf-8',
+              'Cache-Control': 'no-store',
+            });
+            res.end(js);
+          }
+        } catch {
+          sendJson(500, {
+            error: { code: 'consent_window_page_missing', message: 'consent window page assets not built' },
+          });
+        }
+        return;
+      }
+
       // R1-01：/v1/debug/eval 不再豁免鉴权——「本机回环」不等于「可信」，
       // 本机任意进程都能访问回环。所有 /v1 端点统一走 Bearer 校验（fail-closed）。
       if (!auth.authenticate(req.headers['authorization'])) {
         sendJson(401, { error: { code: 'unauthorized', message: 'missing or invalid bearer token' } });
+        return;
+      }
+
+      // —— K2：宿主侧审批的两条端点（Rust 轮询 / 窗口回执）——
+      //
+      // 已过统一 Bearer 闸。**契约第 0 条（PM 2026-11-09 定死，两端成对）**：
+      //   - 无请求 ⇒ `sendJson(200, { ok:true, pending:null })`，形照本文件既有 200 惯例；
+      //   - **禁止**在非 OPTIONS 分支出现 `res.writeHead(204)`——204 在本文件只属于 CORS 预检。
+      // K1 侧按「非 200 ⇒ 没问到结论 ⇒ 指数退避到 5s」判（`consent_window.rs`），
+      // 回 204 会让空闲后的第一次审批慢半拍，而且不会有任何测试变红。
+      if (pathname === '/v1/consent/pending' && req.method === 'GET') {
+        if (!options.consentQueue) {
+          sendJson(503, { error: { code: 'consent_unavailable', message: 'consent queue not wired' } });
+          return;
+        }
+        const list = options.consentQueue.pending();
+        const first = list[0];
+        sendJson(200, {
+          ok: true,
+          // `view` 在类型上是 `unknown`（队列给的是具体接口）；展开前先断言成对象。
+          // 这里只做序列化，不读字段，所以不需要更细的类型。
+          pending: first
+            ? { ...(first.view as Record<string, unknown>), nonce: first.nonce }
+            : null,
+        });
+        return;
+      }
+
+      if (pathname === '/v1/consent/reply' && req.method === 'POST') {
+        if (!options.consentQueue) {
+          sendJson(503, { error: { code: 'consent_unavailable', message: 'consent queue not wired' } });
+          return;
+        }
+        // 再叠一道回环 Origin（与 /v1/mcp/servers* 同口径）：即便 token 泄漏，
+        // 公网页面的 Origin 也不是回环 ⇒ 拒。
+        if (!isLocalOrigin(req.headers.origin)) {
+          sendJson(403, {
+            error: { code: 'origin_not_allowed', message: 'consent reply requires a loopback origin' },
+          });
+          return;
+        }
+        let body: unknown;
+        try {
+          const raw = await readBody(req);
+          body = raw ? JSON.parse(raw) : {};
+        } catch {
+          sendJson(400, { error: { code: 'bad_json', message: 'malformed body' } });
+          return;
+        }
+        const b = (body ?? {}) as Record<string, unknown>;
+        const outcome = options.consentQueue.reply({
+          callId: b.callId,
+          decision: b.decision,
+          nonce: b.nonce,
+        });
+        if (outcome.ok) {
+          sendJson(200, { ok: true, decision: outcome.decision });
+        } else {
+          // 校验失败一律 4xx + 机器码；**请求保持挂起**，最终由超时兜底为 deny。
+          const status = outcome.code === 'unknown-call' ? 404 : outcome.code === 'bad-nonce' ? 403 : 400;
+          sendJson(status, { ok: false, error: { code: outcome.code } });
+        }
         return;
       }
 

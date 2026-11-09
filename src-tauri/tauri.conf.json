@@ -40,7 +40,10 @@
       "../src/ui/icon-512.png": "src/ui/icon-512.png",
       "../dist/mcp-settings-panel.js": "dist/mcp-settings-panel.js",
       "../src/ui/mcp-settings.html": "src/ui/mcp-settings.html",
-      "../src/ui/mcp-settings.css": "src/ui/mcp-settings.css"
+      "../src/ui/mcp-settings.css": "src/ui/mcp-settings.css",
+      "../dist/consent-panel.js": "dist/consent-panel.js",
+      "../src/ui/consent-window.html": "src/ui/consent-window.html",
+      "../src/ui/consent-window.css": "src/ui/consent-window.css"
     },
     "icon": [
       "icons/32x32.png",

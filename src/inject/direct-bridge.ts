@@ -7,7 +7,7 @@
  */
 
 import type { DirectTarget } from './direct-target';
-import { createDirectMessagePort, type DirectMessagePort } from './direct-port';
+import { createDirectMessagePort, type BridgeSide, type DirectMessagePort } from './direct-port';
 
 export interface BridgeSessionContext {
   readonly sessionId: string;
@@ -22,6 +22,8 @@ export interface ValidatedBridgeMessage {
 export interface DirectBridgeOptions {
   target: DirectTarget;
   sessionId: string;
+  /** R6-H1：本端身份。给了就"不接收自己发的消息"（见 `direct-port.ts` 文件头）。 */
+  side?: BridgeSide;
   reportError?: (message: string, error?: unknown) => void;
 }
 
@@ -37,7 +39,7 @@ export interface DirectBridge {
 }
 
 export function createDirectBridge(options: DirectBridgeOptions): DirectBridge {
-  const { target, sessionId, reportError } = options;
+  const { target, sessionId, side, reportError } = options;
   let port: DirectMessagePort | undefined;
 
   return {
@@ -48,7 +50,7 @@ export function createDirectBridge(options: DirectBridgeOptions): DirectBridge {
     },
     start() {
       if (port) return;
-      port = createDirectMessagePort({ target, sessionId, reportError });
+      port = createDirectMessagePort({ target, sessionId, side, reportError });
     },
     post(message) {
       if (!port) throw new Error('direct-bridge: not connected; call start() first');

@@ -39,8 +39,9 @@ import {
   type GrantScope,
 } from '../shared/consent-contract';
 import type { PolicyMode } from '../shared/policy-contract';
-import { FULL_MODE_ALLOW_REASON, FULL_MODE_STILL_ASKS } from '../shared/policy-contract';
+import { CONVERSATION_APPROVAL_EXEMPT, FULL_MODE_ALLOW_REASON, FULL_MODE_STILL_ASKS } from '../shared/policy-contract';
 import type { PolicyVerdict } from './policy';
+import { isOutside } from './policy';
 import type { ToolDefinition } from './tool-registry';
 
 export type AuthorizationDecisionKind = 'allow' | 'ask' | 'deny';
@@ -252,9 +253,9 @@ export function resolveAuthorization(input: AuthorizationInput): AuthorizationRe
   // → 这里判成「不越界」→ 对话级放行把它放行 → **越界静默通过**。
   //
   // 现在：策略层给出**独立的** `outside` 布尔量（policy.ts 的 PolicyVerdict.outside），
-  // 这里直接用它；老判据保留为兜底（策略层未给 outside 时仍能按 reason 判）。
-  const outsideRequested =
-    policyVerdict?.outside === true || policyVerdict?.reason === 'outside-workspace';
+  // 判据收敛到 `isOutside()` 一处（K2，2026-11-09）：原来这里与 desktop-host 各写一份
+  // 同一个表达式，R3-01b 那次就是在两处同时改的 —— 两套写法迟早漂移。
+  const outsideRequested = isOutside(policyVerdict);
 
   // 2) hard-deny 永远先于任何 grant / 档位 / 来源。
   if (input.hardRule) {
@@ -294,7 +295,28 @@ export function resolveAuthorization(input: AuthorizationInput): AuthorizationRe
   //    → 走 require-consent → **逐次问**。
   //    语义与硬规则 5 一致：越界是「每次都要问」的事，不是「一个对话问一次」的事。
   //    不放宽任何东西（只把越界从对话级放行的适用范围里摘出去）。
-  if (input.conversationApproved && !outsideRequested) {
+  //    ── K2（2026-11-09）：key 去掉 toolId/canonicalTarget 后，本步必须加**地板门** ──
+  //    旧 key 含 toolId ⇒ 一次点击只绑"这个工具+这个目标"，always 类实质受保护。
+  //    key 一去掉，同一次点击会免审本对话内**所有非越界调用**——包括 `python.exec` /
+  //    `shell.exec`（特权级）、`mcp.save/remove`、`memory.delete/unarchive`、`policy.set`，
+  //    甚至 `memory.purge`（`FULL_MODE_STILL_ASKS` 在**第 6 步**，位置在本步之后，会被绕过）。
+  //    这正是 R3-01 当年堵的"一次同意顺带批准别的"的形状，只是从"跨工作区"换成"跨工具"。
+  //
+  //    所以本步只对 `mode` 类（file.* / search_files 这类按档位治理的工具）生效：
+  //    特权/always 类**仍逐次问**。
+  //
+  //    ⚠️ **不要用 `def.risk !== 'privileged'` 当判据**：mode 类六枚的 `risk` 全都是
+  //    `'privileged'`（连 `file.read` 也是），用它等于把地板门焊死、对话级放行永不生效。
+  //    门按 `approvalClass` 判，再叠 `CONVERSATION_APPROVAL_EXEMPT` 做逐工具豁免
+  //    （首批只放 `shell.exec`：它虽是 mode 类，但"任意命令不再问"的面太大）。
+  //
+  //    这仍是**一行可回退的暂存态**，等出资人拍板"跨工具免审是否放开"。
+  if (
+    input.conversationApproved &&
+    !outsideRequested &&
+    cls === 'mode' &&
+    !CONVERSATION_APPROVAL_EXEMPT.includes(input.tool)
+  ) {
     return {
       ...base,
       decision: 'allow',

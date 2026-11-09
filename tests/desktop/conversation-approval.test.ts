@@ -65,8 +65,6 @@ function keyOf(
     workspaceHash: string;
     policyMode: string;
     principal: string;
-    toolId: string;
-    canonicalTarget: string;
   }> = {},
 ): string {
   return conversationApprovalKeyOf({
@@ -74,8 +72,6 @@ function keyOf(
     workspaceHash: over.workspaceHash ?? WS,
     policyMode: over.policyMode ?? 'full',
     conversationId,
-    toolId: over.toolId ?? 'python.exec',
-    canonicalTarget: over.canonicalTarget ?? '',
   });
 }
 
@@ -88,15 +84,23 @@ describe('对话级放行表 · key 与失效', () => {
     expect(keyOf('c2')).not.toBe(base);
   });
 
-  // ── C1 P1 安全批 R3-01 新增：工具与目标必须进 key ──
-  it('R3-01：key 随 toolId 变化而变化（file.read 的同意不放行 shell.exec）', () => {
-    const base = keyOf('c1', { toolId: 'file.read' });
-    expect(keyOf('c1', { toolId: 'shell.exec' })).not.toBe(base);
+  // ── K2（2026-11-09）语义翻转：工具与目标**不再**进 key ──
+  //
+  // R3-01（2026-10-2x）当年把 toolId + canonicalTarget 塞进 key，修掉了"file.read 的同意
+  // 放行 shell.exec"；但副作用是 python.exec / shell.exec 这类目标每次都变的工具永远做不到
+  // "一次对话一次"（设计稿 D2）。出资人 2026-11-09 08:2x：「该整个对话就是整个对话」。
+  // ⇒ key 只由语境四维构成；**越界与 always 类另有门守着**（见
+  // `c1p1-r301-conversation-scope.test.ts` 的 ②③ 两组断言）。
+  it('K2：同一对话内换工具 ⇒ **同一个 key**（新语义，R3-01 已退役）', () => {
+    // key 函数已不接收工具维度 ⇒ 同参数的两次调用必然相等。
+    // 这枚锁的是"key 不含工具维度"这件事本身，而不是值巧合。
+    const base = keyOf('c1');
+    expect(keyOf('c1')).toBe(base);
+    expect(base.split('|')).toHaveLength(4);
   });
 
-  it('R3-01：key 随 canonicalTarget 变化而变化（A.txt 的同意不放行 B.txt）', () => {
-    const base = keyOf('c1', { canonicalTarget: 'file:a.txt' });
-    expect(keyOf('c1', { canonicalTarget: 'file:b.txt' })).not.toBe(base);
+  it('K2：同一对话内换目标 ⇒ **同一个 key**（旧放行覆盖全对话目标）', () => {
+    expect(keyOf('c1')).toBe(keyOf('c1'));
   });
 
   it('同一对话内 grant 后即命中；换 key 不命中', () => {
@@ -130,34 +134,51 @@ describe('对话级放行表 · key 与失效', () => {
 });
 
 describe('resolveAuthorization · conversationApproved 的位置', () => {
-  it('同对话第二次调用不再询问（always 类工具）', () => {
+  it('K2：auto 档 always 类（python.exec）即使已放行 ⇒ 仍 ask（地板门挡在外面）', () => {
     const store = createConversationApprovalStore();
     const key = keyOf('c1');
 
-    // 2026-11-08 卡 H：full 档下 always 类**第一次就不再询问**（出资人拍板"完全放开不会弹窗"）。
-    // 本用例原本验的是「第一次 ask、对话级放行后第二次 allow」；在 full 档这两步现在都是 allow，
-    // 所以**必须换成 non-full 档**才能继续验对话级放行本身的语义（auto 档里 always 类仍会 ask）。
+    // 原用例验的是"第一次 ask、对话级放行后第二次 allow"。
+    // K2 的地板门（`cls === 'mode'`）把 always 类挡在第 5 步之外 ⇒ 两次都是 ask。
+    // 若出资人拍板放开"跨工具免审"，这枚按纪律④翻回 allow 并留记录。
     const first = resolveAuthorization(mk('python.exec', { mode: 'auto', conversationApproved: false }));
     expect(first.decision).toBe('ask');
 
     store.grant(key);
     const second = resolveAuthorization(mk('python.exec', { mode: 'auto', conversationApproved: store.check(key) }));
-    expect(second.decision).toBe('allow');
-    expect(second.reason).toBe('conversation-approved');
+    expect(second.decision).toBe('ask');
+  });
 
-    // 反证（卡 H 的语义）：full 档下同一调用**不需要**对话级放行就已 allow
+  it('K2：auto 档 mode 类（file.write）已放行 ⇒ allow（出资人要的"一次对话一次"）', () => {
+    // 同一份 store、同一把 key：换到 mode 类就应当被放行——证明上面那枚 ask 是地板门造成的，
+    // 不是"对话级放行整体失效"。
+    const store = createConversationApprovalStore();
+    store.grant(keyOf('c1'));
+    const r = resolveAuthorization(
+      mk('file.write', {
+        mode: 'auto',
+        conversationApproved: store.check(keyOf('c1')),
+        params: { path: 'C:/ws/a.txt', content: 'x' },
+      }),
+    );
+    expect(r.decision).toBe('allow');
+    expect(r.reason).toBe('conversation-approved');
+  });
+
+  it('反证（卡 H 的语义）：full 档下同一调用**不需要**对话级放行就已 allow', () => {
     const fullNoGrant = resolveAuthorization(mk('python.exec', { mode: 'full', conversationApproved: false }));
     expect(fullNoGrant.decision).toBe('allow');
     expect(fullNoGrant.reason).toBe('full-mode-allow');
   });
 
-  it('换对话 → 重新询问', () => {
+  it('换对话 → 重新询问（auto 档 always 类：两次都 ask，换不换对话都一样）', () => {
     const store = createConversationApprovalStore();
     store.grant(keyOf('c1'));
-    // 同上：对话级放行只在 non-full 档下才是"能不能放行"的决定因素。
+    // 地板门挡住 always 类 ⇒ 这里两枚都是 ask。**换对话的隔离性**由下面 mode 类那枚证明
+    // （那才是"对话级放行本体会不会跨对话生效"的真问题）。
     expect(
       resolveAuthorization(mk('python.exec', { mode: 'auto', conversationApproved: store.check(keyOf('c1')) })).decision,
-    ).toBe('allow');
+    ).toBe('ask');
     expect(
       resolveAuthorization(mk('python.exec', { mode: 'auto', conversationApproved: store.check(keyOf('c2')) })).decision,
     ).toBe('ask');
@@ -184,27 +205,27 @@ describe('resolveAuthorization · conversationApproved 的位置', () => {
     ).toBe('ask');
   });
 
-  // ── C1 P1 安全批 R3-01 新增 ──
-  it('R3-01：换工具 → 重新询问（file.read 的对话级同意不放行 shell.exec）', () => {
+  // ── K2（2026-11-09）：R3-01 的 key 侧断言已翻转 ──
+  //
+  // 历史上这两枚证明「换工具/换目标 → 重新询问」；K2 按出资人 08:2x 语义去掉 key 里的
+  // toolId/canonicalTarget，于是"换工具不再重新询问"是**新诉求**。
+  //
+  // ⚠️ 但"不再问"**不是无条件的**：`authorization.ts` 的地板门（`cls === 'mode'`）与
+  // `CONVERSATION_APPROVAL_EXEMPT`（首批只有 `shell.exec`）仍然把 always 类与命令执行挡在门外；
+  // 越界那一格（`!outsideRequested`）**一字未动**。这三道门的成对断言在
+  // `c1p1-r301-conversation-scope.test.ts` 的 ②③ 两组里，本文件只锁 key 本身的形状。
+  it('K2：换工具 ⇒ key 不变（同对话内一次放行覆盖所有 mode 类）', () => {
     const store = createConversationApprovalStore();
-    // 用户在 file.read 上点了「本次对话始终允许」。
-    store.grant(keyOf('c1', { toolId: 'file.read' }));
-    // 同一对话里调 shell.exec → key 不同 → 没被放行 → 必须重新询问。
-    const shellKey = keyOf('c1', { toolId: 'shell.exec' });
-    expect(store.check(shellKey)).toBe(false);
-    expect(
-      resolveAuthorization(mk('shell.exec', { mode: 'full', conversationApproved: store.check(shellKey) })).decision,
-    ).toBe('ask');
+    store.grant(keyOf('c1'));
+    // 关键：这里已经**没有**"换工具就换 key"的可能——key 函数不接收工具维度。
+    expect(store.check(keyOf('c1'))).toBe(true);
+    expect(keyOf('c1').split('|')).toHaveLength(4);
   });
 
-  it('R3-01：换目标 → 重新询问（A.txt 的对话级同意不放行 B.txt）', () => {
+  it('K2：换目标 ⇒ key 不变（A.txt 的同意覆盖同对话的 B.txt）', () => {
     const store = createConversationApprovalStore();
-    store.grant(keyOf('c1', { toolId: 'file.read', canonicalTarget: 'file:a.txt' }));
-    const otherKey = keyOf('c1', { toolId: 'file.read', canonicalTarget: 'file:b.txt' });
-    expect(store.check(otherKey)).toBe(false);
-    expect(
-      resolveAuthorization(mk('file.read', { mode: 'full', conversationApproved: store.check(otherKey) })).decision,
-    ).toBe('ask');
+    store.grant(keyOf('c1'));
+    expect(store.check(keyOf('c1'))).toBe(true);
   });
 
   it('R3-01b：越界目标不被对话级放行放行（逐次询问），且 outsideApproved 恒 false', () => {

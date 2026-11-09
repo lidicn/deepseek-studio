@@ -29,7 +29,11 @@ import {
 } from './tool-registry';
 import { DEFAULT_TOOL_DEFINITIONS, HOST_INTERNAL_ORIGIN } from './tool-definitions';
 import { createPageRuntimeHub, type PageRuntimeHub } from './page-runtime';
-import { showNativeConsent } from './native-consent';
+// K2（2026-11-09）：宿主侧确认改走 K1 的 Rust 审批窗口 ⇒ 不再直接调 node 侧原生框。
+// `native-consent.ts` 仍保留（`options.nativeConsent` 的默认实现语义说明在那里），
+// 只是 `askHostSide` 不再用它——保留 import 会让 `noUnusedLocals` 红，故移除。
+// 需要退回原生框时：在 `askHostSide` 里恢复 `_showNativeConsent(...)` 分支即可。
+import { createConsentQueue, type ConsentQueue } from './consent-queue';
 import { appendTraceLine } from './trace-log';
 import { AGENT_SENTINEL, type AgentLoopEvent } from './agent-loop';
 import { createAgentChannel, type AgentChannel } from './agent-channel';
@@ -89,6 +93,7 @@ import {
   POLICY_MODES,
   POLICY_MODE_LABELS,
   riskLabel,
+  isOutside,
   type PolicyMode,
 } from './policy';
 import { checkHardDeny, routeConsent } from './consent-router';
@@ -204,6 +209,18 @@ export interface DesktopHostOptions {
    * 缺省则 `/mcp-settings` 路由整体不可用（fail-closed）。
    */
   mcpSettingsPage?: {
+    htmlPath: string;
+    jsPath: string;
+    cssPath?: string;
+  };
+  /**
+   * K2（2026-11-09）：`/consent` 页面壳（K1 独立审批窗里那一页）。
+   *
+   * 由 `src/api/main.ts` 装配传入（与 `mcpSettingsPage` 同型同闸）。
+   * 缺省 ⇒ 该路由不可用（fail-closed 落到 Bearer 闸）；**审批端点不受它影响**
+   * （端点走 Bearer + 队列，与页面壳是两回事）。
+   */
+  consentWindowPage?: {
     htmlPath: string;
     jsPath: string;
     cssPath?: string;
@@ -1149,6 +1166,22 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   // 审计环：全链路执行留痕（还清 v0.3 遗留 3.2.4）。
   const audit: AuditLog = createAuditLog(options.auditCapacity ?? DEFAULT_AUDIT_CAPACITY);
 
+  /**
+   * K2（2026-11-09）：宿主侧审批队列——**登记待决 + 阻塞等回执**。
+   *
+   * 它同时服务两个方向，所以必须在 `createApiServer` **之前**声明：
+   *   - `askHostSide()` 写入（等用户答复）；
+   *   - HTTP `GET /v1/consent/pending`（Rust 轮询取走）与 `POST /v1/consent/reply`（窗口回执）。
+   *
+   * 超时预算与页端模态一致（60s）：两条通道对"用户有多久答复"不该有不同预期。
+   * 轮询宽限 600ms = K1 轮询间隔 200ms 的 3 个周期——到期仍无人来取 ⇒ 判"窗口没起"，
+   * 立刻 `shown:false` 收口，不让调用方白等满 60s。
+   */
+  const hostConsentQueue: ConsentQueue = createConsentQueue({
+    timeoutMs: options.consentTimeoutMs ?? 60_000,
+    pollerGraceMs: 600,
+  });
+
   // R-W4：replySeq 单调代次——loopDepth 每条新消息归零（:1846），不能当去重键。
   // 每次 onAssistantReply 自增一个全局 seq，消费时比对 seq > lastConsumedSeq。
   const lastConsumedSeq = new WeakMap<object, number>();
@@ -1552,6 +1585,12 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     agentLanAccess: options.agentLanAccess,
     // C 卡：MCP 设置窗的页面壳（不含令牌；数据面仍走下面的 mcpServers）。
     mcpSettingsPage: options.mcpSettingsPage,
+    // K2：审批窗的页面壳（同型同闸、零秘密；K1 的 Rust 窗口里渲染 `/consent`）。
+    // 由 `src/api/main.ts` 的装配传入（H3），缺省 ⇒ 路由整体不可用（fail-closed）。
+    consentWindowPage: options.consentWindowPage,
+    // K2：宿主侧审批队列的两条端点（Rust 轮询取 pending / 窗口 POST 回执）。
+    // 挂在 `/v1/*` 统一 Bearer 闸之后，与 MCP 数据面同闸。
+    consentQueue: hostConsentQueue,
     // C1 P1 安全批（(B) 方案）：MCP 配置读写面（工作台专用）。
     // 挂在 /v1/* 统一 Bearer 闸 + 回环 Origin 闸之后 → 页面里的模型够不到。
     mcpServers: {
@@ -1842,16 +1881,15 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       whitelistHit(name, paramsBag, verdict, workspaceHash);
     // 对话级放行：仅当本次调用带有对话身份、且该对话已被用户点过「本次对话始终允许」时成立。
     // key 里含工作区指纹与档位，因此换工作区 / 换档位会自然换 key（旧放行不再命中）。
-    // C1 P1 安全批 R3-01：key **额外含 toolId + canonicalTarget** ——
-    // 否则在 file.read 上的一次同意会放行同对话内的 shell.exec（含工作区外）。
+    // K2（2026-11-09）：key **不再含 toolId / canonicalTarget**（出资人 08:2x「该整个对话就是
+    // 整个对话」；后两项会让 python.exec / shell.exec 这类目标每次都变的工具永远无法"一次对话一次"）。
+    // ⚠️ 越界不吃对话级放行——那道门在 `authorization.ts` 的 `!outsideRequested` 上，**不在 key 上**。
     const conversationKey = conversationId
       ? conversationApprovalKeyOf({
           principal: botId ?? 'main',
           workspaceHash,
           policyMode,
           conversationId,
-          toolId: name,
-          canonicalTarget: canonicalTargetOf(def ?? ({ approvalClass: 'mode' } as ToolDefinition), paramsBag).target,
         })
       : '';
     const conversationApproved = conversationKey !== '' && conversationStore.check(conversationKey);
@@ -1876,6 +1914,26 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       ...(auth.grantScope ? { grantScope: auth.grantScope } : {}),
       ...(auth.hardRule ? { hardRule: auth.hardRule } : {}),
       ...(auth.canonicalTarget ? { canonicalTarget: auth.canonicalTarget } : {}),
+      // K2（2026-11-09）：**越界事实**一处赋值覆盖全部出口。
+      //
+      // 为什么放在这里而不是各出口各写一次：`ctx` 同时被 `finish()`（所有拒绝出口）
+      // 与下面成功路径的 `audit.record({ ...ctx, … })` 展开，所以**一处赋值 = 三处出口
+      // 都带同一份事实**。三处各写就会漂移（`L1781` 拿不到 `verdict`，只能在别处补，
+      // 补着补着就变成"拒绝侧带、成功侧不带"）。
+      //
+      // ⚠️ 为什么用 `verdict` 而不是 `auth.outsideApproved`：
+      //   `outsideApproved` 只在 full 档"策略层直接放行"那条路上为 true，
+      //   它**不覆盖**"窗口同意之后才越界"的场景；而 `verdict.outside` 是机器算出来的事实。
+      //
+      // ⚠️ 射程：`verdict` 是 `governed ? evaluatePolicy(…) : null`，而 `verdict` 在
+      // `resolveAuthorization` 之前就求值了（本块在它之后），所以**本块之前的所有出口**
+      // （`malformed`／`denied`／治理闸门）**物理上不知道越界与否**——那是"没算过"，
+      // 不是"漏写"，将来有人想给它们补 `outside` 只会补出一个假值。
+      //
+      // 用 `...(cond ? { outside: true } : {})` 而不是 `outside: cond`：
+      // 不越界时**键不存在**（`'outside' in rec === false`），这样"没有边界语义的工具"
+      // （`memory.delete` 等非 governed）与"算过、确认在区内"在记录上仍然可区分。
+      ...(isOutside(verdict) ? { outside: true } : {}),
     };
 
     if (auth.decision === 'deny') {
@@ -1912,7 +1970,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           // 原实现只看 `verdict?.reason === 'outside-workspace'` → 命令既命中风险模式
           // 又越界时 reason 是 risk-detected → 「越界」这个提示会丢 →
           // 用户在弹窗里看不到「这个要出工作区」的提示，却要为它逐次确认。
-          outside: verdict?.outside === true || verdict?.reason === 'outside-workspace',
+          outside: isOutside(verdict),
           riskFlagLabels: (verdict?.riskFlags ?? []).map(riskLabel),
           // A5+：风险项 **id** 原样透传（未翻译）。`isHighRiskConsent` 只认这个事实字段，
           // 不认 `riskLabel`／`riskFlagLabels` 这类展示字段（2026-11-08 语义挪用修复）。
@@ -2173,12 +2231,22 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     const highRisk = isHighRiskConsent(meta);
 
     /**
-     * 宿主侧确认（今天＝原生框；C″ 获批后只换这里的实现，路由接口不变）。
-     * `shown=false` ＝ 框根本弹不出来（环境不支持 / spawn 失败 / **注入实现抛错**）；
-     * `decision` 缺省（注入实现返回 null）＝ 弹出来了但没给决议 → 按 deny 处理（旧语义保持）。
+     * 宿主侧确认。
      *
-     * 注入实现抛错必须就地折成 shown=false：否则异常会穿出 `ensureConsent`，
-     * 整条授权链崩掉（既不是 allow 也不是 deny，调用方拿不到可判读的结果）。
+     * ── K2（2026-11-09）改道：C″，即 K1 那枚 Rust 独立审批窗口 ──
+     * 这里**不"打开窗口"**：node→tauri 没有上行 RPC，调用方唯一能做的事是
+     * **登记一条待决，然后阻塞等回执**（`consent-queue.ts`）。窗口由 Rust 侧
+     * 每 200ms 轮询 `GET /v1/consent/pending` 自行拉起，用户点按钮后窗口页面
+     * `POST /v1/consent/reply` 回执。写成同步开窗会落在一条不存在的通道上。
+     *
+     * `shown` 的三来源（见 `consent-queue.ts` 文件头那张表）：
+     *   - 窗口没起 / 轮询线程没跑 ⇒ `shown:false`；
+     *   - 窗口起了、用户没答（超时）⇒ `shown:true` + `deny`；
+     *   - 用户答了 ⇒ `shown:true` + 决议。
+     * 前两种**都必须是 deny**——把超时写成 allow，`L2164`「越界不给页面决议权」就成了假话。
+     *
+     * 注入实现（`options.nativeConsent`）优先：它既是对外可测试的桩，
+     * 也是将来换实现时的覆盖点；抛错就地折成 `shown:false`（异常穿出会让整条授权链崩掉）。
      */
     const askHostSide = async (): Promise<{ shown: boolean; decision: ConsentDecision }> => {
       const allowed = highRiskAllowedDecisions(meta);
@@ -2199,17 +2267,19 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           return { shown: false, decision: 'deny' };
         }
       }
-      const r = await showNativeConsent({
-        tool: req.tool,
+      // ── C″：登记待决 + 等回执（窗口由 Rust 轮询拉起）──
+      // `outside` 取 `meta.outside`（`L1915` 归一化后的事实），不是 `auth.outsideApproved`
+      // 那个"能力层通行证"——后者在 full 档下由策略 allow 产生，含义不同。
+      return hostConsentQueue.request({
+        callId,
+        tool,
         summary: req.summary,
         riskReason: req.riskReason,
-        allowedDecisions: req.allowedDecisions,
+        mode: POLICY_MODE_LABELS[policyMode] ?? policyMode,
+        target: meta?.canonicalTarget ?? '',
+        outside: meta?.outside === true,
+        allowedDecisions: [...allowed] as ConsentDecision[],
       });
-      if (!r.shown) {
-        console.warn(`[consent] native box unavailable (${r.reason ?? 'unknown'})`);
-        return { shown: false, decision: 'deny' };
-      }
-      return { shown: true, decision: r.decision ?? 'deny' };
     };
 
     if (highRisk && meta?.outside === true) {
@@ -2254,21 +2324,17 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     }
     if (decision === 'allow-conversation' && conversationId) {
       // 「本次对话始终允许」：登记对话级放行。
-      // key 含 principal / 工作区指纹 / 档位 / 对话 id / **工具 id / 规范目标**
-      // → 换对话、换工作区、换档位、**换工具、换目标**都会自然失效。
-      // C1 P1 安全批 R3-01：工具与目标进 key 是关键 ——
-      // 否则「读个文件」的同意会被放大成「这个对话里随便干什么都行」。
+      // key = principal / 工作区指纹 / 档位 / 对话 id —— 换对话、换工作区、换档位自然失效。
+      // K2（2026-11-09）：**已去掉 toolId + canonicalTarget**（见 conversation-approval.ts 文件头
+      // 的"语义变更"与安全代价）。越界仍不吃对话级放行，那道门在 authorization.ts。
       const wsRoot = mutableWorkspace.current?.root ?? null;
       const workspaceHash = wsRoot ? createHash('sha1').update(wsRoot).digest('hex').slice(0, 12) : '';
-      const def = registry.get(tool);
       conversationStore.grant(
         conversationApprovalKeyOf({
           principal: botId ?? 'main',
           workspaceHash,
           policyMode,
           conversationId,
-          toolId: tool,
-          canonicalTarget: canonicalTargetOf(def ?? ({ approvalClass: 'mode' } as ToolDefinition), (params ?? {}) as Record<string, unknown>).target,
         }),
       );
       return 'approved';
@@ -2638,14 +2704,26 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       // 原来只有 100ms 防抖定时器，退出前最后 100ms 窗口内的写入会随进程一起消失（静默丢失）。
       // 还要等在途操作：kvSet 的第一步是 await kvGet(key)（首载），stop 发生在它之前时
       // 值还没进 pendingKvSet → 光 flush 也落盘的是空批次。
-      await kvWaitIdle();
-      await flushKvNow();
-      agentChannel?.dispose();
-      agentChannel = null;
-      conversationStore.bumpGeneration();
-      hub?.dispose();
-      hub = null;
-      await server.stop();
+      //
+      // ── K2（2026-11-09）：`drain` 必须放在 **finally** 里 ──
+      // 为什么不能用"顺序执行"：上面任何一步 throw（`kvWaitIdle` 卡住的 KV、`flushKvNow`
+      // 写盘失败、`agentChannel.dispose` 抛错）都会让后面的 `drain` 被跳过 ⇒ 在途的
+      // `askHostSide()` 永挂 ⇒ 调用方既拿不到 allow 也拿不到 deny，`audit.record` 不落地
+      // = **留痕缺失**（比拒绝更糟）。这跟 `askHostSide` 里为"注入实现抛错"专门折
+      // `shown=false` 是同一个道理：收尾动作必须无条件执行。
+      try {
+        await kvWaitIdle();
+        await flushKvNow();
+        agentChannel?.dispose();
+        agentChannel = null;
+        conversationStore.bumpGeneration();
+      } finally {
+        // fail-closed 结算：全部 pending ⇒ `{shown:false, decision:'deny'}`。
+        hostConsentQueue.drain();
+        hub?.dispose();
+        hub = null;
+        await server.stop();
+      }
     },
     get url() {
       return server.url;

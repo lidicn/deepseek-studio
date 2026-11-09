@@ -380,3 +380,73 @@ describe('v0.14.12 卡：Release body 从 notes 文件补齐（body_path + 前�
     expect(beforeBuild, "Build & sign 之前出现 || true——失败被吞、签名空值被发现不了").not.toContain('|| true');
   });
 });
+
+describe('v0.14.13 卡 E/F：打包工具预取＋发布正文显式 PATCH（#48）', () => {
+  it('卡 E：cache→fetch→assert 三步编排全在 Build & sign 之前、断言看真实文件不看 hit/miss', () => {
+    const cache = step(release, 'Restore tauri packaging tools cache');
+    expect(cache).toContain('actions/cache@v4');
+    expect(cache).toContain('path: C:\\Users\\runneradmin\\AppData\\Local\\tauri');
+    expect(cache).toContain('key: tauri-tools-nsis-3.11-wix314');
+    const fetch = step(release, 'Fetch missing tauri packaging tools');
+    // 两条 URL 字面串（出处见 release.yml 注释）
+    expect(fetch).toContain('https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip');
+    expect(fetch).toContain('https://github.com/wixtoolset/wix3/releases/download/wix314rtm/wix314-binaries.zip');
+    // 重试 3 次＋退避
+    expect(fetch).toContain('for ($attempt = 1; $attempt -le 3; $attempt++)');
+    expect(fetch).toContain('Start-Sleep');
+    // 失败点名哪个 URL（验收要求"失败点名是哪个 URL"）
+    expect(fetch).toContain('failed to download');
+    const assertStep = step(release, 'Assert packaging tools present');
+    expect(assertStep).toContain('makensis.exe');
+    expect(assertStep).toContain('candle.exe');
+    expect(assertStep).toContain('exit 1');
+    // 三步都在 Build & sign 之前（顺序锁）
+    const iCache = release.indexOf('- name: Restore tauri packaging tools cache');
+    const iFetch = release.indexOf('- name: Fetch missing tauri packaging tools');
+    const iAssert = release.indexOf('- name: Assert packaging tools present');
+    const iBuild = release.indexOf('- name: Build & sign');
+    expect(iCache, 'cache step missing').toBeGreaterThanOrEqual(0);
+    expect(iFetch, 'fetch step missing or not after cache').toBeGreaterThan(iCache);
+    expect(iAssert, 'assert step missing or not after fetch').toBeGreaterThan(iFetch);
+    expect(iBuild, 'Build & sign must come after assert').toBeGreaterThan(iAssert);
+  });
+
+  it('卡 F：draft 之后有显式 PATCH body 步（charset=utf-8＋回读等值三件套＋零插值）', () => {
+    // 注：step() 用 indexOf 子串匹配，步名只锁存在性、不锁唯一性（将来新增同名前缀步仍绿）；
+    // 真判据在下面的内容断言（-Method Patch／charset／per_page／firstDiff），不靠步名。
+    const patch = step(release, 'Patch draft release body');
+    expect(patch).toContain('-Method Patch');
+    expect(patch).toContain("-ContentType 'application/json; charset=utf-8'");
+    // 查草稿走全量列表（与 Preflight gate 同坑），不许回退到 tags 端点
+    expect(patch).toContain('/releases?per_page=100');
+    expect(patch).toContain("$_.tag_name -eq $tag -and $_.draft");
+    expect(patch).not.toContain('$repo/releases/tags/');
+    // 回读等值三件套：两枚长度＋firstDiff 显式循环＋<end>
+    expect(patch).toContain('expected_len=');
+    expect(patch).toContain('actual_len=');
+    expect(patch).toContain('firstDiff=');
+    expect(patch).toContain('<end>');
+    expect(patch).toContain('throw "draft release body != notes file after PATCH"');
+    // run: 块零插值（与既有注入锁同判据，新增步也必须合规）
+    const runStart = patch.indexOf('run: |');
+    expect(runStart, 'patch 无 run: 块').toBeGreaterThanOrEqual(0);
+    expect(patch.slice(runStart), 'patch run: 块内出现 ${{ 插值').not.toContain('${{');
+    // 位置：Create draft release < Patch < Preflight gate
+    const iDraft = release.indexOf('- name: Create draft release');
+    const iPatch = release.indexOf('- name: Patch draft release body');
+    const iGate = release.indexOf('- name: Preflight gate');
+    expect(iPatch, 'patch must come after draft').toBeGreaterThan(iDraft);
+    expect(iGate, 'gate must come after patch').toBeGreaterThan(iPatch);
+  });
+
+  it('卡 F：Preflight gate 非空断言保留＋等值断言新增（旧正向锁一条不许消失）', () => {
+    const gate = step(release, 'Preflight gate (G1/G2/G5)');
+    // 旧正向锁（L350-351 那对）——纪律④"只加不改删"
+    expect(gate).toContain('IsNullOrWhiteSpace($rel.body)');
+    expect(gate).toContain('throw "draft release body is empty');
+    // 新增等值断言（三件套同判据）
+    expect(gate).toContain('throw "draft release body != notes file (preflight equality check)"');
+    expect(gate).toContain('$notesExpected');
+    expect(gate).toContain('$bodyActual');
+  });
+});

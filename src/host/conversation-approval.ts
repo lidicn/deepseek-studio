@@ -1,30 +1,30 @@
 /**
  * 对话级放行表（"一个对话只审批一次"）
  *
- * 用户诉求：完全放开档不该每个执行都弹一次审批；希望**一个对话审批一次**，
- * 之后同一对话内的调用不再打扰。失效条件（任一命中即作废）：
- *   - 换对话（conversationId 变化）
- *   - 换工作区（workspaceHash 变化）
- *   - 换审批档位（policyMode 变化）
- *   - **换工具（toolId 变化）** ← C1 P1 安全批 R3-01 新增
- *   - **换目标（canonicalTarget 变化）** ← C1 P1 安全批 R3-01 新增
- *   - 页端断开 / 宿主停止
+ * 用户诉求（出资人 08:2x 原话）：「**该整个对话就是整个对话**。该某次放行就是某次放行。
+ * 该完全放开，就彻底关闭审批。」
  *
- * 与 grant（会话级）刻意分开：grant 绑"工具+目标"，本表绑"对话"。
- * 本表只覆盖"逐次询问"这一层，hard-deny 与策略层 deny 永不受影响
- * （它们在 authorization.ts 里先于本表判定）。
+ * ── K2（2026-11-09）语义变更：key 去掉 `toolId` 与 `canonicalTarget` ──
  *
- * ── C1 P1 安全批 R3-01：key 必须含 toolId + canonicalTarget ──
+ * 旧 key = `principal|workspaceHash|policyMode|conversationId|toolId|canonicalTarget`。
+ * 后两项是 C1 P1 安全批 R3-01 加进来的，当时修对了一个真实漏洞（"点一次 file.read
+ * 放行同对话全部工具"），但**副作用是"一次对话审批一次"在 `python.exec`/`shell.exec`
+ * 这类工具上永远不可能成立**——它们的 `canonicalTarget` 天然每次调用都变
+ * （设计稿 D2：这正是"每次都重新审批"的成因）。
  *
- * 缺陷（PM 核实）：原 key **刻意不含工具名**（旧注释：「一个对话审批一次覆盖该对话内全部调用」），
- * 于是用户在 `file.read` 上点一次「本次对话始终允许」→ 同对话内
- * `shell.exec` / `file.write`（含**工作区外**）/ `policy.set` **全部静默放行**。
- * 一次「读个文件」的同意，被放大成了「这个对话里随便干什么都行」。
+ * 现在 key 只保留**四个语境维度**，失效条件写在下面的 `ConversationApprovalKeyInput` 上。
  *
- * 修法：key 纳入 **toolId + canonicalTarget** →
- * 同意只对「这个工具 + 这个目标」生效；换个工具或换个路径**必须重新问**。
- * 这不违背「一个对话审批一次」的用户诉求 ——
- * 诉求是「别每个执行都弹」，不是「一次同意覆盖所有工具」。
+ * ⚠️ **安全代价必须明示，不藏**：一次「本对话始终允许」= 该对话内**任何**工具
+ * （含 `python.exec` 任意代码、`memory.purge`）都不再询问，直到换对话/工作区/档位。
+ * 补偿防线（不在本文件，但都在）：
+ *   ① hard-deny 地板与策略层 deny **仍在** `authorization.ts` 里先于本表判定（它们是拒绝，不是询问）；
+ *   ② **越界不吃对话级放行**——`authorization.ts` 的 `if (conversationApproved && !outsideRequested)`
+ *      这一条**保留不变**（R3-01b 的修法，§1.4 硬规则 5：跨工作区必须逐次确认）；
+ *   ③ 每次放行写审计。
+ *
+ * ⚠️ 第 ② 条以前有"key 里含 canonicalTarget"作为**第一道**保险（越界路径 B 的同意
+ * 换到区内路径 A 就自然不命中）。**去掉 canonicalTarget 后，`!outsideRequested` 成了
+ * 唯一那道门**——所以它从"第二道"升格为"唯一一道"，任何删它的改动都必须先过出资人。
  */
 
 export interface ConversationApprovalKeyInput {
@@ -36,26 +36,12 @@ export interface ConversationApprovalKeyInput {
   readonly policyMode: string;
   /** 页端会话标识；无对话身份时不允许对话级放行。 */
   readonly conversationId: string;
-  /**
-   * C1 P1 安全批 R3-01：工具 id。
-   *
-   * **必须纳入 key** —— 否则在 `file.read` 上的一次同意会放行同对话内的 `shell.exec`。
-   */
-  readonly toolId: string;
-  /**
-   * C1 P1 安全批 R3-01：规范目标（工具的目标归一化结果）。
-   *
-   * **必须纳入 key** —— 否则对 `A.txt` 的同意会放行对 `B.txt`（或工作区外路径）的访问。
-   */
-  readonly canonicalTarget: string;
 }
 
 /**
- * 对话级放行的 key。
+ * 对话级放行的 key：**只由四个语境维度构成**。
  *
- * C1 P1 安全批 R3-01：key 含 **toolId + canonicalTarget** ——
- * 一次同意只对「这个工具 + 这个目标」有效，换工具或换目标必须重新询问。
- * （旧实现刻意不含工具名，是 R3-01 缺陷的直接来源。）
+ * K2（2026-11-09）：不再含 `toolId` / `canonicalTarget`——见文件头"语义变更"。
  */
 export function conversationApprovalKeyOf(input: ConversationApprovalKeyInput): string {
   return [
@@ -63,8 +49,6 @@ export function conversationApprovalKeyOf(input: ConversationApprovalKeyInput): 
     input.workspaceHash,
     input.policyMode,
     input.conversationId,
-    input.toolId,
-    input.canonicalTarget,
   ].join('|');
 }
 

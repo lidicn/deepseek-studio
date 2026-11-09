@@ -104,6 +104,35 @@ export interface PolicyVerdict {
   readonly outside?: boolean;
 }
 
+/**
+ * **越界判据的唯一实现**（K2，2026-11-09）。
+ *
+ * ── 为什么要有这个函数 ──
+ * 同一个表达式 `v?.outside === true || v?.reason === 'outside-workspace'` 在改动前
+ * 存在于两处（`authorization.ts:256` 的 `outsideRequested`、`desktop-host.ts:1915` 的
+ * `consentMeta.outside`）。R3-01b 那次修的是「reason 被 risk-detected 占走时 outside 丢失」，
+ * 而那次**就是在两处同时改的** —— 两套写法迟早漂移，所以收敛成一枚。
+ *
+ * ── 签名为什么同时接 `null` 与 `undefined`（两个都是真实的，别"优化"成单一可空）──
+ * - `desktop-host.ts` 的 `const verdict = governed ? evaluatePolicy(…) : null;`
+ *   —— `evaluatePolicy` 返回**非空** `PolicyVerdict`，三元表达式给出的是字面量 **`null`**；
+ * - `authorization.ts` 的入参是可选属性 `policyVerdict?: PolicyVerdict`
+ *   —— 可选属性给的是 **`undefined`**。
+ * 只接其中一种会在另一处直接 `tsc --strict` 红；用 `!v` 之类的合并写法则会把两种空值的
+ * 语义差抹掉（将来若有一处改成"空值也要算"，合并写法会静默吞掉它）。
+ *
+ * ── 调用面（判据一处，调用三处 + 消费者一处）──
+ * - 调用：`authorization.ts` 的 `outsideRequested`、`desktop-host.ts` 的 `consentMeta.outside`、
+ *   `desktop-host.ts` 写入审计 `ctx.outside` 那一处；
+ * - 消费者：`desktop-host.ts` 的 `if (highRisk && meta?.outside === true)` —— 它读的是
+ *   `consentMeta.outside` 这个**归一化后的布尔**，不重新对 verdict 求值，所以不是第三份判据。
+ *
+ * **任何地方都不许再手写那个 `||` 表达式**；要改判据就改这里。
+ */
+export function isOutside(v: PolicyVerdict | null | undefined): boolean {
+  return v?.outside === true || v?.reason === 'outside-workspace';
+}
+
 export interface PolicyInput {
   readonly tool: string;
   readonly params: Record<string, unknown>;

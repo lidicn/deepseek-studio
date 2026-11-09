@@ -68,4 +68,19 @@ if (!gateMode) {
     logLevel: 'info',
     minify: true,
   });
+
+  // K3（审批重设计 v1，2026-11-09）：/consent 审批窗口页面壳 JS。src/ui/consent-panel.ts →
+  // dist/consent-panel.js（IIFE，浏览器，与上面两枚同型）。宿主路由 /consent.js 服务它
+  // （src/api/main.ts 的 consentWindowPage.jsPath 契约，tauri.conf.json resources 已配旁路映射）。
+  // 独立产物，不进 entry.js、不参与 entry-freshness 字节比对，故同样置于 gateMode 跳过区。
+  await build({
+    entryPoints: [path.join(__dirname, 'src/ui/consent-panel.ts')],
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: 'es2020',
+    outfile: 'dist/consent-panel.js',
+    logLevel: 'info',
+    minify: true,
+  });
 }

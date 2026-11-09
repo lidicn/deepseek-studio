@@ -163,15 +163,26 @@ export async function main(): Promise<void> {
     jsPath: path.join(resourceRoot, 'dist', 'mcp-settings-panel.js'),
     cssPath: path.join(resourceRoot, 'src', 'ui', 'mcp-settings.css'),
   };
+  // K3（审批重设计 v1，2026-11-09）：审批窗口页面壳（路径约定与 mcpSettingsPage 同形）。
+  // 壳零秘密（token 由 K1 的 Rust init script 注入该窗），不走 Bearer 闸（顶层导航带不了头）；
+  // 数据面 /v1/consent/pending｜/v1/consent/reply（K2）在统一 Bearer 闸＋回环 Origin 闸之内。
+  const consentWindowPage = {
+    htmlPath: path.join(resourceRoot, 'src', 'ui', 'consent-window.html'),
+    jsPath: path.join(resourceRoot, 'dist', 'consent-panel.js'),
+    cssPath: path.join(resourceRoot, 'src', 'ui', 'consent-window.css'),
+  };
   {
     // fail-visible：壳缺失时给一行明确诊断（该窗会 500），而不是让人对着白屏猜。
     // 刻意**不进** RESOURCE_FILES：那会让「资源根无效」在壳未产出前误报为装版故障。
-    const missingShell = [mcpSettingsPage.htmlPath, mcpSettingsPage.jsPath, mcpSettingsPage.cssPath].filter(
+    const missingShell = [
+      mcpSettingsPage.htmlPath, mcpSettingsPage.jsPath, mcpSettingsPage.cssPath,
+      consentWindowPage.htmlPath, consentWindowPage.jsPath, consentWindowPage.cssPath,
+    ].filter(
       (p) => !fs.existsSync(p),
     );
     if (missingShell.length > 0) {
       console.warn(
-        `[deepseek-studio] MCP 设置窗页面壳尚未产出（该窗会显示 500，其余功能不受影响）：${missingShell.join('、')}`,
+        `[deepseek-studio] 独立窗口页面壳尚未产出（对应窗会显示 500，其余功能不受影响）：${missingShell.join('、')}`,
       );
     }
   }
@@ -210,6 +221,7 @@ export async function main(): Promise<void> {
   const host = createDesktopHost({
     config, secret, workspace, policyMode, agentPage, apiEngine,
     mcpSettingsPage,
+    consentWindowPage,
     chatRooms: chatRooms.length > 0 ? chatRooms : undefined,
     chatRoomMaxDepth,
     personas,

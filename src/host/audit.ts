@@ -87,6 +87,28 @@ export interface ToolExecutionRecord {
   readonly hardRule?: string;
   /** A2：规范目标摘要（路径 / argv / memory id 等），用于还原授权链。 */
   readonly canonicalTarget?: string;
+  /**
+   * K2（2026-11-09）：**本次调用是否触及工作区外**——机器算出来的事实，不是"用户批过"。
+   *
+   * ── 为什么必须由布尔字段承载，不能靠 `reason` ──
+   * 同一个"越界"事实在 `reason` 列**本来就有两个不同取值**：
+   *   - `policy.ts` 文件类 workspace 档越界被拒 ⇒ `reason: 'mode-restricted'`（"为什么拒"占着这格）；
+   *   - 同一处 full 档越界放行 ⇒ `reason: 'outside-workspace'`。
+   * 再往成功路径的白名单里塞 `'outside-workspace'`，只会让"越界"在一条路上叫这个名字、
+   * 在另一条路上叫那个名字——那才是真漂移。**所以越界事实只由本字段承载。**
+   *
+   * ── 与 `AuthorizationResult.outsideApproved` 的区别（两格不同义，别混）──
+   *   - `outside`（本字段）= **越界事实**，取 `policyVerdict.outside`，机器算的；
+   *   - `outsideApproved`  = **能力层越界通行证**（`allowOutsideWorkspace`），
+   *                          full 档下由策略层 allow 直接授予，**不等于用户点过**。
+   *
+   * ── 已知射程 ──
+   * 非 governed 工具（`memory.delete` 等，`verdict === null`）**永不带本字段**（键不存在）——
+   * 它们没有边界语义，"没有痕迹"是有原因的没有，不是漏写。
+   * `mcp.test` 因 `cwd` 嵌在 `params.config.cwd`、策略层只读顶层而**算不出越界**，
+   * 同样不带此键（已知缺口，见 `mcp.test` 单卡）。
+   */
+  readonly outside?: boolean;
 }
 
 /** 写入审计的输入：除 id/at/ok 由本模块补全外，其余由调用方提供。 */

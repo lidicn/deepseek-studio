@@ -102,6 +102,59 @@ jobs:
           $nsisExists = Test-Path 'src-tauri/target/release/nsis'
           Write-Host "[signing-check] wix_cached=$wixExists nsis_cached=$nsisExists"
 
+      # ── v0.14.13 卡 E：打包工具预取＋退避（#47 复盘：run 42468047633 attempt=1 挂在 NSIS 下载 HTTP 504）──
+      # 工具缓存在 %LOCALAPPDATA%\tauri\（runner 上＝C:\Users\runneradmin\AppData\Local\tauri）：
+      #   NSIS\Bin\makensis.exe ＋ WixTools314\candle.exe。三步编排：恢复缓存 → 预取缺失（重试退避）→ 硬断言。
+      # 断言步看真实文件、不看 cache 步自己的 hit/miss（命中空目录照样绿是坑）；预取与缓存互补不二选一。
+      # URL 出处（台账口径）：NSIS＝PM-LOG.md:L1895（引 CI 日志 L651）；WiX＝CI run 42468047633
+      #   job 128772059929 attempt=2 构建步 L643（在线读数，非本地落盘）。
+      - name: Restore tauri packaging tools cache
+        uses: actions/cache@v4
+        with:
+          path: C:\Users\runneradmin\AppData\Local\tauri
+          key: tauri-tools-nsis-3.11-wix314
+
+      - name: Fetch missing tauri packaging tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tauri = 'C:\Users\runneradmin\AppData\Local\tauri'
+          $targets = @(
+            @{ name='NSIS'; marker=Join-Path $tauri 'NSIS\Bin\makensis.exe'; url='https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip'; dest=$tauri },
+            @{ name='WiX';  marker=Join-Path $tauri 'WixTools314\candle.exe';  url='https://github.com/wixtoolset/wix3/releases/download/wix314rtm/wix314-binaries.zip'; dest=(Join-Path $tauri 'WixTools314') }
+          )
+          foreach ($t in $targets) {
+            if (Test-Path $t.marker) { Write-Host "[tools] $($t.name) present: $($t.marker)"; continue }
+            Write-Host "[tools] $($t.name) missing -> fetching $($t.url)"
+            $zip = Join-Path $env:RUNNER_TEMP "$($t.name)-tools.zip"
+            $ok = $false
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              try {
+                Invoke-WebRequest -Uri $t.url -OutFile $zip -MaximumRedirection 5 -ErrorAction Stop
+                $ok = $true
+                break
+              } catch {
+                Write-Host "[tools] $($t.name) download attempt $attempt failed: $($_.Exception.Message)"
+                if ($attempt -lt 3) { Start-Sleep -Seconds (5 * $attempt) }
+              }
+            }
+            if (-not $ok) { throw "failed to download $($t.name) after 3 attempts from $($t.url) (HTTP gateway errors like 504 are the known failure mode)" }
+            Expand-Archive -Path $zip -DestinationPath $t.dest -Force
+            if (-not (Test-Path $t.marker)) { throw "$($t.name) archive extracted but marker still missing: $($t.marker)" }
+            Write-Host "[tools] $($t.name) fetched and verified"
+          }
+
+      - name: Assert packaging tools present
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $missing = @()
+          foreach ($p in @('C:\Users\runneradmin\AppData\Local\tauri\NSIS\Bin\makensis.exe', 'C:\Users\runneradmin\AppData\Local\tauri\WixTools314\candle.exe')) {
+            if (-not (Test-Path $p)) { $missing += $p }
+          }
+          if ($missing.Count -gt 0) { Write-Host "packaging tools missing after cache+fetch: $($missing -join ', ')"; exit 1 }
+          Write-Host '[tools] NSIS makensis.exe + WiX candle.exe both present'
+
       # 构建 + 签名（createUpdaterArtifacts=true 会产出 .sig）
       - name: Build & sign
         shell: pwsh
@@ -234,6 +287,51 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # ── v0.14.13 卡 F：发布正文显式覆盖（PATCH ＋ 回读等值）────────────────────────────
+      # 取证（run 42468047633 job 128772059929 attempt=2 日志 L987-989 原文）：
+      #   tag push 时 GitHub 已按 annotated tag 自动创建 release 对象（438207615，created_at＝tagger date
+      #   逐秒一致），action 走"复用"路径——自建的带 body_path 的 draft（438330705）被它自己删除，
+      #   body_path 的内容随之消失；v0.14.12 实测 body＝70 字＝tag message 前 69 字＋'…'（机制部分闭合、
+      #   70 字来源未定，台账口径）。⇒ body_path 保留（供新建路径），此步显式 PATCH 兜底，回读逐字符
+      #   等值才放行；不等即 throw（走 Delete draft on failure，fail-closed）。
+      - name: Patch draft release body
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:TAG_NAME
+          $repo = "$env:REPOSITORY"
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+            'User-Agent' = 'studio-release-gate'
+          }
+          # 查草稿必须走全量列表按 tag 过滤（GET /releases/tags/{tag} 不返回 draft——与 Preflight gate 同坑）
+          $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases?per_page=100" |
+            Where-Object { $_.tag_name -eq $tag -and $_.draft } | Select-Object -First 1
+          if (-not $rel) { throw "draft release for tag $tag not found" }
+          $expected = ((Get-Content "docs/release-notes-$tag.md" -Raw).Trim()) -replace "`r`n", "`n"
+          $payload = @{ body = $expected } | ConvertTo-Json
+          Invoke-RestMethod -Method Patch -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$($rel.id)" -ContentType 'application/json; charset=utf-8' -Body $payload
+          # 回读逐字符等值（卡 F 第 0 条硬判据）：不等即 throw，报错打三件套（两枚长度＋firstDiff 下标＋该位字符或 <end>）
+          $rel2 = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases?per_page=100" |
+            Where-Object { $_.tag_name -eq $tag -and $_.draft } | Select-Object -First 1
+          $actual = ($rel2.body.Trim()) -replace "`r`n", "`n"
+          if ($actual -ne $expected) {
+            Write-Host "body mismatch: expected_len=$($expected.Length) actual_len=$($actual.Length)"
+            $min = [Math]::Min($expected.Length, $actual.Length)
+            $firstDiff = -1
+            for ($i = 0; $i -lt $min; $i++) { if ($expected[$i] -cne $actual[$i]) { $firstDiff = $i; break } }
+            if ($firstDiff -ge 0) { Write-Host "firstDiff=$firstDiff expected_char='$($expected[$firstDiff])' actual_char='$($actual[$firstDiff])'" }
+            else { Write-Host "firstDiff=<end> (one side is a prefix of the other)" }
+            throw "draft release body != notes file after PATCH"
+          }
+          Write-Host "draft body patched and verified: $($actual.Length) chars"
+
       # ③ G 闸（Gate 增补判据 G1/G2/G5）：**draft 建好之后**跑，只认 GitHub 上的实际结果。
       #    G1：资产名取自 Release assets API（实际上传名），不许用本地文件名自证；
       #        latest.json 的 url basename 解码后必须等于该资产名。
@@ -273,6 +371,19 @@ jobs:
           # 删的是草稿、公开链一根毛都没动；且在点 Publish 之前就报红）。
           if ([string]::IsNullOrWhiteSpace($rel.body)) { throw "draft release body is empty — body_path did not take effect" }
           Write-Host "draft body length=$($rel.body.Length)"
+          # v0.14.13 卡 F：非空之外再验等值（PATCH 步同判据的双保险；本步失败同样走 Delete draft on failure）。
+          # 旧非空断言保留（抓"完全空"灾难态），等值断言抓"70 字 tag 注释残留"这类部分态。
+          $notesExpected = ((Get-Content "docs/release-notes-$tag.md" -Raw).Trim()) -replace "`r`n", "`n"
+          $bodyActual = ($rel.body.Trim()) -replace "`r`n", "`n"
+          if ($bodyActual -ne $notesExpected) {
+            Write-Host "body mismatch: expected_len=$($notesExpected.Length) actual_len=$($bodyActual.Length)"
+            $min = [Math]::Min($notesExpected.Length, $bodyActual.Length)
+            $firstDiff = -1
+            for ($i = 0; $i -lt $min; $i++) { if ($notesExpected[$i] -cne $bodyActual[$i]) { $firstDiff = $i; break } }
+            if ($firstDiff -ge 0) { Write-Host "firstDiff=$firstDiff expected_char='$($notesExpected[$firstDiff])' actual_char='$($bodyActual[$firstDiff])'" }
+            else { Write-Host "firstDiff=<end> (one side is a prefix of the other)" }
+            throw "draft release body != notes file (preflight equality check)"
+          }
 
           $latest = Get-Content 'src-tauri/target/release/latest.json' -Raw | ConvertFrom-Json
           $plat = $latest.platforms.'windows-x86_64'

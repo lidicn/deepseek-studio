@@ -37,6 +37,7 @@ import {
   type AuthorizationInput,
 } from '../../src/host/authorization';
 import { DEFAULT_TOOL_DEFINITIONS } from '../../src/host/tool-definitions';
+import { CONVERSATION_APPROVAL_EXEMPT } from '../../src/shared/policy-contract';
 import { routeConsent } from '../../src/host/consent-router';
 import type { ToolDefinition } from '../../src/host/tool-registry';
 
@@ -99,16 +100,35 @@ describe('R3-01b · 越界目标不吃对话级放行', () => {
   });
 
   it('非越界的 require-consent 仍吃对话级放行（不误伤）', () => {
-    // auto 档 + 命中风险模式（区内但有风险）→ require-consent，但**不是**越界
+    // auto 档 + 命中风险模式（区内但有风险）→ require-consent，但**不是**越界。
+    // K2 换样本：原来用 `shell.exec`，而它现在在 `CONVERSATION_APPROVAL_EXEMPT` 里
+    // （豁免表首批只放它：一次点击之后"任意命令不再问"面太大）。用 `file.write`
+    // 保留本用例原意"非越界不该被误伤"。
+    const r = resolveAuthorization(
+      mk('file.write', {
+        mode: 'auto',
+        conversationApproved: true,
+        policyVerdict: { decision: 'require-consent', reason: 'risk-detected' },
+        params: { path: 'C:/ws/a.txt', content: 'x' },
+      }),
+    );
+    expect(r.decision).toBe('allow');
+    expect(r.reason).toBe('conversation-approved');
+  });
+
+  it('K2 豁免表：auto 档 + `shell.exec` 非越界 ⇒ **仍 ask**（守门，不是记录现状）', () => {
+    // 档位必须是 auto/ask —— full 档下它走 `L361` 策略 allow，与本门无关（见矩阵第二行）。
     const r = resolveAuthorization(
       mk('shell.exec', {
         mode: 'auto',
         conversationApproved: true,
         policyVerdict: { decision: 'require-consent', reason: 'risk-detected' },
+        params: { command: 'whoami' },
       }),
     );
-    expect(r.decision).toBe('allow');
-    expect(r.reason).toBe('conversation-approved');
+    expect(r.decision).toBe('ask');
+    // 负控：把 'shell.exec' 从豁免表删掉 ⇒ 这枚必红（那时它会变 allow）。
+    expect(CONVERSATION_APPROVAL_EXEMPT).toContain('shell.exec');
   });
 });
 
@@ -225,6 +245,8 @@ describe('R3-01b · 根因：风险模式不得掩盖「越界」事实', () => 
       whitelist: [
         {
           id: 'wl-1',
+          // K2 复原：这条是 **WhitelistEntry** 的 toolId（白名单条目自身的字段），
+          // 与对话级 key 无关——之前批量清理时误删，tsc 当场抓住（TS2741）。
           toolId: 'file.read',
           action: 'read',
           pathPattern: '**',
@@ -353,8 +375,6 @@ describe('R3-01b · 端到端：对区外目标点过同意 → 再来同一个�
       workspaceHash: WS,
       policyMode: 'auto',
       conversationId: 'conv-1',
-      toolId: 'shell.exec',
-      canonicalTarget: shellTarget,
     });
     // 用户确实对这个区外目标点过「本次对话始终允许」
     store.grant(key);
@@ -376,15 +396,16 @@ describe('R3-01b · 端到端：对区外目标点过同意 → 再来同一个�
   it('负控：回退那行条件 → 越界就会被静默放行（证明这条防线真的在挡东西）', () => {
     // 模拟「没有 R3-01b 修复」的行为：对话级放行无条件 allow
     const outsideCwd = 'C:/outside-workspace';
+    // 这枚 target 只是为了让"这次调用确实是越界的"显形（读一下，进断言用）；
+    // K2 清字段时曾把它变成未使用变量（TS6133），这里让它参与断言，别删。
     const shellTarget = canonicalTargetOf(byId['shell.exec'], { command: 'echo hi', cwd: outsideCwd }).target;
+    expect(shellTarget).toContain('outside-workspace');
     const store = createConversationApprovalStore();
     const key = conversationApprovalKeyOf({
       principal: 'main',
       workspaceHash: WS,
       policyMode: 'auto',
       conversationId: 'conv-1',
-      toolId: 'shell.exec',
-      canonicalTarget: shellTarget,
     });
     store.grant(key);
 

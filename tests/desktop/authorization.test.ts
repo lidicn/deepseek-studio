@@ -141,13 +141,17 @@ describe('A2 · full 档不再无条件放行 always 类', () => {
     expect(r.reason).toBe('hard-deny');
   });
 
-  it('conversationApproved=true → always 类在 full 下直接 allow，reason=conversation-approved', () => {
+  it('full + always 类 + 对话级放行 ⇒ allow，但 reason 是 full-mode-allow（不再来自对话级放行）', () => {
+    // K2（2026-11-09）：地板门（`cls === 'mode'`）生效后，always 类**在第 5 步就被跳过**，
+    // 照常走进第 6 步 6b（full × always × 非越界 × 非 purge ⇒ allow）。
+    // ⚠️ 所以这里**不能**翻成 ask —— 那等于推翻出资人 11-08「完全放开不弹窗」的拍板。
+    // 变的只有 reason：不再是 'conversation-approved'，而是 'full-mode-allow'。
     for (const tool of ['python.exec', 'mcp.call', 'policy.set', 'workspace.set', 'memory.delete', 'chat-send']) {
       const r = resolveAuthorization(
         mk({ tool, mode: 'full', conversationApproved: true, params: { id: 'mem-1', mode: 'full', root: 'C:\\\\other', text: 'x' } }),
       );
-      expect(r.decision, `${tool} 对话级放行后应直接放行`).toBe('allow');
-      expect(r.reason).toBe('conversation-approved');
+      expect(r.decision, `${tool} full 档仍应免审`).toBe('allow');
+      expect(r.reason, `${tool} 这一发来自 full 档免审，不是对话级放行`).toBe('full-mode-allow');
     }
   });
 
@@ -320,7 +324,8 @@ describe('A2 · fail-closed 兜底', () => {
     expect(full.reason).toBe('full-mode-allow');
     const granted = resolveAuthorization(mk({ tool: 'legacy', def: legacy, mode: 'full', conversationApproved: true }));
     expect(granted.decision).toBe('allow');
-    expect(granted.reason).toBe('conversation-approved');
+    // K2：always 类走不进第 5 步（地板门），这一发是 full 档免审给的，不是对话级放行。
+    expect(granted.reason).toBe('full-mode-allow');
   });
 
   it('mode 类但策略层没给结论 → ask(policy-unresolved)', () => {
