@@ -108,7 +108,32 @@ describe('F-1 ②：address() 取不到端口 ⇒ start() reject，且不产出 
 describe('F-1 ③：正常 start ⇒ url 是真端口且能连上（正控）', () => {
   it('start() 后 url 端口非 0，且该地址真的能响应', async () => {
     const s = mkServer(0);
-    await s.start();
+    // ── #53（2026-11-09）：让这一格的失败在闸日志里**自己说清是哪个故事** ──
+    //
+    // 本行失败有两种完全不同的读法（五态表 #3 / #4 / #5）：
+    //   · `start()` 以「未能取到端口…`server.address()`」reject ⇒ **真实环境失准、被守卫拦住**
+    //     （F-1 修法生效的直接证据，是好消息）；
+    //   · 下面四条 `expect` 失败（`:0` 形态 / `port>0` / `addr` 一致）⇒ **守卫失效＝回归**
+    //     （守卫在位时根本 resolve 不出 `:0`）；
+    //   · `fetch` 自己的报错（`fetch failed` / `aborted`）⇒ **环境/连通类**，另立卡，不记进 F-1 任何一态。
+    //
+    // 所以：**只包 `start()` 这一处调用**，且**仅当原 message 确实含目标字样才加前缀**，
+    // 否则 `throw e` 原样透传（保原类型与原堆栈——为了日志可读而丢堆栈是一次取证损失）。
+    // ⚠️ 四条 `expect` 与 `fetch` **一律留在 try 之外**：包进来会把 `AssertionError`
+    // 卷成普通 `Error`，第 4 态赖以判读的「断言差异原文」就看不到了；
+    // 而 `fetch` 那条若也包一层，在"不加人工标签"的约束下它只会执行 `throw e`＝空壳。
+    try {
+      await s.start();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('未能取到端口')) {
+        throw new Error(
+          `③ 正控：start() 以「未能取到端口」失败——真实环境下地址失准、被 F-1 守卫拦住（按"拦住了"读，不是 F-1 复发）。原始：${msg}`,
+          { cause: e },
+        );
+      }
+      throw e;
+    }
     const url = s.url;
     expect(url).not.toMatch(/:0$/);
     const port = Number(new URL(url).port);
@@ -116,7 +141,7 @@ describe('F-1 ③：正常 start ⇒ url 是真端口且能连上（正控）', 
     // 与真实 socket 一致：address() 报的就是这个端口
     const addr = s.rawServer.address() as AddressInfo;
     expect(addr.port).toBe(port);
-    // 真连一次（不只看字符串）
+    // 真连一次（不只看字符串）。不包 try：它的原文本就是第 5 态的分辨依据。
     const res = await fetch(`${url}/healthz`, { headers: { Authorization: `Bearer ${TOKEN}` } });
     expect(res.status).toBeLessThan(500);
   });
