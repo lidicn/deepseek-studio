@@ -17,10 +17,14 @@
  *   9. none 类放行
  *   10. 其余一律 fail-closed
  *
- * 关于 full 档：不设"无条件放行"分支。full 档下 mode 类由 evaluatePolicy
- * 直接放行；always 类仍走人工确认，只是用户点一次「本次对话始终允许」后，
- * 本对话内不再逐次打扰（见 conversation-approval.ts）。
- * 这样"完全放开"= 少打扰，而不是"无人值守也能改档位/删记忆"。
+ * 关于 full 档（2026-11-08 卡 H 起，出资人拍板「完全放开不会弹窗」）：
+ *   - mode 类：由 evaluatePolicy 直接放行（第 8 步）；
+ *   - always 类：**默认不再询问**，直接 allow 并在审计里记 `full-mode-allow`（第 6b 步）；
+ *   - **三条例外照旧**（都在第 6b 步之前 return，full 档不豁免）：
+ *       ① hard-deny（第 2 步）与策略层 deny（第 3 步）＝**拒绝**，不是询问；
+ *       ② 越界（第 5 步判出的 outsideRequested）＝仍逐次确认（§1.4 硬规则 5）；
+ *       ③ `FULL_MODE_STILL_ASKS`（现仅 `memory.purge`，彻底删除不可恢复）＝仍问一次。
+ *   ⇒ 「完全放开」= 不再被打扰，**不是**「拒绝变成放行」，也不是「可以静默跨工作区」。
  *
  * 纯函数纪律：不做 fs/env/realpath。工作区边界与风险模式由调用方（宿主）算好后
  * 以 `policyVerdict` 传入；hard 规则由 consent-router 的 `checkHardDeny` 结果传入。
@@ -35,6 +39,7 @@ import {
   type GrantScope,
 } from '../shared/consent-contract';
 import type { PolicyMode } from '../shared/policy-contract';
+import { FULL_MODE_ALLOW_REASON, FULL_MODE_STILL_ASKS } from '../shared/policy-contract';
 import type { PolicyVerdict } from './policy';
 import type { ToolDefinition } from './tool-registry';
 
@@ -311,6 +316,21 @@ export function resolveAuthorization(input: AuthorizationInput): AuthorizationRe
     // 一旦被泛化，就等于让 bot 给自己开了删记忆 / 改档位的后门。
     if (g && g.source === 'internal-bot' && g.key === grantKey && target.kind === 'chat-action') {
       return { ...base, decision: 'allow', reason: 'internal-preauth', grantScope: g.scope, outsideApproved: false };
+    }
+    // 6b) 「完全放开（full）」档：always 类**不再询问**（2026-11-08 出资人拍板「完全放开改成不会弹窗」）。
+    //
+    //   语义边界（三条例外都不能被这条覆盖，且它们都在本行之前 return）：
+    //     · hard-deny 地板 → 第 2 步已 return deny（full 档本来就拒绝，不是询问）；
+    //     · 策略层 deny（未配置工作区的文件类 / cwd 越界等）→ 第 3 步已 return deny；
+    //     · 越界事实（outsideRequested）→ 第 5 步的对话级放行不吃它；本分支同样**不吃**：
+    //       越界必须逐次确认（§1.4 硬规则 5），full 档不等于「可以静默跨工作区」。
+    //     · `memory.purge`（FULL_MODE_STILL_ASKS 显式例外）→ 仍走 ask，不可撤销操作保留一次确认。
+    if (
+      input.mode === 'full' &&
+      !outsideRequested &&
+      !FULL_MODE_STILL_ASKS.includes(input.tool)
+    ) {
+      return { ...base, decision: 'allow', reason: FULL_MODE_ALLOW_REASON, outsideApproved: false };
     }
     return { ...base, decision: 'ask', reason: 'requires-approval', outsideApproved: false };
   }

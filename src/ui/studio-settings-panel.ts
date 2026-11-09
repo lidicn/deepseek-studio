@@ -248,8 +248,10 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   const policyDesc: Record<(typeof PANEL_POLICY_MODES)[number], string> = {
     workspace: '文件读写与命令执行仅限工作区根目录，越界一律拒绝。最收敛。',
     auto: '低风险操作自动执行，高风险操作弹出确认。默认档。',
-    // full 是同一对话内"一次批准后合法工具放行"；安全红线和策略拒绝仍生效。
-    full: '执行范围放开：同一对话内批准一次后，合法工具不再逐次确认；仅安全硬规则和策略拒绝仍会阻止。',
+    // 卡 H（2026-11-09）语义后 full＝所有工具（含 always 类）不再询问；仍需确认两种情况：
+    // ① 出工作区的操作仍逐次询问；② memory.purge（不可恢复）仍需一次确认；hard-deny 与策略
+    // deny 仍是直接拒绝（不弹窗）。字面＝2026-11-09 群 PM 批的（Chief 漏项裁定后修正版）。
+    full: '完全放开：所有工具（含删除记忆、执行代码、修改设置）不再询问；仍需确认的只有两种情况——要出工作区的操作、彻底删除记忆；安全硬规则直接拒绝、不弹窗。',
   };
   for (const mode of PANEL_POLICY_MODES) {
     const option = el('div', { className: `studio-policy-option${mode === globalState.policyMode ? ' selected' : ''}`, attrs: { 'data-mode': mode } });

@@ -92,6 +92,7 @@ import {
   type PolicyMode,
 } from './policy';
 import { checkHardDeny, routeConsent } from './consent-router';
+import { FULL_MODE_ALLOW_REASON } from '../shared/policy-contract';
 import {
   canonicalTargetOf,
   grantKeyOf,
@@ -438,11 +439,15 @@ async function listMemoryBroadcastRows(): Promise<
  *   2. `allowedGrantScopes.includes(...)` —— **长时效授权不构成高风险**，它只决定「这次同意
  *      给多久」；且 shell.exec/python.exec 的 grantScopes 恒含 `session` ⇒ 该判据恒真。
  *
- * R2-01 的原意是「**高风险决议不得由页面自答**」（防伪造），不是「凡支持长时效就要问」——
- * 用 scope 名当风险判据既误读原意、又恒真。**`riskLabel`／`riskFlagLabels` 等展示字段亦不得进本函数。**
+ * R2-01 的原意是「**高风险决议不得由页面自答**」（防伪造）——2026-11-09 卡 J **收窄为**：
+ * 「**越界不得由页面自答**」这条不变量**保持**（越界恒走宿主侧确认）；「非越界的高风险决议不得由
+ * 页面自答」**已作废**（其主路径改走页内模态，补偿＝nonce 一次性 + 真实手势 + 渲染失败 fail-closed）。
+ * 本函数只回答「**要不要问**」：即使 scope 支持长时效也**不代表高风险**——用 scope 名当风险判据
+ * 既误读原意、又恒真。**`riskLabel`／`riskFlagLabels` 等展示字段亦不得进本函数。**
  *
- * 另注：本函数决定的是「**框型**」，**不决定弹不弹**——弹不弹由 `auth.decision === 'ask'` 决定
- * （`ensureConsent` 只在那个分支里被调用；full 档 policy 层直接 allow，不进 ask）。
+ * 另注：本函数决定的是「**要不要走高风险询问**」，**不决定弹不弹**——弹不弹由 `auth.decision === 'ask'` 决定
+ * （`ensureConsent` 只在那个分支里被调用；full 档 policy 层直接 allow/`full-mode-allow`，不进 ask）。
+ * 「问在哪儿」（页内模态 vs 原生框）由 `ensureConsent` 的路由决定（卡 J）。
  */
 function isHighRiskConsent(meta?: ConsentMeta): boolean {
   if (!meta) return false;
@@ -1929,7 +1934,14 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     audit.record({
       ...ctx,
       outcome: result.ok ? 'executed' : 'execution-failed',
-      reason: result.ok ? (auth.reason === 'conversation-approved' ? 'conversation-approved' : result.reason) : result.reason,
+      // 卡 H：「完全放开」档的放行也必须能事后查到 —— 放行不等于不留痕。
+      // 成功路径原本一律记执行侧 reason，会把 full 档放行的原因抹掉；这里与 conversation-approved 同等保留。
+      // 读的是 policy-contract 的**常量**（不写字面量）：改字符串时不会静默失配（台账 86 枚"锁必须锁载体"）。
+      reason: result.ok
+        ? auth.reason === 'conversation-approved' || auth.reason === FULL_MODE_ALLOW_REASON
+          ? auth.reason
+          : result.reason
+        : result.reason,
       durationMs,
       ...(name === 'memory.select'
         ? { canonicalTarget: `sel:${conversationId ?? 'host-agent'}#${mselSeq}` }
@@ -2148,12 +2160,27 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     // 世代号：等待用户决策期间若发生了换档位 / 换工作区 / 页端断开 / 宿主停止，
     // 迟到的"允许"回调必须作废（否则等于用旧语境下的同意去放行新语境下的操作）。
     const generation = conversationStore.currentGeneration();
-    // R2-01：高风险 → 宿主原生确认框（页面不参与决议）；否则 → 页端模态（nonce 绑定）。
-    // 原生框实现：优先 options.nativeConsent 注入（tauri 可接管）；
-    // 否则用 node 侧默认（showNativeConsent：Windows MessageBox）。
-    // 环境弹不出框（非 Windows / spawn 失败）→ 回退页端模态并记 degraded（fail-closed 仍靠 nonce）。
+    // 卡 J（2026-11-09，PM 裁 A′）：
+    //   · **越界（meta.outside === true）→ 宿主侧确认，任何档位都不给页面决议权**。
+    //     R2-01 不变量「**越界不得由页面自答**」**仍然活着**（提示注入最想拿的就是这一格）。
+    //     今天"宿主侧"＝原生框（node MessageBox）；C″（Rust 自绘宿主窗口）待出资人拍板，
+    //     获批后只需替换这一段实现，路由接口不变。
+    //   · **非越界的高风险 → 页内模态（主路径）**；页内不可用时才降级到原生框并写审计 `degraded`。
+    //     ⇒ R2-01 原设计里「**高风险（除越界外）决议不得由页面自答**」已作废（台账有记录）；
+    //       补偿防线＝nonce 一次性 + 常数时间比对 + 真实手势(isTrusted) + 渲染失败 fail-closed（卡 I）。
+    //   · `isHighRiskConsent` 仍决定「要不要问」，不再决定「问在哪儿」；四条事实判据一字不动。
     let decision: ConsentDecision;
-    if (isHighRiskConsent(meta)) {
+    const highRisk = isHighRiskConsent(meta);
+
+    /**
+     * 宿主侧确认（今天＝原生框；C″ 获批后只换这里的实现，路由接口不变）。
+     * `shown=false` ＝ 框根本弹不出来（环境不支持 / spawn 失败 / **注入实现抛错**）；
+     * `decision` 缺省（注入实现返回 null）＝ 弹出来了但没给决议 → 按 deny 处理（旧语义保持）。
+     *
+     * 注入实现抛错必须就地折成 shown=false：否则异常会穿出 `ensureConsent`，
+     * 整条授权链崩掉（既不是 allow 也不是 deny，调用方拿不到可判读的结果）。
+     */
+    const askHostSide = async (): Promise<{ shown: boolean; decision: ConsentDecision }> => {
       const allowed = highRiskAllowedDecisions(meta);
       const req: NativeConsentRequest = {
         callId,
@@ -2163,27 +2190,61 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         allowedDecisions: allowed,
         botId,
       };
-      const native = options.nativeConsent
-        ? await options.nativeConsent(req)
-        : await (async () => {
-            const r = await showNativeConsent({
-              tool: req.tool,
-              summary: req.summary,
-              riskReason: req.riskReason,
-              allowedDecisions: req.allowedDecisions,
-            });
-            if (!r.shown) {
-              console.warn(`[consent] native box unavailable (${r.reason ?? 'unknown'}) → degraded to page nonce`);
-              return undefined; // 触发下面的回退
-            }
-            return r.decision ?? 'deny';
-          })();
-      if (native === undefined) {
-        // 原生框弹不出 → 回退页端 nonce 模态（B），不是放行。
+      if (options.nativeConsent) {
+        try {
+          const d = await options.nativeConsent(req);
+          return { shown: true, decision: d ?? 'deny' };
+        } catch (e) {
+          console.warn(`[consent] nativeConsent threw → treat as unavailable: ${e instanceof Error ? e.message : String(e)}`);
+          return { shown: false, decision: 'deny' };
+        }
+      }
+      const r = await showNativeConsent({
+        tool: req.tool,
+        summary: req.summary,
+        riskReason: req.riskReason,
+        allowedDecisions: req.allowedDecisions,
+      });
+      if (!r.shown) {
+        console.warn(`[consent] native box unavailable (${r.reason ?? 'unknown'})`);
+        return { shown: false, decision: 'deny' };
+      }
+      return { shown: true, decision: r.decision ?? 'deny' };
+    };
+
+    if (highRisk && meta?.outside === true) {
+      // ── 越界：永久宿主侧（不变量）。弹不出来 ⇒ fail-closed 拒绝，绝不交给页面。 ──
+      const hostSide = await askHostSide();
+      if (!hostSide.shown) {
+        console.warn(`[consent] outside-workspace host-side box unavailable tool=${tool} callId=${callId} → deny`);
+        decision = 'deny';
+      } else {
+        decision = hostSide.decision;
+        console.warn(`[consent] host-side(outside) tool=${tool} decision=${decision} callId=${callId}`);
+      }
+    } else if (highRisk) {
+      // ── 非越界高风险：页内模态为主路径，页内不可用才降级 ──
+      const pageAvailable = hub.connectedPages.some(
+        (p) => p.untrusted === false && (!botId || (p.botId ?? 'main') === (botId ?? 'main')),
+      );
+      if (pageAvailable) {
         decision = await hub.requestConsent(callId, tool, params, meta, botId);
       } else {
-        decision = native ?? 'deny';
-        console.warn(`[consent] native risk=high tool=${tool} decision=${decision} callId=${callId}`);
+        // 降级：页内不可用 → 宿主框问；**宿主框也弹不出来 ⇒ 拒绝**，绝不回到刚才被判"不可用"的页内通道。
+        // （回到页面 = 白等一个超时，或在等待期间页面重连由页面回话——那正是本分支要守的那一格。）
+        const hostSide = await askHostSide();
+        console.warn(`[consent] degraded(no-page) risk=high tool=${tool} callId=${callId} shown=${hostSide.shown}`);
+        decision = hostSide.shown ? hostSide.decision : 'deny';
+        // 审计在**最终 decision 之后**写、outcome 按最终值推导
+        // （写早了会出现"记着 consent-unavailable、实际执行了"，复盘会读错）。
+        audit.record({
+          tool,
+          summary: summarizeParams(params, tool),
+          origin: '',
+          outcome: decision === 'deny' ? 'denied' : 'executed',
+          reason: 'degraded',
+          durationMs: 0,
+        });
       }
     } else {
       decision = await hub.requestConsent(callId, tool, params, meta, botId);

@@ -183,15 +183,27 @@ describe('A1 · approvalClass fail-closed', () => {
 describe('A1 · full 文案与 session 文案', () => {
   const root = resolve(__dirname, '../..');
 
-  it('设置面板 full 文案不再声称"所有工具调用自动执行，无需确认"', () => {
+  it('设置面板 full 文案不再声称"所有工具调用自动执行"，新语义＝不再询问＋安全硬规则直接拒绝', () => {
     const src = readFileSync(resolve(root, 'src/ui/studio-settings-panel.ts'), 'utf8');
+    // 旧假话不许回流
     expect(src).not.toContain('所有工具调用自动执行');
-    expect(src).toMatch(/full: '[^']*执行范围放开[^']*'/);
-    // 必须同时说清"执行范围放开"与"安全硬规则 / 策略拒绝仍生效"
+    // 新语义：不再询问（卡 H/I 后 full 档语义更正）
+    expect(src).toMatch(/full: '[^']*不再询问[^']*'/);
     const fullLine = src.split(/\r?\n/).find((l) => l.trim().startsWith("full: '"));
     expect(fullLine).toBeDefined();
-    expect(fullLine).toContain('不再逐次确认');
+    expect(fullLine).toContain('不再询问');
+    // 安全硬规则仍直接拒绝
     expect(fullLine).toMatch(/安全硬规则|策略拒绝/);
+  });
+
+  it('设置面板 full 文案必须写明仍需确认的两种情况（出工作区／彻底删除记忆）——防"唯一例外"漏项', () => {
+    const src = readFileSync(resolve(root, 'src/ui/studio-settings-panel.ts'), 'utf8');
+    const fullLine = src.split(/\r?\n/).find((l) => l.trim().startsWith("full: '"));
+    expect(fullLine, 'full: 行未找到').toBeDefined();
+    // 依据 authorization.ts:325-327 的 !outsideRequested ⇒ full 档越界仍逐次 ask
+    expect(fullLine).toContain('出工作区');
+    // memory.purge 在 FULL_MODE_STILL_ASKS 常量里、full 档仍需人工确认
+    expect(fullLine).toContain('彻底删除记忆');
   });
 
   it('allow-session 按钮文案去掉"10 分钟"（TTL 只属于 temporary）', () => {

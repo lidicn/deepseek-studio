@@ -111,12 +111,34 @@ describe('A2 · full 档不再无条件放行 always 类', () => {
     expect(r.outsideApproved).toBe(true);
   });
 
-  it('full + python.exec / mcp.call / policy.set / workspace.set / memory.delete / chat-send → ask（对话级放行后不再逐次打扰）', () => {
+  it('full + python.exec / mcp.call / policy.set / workspace.set / memory.delete / chat-send → allow（2026-11-08 卡 H：完全放开不再弹窗）', () => {
     for (const tool of ['python.exec', 'mcp.call', 'policy.set', 'workspace.set', 'memory.delete', 'chat-send']) {
       const r = resolveAuthorization(mk({ tool, mode: 'full', params: { id: 'mem-1', mode: 'full', root: 'C:\\\\other', text: 'x' } }));
-      expect(r.decision, `${tool} 在 full 下仍需一次人工确认`).toBe('ask');
+      expect(r.decision, `${tool} 在 full 下不该再询问`).toBe('allow');
+      expect(r.reason, tool).toBe('full-mode-allow');
       expect(r.approvalClass, tool).toBe('always');
+      // full 档的 allow 不等于"可以静默跨工作区"：outsideApproved 恒 false
+      expect(r.outsideApproved, tool).toBe(false);
     }
+  });
+
+  it('full + memory.purge → 仍 ask（显式例外：彻底删除不可恢复）', () => {
+    const r = resolveAuthorization(mk({ tool: 'memory.purge', mode: 'full', params: { id: 'mem-1' } }));
+    expect(r.decision).toBe('ask');
+    expect(r.reason).toBe('requires-approval');
+  });
+
+  it('full + always 类但越界 → 仍 ask（§1.4 硬规则 5：越界逐次确认，full 不豁免）', () => {
+    const r = resolveAuthorization(
+      mk({ tool: 'memory.delete', mode: 'full', policyVerdict: verdict('allow', 'outside-workspace'), params: { id: 'mem-1' } }),
+    );
+    expect(r.decision).toBe('ask');
+  });
+
+  it('full + hard-deny → 仍 deny（拒绝不是询问，"不弹窗"不许把拒绝变放行）', () => {
+    const r = resolveAuthorization(mk({ tool: 'python.exec', mode: 'full', hardRule: 'disk-format', params: {} }));
+    expect(r.decision).toBe('deny');
+    expect(r.reason).toBe('hard-deny');
   });
 
   it('conversationApproved=true → always 类在 full 下直接 allow，reason=conversation-approved', () => {
@@ -285,14 +307,17 @@ describe('A2 · fail-closed 兜底', () => {
     expect(r.reason).toBe('unknown-capability');
   });
 
-  it('漏标 approvalClass 的定义 → 仍落 always；各档位都询问（对话级放行后才免打扰）', () => {
+  it('漏标 approvalClass 的定义 → 仍落 always；auto 询问，full 按卡 H 放行（对话级放行仍可覆盖 auto）', () => {
     const legacy = { id: 'legacy', title: 't', description: 'd', risk: 'privileged', allowedOrigins: ['*'] } as unknown as ToolDefinition;
     const auto = resolveAuthorization(mk({ tool: 'legacy', def: legacy, mode: 'auto' }));
     expect(auto.approvalClass).toBe('always');
     expect(auto.decision).toBe('ask');
+    // 2026-11-08 卡 H：full 档下 always 类不再询问（fail-closed 的"落 always"语义不变，
+    // 变的是 full 档对 always 的处理：allow + reason=full-mode-allow）。
     const full = resolveAuthorization(mk({ tool: 'legacy', def: legacy, mode: 'full' }));
     expect(full.approvalClass).toBe('always');
-    expect(full.decision).toBe('ask');
+    expect(full.decision).toBe('allow');
+    expect(full.reason).toBe('full-mode-allow');
     const granted = resolveAuthorization(mk({ tool: 'legacy', def: legacy, mode: 'full', conversationApproved: true }));
     expect(granted.decision).toBe('allow');
     expect(granted.reason).toBe('conversation-approved');

@@ -134,32 +134,42 @@ describe('resolveAuthorization · conversationApproved 的位置', () => {
     const store = createConversationApprovalStore();
     const key = keyOf('c1');
 
-    const first = resolveAuthorization(mk('python.exec', { mode: 'full', conversationApproved: false }));
+    // 2026-11-08 卡 H：full 档下 always 类**第一次就不再询问**（出资人拍板"完全放开不会弹窗"）。
+    // 本用例原本验的是「第一次 ask、对话级放行后第二次 allow」；在 full 档这两步现在都是 allow，
+    // 所以**必须换成 non-full 档**才能继续验对话级放行本身的语义（auto 档里 always 类仍会 ask）。
+    const first = resolveAuthorization(mk('python.exec', { mode: 'auto', conversationApproved: false }));
     expect(first.decision).toBe('ask');
 
     store.grant(key);
-    const second = resolveAuthorization(mk('python.exec', { mode: 'full', conversationApproved: store.check(key) }));
+    const second = resolveAuthorization(mk('python.exec', { mode: 'auto', conversationApproved: store.check(key) }));
     expect(second.decision).toBe('allow');
     expect(second.reason).toBe('conversation-approved');
+
+    // 反证（卡 H 的语义）：full 档下同一调用**不需要**对话级放行就已 allow
+    const fullNoGrant = resolveAuthorization(mk('python.exec', { mode: 'full', conversationApproved: false }));
+    expect(fullNoGrant.decision).toBe('allow');
+    expect(fullNoGrant.reason).toBe('full-mode-allow');
   });
 
   it('换对话 → 重新询问', () => {
     const store = createConversationApprovalStore();
     store.grant(keyOf('c1'));
+    // 同上：对话级放行只在 non-full 档下才是"能不能放行"的决定因素。
     expect(
-      resolveAuthorization(mk('python.exec', { mode: 'full', conversationApproved: store.check(keyOf('c1')) })).decision,
+      resolveAuthorization(mk('python.exec', { mode: 'auto', conversationApproved: store.check(keyOf('c1')) })).decision,
     ).toBe('allow');
     expect(
-      resolveAuthorization(mk('python.exec', { mode: 'full', conversationApproved: store.check(keyOf('c2')) })).decision,
+      resolveAuthorization(mk('python.exec', { mode: 'auto', conversationApproved: store.check(keyOf('c2')) })).decision,
     ).toBe('ask');
   });
 
   it('换工作区 → 重新询问', () => {
     const store = createConversationApprovalStore();
     store.grant(keyOf('c1'));
+    // non-full 档：换工作区后 key 不命中 ⇒ 回到 ask（full 档下 always 类第一次就不问，见卡 H）
     expect(
       resolveAuthorization(
-        mk('python.exec', { mode: 'full', workspaceHash: 'other-ws', conversationApproved: store.check(keyOf('c1', { workspaceHash: 'other-ws' })) }),
+        mk('python.exec', { mode: 'auto', workspaceHash: 'other-ws', conversationApproved: store.check(keyOf('c1', { workspaceHash: 'other-ws' })) }),
       ).decision,
     ).toBe('ask');
   });

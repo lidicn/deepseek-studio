@@ -237,7 +237,13 @@ describe('T8-1：工具显示名映射（已知/未知/工作区）', () => {
     const card = document.querySelector('.ds-consent-card') as HTMLElement;
     expect(card.textContent).toContain('Studio 请求修改审批档位');
     expect(card.textContent).toContain('将审批档位改为「完全放开」');
-    expect(card.textContent).toContain('普通操作可能不再逐次向你确认');
+    // 卡 I（2026-11-09）：旧句「普通操作可能不再逐次向你确认」暗示 full 档仍会弹框，已换成
+    // 卡面字面；07:5x 漏项裁定后字面补全为「两种仍需确认」（出工作区仍逐次问＋彻底删除记忆）——
+    // 只写「唯一例外」＝少写一种仍会询问的情况，属 86 枚假陈述。新断言锁两种情况句＋负控。
+    expect(card.textContent).toContain('所有工具（含删除记忆、执行代码、修改设置）');
+    expect(card.textContent).toContain('仍需确认的只有两种情况');
+    expect(card.textContent).toContain('要出工作区的操作');
+    expect(card.textContent).toContain('彻底删除记忆');
     // 原始协议名不出现
     expect(card.textContent).not.toContain('policy.set');
     expect(card.textContent).not.toContain('mode:');

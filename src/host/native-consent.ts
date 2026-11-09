@@ -1,9 +1,19 @@
 /**
- * R2-01：宿主原生确认框（Windows MessageBox，node 侧实现）。
+ * R2-01：宿主原生确认框（Windows MessageBox，node 侧实现）——**卡 J 起降为降级通道**。
  *
  * 背景：consent 决议原走页端通道（页面回传 consent-decision），被约束方（页面/模型）
- * 可伪造。高风险授权必须让决议**来自页面之外的权威源**——本模块用 node 侧直接弹
- * 系统原生 MessageBox（powershell + System.Windows.Forms），页面完全无参与，无渠道伪造。
+ * 可伪造。R2-01 当时的做法是：高风险授权让决议**来自页面之外**——本模块用 node 侧直接弹
+ * 系统原生 MessageBox（powershell + System.Windows.Forms），页面完全无参与。
+ *
+ * **2026-11-09 卡 J 起语义变更（PM 裁定 A′，出资人 11-08 拍板「不要逐次弹原生框」）**：
+ *   - **越界（outside）**：任何档位都**不给页面决议权**，由宿主侧确认 ⇒ 今天就是本模块的原生框。
+ *     R2-01 的不变量「**越界不得由页面自答**」**仍然活着**（提示注入最想拿的就是这一格）。
+ *     C″（Rust 自绘宿主窗口）待出资人拍板；获批后只替换 desktop-host 里 `askHostSide` 的实现。
+ *   - **非越界的高风险**：主路径改为**页内模态**（`hub.requestConsent`，带一次性 nonce）；
+ *     ⇒ R2-01 原设计里「**高风险（除越界外）决议不得由页面自答**」**已作废**，台账有记录。
+ *   - 本模块在非越界路径上只在**页内不可用**时作为**降级**被调用，且 `ensureConsent` 必须把这次
+ *     降级写进审计（`degraded`），不得静默。
+ *   - 补偿防线：nonce 一次性消费 + 常数时间比对 + 真实手势（isTrusted）+ 渲染失败 fail-closed。
  *
  * 架构说明（为什么在 node 而非 tauri 主进程）：
  *   - host(node) 跑在 sidecar 进程里，与 tauri 主进程之间**没有 node→tauri 的上行 RPC**；

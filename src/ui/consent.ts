@@ -1,9 +1,15 @@
 /**
  * 页侧同意模态（v0.3.2）
  *
- * 非侵入式浮层：半透明遮罩 + 居中圆角卡片，展示工具名与脱敏参数摘要，提供三个动作：
- *   允许一次 / 拒绝 / 本次会话允许。
- * fail-closed：点遮罩外、Esc、或超时（默认 60s）→ 视为 deny。
+ * 非侵入式浮层：半透明遮罩 + 居中圆角卡片，展示工具名与脱敏参数摘要，提供动作：
+ *   允许一次 / 拒绝 / 本次会话允许（always 类隐藏会话按钮）/ 本次对话始终允许（宿主
+ *   确认有对话身份时）。
+ * fail-closed：点遮罩外、Esc、Enter（2026-11-02 起键盘只通向拒绝）、或超时（默认 60s）
+ * → 视为 deny；渲染失败同样立即 deny（卡 I：弹不出 ≠ 静默放行）。
+ * 卡 I（2026-11-09）：高风险请求（meta 事实字段 outside/hardRule/riskFlags 命中）在本
+ * 模态内呈现——危险外观（红边/红字）＋「高风险」徽标＋「风险原因」说明行＋档位与
+ * 规范目标显形，按钮集为 允许一次 / 拒绝 / 本次对话始终允许；宿主原生框只作为
+ * 页内模态不可用时的降级（降级与审计留痕在宿主侧）。
  * 样式内联注入（适配注入式 IIFE，不依赖外部 css 文件）；明暗跟随系统。
  */
 
@@ -27,10 +33,13 @@ export interface ConsentRequest {
    * 页端回执必须原样带回，宿主据此把决议绑到「这一次真实手势」上——防伪造回执。
    *
    * **缺失即不渲染**：R2-01 把工具分两档——低风险走页端模态（带 nonce），
-   * 高风险（outside/hardRule/allowConversation/allow-session）走宿主**原生框**，
-   * 原生档**不会把 consent-required 发给页面**。因此页端若收到一个没有 nonce 的
-   * consent-required，说明它本不该由页端处理（或宿主已改走原生），此时**不渲染模态、
+   * 高风险（宿主 `isHighRiskConsent` 四条事实判据：outside / hardRule /
+   * allowConversation / riskFlags）当前走宿主**原生框**，原生档**不会把
+   * consent-required 发给页面**。因此页端若收到一个没有 nonce 的 consent-required，
+   * 说明它本不该由页端处理（宿主已改走原生/正在原生降级中），此时**不渲染模态、
    * 也不回执**，把决定权完全交回宿主——避免页内脚本抢在原生框之前伪造决议。
+   * （卡 I 之后宿主侧把高风险改走页内模态主路径、原生框只作降级时，此守卫仍是
+   * 安全边界：无 nonce 一律不渲染，防竞态伪造。）
    */
   nonce?: string;
 }
@@ -58,6 +67,37 @@ interface ConsentPresentation {
   summary: string;
   allowOnceLabel: string;
   allowSessionLabel: string;
+}
+
+/**
+ * 卡 I（2026-11-09）呈现层「高风险」判定：只认与宿主 `isHighRiskConsent` 同源的
+ * 事实字段（outside / hardRule / riskFlags）。`allowConversation` 是放行能力、不是
+ * 风险事实；`riskLabel` / `riskFlagLabels` 等展示字段同样不参与判定（#35 判据
+ * 「只认事实字段」的呈现层镜像——判定本体仍在宿主，页端这里只决定「怎么画」）。
+ */
+export function isHighRiskPresentation(meta?: ConsentMeta): boolean {
+  if (!meta) return false;
+  if (meta.outside === true) return true;
+  if (typeof meta.hardRule === 'string' && meta.hardRule !== '') return true;
+  return (meta.riskFlags?.length ?? 0) > 0;
+}
+
+/**
+ * 卡 I：「风险原因」说明行（原生框 `consentRiskReason` 的页端对应物）。
+ * 纯展示层拼装：只用宿主已翻译好的 meta 字段（越出工作区 / 命中硬拒规则 /
+ * riskLabel / riskFlagLabels，去重保序），不做任何判定。高风险请求拼装为空时
+ * 兜底「高风险操作」，保证该行对高风险模态永不消失。
+ */
+export function describeRiskReason(meta?: ConsentMeta): string {
+  if (!meta) return '';
+  const parts: string[] = [];
+  if (meta.outside === true) parts.push('越出工作区');
+  if (typeof meta.hardRule === 'string' && meta.hardRule !== '') parts.push(`命中硬拒规则(${meta.hardRule})`);
+  if (meta.riskLabel) parts.push(meta.riskLabel);
+  for (const flag of meta.riskFlagLabels ?? []) parts.push(flag);
+  const uniq = [...new Set(parts)];
+  if (uniq.length === 0) return isHighRiskPresentation(meta) ? '高风险操作' : '';
+  return uniq.join(' · ');
 }
 
 const STYLE_ID = 'ds-consent-style';
@@ -115,9 +155,27 @@ const CSS = `
 .ds-consent-badge[data-level="warn"] {
   background: rgba(212,138,13,0.14); color: #B26A00; border-color: rgba(212,138,13,0.3);
 }
+/* 卡 I：高风险徽标（与 danger 同色系，加粗以区分「等级提示」与「单项风险」） */
+.ds-consent-badge[data-level="high-risk"] {
+  background: rgba(212,56,13,0.14); color: #D4380D; border-color: rgba(212,56,13,0.35); font-weight: 600;
+}
+/* 卡 I：高风险卡片危险外观——沿用本模态同一套 DOM/视觉语言（圆角卡片/遮罩/动画），
+   只把边框、投影、工具名颜色切到红色系，与「Studio 现有弹层」保持一体。 */
+.ds-consent-card[data-risk="high"] {
+  border-color: rgba(212,56,13,0.55); box-shadow: 0 12px 40px rgba(212,56,13,0.2);
+}
+.ds-consent-card[data-risk="high"] .ds-consent-tool { color: #D4380D; }
+/* 卡 I：「风险原因」说明行（宿主原生框 riskReason 的页端对应物） */
+.ds-consent-risk-reason {
+  margin-top: 8px; font-size: 12px; line-height: 1.5; font-weight: 500; color: #D4380D;
+}
 @media (prefers-color-scheme: dark) {
   .ds-consent-badge[data-level="danger"] { color: #FF7A5C; }
   .ds-consent-badge[data-level="warn"] { color: #E8A33D; }
+  .ds-consent-badge[data-level="high-risk"] { color: #FF7A5C; }
+  .ds-consent-card[data-risk="high"] { border-color: rgba(255,122,92,0.5); box-shadow: 0 12px 40px rgba(212,56,13,0.25); }
+  .ds-consent-card[data-risk="high"] .ds-consent-tool { color: #FF7A5C; }
+  .ds-consent-risk-reason { color: #FF7A5C; }
 }
 .ds-consent-actions { margin-top: 18px; display: flex; gap: 10px; justify-content: flex-end; }
 .ds-consent-actions button {
@@ -187,7 +245,15 @@ function presentNextConsent(): void {
   }
   activeConsent = next;
   next.shown = true;
-  renderConsent(next);
+  try {
+    renderConsent(next);
+  } catch (error) {
+    // 卡 I：页内模态渲染失败（页面损坏 / document 不可用）→ 不许留 pending、更不许静默放行：
+    // 立即 deny（fail-closed）并把回执发回宿主。宿主侧的降级链（原生框）与审计留痕归宿主，
+    // 页端这一侧的保证是「弹不出就拒绝」，与超时 / Esc / 点遮罩的 fail-closed 同口径。
+    console.error('[consent] modal render failed → fail-closed deny', error);
+    settleConsent(next, 'deny');
+  }
 }
 
 function settleConsent(entry: QueuedConsent, decision: ConsentDecision): void {
@@ -243,11 +309,23 @@ function renderConsent(entry: QueuedConsent): void {
   tool.className = 'ds-consent-tool';
   tool.textContent = presentation.headline;
 
-  const badges = buildBadges(request.meta);
+  // 卡 I：高风险请求切危险外观（同一套弹层语言内的红色系强调），并给徽标行补「高风险」chip
+  const highRisk = isHighRiskPresentation(request.meta);
+  if (highRisk) card.dataset.risk = 'high';
+  const badges = buildBadges(request.meta, highRisk);
 
   const summary = doc.createElement('div');
   summary.className = 'ds-consent-summary';
   summary.textContent = presentation.summary;
+
+  // 卡 I：「风险原因」说明行——宿主把 meta 翻译成展示串下发，页端只拼装不判定
+  const reasonText = describeRiskReason(request.meta);
+  let riskLine: HTMLElement | undefined;
+  if (reasonText) {
+    riskLine = doc.createElement('div');
+    riskLine.className = 'ds-consent-risk-reason';
+    riskLine.textContent = `风险：${reasonText}`;
+  }
 
   // T4（2026-10-27 E-01）：审批弹窗作用域 + 时长副文案，让用户一眼看懂
   // 「允许一次」与「本会话允许」的区别，以及 hideAllowSession=true 时为何只有前者。
@@ -297,6 +375,7 @@ function renderConsent(entry: QueuedConsent): void {
   }
 
   card.append(title, tool, ...(badges ? [badges] : []), summary,
+    ...(riskLine ? [riskLine] : []),
     ...(scopeParts.length > 0 ? [scopeHint] : []),
     actions,
     ...(meta?.hideAllowSession ? [sessionHint] : []));
@@ -409,7 +488,7 @@ export function describeConsentRequest(request: ConsentRequest): ConsentPresenta
       title: 'Studio 请求修改审批档位',
       headline: `将审批档位改为「${modeLabel}」`,
       summary: rawMode === 'full'
-        ? '允许后，后续工具将按"完全放开"执行，普通操作可能不再逐次向你确认。请确认你了解这项变更的影响。'
+        ? '允许后，所有工具（含删除记忆、执行代码、修改设置）将按"完全放开"执行、不再逐次询问；仍需确认的只有两种情况——要出工作区的操作、彻底删除记忆（不可恢复）；安全硬规则直接拒绝、不弹窗。请确认你了解这项变更的影响。'
         : `允许后，后续工具将按"${modeLabel}"档位执行。该设置会改变工具执行前的确认强度。`,
       allowOnceLabel: '允许本次修改',
       allowSessionLabel: '本次会话允许修改',
@@ -477,13 +556,14 @@ export function getRawToolName(request: ConsentRequest): string { return request
  * 组装风险徽标行。用户看到的信息必须能回答三个问题：
  * 「这是什么等级」「为什么需要我批准」「是否触碰工作区之外」。
  */
-function buildBadges(meta: ConsentMeta | undefined): HTMLElement | null {
-  if (!meta) return null;
-  const items: { text: string; level: 'info' | 'warn' | 'danger' }[] = [];
-  if (meta.riskLabel) items.push({ text: meta.riskLabel, level: 'danger' });
-  if (meta.modeLabel) items.push({ text: meta.modeLabel, level: 'info' });
-  if (meta.outside) items.push({ text: '工作区外', level: 'warn' });
-  for (const flag of meta.riskFlagLabels ?? []) items.push({ text: flag, level: 'danger' });
+function buildBadges(meta: ConsentMeta | undefined, highRisk: boolean): HTMLElement | null {
+  if (!meta && !highRisk) return null;
+  const items: { text: string; level: 'info' | 'warn' | 'danger' | 'high-risk' }[] = [];
+  if (highRisk) items.push({ text: '高风险', level: 'high-risk' });
+  if (meta?.riskLabel) items.push({ text: meta.riskLabel, level: 'danger' });
+  if (meta?.modeLabel) items.push({ text: meta.modeLabel, level: 'info' });
+  if (meta?.outside) items.push({ text: '工作区外', level: 'warn' });
+  for (const flag of meta?.riskFlagLabels ?? []) items.push({ text: flag, level: 'danger' });
   if (items.length === 0) return null;
 
   const doc = globalThis.document;

@@ -4,11 +4,12 @@
  * 面板三档口径（用户选定，2026-10-10 需求访谈）：
  *   1. workspace 仅工作区——文件读写限于工作区内，shell 与越界一律硬拒绝
  *   2. auto    风险审批——工作区内读/写自动放行，仅 shell / 删除 / 越界等风险弹审批（默认档）
- *   3. full    执行范围完全放开——mode 类工具不再逐次确认；
- *              always 类（policy.set / workspace.set / memory.delete|purge|unarchive /
- *              chat-send / python.exec / mcp.call|save|remove 等）仍会询问一次，
- *              用户点「本次对话始终允许」后本对话内不再打扰
- *              （见 host/conversation-approval.ts）；
+ *   3. full    执行范围完全放开——**不再逐次确认**：
+ *              mode 类由 evaluatePolicy 直接放行；always 类（policy.set / workspace.set /
+ *              memory.delete|unarchive / chat-send / python.exec / mcp.call|save|remove 等）
+ *              默认也直接放行（审计记 `full-mode-allow`，见 authorization.ts 第 6b 步）。
+ *              **仍会询问的只有两种情况**：要出工作区的操作（§1.4 硬规则 5 逐次确认）、
+ *              以及 `FULL_MODE_STILL_ASKS` 里的 `memory.purge`（彻底删除、不可恢复）。
  *              hard-deny 类动作（磁盘格式化、关机、盘根递归删除、敏感凭据路径、
  *              未知工具/来源）以及策略层 deny（未配置工作区、缺参数等）仍直接拒绝。
  * 旧档 ask（询问审批：shell 无风险也审批）保留为合法值以兼容既有配置与测试，

@@ -10,7 +10,11 @@
  */
 import { describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
+import { mkdtempSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createDesktopHost } from '../../src/host/desktop-host';
+import { createWorkspace } from '../../src/host/workspace';
 import type { HostToPageMessage } from '../../src/host/protocol';
 
 interface FakePage {
@@ -153,19 +157,55 @@ describe('R2-01 consent nonce 绑定（低风险页端模态）', () => {
   });
 });
 
-describe('R2-01 高风险 → 宿主原生确认框（不发给页面）', () => {
-  it('高风险工具走 nativeConsent 注入桩：页面收不到 consent-required，决议来自 native', async () => {
+describe('R2-01 高风险路由（2026-11-09 卡 J 起按 A′）', () => {
+  it('非越界高风险 → 页内模态（页面收到 consent-required），原生框不弹', async () => {
+    // 卡 J：R2-01 的「高风险（除越界外）决议不得由页面自答」已作废 ⇒ 非越界高风险改走页内模态。
+    // 本用例原断言「页面收不到 consent-required、决议来自 native」是**旧路由**的行为，
+    // 路由翻转后按新语义改写（纪律④；原断言面一条没删，见下方仍保留的决策项断言）。
     let nativeCalled = 0;
-    let lastSummary = '';
+    const host = createDesktopHost({
+      config: { host: '127.0.0.1', port: 0, token: 't' },
+      secret: 's',
+      consentTimeoutMs: 3000,
+      nativeConsent: async () => {
+        nativeCalled += 1;
+        return 'deny';
+      },
+    });
+    await host.start();
+    const port = Number(new URL(host.url).port);
+    const page = await connectFakePage(port, { id: 'p' });
+    try {
+      // 触发高风险：chat-send 带 conversationId → meta.allowConversation=true；且**不越界**。
+      const pending = probe(host.invokeTool('chat-send', { text: 'hi' }, 'main', 'conv-r201'));
+      await wait(200);
+      // 新语义：页面**收到** consent-required（页内模态），带 nonce
+      const c = firstConsent(page);
+      expect(c, '非越界高风险应走页内模态').toBeTruthy();
+      expect(typeof c!.nonce).toBe('string');
+      // 原生框一次都不该弹（主路径不是它）
+      expect(nativeCalled, '非越界高风险不再走原生框').toBe(0);
+      // 页面回一个带 nonce 的拒绝 → 结论 deny
+      page.ws.send(JSON.stringify({ type: 'consent-decision', callId: c!.callId, decision: 'deny', nonce: c!.nonce }));
+      await wait(200);
+      expect(pending.settled).toBe(true);
+    } finally {
+      page.ws.close();
+    }
+  });
+
+  it('越界高风险 → 宿主侧（页面收不到 consent-required），决策项基线仍锁在 allow-once/deny', async () => {
+    // 卡 J 的不变量：**越界不得由页面自答**——任何档位都由宿主侧确认（今天＝原生框）。
+    let nativeCalled = 0;
     let lastDecisions: readonly string[] = [];
     const host = createDesktopHost({
       config: { host: '127.0.0.1', port: 0, token: 't' },
       secret: 's',
       consentTimeoutMs: 3000,
-      // 注入 nativeConsent 桩：模拟用户点「拒绝」
+      policyMode: 'ask',
+      workspace: createWorkspace(mkdtempSync(path.join(os.tmpdir(), 'studio-r201-'))),
       nativeConsent: async (req) => {
         nativeCalled += 1;
-        lastSummary = req.summary;
         lastDecisions = req.allowedDecisions;
         return 'deny';
       },
@@ -174,29 +214,19 @@ describe('R2-01 高风险 → 宿主原生确认框（不发给页面）', () =>
     const port = Number(new URL(host.url).port);
     const page = await connectFakePage(port, { id: 'p' });
     try {
-      // 需要触发 isHighRiskConsent：chat-send 带 conversationId → meta.allowConversation=true → 高风险。
-      // （file.write 越界在测试的 grant/origin 条件下到不了 consent，故用 chat-send + conversationId。）
-      const pending = probe(host.invokeTool('chat-send', { text: 'hi' }, 'main', 'conv-r201'));
-      await wait(200);
-      // 页面应**收不到** consent-required（决议不经页面）
-      expect(firstConsent(page)).toBeUndefined();
-      // 原生框被调用过
-      expect(nativeCalled).toBeGreaterThanOrEqual(1);
-      // pending 最终按 deny 结算（不是挂到超时）
-      await wait(200);
-      expect(pending.settled).toBe(true);
-      // 行为锁（2026-11-08 同族清扫）：原生框拿到的决策项基线只有「允许一次 / 拒绝」，
-      // 且**不含** 'allow-session'——旧实现用 allowedGrantScopes.includes('allow-session')
-      // （ConsentDecision 值当 GrantScope 名找）恒定不命中；改回即与本断言冲突。
+      // 目标在工作区**之外**（工作区已配好，否则策略层 workspace-unconfigured 直接 deny，走不到 consent 路由）
+      const outsideFile = path.join(os.tmpdir(), 'r201-outside-of-workspace.txt');
+      const pending = probe(host.invokeTool('file.read', { path: outsideFile }, 'main'));
+      await wait(300);
+      expect(firstConsent(page), '越界决议不得交给页面').toBeUndefined();
+      expect(nativeCalled, '越界必须走宿主侧').toBeGreaterThanOrEqual(1);
       expect(lastDecisions).toContain('allow-once');
       expect(lastDecisions).toContain('deny');
       expect(lastDecisions).not.toContain('allow-session');
-      // 正控：带 conversationId ⇒ allowConversation 事实为真 ⇒ 对话级放行项应出现
-      expect(lastDecisions).toContain('allow-conversation');
-      void lastSummary; // summary 已生成（可为空字符串，取决于 params 形状）
+      await wait(200);
+      expect(pending.settled).toBe(true);
     } finally {
       page.ws.close();
-      await host.stop();
     }
   });
 });
