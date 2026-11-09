@@ -16,6 +16,15 @@
  *   ② 能力层的 spawn 落点确实取自 `config.cwd`（**读源码定位**，因为它是 spawn 参数，
  *      行为级验证会真起子进程、把测试变成"能不能 spawn"的环境依赖）；
  *   ③ 两处的**取值表达式形状一致**（都从 `config` 取 `cwd`），且策略层另有顶层回退。
+ *
+ * ── 射程声明（#51，2026-11-09，必读）────────────────────────────
+ * ⚠️ **本文件只声称「策略层契约」与「能力层源码落点」，不声称授权/策略「管线」行为。**
+ * ①③ 用 `evaluatePolicy` **直连策略层**，② 是**读源码**定位；三者都**看不见**
+ * 「送到策略层之前字段是否已被删／被改写」这一类失效——#50 第一发闸红正是那种
+ * （`buildPolicyParams` 曾对所有工具无条件剔除 `cwd`，本文件的用例全绿而闸红）。
+ * ⇒ **管线的证据只在 `tests/desktop/k7-pipeline-injection.test.ts`**
+ *   （`createDesktopHost`＋`invokeTool` 真装置）。改授权管线输入对象时，
+ *   **必须去那枚文件补锁**，别在本文件里"补到绿"就算完。
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';

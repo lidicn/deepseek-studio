@@ -14,6 +14,15 @@
  *   ③ `spawnCwd` **不泄进** grant / 授权输入（否则审计里的 `canonicalTarget` 会指错目标）；
  *   ④ **顶层 `cwd` 不得参与判定**（`params.cwd` 是调用方可写的，顶层优先会被利用）。
  *
+ * ── 射程声明（#51，2026-11-09，必读）────────────────────────────
+ * ⚠️ **本文件只声称「策略层契约」，不声称授权/策略「管线」行为。**
+ * 它用 `evaluatePolicy({ tool, params, … })` **直连策略层**，因此**看不见**
+ * 「送到策略层之前字段是否已被删／被改写」这一类失效——#50 第一发闸红正是那种：
+ * `buildPolicyParams` 曾对所有工具无条件剔除 `cwd`，34 枚自测全绿而闸红。
+ * ⇒ **管线的证据只在 `tests/desktop/k7-pipeline-injection.test.ts`**
+ *   （`createDesktopHost`＋`invokeTool` 真装置）。改授权管线输入对象时，
+ *   **必须去那枚文件补锁，不能在本文件里"补到绿"就算完**。
+ *
  * ── 锁写法纪律（今日立的判据，见 `mcp-cwd-source-parity.test.ts` L66 的反面教材）──
  * 只锁**短标识符**、且锁在**所属处理段/函数体内**；不锁整行表达式（等价改写会假红），
  * 也不锁全文件计数（别人写一处就假绿）。
@@ -208,7 +217,10 @@ describe('③c 接线锁：host 必须真的用 buildPolicyParams（行为级测
   });
 });
 
-describe('④ 顶层 cwd 不得参与判定（调用方可写，顶层优先会被利用）', () => {  it('spawnCwd 区外 ⇒ require-consent 且 outside（auto 档）', () => {
+// ⚠️ 射程：本 describe 及其下用例**只测策略层契约**（直连 `evaluatePolicy`），
+// **不测管线**——管线证据见 `k7-pipeline-injection.test.ts`。
+describe('④ 顶层 cwd 不得参与判定（调用方可写，顶层优先会被利用；仅策略层）', () => {
+  it('spawnCwd 区外 ⇒ require-consent 且 outside（auto 档）', () => {
     const v = evaluate({ serverId: 's1', spawnCwd: OUTSIDE });
     expect(v.decision).toBe('require-consent');
     expect(v.outside).toBe(true);
