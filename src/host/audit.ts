@@ -109,6 +109,25 @@ export interface ToolExecutionRecord {
    * 同样不带此键（已知缺口，见 `mcp.test` 单卡）。
    */
   readonly outside?: boolean;
+
+  /**
+   * F-2a（2026-11-09）：**这一发审批落在哪个面上**——把"页内到底承担了多少审批"
+   * 从"读码推"变成"实测"。
+   *
+   * 三个值，与 `AGENTS.md`「权限审批」条的语义直接对应：
+   *   - `page-modal`            ＝ **页内模态**（页面 DOM，agent 可控面）；
+   *   - `host-window`           ＝ **宿主侧独立窗口**（C″，Rust 自绘，合规面）；
+   *   - `host-unavailable-deny` ＝ 独立窗口起不来 ⇒ **fail-closed 拒绝**。
+   *
+   * 为什么要有这一格：条文写着「审批界面须独立于当前页面 DOM」，而**页内模态今天
+   * 仍在承担普通审批**（见 `desktop-host.ts` 的普通支）。到底占多少，只有把每次
+   * 审批的面记下来才数得清——否则"要不要废止页内模态"这个决定只能靠读码推。
+   *
+   * 与 `outside` 的关系：**正交**。`outside` 说"越没越界"，本字段说"问在哪儿"。
+   * 未经过审批的调用（不弹任何面、例如 `none`/`mode` 类 grant 或 full 档放行）
+   * **不带本字段**——没有面可记，不是漏写。
+   */
+  readonly consentSurface?: 'page-modal' | 'host-window' | 'host-unavailable-deny';
 }
 
 /** 写入审计的输入：除 id/at/ok 由本模块补全外，其余由调用方提供。 */

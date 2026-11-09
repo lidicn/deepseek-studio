@@ -2041,7 +2041,10 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           riskFlags: [...(verdict?.riskFlags ?? [])],
         };
       }
-      const decision = await ensureConsent(name, params, randomCallId(), consentMeta, botId, conversationId);
+      const gate = await ensureConsent(name, params, randomCallId(), consentMeta, botId, conversationId);
+      // F-2a：审批落在哪个面，随 `ctx` 进**所有**出口的审计（成功路径与 finish()）。
+      if (gate.consentSurface) ctx = { ...ctx, consentSurface: gate.consentSurface };
+      const decision = gate.decision;
       if (decision === 'consent-unavailable') return finish('consent-unavailable', 'consent-unavailable');
       if (decision === 'consent-denied') return finish('consent-denied', 'consent-denied');
       // 用户明确同意了这次越界请求 → 授予能力层越界授权
@@ -2266,18 +2269,18 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     meta?: ConsentMeta,
     botId?: string,
     conversationId?: string,
-  ): Promise<ConsentGate> {
+  ): Promise<{ decision: ConsentGate; consentSurface?: AuditInput['consentSurface'] }> {
     const allowlist = allowlistFor(botId);
-    if (!hub) return 'consent-unavailable'; // 宿主尚未就绪，无法征求用户同意 → fail-closed
+      if (!hub) return { decision: 'consent-unavailable' }; // 宿主尚未就绪，无法征求用户同意 → fail-closed
     // 「没有人类在场」与「人类点了拒绝」成因不同，审计必须能区分：
     // 前者是环境问题（窗口关了），后者是用户决策。两者都 fail-closed 拒绝。
     if (botId) {
       // v0.24：只认发起 bot 自己的窗口在场；无对应页 = 无人类在场 → fail-closed。
       if (!hub.connectedPages.some((p) => p.untrusted === false && (p.botId ?? 'main') === (botId ?? 'main'))) {
-        return 'consent-unavailable';
+          return { decision: 'consent-unavailable' };
       }
     } else if (hub.connectedPages.length === 0) {
-      return 'consent-unavailable';
+          return { decision: 'consent-unavailable' };
     }
     // 世代号：等待用户决策期间若发生了换档位 / 换工作区 / 页端断开 / 宿主停止，
     // 迟到的"允许"回调必须作废（否则等于用旧语境下的同意去放行新语境下的操作）。
@@ -2352,28 +2355,55 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       });
     };
 
+    // ── F-2a（2026-11-09）：把"这一发审批问在哪个面上"记下来 ──
+    //
+    // 三支各赋值一次，走完这一段 `consentSurface` 必然有值（无论问在哪）：
+    //   · 越界 ⇒ 宿主侧独立窗口；窗口起不来 ⇒ fail-closed 拒绝
+    //   · 非越界高风险 ⇒ 页内主路径（页不可用才降级宿主侧）
+    //   · 其余（普通审批）⇒ 页内模态——**这一支就是条文要废止的那一支**，
+    //     但在出资人拍板「页内模态是否即刻废止」之前它仍在服役，所以必须可数。
+    // 写进 `ctx` 后会随所有出口（`finish()` 与成功路径）进审计。
+    let consentSurface: AuditInput['consentSurface'];
+
     if (highRisk && meta?.outside === true) {
       // ── 越界：永久宿主侧（不变量）。弹不出来 ⇒ fail-closed 拒绝，绝不交给页面。 ──
       const hostSide = await askHostSide();
       if (!hostSide.shown) {
-        console.warn(`[consent] outside-workspace host-side box unavailable tool=${tool} callId=${callId} → deny`);
+        consentSurface = 'host-unavailable-deny';
+        // F-2a：拒绝原因必须**可见**——用户/审计要知道这是"独立窗口起不来"，
+        // 不是用户点了拒绝，也不是页面没连。原来这行只有"box unavailable"，
+        // 谁读都判断不出是环境问题还是用户拒绝。
+        console.warn(
+          `[consent] outside-workspace host-side box unavailable tool=${tool} callId=${callId}` +
+            ` surface=host-unavailable-deny reason=host-window-unavailable → deny（fail-closed：独立窗口不可用时绝不回退页内）`,
+        );
         decision = 'deny';
       } else {
+        consentSurface = 'host-window';
         decision = hostSide.decision;
-        console.warn(`[consent] host-side(outside) tool=${tool} decision=${decision} callId=${callId}`);
+        console.warn(`[consent] host-side(outside) tool=${tool} decision=${decision} callId=${callId} surface=host-window`);
       }
     } else if (highRisk) {
-      // ── 非越界高风险：页内模态为主路径，页内不可用才降级 ──
+      // ── 非越界高风险：页内模态为主路径（**待条文拍板是否废止**），页内不可用才降级宿主侧 ──
       const pageAvailable = hub.connectedPages.some(
         (p) => p.untrusted === false && (!botId || (p.botId ?? 'main') === (botId ?? 'main')),
       );
       if (pageAvailable) {
+        consentSurface = 'page-modal';
+        // F-2a（PM 裁"补"）：这一支原来**一行 `[consent]` 都不打**，只有审计里有面 ⇒
+        // 日志面会系统性**低估** `page-modal` 的量。补一行，与普通支（下面那行）同形。
+        // ⚠️ 代价（已报，落台账）：自 #54 起 `[consent]` 多这一类行，
+        // **今天所有基于"58 枚"的计数判据一律标"截至 #53 止"**。
+        console.warn(`[consent] page-modal risk=high tool=${tool} callId=${callId} surface=page-modal`);
         decision = await hub.requestConsent(callId, tool, params, meta, botId);
       } else {
         // 降级：页内不可用 → 宿主框问；**宿主框也弹不出来 ⇒ 拒绝**，绝不回到刚才被判"不可用"的页内通道。
         // （回到页面 = 白等一个超时，或在等待期间页面重连由页面回话——那正是本分支要守的那一格。）
         const hostSide = await askHostSide();
-        console.warn(`[consent] degraded(no-page) risk=high tool=${tool} callId=${callId} shown=${hostSide.shown}`);
+        consentSurface = hostSide.shown ? 'host-window' : 'host-unavailable-deny';
+        console.warn(
+          `[consent] degraded(no-page) risk=high tool=${tool} callId=${callId} shown=${hostSide.shown} surface=${consentSurface}`,
+        );
         decision = hostSide.shown ? hostSide.decision : 'deny';
         // 审计在**最终 decision 之后**写、outcome 按最终值推导
         // （写早了会出现"记着 consent-unavailable、实际执行了"，复盘会读错）。
@@ -2384,13 +2414,27 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           outcome: decision === 'deny' ? 'denied' : 'executed',
           reason: 'degraded',
           durationMs: 0,
+          consentSurface,
         });
       }
     } else {
+      // 普通审批：**今天只有页内模态这一条路，压根没有独立窗口分支**。
+      // 这正是 `AGENTS.md`「权限审批」条要禁的那一支（审批面须独立于页面 DOM）；
+      // 在出资人拍板"是否即刻废止"之前它继续服役，但每一发都记 `surface=page-modal`，
+      // 让"页内承担了多少审批"是实测数字而不是读码推。
+      consentSurface = 'page-modal';
+      console.warn(`[consent] page-modal tool=${tool} callId=${callId} surface=page-modal（普通审批：暂无独立窗口支）`);
       decision = await hub.requestConsent(callId, tool, params, meta, botId);
     }
+
     if (conversationStore.currentGeneration() !== generation) {
-      return 'consent-unavailable';
+      // F-2a 措辞更正（PM 20:4x 现读纠正 Core 交卷①的"两处都不带面"）：这个函数里
+      // `consent-unavailable` 共有 **三处**，带不带面各不同——
+      //   · L2274 `if (!hub)`：**不带面**（宿主还没起，谈不上问在哪）；
+      //   · L2280／L2283 零连接页：**不带面**（没问过）；
+      //   · 本行（世代号在等待期间失效）：**带面**——问已经问过，面是真实的，
+      //     只是那个"同意"作废了。丢掉它等于把"问过"抹成"没问"。
+      return { decision: 'consent-unavailable', consentSurface };
     }
     if (decision === 'allow-conversation' && conversationId) {
       // 「本次对话始终允许」：登记对话级放行。
@@ -2407,7 +2451,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           conversationId,
         }),
       );
-      return 'approved';
+        return { decision: 'approved', consentSurface };
     }
     if (decision === 'allow-session') {
       // A3：allow-session 只给 mode 类发 session grant，且绑「工作区 + 工具 + 审批类别 + 规范目标」。
@@ -2437,7 +2481,13 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         });
       }
     }
-    return decision !== 'deny' ? 'approved' : 'consent-denied';
+    // F-2a：`consentSurface` 与决策一起带回——**只有真问过才带**：
+    // 早退的 `consent-unavailable`（零连接页／宿主未就绪）是"没问"，故不带此键；
+    // full 档压根不进 ask（`policy.ts` 短路）与对话级缓存放行同理，都属于"没问"。
+    // 把"没问"写成 `host-unavailable-deny` 会让观测数据说谎，那是本卡唯一的存在理由。
+    return decision !== 'deny'
+      ? { decision: 'approved' as const, consentSurface }
+      : { decision: 'consent-denied' as const, consentSurface };
   }
 
   async function routeExecution(
