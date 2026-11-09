@@ -1297,10 +1297,26 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     }
   });
 
-  let resolvedUrl = `http://${options.config.host}:${options.config.port}`;
+  // F-1（2026-11-09）：**未就绪时不给出任何"看起来合法"的 URL**。
+  //
+  // 原实现把初值写成 `http://${host}:${config.port}`：`port=0`（测试/随机端口）时
+  // 它是一个**语法合法、实际不可用**的地址，调用方 `fetch` 只会拿到 `bad port`，
+  // 而不是一句"服务还没就绪"。这与本文件 `L1312-1318` 自己立的原则相反——
+  // 那一段把**端口面**做成了 fail-visible（EADDRINUSE 明确报错、不静默换端口），
+  // 却在**URL 面**留了个 fail-silent：拿不到地址也照样 `resolve()` 并交出一个坏 URL。
+  //
+  // 现在：`null` ＝ 未就绪；读 `url` 直接抛，错误信息点名原因。
+  let resolvedUrl: string | null = null;
 
   return {
     get url() {
+      if (resolvedUrl === null) {
+        throw new Error(
+          `本地 HTTP API 地址尚未就绪（host=${options.config.host} port=${options.config.port}）：` +
+            'start() 尚未完成，或 listen 回调里 server.address() 未取到端口。' +
+            '本进程不会交出一个"看起来合法、实际不可用"的地址（如 :0），请 await start() 后再读 url。',
+        );
+      }
       return resolvedUrl;
     },
     get rawServer() {
@@ -1334,9 +1350,21 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         server.listen(options.config.port, options.config.host, () => {
           server.off('error', onError);
           const addr = server.address();
-          if (addr && typeof addr === 'object') {
-            resolvedUrl = `http://${options.config.host}:${addr.port}`;
+          // F-1：**取不到地址必须报错，不许 `resolve()` 之后把 `:0` 交给调用方。**
+          // `address()` 在 listen 成功后返回对象；返回 `null`/字符串意味着绑定态未就绪
+          // （例如被测试桩替换、或运行时异常态）——那一刻端口未知，而"未知"绝不能
+          // 变成一个可用的 URL。调用方 `await start()` 会拿到明确错误，而不是稍后 `bad port`。
+          if (!addr || typeof addr !== 'object') {
+            reject(
+              new Error(
+                `本地 HTTP API 绑定后未能取到端口（host=${options.config.host} port=${options.config.port}）：` +
+                  `listen 回调里 server.address() 返回 ${addr === null ? 'null' : typeof addr}。` +
+                  '本进程不交出不存在的地址（与 EADDRINUSE 同一条 fail-visible 原则）。',
+              ),
+            );
+            return;
           }
+          resolvedUrl = `http://${options.config.host}:${addr.port}`;
           resolve();
         });
       });
