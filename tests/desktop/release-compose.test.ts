@@ -449,8 +449,58 @@ describe('v0.14.13 卡 E/F：打包工具预取＋发布正文显式 PATCH（#48
     expect(sleepIdx, 'Start-Sleep 必须出现在 attempt 循环内（循环起点之后）').toBeGreaterThan(attemptFor);
     expect(sleepIdx, 'Start-Sleep 被挪到 attempt 循环之外').toBeLessThan(notOkIdx);
     expect(fetch).toContain('Start-Sleep');
+    // ── R-1（2026-11-10）解压落点/marker 映射锁：本次发版链真死因 ──
+    // 现场：run 42724494390 step 9 末行 `NSIS archive extracted but marker still missing:
+    //   …\tauri\NSIS\Bin\makensis.exe`。根因＝zip 顶层目录名（nsis-3.11/）≠ marker 父目录名（NSIS/），
+    //   旧写法 `Expand-Archive -DestinationPath $t.dest` 把包原样解到 $tauri 下 ⇒ marker 永不可能命中；
+    //   这个坏分支**从未被执行过**（缓存命中时 step 8 已放好工具），所以闸绿了一整天也照不出来。
+    // 断言锁"映射关系"而非目录名：换包版本（nsis-3.12/）或换工具，只要映射还对就仍绿。
+    //
+    // 我抓不住哪一类变异（判据 5 尾巴）：
+    //   ① 深度上限 2 层改成 3 层（本文件不看循环上界常量，只锁"逐层收敛"的形态）；
+    //   ② 真实布局匹配是否真的发生（本文件只验脚本文本形状，真跑要真 runner／真包）；
+    //   ③ `-Depth` 类参数被换成等价的显式两层遍历（写法变了但语义相同，本不该红）。
+    const relDeclIdx = fetch.indexOf('$rel = $t.marker.Substring(');
+    const lookIdx = fetch.indexOf('Test-Path (Join-Path $_ $rel)');
+    const moveIdx = fetch.indexOf('Move-Item -Destination $dstParent');
+    const expandDeclIdx = fetch.indexOf('Expand-Archive -Path $zip -DestinationPath $tmpExtract');
+    const dstParentDeclIdx = fetch.indexOf('$dstParent = Split-Path $t.marker -Parent');
+    // n) 解压落点必须是临时区变量，不得直接落 $t.dest / $tauri（R-1 的原始死因）
+    expect(expandDeclIdx, 'R-1：Expand-Archive 未解压到临时区变量 $tmpExtract（可能又直接落到 marker 父目录）')
+      .toBeGreaterThanOrEqual(0);
+    expect(fetch, 'R-1：解压落点又回到 $t.dest（当初的路径错配死因）').not.toContain('Expand-Archive -Path $zip -DestinationPath $t.dest');
+    // o) marker 尾相对路径参与推导：$rel 由 marker 减父目录得出
+    expect(relDeclIdx, 'R-1：$rel 未由 $t.marker.Substring($dstParent.Length + 1) 推导（marker 尾相对路径未参与）')
+      .toBeGreaterThanOrEqual(0);
+    expect(dstParentDeclIdx, 'R-1：$dstParent 未由 Split-Path $t.marker -Parent 得出')
+      .toBeGreaterThanOrEqual(0);
+    // p) 定位用同一枚 $rel（不是另写死的目录名）
+    expect(lookIdx, 'R-1：定位层未使用 (Join-Path $_ $rel) —— 可能有写死的目录名')
+      .toBeGreaterThanOrEqual(0);
+    // q) 存在一次把临时区某层内容搬到 marker 父目录的动作
+    expect(moveIdx, 'R-1：缺少 Move-Item -Destination $dstParent —— 定位到了却没有搬运')
+      .toBeGreaterThanOrEqual(0);
+    // r) 三处同源：推导 → 定位 → 搬运，用的都是 $rel／$dstParent 这一对，不许各写各的
+    expect(relDeclIdx, 'R-1：$rel 推导必须在定位之前').toBeLessThan(lookIdx);
+    expect(lookIdx, 'R-1：定位必须在搬运之前').toBeLessThan(moveIdx);
+    // s) 解压/定位/搬运仍都在 attempt 循环内（失败照走重试，不靠重跑整个 job）
+    expect(expandDeclIdx, 'R-1：解压被挪出 attempt 循环').toBeGreaterThan(attemptFor);
+    expect(expandDeclIdx, 'R-1：解压跑到循环之后去了').toBeLessThan(notOkIdx);
+    expect(moveIdx, 'R-1：搬运被挪出 attempt 循环').toBeGreaterThan(attemptFor);
+    expect(moveIdx, 'R-1：搬运跑到循环之后去了').toBeLessThan(notOkIdx);
+    // t) marker 硬校验仍在搬运之后（搬完必须立刻验，验不过就 throw 走重试）
+    expect(fetch.indexOf('archive relocated but marker still missing'), 'R-1：搬运后没有 marker 复核（搬错也会被当成功）')
+      .toBeGreaterThan(moveIdx);
     // 失败点名哪个 URL（验收要求"失败点名是哪个 URL"）
     expect(fetch).toContain('failed to download');
+    // u) 判据 D：三类失败文案必须共存且互不相同（歧义／未命中／搬运后仍缺 marker）。
+    // 只锁"三者存在且不同"，不锁整句——措辞润色不该红，但把 ambiguous 与 unmatched 合并成一句
+    // 通用报错必须红：那正是这次把 504 当根因的那种失效（两病同症状、日志分不出）。
+    const throwStrs = ['ambiguous layout', 'layout unmatched', 'archive relocated but marker still missing'];
+    for (const s of throwStrs) {
+      expect(fetch, `R-1 判据 D：缺少失败文案「${s}」`).toContain(s);
+    }
+    expect(new Set(throwStrs).size, 'R-1 判据 D：三条文案必须互不相同').toBe(3);
     const assertStep = step(release, 'Assert packaging tools present');
     expect(assertStep).toContain('makensis.exe');
     expect(assertStep).toContain('candle.exe');

@@ -148,12 +148,33 @@ jobs:
                   Remove-Item $zip -Force -ErrorAction SilentlyContinue
                   throw "downloaded package size $size below minimum $($t.minBytes)"
                 }
-                # 解压＋marker 校验进重试循环（zip 损坏时走同一条退避路径，不靠重跑整个 job）
-                Expand-Archive -Path $zip -DestinationPath $t.dest -Force
+                # R-1（路径错配修复）：zip 顶层目录名可能与 marker 父目录名不同（如 nsis-3.11 vs NSIS；
+                #   此处仅为说明性举例、不是逻辑前提——推导/查找/搬运三段不依赖任何包名字面量），
+                # 不能直接解压到 marker 父目录——解压到临时区、按 marker 尾相对路径定位最浅满足层、再搬运。
+                # 逐层 for 保证"最浅先"、同层歧义（>1）显式 throw 不猜、深度上限 2 层。
+                # 不依赖任何 zip 实测布局：NSIS 在 depth1 命中、WiX 在 depth0 命中，两包走同一段代码。
+                $tmpExtract = Join-Path $env:RUNNER_TEMP "$($t.name)-extract"
+                if (Test-Path $tmpExtract) { Remove-Item $tmpExtract -Recurse -Force }
+                Expand-Archive -Path $zip -DestinationPath $tmpExtract -Force
+                $dstParent = Split-Path $t.marker -Parent
+                $rel = $t.marker.Substring($dstParent.Length + 1)   # 'Bin\makensis.exe' ／ 'candle.exe'
+                $root = $null; $depthHit = -1
+                $level = @($tmpExtract)                              # depth 0
+                for ($d = 0; $d -le 2; $d++) {                       # 最多下探 2 层、逐层收敛
+                  $cand = @($level | Where-Object { Test-Path (Join-Path $_ $rel) })
+                  if ($cand.Count -eq 1) { $root = $cand[0]; $depthHit = $d; break }
+                  if ($cand.Count -gt 1) { throw "[$($t.name)] ambiguous layout: $($cand.Count) dirs at depth $d satisfy '$rel' — refusing to guess" }
+                  $level = @($level | ForEach-Object { Get-ChildItem $_ -Directory -Force } | ForEach-Object { $_.FullName })
+                  if ($level.Count -eq 0) { break }
+                }
+                if (-not $root) { throw "[$($t.name)] layout unmatched: no dir within depth 2 satisfies '$rel' from $($t.marker)" }
+                if (-not (Test-Path $dstParent)) { New-Item -ItemType Directory -Force -Path $dstParent | Out-Null }
+                Get-ChildItem $root -Force | Move-Item -Destination $dstParent -Force
+                Write-Host "[tools] $($t.name) relocated from depth=$depthHit -> $dstParent"
                 if (-not (Test-Path $t.marker)) {
-                  Write-Host "[tools] $($t.name) attempt $attempt: extracted but marker missing — discarding, will retry"
+                  Write-Host "[tools] $($t.name) attempt $attempt: marker still missing after relocate — discarding, will retry"
                   Remove-Item $zip -Force -ErrorAction SilentlyContinue
-                  throw "$($t.name) archive extracted but marker still missing: $($t.marker)"
+                  throw "$($t.name) archive relocated but marker still missing: $($t.marker)"
                 }
                 $ok = $true
                 break
