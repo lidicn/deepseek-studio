@@ -66,6 +66,12 @@ const blockingSteps: Step[] = [
   // 命令必须在 capabilities/*.json permissions 里有对应 allow-<kebab>——ACL 只由真实 Tauri
   // runtime 强制，mock-invoke 测试与 cargo test 都不校验。先红：当前树缺 2 条（studio_open_mcp_settings + studio_request_grant）。
   { name: 'acl-contract-guard', cmd: 'npx tsx tools/audit/acl-contract-guard.ts' },
+  // workflow 内嵌 pwsh 脚本编译闸（R-2，20261110）：v0.14.14 release run 红在 step 9
+  // ——`$attempt:` 被 PowerShell 当驱动器前缀、解析期死、整块不跑。闸与 CI 都没检查
+  // workflow 内嵌脚本语法。本步遍历 .github/workflows/*.yml、抽 shell:pwsh 的 run 块、
+  // 替换 ${{ }} 占位、落盘后 Parser::ParseFile 真解析、errors 必须 0。
+  // 必须落盘（跨进程传串丢 CRLF ⇒ 假绿，已实测）。
+  { name: 'workflow-pwsh-compile', cmd: 'node tools/audit/workflow-pwsh-compile.cjs' },
 ];
 
 /** 信息级：红了照常合，输出进 logs/gate-info.log。 */

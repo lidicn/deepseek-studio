@@ -501,6 +501,22 @@ describe('v0.14.13 卡 E/F：打包工具预取＋发布正文显式 PATCH（#48
       expect(fetch, `R-1 判据 D：缺少失败文案「${s}」`).toContain(s);
     }
     expect(new Set(throwStrs).size, 'R-1 判据 D：三条文案必须互不相同').toBe(3);
+    // v) R-2 追加（2026-11-10）：确定性布局类失败不重试、最终报错保留真因
+    // （负控＝删 ②或③任一行 ⇒ 必红，防有人把整段退化成"全重试＋模板报错"）
+    //   v-② 布局错误走 throw、不走退避（重试 5 次只是白等 150s 并把真因盖成下载失败）
+    expect(fetch, 'R-2：$isLayoutError 判定缺失（布局类确定性失败会被误重试 5 次并按下载故障上报）')
+      .toContain('$isLayoutError');
+    expect(fetch, 'R-2：布局错误必须直接 throw 且文案含 not retried（不进退避循环）')
+      .toContain('deterministic failure (not retried)');
+    //   v-③ 末条 throw 必须带真实错误串（不带则真因被模板盖掉）
+    expect(fetch, 'R-2：末条 throw 缺 last error: —— 真因会被通用模板盖掉').toContain('last error:');
+    //   v-④ 前缀↔判定式同源锁（PM ②：防止有人删 throw 里的 [LAYOUT] 而判定式仍在、分类静默失效）
+    // 判据是对**正则源串**取的：workflow 里写的是 -match '^\[LAYOUT\]'（方括号在正则里需转义），
+    // 所以这里断言 `^\[LAYOUT\]`（JS 字符串里写作 "\\[" 表示一个反斜杠），不是 `^[LAYOUT]`。
+    expect(fetch, "R-2：判定式缺 '^\\[LAYOUT\\]' 串（isLayoutError 的匹配来源）").toContain('^\\[LAYOUT\\]');
+    const layoutCount = (fetch.match(/\[LAYOUT\]/g) ?? []).length;
+    expect(layoutCount, `R-2：[LAYOUT] 前缀应出现 ≥3 次（三条布局 throw 各一枚），实际 ${layoutCount}`)
+      .toBeGreaterThanOrEqual(3);
     const assertStep = step(release, 'Assert packaging tools present');
     expect(assertStep).toContain('makensis.exe');
     expect(assertStep).toContain('candle.exe');
