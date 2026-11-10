@@ -57,6 +57,8 @@ export interface StudioChatUIHandle {
    * v0.27：可选 sender 参数标识多参与者（主 bot / 子 bot），渲染头像+名称标签。
    */
   startAssistantMessage(sender?: { name?: string; type?: 'user' | 'main-bot' | 'sub-bot' }): void;
+  /** C-1/#61：是否有一枚在飞助手气泡（currentAssistant 非 null）。供注入层「无泡才开泡」守卫使用。 */
+  hasOpenAssistantBubble(): boolean;
   /** 流式追加可见正文（80ms 节流 + markdown 实时渲染 + 光标） */
   appendToAssistantMessage(text: string): void;
   /** 流式追加思考段（reasoning），渲染到可折叠 think 块 */
@@ -812,6 +814,11 @@ export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioCha
     scrollToBottom(true);
   }
 
+  /** C-1/#61：在飞气泡探针（结构守卫，供注入层 L3155 支「无泡才开泡」判读） */
+  function hasOpenAssistantBubble(): boolean {
+    return currentAssistant !== null;
+  }
+
   // 流式渲染节流（参考 cuckoo 80ms 节流 + 全量 re-parse markdown）
   let streamRenderTimer: ReturnType<typeof setTimeout> | null = null;
   function scheduleStreamRender(): void {
@@ -1427,6 +1434,7 @@ export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioCha
     container,
     addUserMessage,
     startAssistantMessage,
+    hasOpenAssistantBubble,
     appendToAssistantMessage,
     appendReasoning,
     finishAssistantMessage,

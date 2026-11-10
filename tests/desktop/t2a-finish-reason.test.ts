@@ -76,6 +76,8 @@ function installHarness() {
     activateSession: vi.fn(async () => undefined),
     addUserMessage: vi.fn(),
     startAssistantMessage: vi.fn(),
+    // C-1/#61 harness 管线（非断言）：mock 模拟「无在飞气泡」态，条件 start 照走原形态
+    hasOpenAssistantBubble: vi.fn(() => false),
     appendToAssistantMessage: vi.fn(),
     appendReasoning: vi.fn(),
     finishAssistantMessage: vi.fn(),
@@ -247,6 +249,63 @@ describe('T-2b 验收断言：全工具原文收尾的中性说明（L3146 支�
       await vi.advanceTimersByTimeAsync(2_000);
       // 真 chatUI：中性说明落进 DOM 消息列表（L868 早退守卫靠 startAssistantMessage 先开气泡绕开）
       expect(ui.container.textContent).toContain(NEUTRAL_TOOL_ONLY_REPLY_NOTE);
+    } finally {
+      handle.stop();
+      ui.destroy();
+      vi.useRealTimers();
+    }
+  });
+});
+
+/**
+ * C-1 / #61（出资人拍板首位候选实证）：「在飞气泡＋无条件 start」的显示面实证。
+ * 驱动（真 chatUI jsdom、无 mock）：
+ * - 第 1 轮：真工具执行（sseTool 无属性）⇒ 工具卡开气泡 B0（startToolCard L940 条件 start，属上一场景）；
+ * - 第 2 轮（续跑）：空回复 ⇒ L3104 finish({recordFinal:false}) 关 B0（currentAssistant=null）＋协议修复轮起；
+ * - 第 3 轮（修复轮）：带属性工具原文（sseAttrTool）⇒ 不提取、不执行；但 chunk 循环 append（L2150：
+ *   解析器不提取属性形态、clean ≠ ''）把工具原文喂进在飞气泡 B1（L840 自动开泡）。
+ * 红态读数（修前、在案）：L3155 支入口 B1 在飞，无条件 startAssistantMessage() 抢占它、
+ * 再开第二枚 B2（中性说明）⇒ 本场景 delta＝2＝「多一枚空气泡＋一枚中性说明」
+ * （PM 待验预测：气泡枚数面命中；光标面不命中——B1 的 80ms 渲染被 L811/L870 清掉、光标从未渲染，cursors=0）。
+ * 卡面判读：红 ⇒ 把 L3155 的 start 按 hasOpenAssistantBubble() 条件化（「无泡才开泡」）、修到绿。
+ * 修后本 it 锁：本场景 delta 气泡枚数 == 1（B1 复用收中性说明、不多开）＋收尾后 .ds-sc-cursor 零残留
+ * （收尾时 streaming 节点被整体替换/移除，光标结构性带不进已收尾气泡）。
+ */
+describe('C-1 / #61 在飞边缘：协议修复轮全工具原文 ⇒ 本场景恰一枚气泡（复用收中性说明）、无光标残留', () => {
+  it('本场景 delta 气泡枚数 == 1（在飞气泡携中性说明；无条件 start 形态会是 2 枚）且 .ds-sc-cursor 零残留', async () => {
+    vi.useFakeTimers();
+    const FakeXHR = makeFakeXhrClass();
+    (globalThis as Record<string, unknown>).XMLHttpRequest = FakeXHR;
+    vi.stubGlobal('location', { href: 'https://chat.deepseek.com/' });
+    const sender = vi.fn(async () => ({ ok: true, data: { stdout: 'hi', exitCode: 0 } }));
+    const ui = createStudioChatUI();
+    document.body.appendChild(ui.container);
+    const handle = installMainWorldInterceptor({ sender, chatUI: ui as never, diag: () => {} });
+    try {
+      // 第 1 轮：真工具执行（B0 带工具卡，属上一场景）
+      fireFirstRoundAttr(FakeXHR, 't61-c1', sseTool());
+      await vi.advanceTimersByTimeAsync(2_000);
+      // 第 2 轮（续跑）：空回复 ⇒ L3104 关 B0 ＋ 修复轮起
+      let reqs = chatRequests(FakeXHR);
+      reqs[reqs.length - 1].respond(200, sseText('') + sseDone());
+      await vi.advanceTimersByTimeAsync(2_000);
+      // 前提锚：进修复轮时刻，B0（已收尾、带工具卡）是唯一在 DOM 的助手气泡
+      const before = ui.container.querySelectorAll('.ds-sc-msg-assistant').length;
+      expect(before).toBe(1);
+      // 第 3 轮（修复轮）：L2150 append 把工具原文喂进在飞气泡 B1（自动开泡）⇒ L3155 支入口，条件 start 不再多开
+      reqs = chatRequests(FakeXHR);
+      reqs[reqs.length - 1].respond(200, sseAttrTool() + sseDone());
+      await vi.advanceTimersByTimeAsync(2_000);
+      // 格①（气泡枚数）：本场景 delta 恰好 1（B1 复用携中性说明；旧无条件 start 形态会是 2，负控红态在案）
+      const after = ui.container.querySelectorAll('.ds-sc-msg-assistant').length;
+      expect(after - before).toBe(1);
+      // 末枚气泡（B1）携中性说明（该气泡显示面正确，非仅枚数正确）
+      const last = ui.container.querySelectorAll('.ds-sc-msg-assistant')[after - 1] as HTMLElement;
+      expect(last.textContent).toContain(NEUTRAL_TOOL_ONLY_REPLY_NOTE);
+      // 格②（光标态）：收尾后 .ds-sc-cursor 零残留（整容器）
+      // 机制保证：光标 span 仅在 currentRawText 非空时插入 streaming（studio-chat-ui.ts L832），
+      // 收尾时 streaming 节点被整体替换/移除（L878-892）⇒ 光标结构性带不进已收尾气泡。
+      expect(ui.container.querySelectorAll('.ds-sc-cursor').length).toBe(0);
     } finally {
       handle.stop();
       ui.destroy();

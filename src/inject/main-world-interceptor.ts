@@ -3154,13 +3154,17 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                     try { onAssistantReply?.(cleanReply, loopDepth); } catch (e) { d(`auto-continue push failed: ${(e as Error).message}`); }
                   } else if (reply) {
                     // T-2b（甲案，出资人 21:47 问题卡／PM-LOG 69 件闭合）：模型只输出工具调用原文、无正文时，
-                    // 不留空白气泡，显示一句中性说明。currentAssistant 写入点现读（studio-chat-ui.ts）：
-                    // L804 start 写入／L920 finish 置空／L839·L940 条件 start（本支 clean 为空、到不了）——
-                    // 上一轮各收尾出口均经 finish，此处结构性为 null，故先开一枚气泡再落说明；
-                    // 复用 L3143 形态 fallbackText＋recordFinal:true；不挂 appendError（非故障）、trace 面不动
-                    // （tool-text-unparsed 由 raw-tool-text 单测另锁）。
+                    // 不留空白气泡，显示一句中性说明。currentAssistant 写入点见 src/ui/studio-chat-ui.ts（按符号名引用、
+                    // 行号只作辅助——第 77 件：被引用面增删行不漂移、裸行号每改一次都要再校一次）：
+                    // startAssistantMessage()（赋 currentAssistant）／finishAssistantMessage()（置 null）／
+                    // appendToAssistantMessage()·appendReasoning()·startToolCard() 三处条件开泡（`if (!currentAssistant) startAssistantMessage()`）。
+                    // C-1/#61 实跑更正：「此处结构性为 null」前提不成立——本支回复会被 chunk 循环 append
+                    // （XHR chunk 循环 parser.feed 返回：解析器不提取属性形态、clean ≠ ''）先自动开在飞气泡，
+                    // 无条件 start 会抢占它、留一枚多余空气泡；用 hasOpenAssistantBubble() 守卫：无泡才开、有泡复用收说明。
+                    // 复用 cleanReply 非空兄弟支形态（finishAssistantMessage fallbackText＋recordFinal:true）；
+                    // 不挂 appendError（非故障）、trace 面不动（tool-text-unparsed 由 raw-tool-text 单测另锁）。
                     try {
-                      chatUI?.startAssistantMessage();
+                      if (!chatUI?.hasOpenAssistantBubble()) chatUI?.startAssistantMessage();
                       chatUI?.finishAssistantMessage({ fallbackText: NEUTRAL_TOOL_ONLY_REPLY_NOTE, recordFinal: true });
                     } catch { /* ignore */ }
                     d('auto-continue reply all-tool-text (stripped to empty), showing neutral note, skipping push');
