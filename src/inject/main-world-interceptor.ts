@@ -69,6 +69,13 @@ import {
 // → 格式纠偏循环 → 永不 emit assistant）详见 src/inject/raw-tool-text.ts 头注释。
 import { continuationReasonForReply, scanRawToolText, stripRawToolText } from './raw-tool-text';
 
+/**
+ * T-2b（甲案：出资人 2026-11-09 21:47 问题卡 part 2 #36641，PM-LOG 第 69 件闭合）：
+ * 续跑轮回复只有工具调用原文、没有正文时，显示的一句中性说明（L3146 支）。
+ * 禁「故障／失败／错误」字样（此支不是故障）；「未执行／已停止」同禁（T-2a 红线族）。
+ */
+export const NEUTRAL_TOOL_ONLY_REPLY_NOTE = '本轮模型仅输出了工具调用，没有正文回复。';
+
 /** 页端 → 宿主 的工具调用投递请求（与 host-client.sendToolCall 入参同构）。 */
 export interface ToolCallRequest {
   readonly callId: string;
@@ -3061,6 +3068,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                 try { chatUI?.finishAssistantMessage({ fallbackText: cleanReply, recordFinal: true }); } catch { /* ignore */ }
                 try { onAssistantReply?.(cleanReply, loopDepth); } catch (e) { d(`auto-continue max-round push failed: ${(e as Error).message}`); }
               } else {
+                // T-2b 伴随件（PM 裁字）：此支可见性由 L3067 的 max-loop 卡承担（该支必有触顶事实＋N 实数），
+                // 不另补甲案中性说明——否则同一轮出现两张卡、第二张无新信息（本批只加此注释，逻辑零改动）。
                 try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
               }
               // #55：MAX_LOOP 触顶收尾带原因（用户可见）；N＝下界实数，N>0 写实数、N=0 落不带数回退句；同一 N 已进 d() 与上方 turn.end trace
@@ -3144,7 +3153,17 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                     try { chatUI?.finishAssistantMessage({ fallbackText: cleanReply, recordFinal: true }); } catch { /* ignore */ }
                     try { onAssistantReply?.(cleanReply, loopDepth); } catch (e) { d(`auto-continue push failed: ${(e as Error).message}`); }
                   } else if (reply) {
-                    d('auto-continue reply all-tool-text (stripped to empty), skipping push');
+                    // T-2b（甲案，出资人 21:47 问题卡／PM-LOG 69 件闭合）：模型只输出工具调用原文、无正文时，
+                    // 不留空白气泡，显示一句中性说明。currentAssistant 写入点现读（studio-chat-ui.ts）：
+                    // L804 start 写入／L920 finish 置空／L839·L940 条件 start（本支 clean 为空、到不了）——
+                    // 上一轮各收尾出口均经 finish，此处结构性为 null，故先开一枚气泡再落说明；
+                    // 复用 L3143 形态 fallbackText＋recordFinal:true；不挂 appendError（非故障）、trace 面不动
+                    // （tool-text-unparsed 由 raw-tool-text 单测另锁）。
+                    try {
+                      chatUI?.startAssistantMessage();
+                      chatUI?.finishAssistantMessage({ fallbackText: NEUTRAL_TOOL_ONLY_REPLY_NOTE, recordFinal: true });
+                    } catch { /* ignore */ }
+                    d('auto-continue reply all-tool-text (stripped to empty), showing neutral note, skipping push');
                   }
                   finishStepFlow();
                   loopDepth = 0;
