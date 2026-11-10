@@ -142,9 +142,9 @@ jobs:
               try {
                 Invoke-WebRequest -Uri $t.url -OutFile $zip -MaximumRedirection 5 -ErrorAction Stop
                 $size = (Get-Item $zip).Length
-                Write-Host "[tools] $($t.name) attempt $attempt: downloaded $size B"
+                Write-Host "[tools] $($t.name) attempt ${attempt}: downloaded $size B"
                 if ($size -lt $t.minBytes) {
-                  Write-Host "[tools] $($t.name) attempt $attempt: package too small ($size < $($t.minBytes) min) — discarding, will retry"
+                  Write-Host "[tools] $($t.name) attempt ${attempt}: package too small ($size < $($t.minBytes) min) — discarding"
                   Remove-Item $zip -Force -ErrorAction SilentlyContinue
                   throw "downloaded package size $size below minimum $($t.minBytes)"
                 }
@@ -163,18 +163,18 @@ jobs:
                 for ($d = 0; $d -le 2; $d++) {                       # 最多下探 2 层、逐层收敛
                   $cand = @($level | Where-Object { Test-Path (Join-Path $_ $rel) })
                   if ($cand.Count -eq 1) { $root = $cand[0]; $depthHit = $d; break }
-                  if ($cand.Count -gt 1) { throw "[$($t.name)] ambiguous layout: $($cand.Count) dirs at depth $d satisfy '$rel' — refusing to guess" }
+                  if ($cand.Count -gt 1) { throw "[LAYOUT] [$($t.name)] ambiguous layout: $($cand.Count) dirs at depth $d satisfy '$rel' — refusing to guess" }
                   $level = @($level | ForEach-Object { Get-ChildItem $_ -Directory -Force } | ForEach-Object { $_.FullName })
                   if ($level.Count -eq 0) { break }
                 }
-                if (-not $root) { throw "[$($t.name)] layout unmatched: no dir within depth 2 satisfies '$rel' from $($t.marker)" }
+                if (-not $root) { throw "[LAYOUT] [$($t.name)] layout unmatched: no dir within depth 2 satisfies '$rel' from $($t.marker)" }
                 if (-not (Test-Path $dstParent)) { New-Item -ItemType Directory -Force -Path $dstParent | Out-Null }
                 Get-ChildItem $root -Force | Move-Item -Destination $dstParent -Force
                 Write-Host "[tools] $($t.name) relocated from depth=$depthHit -> $dstParent"
                 if (-not (Test-Path $t.marker)) {
-                  Write-Host "[tools] $($t.name) attempt $attempt: marker still missing after relocate — discarding, will retry"
+                  Write-Host "[tools] $($t.name) attempt ${attempt}: marker still missing after relocate — discarding (not retried)"
                   Remove-Item $zip -Force -ErrorAction SilentlyContinue
-                  throw "$($t.name) archive relocated but marker still missing: $($t.marker)"
+                  throw "[LAYOUT] $($t.name) archive relocated but marker still missing: $($t.marker)"
                 }
                 $ok = $true
                 break
@@ -182,9 +182,15 @@ jobs:
                 $code = $null
                 if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
                 $msg = $_.Exception.Message
-                Write-Host "[tools] $($t.name) attempt $attempt/$maxAttempts failed: HTTP=$code msg=$msg"
+                # R-2 追加：确定性失败（布局类）不重试——它们不是网络错，重试 5 次只是白等 150s
+                # 并把真因盖成"下载失败"。只有 HTTP 5xx/429/体积不足类才走退避。
+                $isLayoutError = $msg -match '^\[LAYOUT\]'
+                if ($isLayoutError) {
+                  throw "[$($t.name)] deterministic failure (not retried): $msg"
+                }
+                Write-Host "[tools] $($t.name) attempt ${attempt}/$maxAttempts failed: HTTP=$code msg=$msg"
                 if ($code -and -not (Test-Retryable $code)) {
-                  throw "[$($t.name)] HTTP $code is not retryable (4xx except 429) — aborting after attempt $attempt from $($t.url)"
+                  throw "[$($t.name)] HTTP $code is not retryable (4xx except 429) — aborting after attempt ${attempt} from $($t.url)"
                 }
                 if ($attempt -lt $maxAttempts) {
                   $wait = $backoffSecs[$attempt - 1]
@@ -193,7 +199,7 @@ jobs:
                 }
               }
             }
-            if (-not $ok) { throw "failed to download $($t.name) after $maxAttempts attempts from $($t.url) (HTTP gateway errors like 504 are the known failure mode; total backoff waited=$(($backoffSecs | Measure-Object -Sum).Sum)s)" }
+            if (-not $ok) { throw "failed to download $($t.name) after $maxAttempts attempts from $($t.url); last error: $($msg) (HTTP gateway errors like 504 are the known failure mode; total backoff waited=$(($backoffSecs | Measure-Object -Sum).Sum)s)" }
             Write-Host "[tools] $($t.name) fetched and verified"
           }
 
