@@ -120,27 +120,59 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $tauri = 'C:\Users\runneradmin\AppData\Local\tauri'
           $targets = @(
-            @{ name='NSIS'; marker=Join-Path $tauri 'NSIS\Bin\makensis.exe'; url='https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip'; dest=$tauri },
-            @{ name='WiX';  marker=Join-Path $tauri 'WixTools314\candle.exe';  url='https://github.com/wixtoolset/wix3/releases/download/wix314rtm/wix314-binaries.zip'; dest=(Join-Path $tauri 'WixTools314') }
+            @{ name='NSIS'; marker=Join-Path $tauri 'NSIS\Bin\makensis.exe'; url='https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip'; dest=$tauri; minBytes=1500000 },
+            @{ name='WiX';  marker=Join-Path $tauri 'WixTools314\candle.exe';  url='https://github.com/wixtoolset/wix3/releases/download/wix314rtm/wix314-binaries.zip'; dest=(Join-Path $tauri 'WixTools314'); minBytes=30000000 }
           )
+          # 退避策略（发版链加固 20261110）：5xx/429/网关瞬时错可重试、4xx(除429)不可重试。
+          # 尝试 5 次、指数退避 10/20/40/80 秒（总等待上限 150s≈2.5min），抗 GitHub releases CDN
+          # 偶发 504（v0.14.12 attempt=1 NSIS 504、v0.14.13 第三次同族失败，旧版仅 3 次×15s 总等待）。
+          # minBytes 阈值取实测值 60%–73%（实测 2026-11-10：nsis-3.11.zip＝2,361,546 B／
+          #   wix314-binaries.zip＝41,282,726 B；阈值用于拦截断流与 HTML 错误页，不误杀正常包）。
+          $maxAttempts = 5
+          $backoffSecs = @(10, 20, 40, 80)
+          function Test-Retryable([int]$code) {
+            return ($code -ge 500) -or ($code -eq 429)
+          }
           foreach ($t in $targets) {
             if (Test-Path $t.marker) { Write-Host "[tools] $($t.name) present: $($t.marker)"; continue }
             Write-Host "[tools] $($t.name) missing -> fetching $($t.url)"
             $zip = Join-Path $env:RUNNER_TEMP "$($t.name)-tools.zip"
             $ok = $false
-            for ($attempt = 1; $attempt -le 3; $attempt++) {
+            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
               try {
                 Invoke-WebRequest -Uri $t.url -OutFile $zip -MaximumRedirection 5 -ErrorAction Stop
+                $size = (Get-Item $zip).Length
+                Write-Host "[tools] $($t.name) attempt $attempt: downloaded $size B"
+                if ($size -lt $t.minBytes) {
+                  Write-Host "[tools] $($t.name) attempt $attempt: package too small ($size < $($t.minBytes) min) — discarding, will retry"
+                  Remove-Item $zip -Force -ErrorAction SilentlyContinue
+                  throw "downloaded package size $size below minimum $($t.minBytes)"
+                }
+                # 解压＋marker 校验进重试循环（zip 损坏时走同一条退避路径，不靠重跑整个 job）
+                Expand-Archive -Path $zip -DestinationPath $t.dest -Force
+                if (-not (Test-Path $t.marker)) {
+                  Write-Host "[tools] $($t.name) attempt $attempt: extracted but marker missing — discarding, will retry"
+                  Remove-Item $zip -Force -ErrorAction SilentlyContinue
+                  throw "$($t.name) archive extracted but marker still missing: $($t.marker)"
+                }
                 $ok = $true
                 break
               } catch {
-                Write-Host "[tools] $($t.name) download attempt $attempt failed: $($_.Exception.Message)"
-                if ($attempt -lt 3) { Start-Sleep -Seconds (5 * $attempt) }
+                $code = $null
+                if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
+                $msg = $_.Exception.Message
+                Write-Host "[tools] $($t.name) attempt $attempt/$maxAttempts failed: HTTP=$code msg=$msg"
+                if ($code -and -not (Test-Retryable $code)) {
+                  throw "[$($t.name)] HTTP $code is not retryable (4xx except 429) — aborting after attempt $attempt from $($t.url)"
+                }
+                if ($attempt -lt $maxAttempts) {
+                  $wait = $backoffSecs[$attempt - 1]
+                  Write-Host "[tools] $($t.name) backing off ${wait}s before attempt $($attempt + 1)"
+                  Start-Sleep -Seconds $wait
+                }
               }
             }
-            if (-not $ok) { throw "failed to download $($t.name) after 3 attempts from $($t.url) (HTTP gateway errors like 504 are the known failure mode)" }
-            Expand-Archive -Path $zip -DestinationPath $t.dest -Force
-            if (-not (Test-Path $t.marker)) { throw "$($t.name) archive extracted but marker still missing: $($t.marker)" }
+            if (-not $ok) { throw "failed to download $($t.name) after $maxAttempts attempts from $($t.url) (HTTP gateway errors like 504 are the known failure mode; total backoff waited=$(($backoffSecs | Measure-Object -Sum).Sum)s)" }
             Write-Host "[tools] $($t.name) fetched and verified"
           }
 

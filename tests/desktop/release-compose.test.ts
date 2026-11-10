@@ -127,9 +127,17 @@ describe('发布后公开链路闸（G4：draft 的公开 url 恒 404，只能�
     expect(published).toContain('types: [published]');
   });
 
-  it('优先读客户端实际使用的 Latest 端点，url 可达带 3 次重试', () => {
+  it('优先读客户端实际使用的 Latest 端点，url 可达带重试（上限≥3）', () => {
     expect(published).toContain('releases/latest/download/latest.json');
-    expect(published).toContain('for ($attempt = 1; $attempt -le 3; $attempt++)');
+    // #59：原 `toContain('for ($attempt = 1; $attempt -le 3; $attempt++)')` 把"恰好 3 次"锁死，
+    // 实现改次数就红（同族缺陷，与卡 E 的 L395 一起改）。改为锁性质：上限 ≥3、退化成 1–2 次显式红、
+    // 有睡眠退避、可达后 break。（标题随断言同步改，原标题「…带 3 次重试」留档在台账。）
+    // 我抓不住：睡眠秒数被改小（release-published.yml 现值 Start-Sleep -Seconds 10 未锁死）；
+    //           上限被改成 4–9（仍在 [3-9] 内、且不属于"退化"，属可接受区间外的钝角）。
+    expect(published, '发布后公开链路的可达重试循环丢失或被改成 <3 次').toMatch(/\$attempt\s*-\le\s*[3-9]\b/);
+    expect(published, '发布后公开链路的重试上限退化为 1–2 次（等于不重试）').not.toMatch(/\$attempt\s*-\le\s*\$?[12]\b/);
+    expect(published, '发布后公开链路的重试已无睡眠退避').toContain('Start-Sleep -Seconds');
+    expect(published, '公网 HEAD 可达后的 break 丢失（会白跑满次数）').toContain('$reachable = $true; break');
     expect(published).toContain('-Method Head');
     expect(published).toContain('if (-not $reachable) { throw');
   });
@@ -391,8 +399,55 @@ describe('v0.14.13 卡 E/F：打包工具预取＋发布正文显式 PATCH（#48
     // 两条 URL 字面串（出处见 release.yml 注释）
     expect(fetch).toContain('https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip');
     expect(fetch).toContain('https://github.com/wixtoolset/wix3/releases/download/wix314rtm/wix314-binaries.zip');
-    // 重试 3 次＋退避
-    expect(fetch).toContain('for ($attempt = 1; $attempt -le 3; $attempt++)');
+    // ── step 9 重试编排性质锁（#59：原「字面钉死 3 次」已删，改为锁性质） ──
+    // 背景：$maxAttempts 由 3 改 5 时，旧断言 `toContain('for ($attempt = 1; $attempt -le 3; ...)')`
+    // 直接把实现锁死，实现一变就红（#58 闸红即此因）。下面 14 枚锁的是"有重试、退避按序、
+    // 分类不倒、阈值取实测、解压与睡眠都在循环内"这些性质——实现改数字仍绿，性质被破坏才红。
+    //
+    // 我抓不住哪一类变异（判据 5 尾巴）：
+    //   ① Expand-Archive 的 -Force 被删（覆盖已解压目录的能力丢失）——需真 runner 行为验证，#59 候选；
+    //   ② 真实等待是否真的发生（本文件只验"算得对"，"等得住"由真发版 run 作证，#58 后批残格）；
+    //   ③ 退避总上限与注释 150s 是否联动（四个值不变而注释改大仍绿）。
+    const attemptFor = fetch.indexOf('for ($attempt');
+    const notOkIdx = fetch.indexOf('if (-not $ok)');
+    const expandIdx = fetch.indexOf('Expand-Archive');
+    const sleepIdx = fetch.indexOf('Start-Sleep');
+    // a) 尝试上限＝5（退化成更低次数会让下面 k/l 与上限断言同时失配）
+    expect(fetch, '尝试上限 $maxAttempts = 5 缺失或被改').toContain('$maxAttempts = 5');
+    // b) 指数退避序列
+    expect(fetch, '退避序列 $backoffSecs = @(10, 20, 40, 80) 被改').toContain('$backoffSecs = @(10, 20, 40, 80)');
+    // c) 可重试分类：整条 return 表达式锁死（方向被翻、条件被删都红）
+    expect(fetch, 'Test-Retryable 的 return 表达式被改（-ge 500 / -eq 429）')
+      .toMatch(/return \(\$code -ge 500\) -or \(\$code -eq 429\)/);
+    // e) "可重试才重试"的否定判断被去掉 ⇒ 重试逻辑整个反过来
+    expect(fetch, 'if ($code -and -not (Test-Retryable $code)) 被改：不可重试的错误会被重试')
+      .toContain('if ($code -and -not (Test-Retryable $code))');
+    // f) 两枚阈值取实测值，并各自落在对应工具那一行（互换即红）
+    const nsisLine = fetch.split('\n').find((l) => l.includes("name='NSIS'")) ?? '';
+    const wixLine = fetch.split('\n').find((l) => l.includes("name='WiX'")) ?? '';
+    expect(nsisLine, 'NSIS 的 minBytes=1500000 缺失或与 WiX 互换').toContain('minBytes=1500000');
+    expect(wixLine, 'WiX 的 minBytes=30000000 缺失或与 NSIS 互换').toContain('minBytes=30000000');
+    // g) 解压在 attempt 循环内（下界＝循环起点，上界＝循环后的 if (-not $ok)）
+    expect(attemptFor, 'fetch 步里找不到 for ($attempt 循环').toBeGreaterThanOrEqual(0);
+    expect(notOkIdx, 'fetch 步里找不到循环后的 if (-not $ok)').toBeGreaterThan(attemptFor);
+    expect(expandIdx, 'Expand-Archive 必须出现在 attempt 循环内（循环起点之后）').toBeGreaterThan(attemptFor);
+    expect(expandIdx, 'Expand-Archive 被挪到 attempt 循环之外（解压失败将不走同一条退避）').toBeLessThan(notOkIdx);
+    // h) 只有解压成功才置 $ok 并 break
+    expect(fetch, '$ok = $true 与 break 缺失（成功判定被改）').toMatch(/\$ok = \$true\s*\n\s*break/);
+    // i) 注释里的实测值与取样日期（阈值来历可追溯）
+    expect(fetch, '注释实测值 2,361,546 缺失').toContain('2,361,546');
+    expect(fetch, '注释实测值 41,282,726 缺失').toContain('41,282,726');
+    expect(fetch, '注释取样日期 2026-11-10 缺失').toContain('2026-11-10');
+    // j) 只有一处 attempt 循环与一处 after-loop 判定（不许并存两套重试逻辑）
+    expect(fetch.match(/for \(\$attempt/g)?.length ?? 0, '出现多处 attempt 循环').toBe(1);
+    expect(fetch.match(/if \(\$attempt -lt \$maxAttempts\)/g)?.length ?? 0, '出现多处退避判断').toBe(1);
+    // k) 退避秒数按下标取（写成 $backoffSecs[0] 会让退避永远 10s）
+    expect(fetch, '退避秒数未按 $attempt - 1 取下标').toContain('$wait = $backoffSecs[$attempt - 1]');
+    // l) 睡眠用的是算出来的 $wait（写死秒数＝退避序列名存实亡）
+    expect(fetch, 'Start-Sleep 没有使用算出的 $wait').toContain('Start-Sleep -Seconds $wait');
+    // m) 睡眠也在 attempt 循环内（挪出循环＝指数退避形同虚设）
+    expect(sleepIdx, 'Start-Sleep 必须出现在 attempt 循环内（循环起点之后）').toBeGreaterThan(attemptFor);
+    expect(sleepIdx, 'Start-Sleep 被挪到 attempt 循环之外').toBeLessThan(notOkIdx);
     expect(fetch).toContain('Start-Sleep');
     // 失败点名哪个 URL（验收要求"失败点名是哪个 URL"）
     expect(fetch).toContain('failed to download');
