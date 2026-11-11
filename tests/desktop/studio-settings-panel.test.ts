@@ -400,7 +400,8 @@ describe('设置面板：手动「检查更新」入口（C-2 卡，诊断页）
  * 文案口径（PM 定字）：「宿主限流（冷却中），30 秒后自动重试一次」——与
  * entry.ts surfaceGrantFailure stopNote（rate-limited 分支）逐字一致、不许第二套说法。
  * 面板经页端痕迹 window.__studioGrantStatus（entry.ts setGrantStatus 写入）识别限流态。
- * 负控：把限流分支摘掉／把文案改成「已是最新」类 ⇒ 下述必红。
+ * 负控：把限流分支摘掉／把文案改成「已是最新」类 ⇒ 下述必红；
+ * 摘 open() 里的 `fillPathRows()`（重取半边）⇒「重取半边」那条必红。
  */
 describe('设置面板：限流态误报文案（待修②，noDataNote 分支）', () => {
   const RATE_LIMIT_NOTE = '宿主限流（冷却中），30 秒后自动重试一次';
@@ -455,6 +456,25 @@ describe('设置面板：限流态误报文案（待修②，noDataNote 分支�
     const text = allTextLines(handle.container).join('\n');
     expect(text).toContain('/opt/studio/logs');
     expect(text).not.toContain(RATE_LIMIT_NOTE);
+    handle.destroy();
+  });
+
+  it('重取半边（补刀）：限流态首开显冷却文案 → 宿主恢复后重开面板 ⇒ 路径行翻回真路径（不永久停旧值；摘 open() 里的 fillPathRows 必红）', async () => {
+    setHostBridge(deadBridge); // 首开：限流态且取不到数据
+    setGrantStatus({ stage: 'resolver-invoked', failed: true, aud: 'main', lastError: 'rate-limited', cause: null, ts: 1_000 });
+    const handle = mountDiag();
+    await flushOneTick();
+    expect(allTextLines(handle.container).join('\n')).toContain(`不可用（${RATE_LIMIT_NOTE}）`);
+    handle.close();
+    // 宿主恢复：桥开始给真数据、限流痕迹清除（30 s 后自动重试成功）
+    setHostBridge(settingsBridge({ logDir: '/opt/studio/logs', logDirSource: 'env', configDir: '/opt/studio/config' }));
+    setGrantStatus(undefined);
+    handle.open('diagnostics');
+    await flushOneTick();
+    const text = allTextLines(handle.container).join('\n');
+    expect(text).toContain('/opt/studio/logs'); // 文案翻成真路径（重取生效）
+    expect(text).not.toContain(RATE_LIMIT_NOTE); // 限流注记消失
+    expect(text).not.toContain('宿主未连接');
     handle.destroy();
   });
 });

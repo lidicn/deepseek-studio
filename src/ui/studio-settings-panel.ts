@@ -750,6 +750,10 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
     // M10-5：面板打开就从宿主拉一次，别只等广播（否则打开早于首帧广播时永远空）。
     void reloadActive();
     void reloadArchived();
+    // 0.14.19 补刀（待修② 同卡）：打开面板再重取一次路径行——启动那刻取券被限流/宿主未连，
+    // 路径行会停在「不可用（…）」；宿主恢复后用户重开面板须翻回真路径，不能永久停旧值。
+    // fillPathRows 内部全捕获（永不 reject、重取失败保留旧值不闪空），.catch 是 unhandled rejection 保险丝。
+    void fillPathRows().catch(() => { /* unreachable：内部 try/catch 已兜底 */ });
   }
 
   function close(): void {
