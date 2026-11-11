@@ -12,6 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   acquireGrant,
   GRANT_FALLBACK_BARE_URL_CAUSE,
+  GRANT_RATE_LIMITED_RETRY_MS,
   GRANT_REPLY_SHAPE_VIOLATION_CAUSE,
   type RequestGrantFn,
 } from '../../src/desktop/grant-acquire';
@@ -66,6 +67,20 @@ describe('裁定五十七 缺陷③ · 取券闭包抛错 → 页端 fail-visibl
     const logged = consoleErrorSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(logged).toContain('[studio-grant]');
     expect(logged).toContain('not allowed by ACL');
+  });
+
+  it('rate-limited 是冷却（2026-11-11 设计变更）：横幅写「30 秒后自动重试一次」，**不许**写「已停止」——文案与真实行为不一致就是骗现场', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const banner = createGrantBanner({ enabled: true, getMount: () => document.body });
+    surfaceGrantFailure(
+      { grant: null, attempts: 1, lastError: 'rate-limited', cause: GRANT_FALLBACK_BARE_URL_CAUSE, retryAfterMs: GRANT_RATE_LIMITED_RETRY_MS },
+      'main',
+      banner.setBanner,
+    );
+    const text = document.querySelector('[data-studio-grant-banner]')?.textContent ?? '';
+    expect(text).toContain('限流');
+    expect(text).toContain('30 秒后自动重试一次');
+    expect(text).not.toContain('已停止'); // 旧口径（终局）残留即红
   });
 
   it('裁定五十八：回落裸连（no-config 枚举）vs ACL 拒绝（闭包抛错）现场互斥可判（CDP 三选一）', () => {
@@ -212,5 +227,32 @@ describe('裁定五十七 0.14.9 判别仪 · installStudio 端到端 stage 链'
     expect(status!.failed).toBe(false);
     expect(status!.cause).toBeUndefined();
     expect(status!.lastError).toBeUndefined();
+  });
+
+  it('rate-limited 冷却重连（2026-11-11 设计变更）：30s 到点自动重连**一次**；第二次仍限流则不再排（IPC 上界=2，绝不循环）', async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const rateLimited: RequestGrantFn = async () => {
+        calls += 1;
+        return { ok: false, error: 'rate-limited' };
+      };
+      vi.stubGlobal('__studioRequestGrant', rateLimited);
+      installStudio({ botId: 'writer' });
+      await vi.advanceTimersByTimeAsync(0);
+      // ① 当次不做毫秒级重试（宿主限流窗口是秒级，打愈勤断愈久）
+      expect(calls).toBe(1);
+      // ② 冷却未到点前不重连
+      await vi.advanceTimersByTimeAsync(GRANT_RATE_LIMITED_RETRY_MS - 1_000);
+      expect(calls).toBe(1);
+      // ③ 到点重连一次
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(calls).toBe(2);
+      // ④ 单次 = 上界：持续限流至预算耗尽也不再排（不把页面变成限流放大器）
+      await vi.advanceTimersByTimeAsync(GRANT_RATE_LIMITED_RETRY_MS * 10);
+      expect(calls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

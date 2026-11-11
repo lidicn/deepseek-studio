@@ -22,6 +22,7 @@ import { createHostClient, type HostClient } from './host-client';
 import {
   acquireGrant,
   GRANT_FALLBACK_BARE_URL_CAUSE,
+  GRANT_RATE_LIMITED_RETRY_MS,
   GRANT_REPLY_SHAPE_VIOLATION_CAUSE,
   type GrantError,
 } from './grant-acquire';
@@ -147,14 +148,17 @@ function setGrantStatus(status: GrantStatus): void {
  *  - `host-down` / 不可重试枚举 = **停止不重试**（语义不变），但**停止必须可见**。
  */
 export function surfaceGrantFailure(
-  result: { grant: string | null; attempts: number; lastError?: GrantError; cause?: string },
+  result: { grant: string | null; attempts: number; lastError?: GrantError; cause?: string; retryAfterMs?: number },
   aud: string,
   setBanner: (message: string | null) => void,
 ): void {
   const lastError = result.lastError ?? 'unknown';
+  // 2026-11-11 设计变更（PM 裁定）：rate-limited 从「终局」改成「冷却」——
+  // 文案必须与**真实行为**一致（当次不做毫秒重试、由调用方在 ≥30s 后单次重试），
+  // 不许再写「已停止」（那正是「页面通道永久断」的误导来源）。
   const stopNote =
     result.lastError === 'rate-limited'
-      ? '宿主拒绝续签，已停止'
+      ? `宿主限流（冷却中），${GRANT_RATE_LIMITED_RETRY_MS / 1000} 秒后自动重试一次`
       : result.lastError === 'no-config'
         ? '重试预算耗尽，已停止'
         : '已停止（不可重试）';
@@ -290,6 +294,27 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
   // 判别仪（第 1/2 选）：取券 bootstrap 一开始就把痕迹钉 'init'——
   // CDP 之后若仍停在 'init'（resolver 从未被调）= connect() 没被调 = 另一缺陷，不归给 ACL。
   setGrantStatus({ stage: 'init', aud, ts: Date.now() });
+  // 2026-11-11 设计变更（PM 裁定）：`rate-limited` 从「终局」改成「冷却」——
+  // 页端拿到 `retryAfterMs`（30s）后**单次**重连；**整页生命周期内只重试一次**（不是循环重试：
+  // 宿主限流若一直不放行，循环只会把页面变成限流放大器）。第二次仍被限流就停在可见失败态，
+  // 由用户手动重连/刷新（那条路本来就通：`onclose → scheduleReconnect` 每轮都现取新券）。
+  let rateLimitedRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let rateLimitedRetried = false;
+  const scheduleRateLimitedRetry = (retryAfterMs: number): void => {
+    if (rateLimitedRetried || rateLimitedRetryTimer !== null) return;
+    rateLimitedRetryTimer = setTimeout(() => {
+      rateLimitedRetryTimer = null;
+      rateLimitedRetried = true;
+      // `connect()` 只开新一轮「取券 → 开 WS」（host-client 内部 `roundActive` 守卫挡重叠轮）；
+      // 冷却已过 30s，这一轮拿到的就是新券。
+      try {
+        host.connect();
+      } catch (error) {
+        options.reportError?.('rate-limited retry failed', error);
+      }
+    }, retryAfterMs);
+  };
+
   const host = createHostClient({
     url: fallbackUrl,
     urlResolver: (): Promise<string> => {
@@ -306,12 +331,19 @@ export function installStudio(options: InstallStudioOptions = {}): InstalledStud
           setGrantBanner(null);
           // 成功（判别仪第 4 选）：刷新页端标记为成功态（stage 钉 resolver-invoked），避免残留旧失败痕迹误导取证。
           setGrantStatus({ stage: 'resolver-invoked', failed: false, aud, ts: Date.now() });
+          // 冷却重试已排上但这一轮先通了 → 撤掉（否则 30s 后会平白多开一轮）。
+          if (rateLimitedRetryTimer !== null) {
+            clearTimeout(rateLimitedRetryTimer);
+            rateLimitedRetryTimer = null;
+          }
           return resolveHostUrl(r.grant, botId, fallbackUrl);
         }
         if (r.attempts > 0) {
           // attempts>0 = 真进过按需取券且回落：横幅带**真实原因**（cause，如 ACL 拒绝原文）
           // + 页端可 grep 痕迹（window.__studioGrantStatus + console.error）——裁定五十七 缺陷③ 页面侧腿。
           surfaceGrantFailure(r, aud, setGrantBanner);
+          // 2026-11-11 设计变更：限流是冷却不是终局 → 排一次 30s 后的重连（单次，见上）。
+          if (r.retryAfterMs !== undefined) scheduleRateLimitedRetry(r.retryAfterMs);
         }
         // dev 形态（attempts===0）：不提示——裸连在 dev 是合法形态（设计稿 §6 fail-closed 只约束生产）。
         return fallbackUrl;

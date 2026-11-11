@@ -17,8 +17,12 @@
  * 2. **单飞**：同窗口并发（连接 + 重连 + 面板拉取同时触发）只发一次 IPC，复用 in-flight；
  * 3. **裁定三十六退避**：仅 `no-config` 可重试（首启竞态窗口：config.json 刚写完就取），
  *    指数退避 500ms→1s→2s→4s→8s（5 次重试、总预算 ~15.5s，覆盖实测 5s 竞态窗口留 3 倍余量）；
- *    `rate-limited` **一律停**（宿主明确拒绝续签，重试只会打爆限流）；
- *    `no-secret/sign-failed/bad-aud/host-down` 四支按不可重试回落（各带自己的日志行，不共用）；
+ *    **`rate-limited` 是「冷却」不是「终局」**（2026-11-11 设计变更，PM 裁定后改，**旧口径
+ *    「一律停」作废**）：宿主限流窗口是**秒级**的（Rust `GRANT_MIN_INTERVAL_MS=1000`），
+ *    拿 500ms 那串毫秒退避去打只会**续着限流**，所以当次**不做毫秒级重试**——回落并交回
+ *    `retryAfterMs`（`GRANT_RATE_LIMITED_RETRY_MS` = 30s，宽于 1s 窗口一个量级），
+ *    **由调用方（`entry.ts`）在 ≥30s 后单次重试**（单次 = 不会自己造请求风暴）；
+ *    `no-secret/sign-failed/bad-aud/host-down` 四支仍是不可重试回落（各带自己的日志行，不共用）；
  * 4. **耗尽才回落**：预算耗尽/不可重试错误 → 回落既有 URL（静态 grant 或裸连，仅 dev 合法），
  *    且回落**必须 fail-visible**（裁定三十二：调用方给可见提示，宿主侧一行可 grep 日志）；
  * 5. 闭包缺失（dev 形态/旧构建）→ 不碰按需取券路径，立即回落，**零等待、行为与改前一致**。
@@ -41,6 +45,21 @@ export type RequestGrantFn = (aud: string) => Promise<GrantReply>;
 
 /** 裁定三十六：5 次重试（首试不计），总预算 500+1000+2000+4000+8000 = 15.5s。 */
 export const GRANT_BACKOFF_MS: readonly number[] = [500, 1000, 2000, 4000, 8000];
+
+/**
+ * `rate-limited` 的**冷却时长**（2026-11-11 设计变更，PM 裁定：从「终局」改成「可恢复」）。
+ *
+ * 为什么是 30s、为什么**不**塞进 `GRANT_BACKOFF_MS`：
+ *   - 宿主限流窗口是**秒级**的（Rust `GRANT_MIN_INTERVAL_MS = 1000`：同窗口两次签发间隔 < 1s
+ *     即拒；另有单窗口 200 张的生命周期上界）——用 500ms→8s 那串**毫秒级**退避去重试，
+ *     只会一次次撞在同一个窗口上、**续着限流**（重试越勤、断得越久）；
+ *   - 30s 比 1s 窗口宽一个量级，且**只重试一次**（单次 ≠ 自造请求风暴）。
+ *
+ * **宿主侧不提供窗口信息**（`main.rs` 的 `GrantReplyErr` 只有 `{ok,error}`，且该可辨识联合
+ * 明令禁止可选字段形态——见文件头裁定三十三），所以这里是**固定常量**、不硬加 IPC 字段。
+ * 将来宿主真能报 `retryAfterMs` 时，改成由 reply 透传、本常量退为缺省值。
+ */
+export const GRANT_RATE_LIMITED_RETRY_MS = 30_000;
 
 /** 唯一可重试错误（首启竞态：宿主正在写 config.json）。其余一律不重试。 */
 const RETRYABLE: ReadonlySet<GrantError> = new Set<GrantError>(['no-config']);
@@ -66,6 +85,17 @@ export interface GrantAcquireResult {
   lastError?: GrantError;
   /** 券的过期时刻（宿主报的 expMs；回落时为 undefined）。 */
   expMs?: number;
+  /**
+   * **仅 `lastError === 'rate-limited'` 时**出现：宿主最早何时可能放行（ms）。
+   *
+   * 2026-11-11 设计变更（PM 裁定）的载荷：`rate-limited` 从「终局」改成「冷却」，
+   * 本函数**当次不做毫秒级重试**（见 `GRANT_RATE_LIMITED_RETRY_MS` 注释），
+   * 而是把这个冷却时长交回调用方 ⇒ 调用方（`entry.ts`）**在 ≥30s 后单次重试**。
+   *
+   * 负控：**不许**拿本字段去循环重试（单次是契约、不是建议值）；其余回落分支不得带本字段
+   * （带了就是把「不可恢复」误报成「冷却中」，现场会对着一个永不恢复的错误等 30 秒）。
+   */
+  retryAfterMs?: number;
   /**
    * 裁定五十七 缺陷③（P0，v0.14.8 真机）：闭包**抛错 / 形状违例**时的**原文**原因
    * （如 `Command studio_request_grant not allowed by ACL`）。
@@ -170,8 +200,19 @@ export function acquireGrant(opts: GrantAcquireOptions): Promise<GrantAcquireRes
         return { grant: reply.grant, attempts: attempt + 1, expMs: reply.expMs };
       }
       if (!RETRYABLE.has(reply.error)) {
-        // rate-limited / no-secret / sign-failed / bad-aud / host-down：停，不重试。
+        // no-secret / sign-failed / bad-aud / host-down：停，不重试。
         // 裁定五十八：回落裸连必带稳定 cause（与宿主 absent 成对），不只留枚举。
+        // 2026-11-11 设计变更：`rate-limited` **不再**走这条「终局」——它是**冷却**，
+        // 当次不重试（毫秒退避打不动秒级窗口），但把冷却时长交回调用方单次重试。
+        if (reply.error === 'rate-limited') {
+          return {
+            grant: null,
+            attempts: attempt + 1,
+            lastError: 'rate-limited',
+            cause: GRANT_FALLBACK_BARE_URL_CAUSE,
+            retryAfterMs: GRANT_RATE_LIMITED_RETRY_MS,
+          };
+        }
         return { grant: null, attempts: attempt + 1, lastError: reply.error, cause: GRANT_FALLBACK_BARE_URL_CAUSE };
       }
       const wait = backoff[attempt];

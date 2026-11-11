@@ -8,7 +8,8 @@
  *   - 5s  → config 在第 4 试（7.5s）前就绪 → **第 4 试成功**；
  *   - 12s → config 在第 5 试（7.5s）后、第 6 试（15.5s）前就绪 → **压预算最后一格成功**；
  *   - 20s → 最后尝试（15.5s）仍早于就绪时刻 → **预算耗尽回落**（fail-visible）。
- * 另锁：rate-limited 一律停（不重试打爆宿主限流）、非 no-config 错误不重试、
+ * 另锁：rate-limited 是**冷却**不是终局（2026-11-11 设计变更：当次不重试、交回 30s 冷却、
+ * 由调用方单次重连）、非 no-config 错误不重试、
  * 无闭包（dev 形态）零等待回落、单飞（并发一次 IPC）、每轮新券（不缓存）。
  * 宿主侧静默裸连判红由 UI 横幅 + 宿主可 grep 行承接（裁定三十二），本文件锁页端状态机。
  */
@@ -17,6 +18,7 @@ import {
   acquireGrant,
   GRANT_BACKOFF_MS,
   GRANT_FALLBACK_BARE_URL_CAUSE,
+  GRANT_RATE_LIMITED_RETRY_MS,
   GRANT_REPLY_SHAPE_VIOLATION_CAUSE,
   type GrantAcquireResult,
   type GrantError,
@@ -105,23 +107,43 @@ describe('grant-acquire：按需取券状态机（P0 卡 (A) 页端半）', () =
     expect(r.cause).toBe('grant-fallback-bare-url');
   });
 
-  it('裁定五十八：rate-limited（不可重试枚举）回落裸连 → 同样带稳定 cause（不是泛化 host-down）', async () => {
+  it('裁定五十八：rate-limited（冷却回落）→ 带稳定 cause（不是泛化 host-down）＋ 交回冷却时长', async () => {
     vi.useFakeTimers();
     mockHostGrantError('rate-limited');
     const r = await acquireGrant({ aud: 'main', backoffMs: [] });
     expect(r.grant).toBeNull();
     expect(r.lastError).toBe('rate-limited');
     expect(r.cause).toBe(GRANT_FALLBACK_BARE_URL_CAUSE);
+    // 2026-11-11 设计变更：冷却时长交回调用方（单次重试的载荷）。
+    expect(r.retryAfterMs).toBe(GRANT_RATE_LIMITED_RETRY_MS);
   });
 
-  it('rate-limited 一律停：第一回就回落（attempts=1、不重试），不拿重试去打爆宿主限流', async () => {
+  it('rate-limited 是冷却不是终局（2026-11-11 设计变更）：当次只发 1 次 IPC、绝不走 500ms→8s 退避串，交回 retryAfterMs=30s', async () => {
     vi.useFakeTimers();
     const fn = mockHostGrantError('rate-limited');
     const r = await runThroughBudget(acquireGrant({ aud: 'main' }));
     expect(r.grant).toBeNull();
+    // 关键上界：整个 20s 预算窗口内只打 1 次 IPC——毫秒退避打不动秒级限流窗口，
+    // 多打一次就是「续着限流」（重试越勤、断得越久）。
     expect(r.attempts).toBe(1);
+    expect(fn.mock.calls.length).toBe(1);
     expect(r.lastError).toBe('rate-limited');
-    expect(fn.mock.calls.length).toBe(1); // 20s 预算窗口内没有第二次 IPC
+    // 恢复路径靠调用方在 ≥30s 后单次重试，不是本函数自己循环。
+    expect(r.retryAfterMs).toBe(30_000);
+    expect(r.retryAfterMs).toBe(GRANT_RATE_LIMITED_RETRY_MS);
+    // 负控：冷却常量不得混进退避表（混进去就等于「毫秒级重试」复活）。
+    expect(GRANT_BACKOFF_MS).not.toContain(GRANT_RATE_LIMITED_RETRY_MS);
+  });
+
+  it('负控：其余不可重试枚举（no-secret/sign-failed/bad-aud/host-down）**不得**带 retryAfterMs——否则现场会对着永不恢复的错误干等 30s', async () => {
+    vi.useFakeTimers();
+    for (const error of ['no-secret', 'sign-failed', 'bad-aud', 'host-down'] as GrantError[]) {
+      vi.unstubAllGlobals();
+      mockHostGrantError(error);
+      const r = await acquireGrant({ aud: 'main', backoffMs: [] });
+      expect(r.lastError).toBe(error);
+      expect(r.retryAfterMs).toBeUndefined();
+    }
   });
 
   it('no-secret / sign-failed / bad-aud / host-down：不可重试，第一回即回落（各带自己的枚举，不共用「回落」）', async () => {
