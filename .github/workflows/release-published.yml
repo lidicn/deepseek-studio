@@ -118,6 +118,15 @@ jobs:
           }
           $assetNames = @($rel.assets | ForEach-Object { $_.name })
           Write-Host "release state: draft=$($rel.draft) prerelease=$($rel.prerelease) id=$($rel.id) tag_name=$($rel.tag_name) body_len=$($rel.body.Length) assets=$($assetNames.Count) names=$($assetNames -join ', ')"
+          # 第 112 件判据：release 必须绑在 git 标签上——tag_name == release.name（＝step15 建草稿时的真 git tag）、
+          # html_url 形如 /releases/tag/vX.Y.Z；untagged-… ＝未绑定＝失败态
+          # （今晚三发起红处在其上游的版本等值比对，绑定关系与红点的因果未证）
+          $expectedTag = $env:RELEASE_NAME
+          if (-not $expectedTag -or $expectedTag -like 'untagged-*') { $expectedTag = $env:REF_NAME }
+          if (-not $expectedTag -or $rel.tag_name -ne $expectedTag -or $rel.html_url -notlike "*/releases/tag/$expectedTag") {
+            Write-Host "::error::[pub-chain] release not bound to git tag: expected=$expectedTag actual_tag_name=$($rel.tag_name) html_url=$($rel.html_url) release.id=$env:RELEASE_ID release.name=$env:RELEASE_NAME"
+            throw "release tag_name '$($rel.tag_name)' != expected '$expectedTag' or html_url not /releases/tag/$expectedTag — unbound draft, must revert and rebuild"
+          }
           if ($assetNames -notcontains $urlName) {
             Write-Host "::error::[pub-chain] manifest url asset not in release: expected='$urlName' actual=[$($assetNames -join ', ')] draft=$($rel.draft) tag_name=$tag ref_name=$env:REF_NAME"
             throw "manifest url asset '$urlName' not in release assets: $($assetNames -join ', ')"

@@ -655,6 +655,7 @@ describe('第 107/108/110 件：发布后闸可观测性＋草稿 target 钉 tag
       '$rawVersion = $env:RELEASE_NAME',
       'git_ref_tags/$tag=$gitRefState',
       'tag_name=$($rel.tag_name)',
+      '::error::[pub-chain] release not bound to git tag:',
       '::error::[pub-chain] manifest url asset not in release',
       '::error::[pub-chain] manifest url asset name contains a space',
       '::error::[pub-chain] public download url not reachable',
@@ -734,13 +735,15 @@ describe('第 107/108/110 件：发布后闸可观测性＋草稿 target 钉 tag
     expect(hasCommitish(mutated), '负控失效：抹掉 github.sha 后判据仍绿 ⇒ 锁无判别力').toBe(false);
   });
 
-  it('G-f（第 112 件）：release 取数走 id 数据通道＋版本号从 release.name 推＋git 标签绑定三方并排（unbound release 的 tag_name 是合成名）', () => {
+  it('G-f（第 112 件）：release 取数走 id 数据通道＋版本号从 release.name 推＋git 标签绑定三方并排＋发布后断言 tag_name==期望（unbound release 的 tag_name 是合成名）', () => {
     const hasByIdAndNameVersion = (body: string): boolean =>
       body.includes('RELEASE_ID: ${{ github.event.release.id }}') &&
       body.includes('/releases/$env:RELEASE_ID') &&
       body.includes('::notice::[pub-chain] release context: id=$env:RELEASE_ID') &&
       body.includes('$rawVersion = $env:RELEASE_NAME') &&
-      body.includes('git_ref_tags/$tag=$gitRefState');
+      body.includes('git_ref_tags/$tag=$gitRefState') &&
+      body.includes('::error::[pub-chain] release not bound to git tag:') &&
+      body.includes('$rel.html_url -notlike');
     expect(hasByIdAndNameVersion(pubGate), 'step4 缺 release.id 数据通道或版本号仍依赖 tag_name').toBe(true);
     // 负控：把 by-id 退回按 tag 查＋版本号改回 $tag ⇒ 同一判据必红
     const mutated = pubGate.replaceAll('/releases/$env:RELEASE_ID', '/releases/tags/$tag')
