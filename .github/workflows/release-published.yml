@@ -37,17 +37,30 @@ jobs:
           GH_REF: ${{ github.ref }}
           GH_SHA: ${{ github.sha }}
           TARGET_COMMITISH: ${{ github.event.release.target_commitish }}
+          RELEASE_ID: ${{ github.event.release.id }}
+          RELEASE_HTML_URL: ${{ github.event.release.html_url }}
+          RELEASE_NAME: ${{ github.event.release.name }}
         run: |
           $ErrorActionPreference = 'Stop'
           $repo = '${{ github.repository }}'
           $tag = '${{ github.event.release.tag_name }}'
-          $version = $tag.TrimStart('v')
+          # 版本号不依赖 tag_name（unbound release 的 tag_name 是合成名 untagged-…，第 112 件）：
+          # 优先 release.name（step15 建草稿时由 github.ref_name＝真 git tag 写入），回退 github.ref_name
+          $rawVersion = $env:RELEASE_NAME
+          if (-not $rawVersion -or $rawVersion -like 'untagged-*') { $rawVersion = $env:REF_NAME }
+          $version = $rawVersion.TrimStart('v')
           $latestUrl = "https://github.com/$repo/releases/latest/download/latest.json"
           $tagLatestUrl = "https://github.com/$repo/releases/download/$tag/latest.json"
           # 现场诊断（第 107 件）：tag_name 与 ref_name 两个都打，一眼分 ③A（结构性 404）/③B（API 现算字段）
           Write-Host "[pub-chain] diag: repo=$repo tag_name=$tag ref_name=$env:REF_NAME version=$version latest_url=$latestUrl tag_url=$tagLatestUrl"
           # 第 110 件验证面：commitish 三件进 ::notice::（匿名可读注解，一发定案"闸读 tag 提交还是分支尖端"）
           Write-Host "::notice::[pub-chain] commitish: github.ref=$env:GH_REF github.sha=$env:GH_SHA target_commitish=$env:TARGET_COMMITISH tag_name=$tag ref_name=$env:REF_NAME"
+          # 第 112 件验证面：release 四件进 ::notice::（id/tag_name/target_commitish/html_url——按 tag 查 unbound release 必 404）
+          # 第 112 件观测面：git 标签绑定三方并排（release 在/tag 在/绑没绑）——缺这行查了两小时
+          $gitRef = $null
+          try { $gitRef = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/git/ref/tags/$tag" -Headers @{ 'User-Agent' = 'studio-release-gate' } -TimeoutSec 60 -ErrorAction SilentlyContinue } catch { $gitRef = $null }
+          $gitRefState = if ($gitRef -and $gitRef.object.sha) { "hit sha=$($gitRef.object.sha)" } else { "miss" }
+          Write-Host "::notice::[pub-chain] release context: id=$env:RELEASE_ID tag_name=$tag name=$env:RELEASE_NAME target_commitish=$env:TARGET_COMMITISH html_url=$env:RELEASE_HTML_URL git_ref_tags/$tag=$gitRefState"
 
           # 1) 取 latest.json：优先读**客户端实际用的** Latest 端点；若刚发布的不是 Latest，退回本 tag 的资产
           $manifestSource = $null
@@ -73,10 +86,10 @@ jobs:
               throw "tag-asset latest.json not reachable (HTTP=$pcode): $tagLatestUrl — $($_.Exception.Message)"
             }
           }
-          Write-Host "manifest source=$manifestSource manifest_version=$($manifest.version) tag_version=$version tag_name=$tag ref_name=$env:REF_NAME"
+          Write-Host "manifest source=$manifestSource manifest_version=$($manifest.version) expected_version=$version release_name=$env:RELEASE_NAME tag_name=$tag ref_name=$env:REF_NAME"
           if ($manifest.version -ne $version) {
-            Write-Host "::error::[pub-chain] manifest version mismatch: manifest=$($manifest.version) tag=$version source=$manifestSource tag_name=$tag ref_name=$env:REF_NAME"
-            throw "manifest version $($manifest.version) != tag version $version (source=$manifestSource)"
+            Write-Host "::error::[pub-chain] manifest version mismatch: manifest.version=$($manifest.version) expected=$version release.tag_name=$tag release.name=$env:RELEASE_NAME github.ref_name=$env:REF_NAME release.id=$env:RELEASE_ID"
+            throw "manifest version $($manifest.version) != expected $version (release.tag_name=$tag release.name=$env:RELEASE_NAME)"
           }
 
           $plat = $manifest.platforms.'windows-x86_64'
@@ -95,15 +108,16 @@ jobs:
             'X-GitHub-Api-Version' = '2022-11-28'
             'User-Agent' = 'studio-release-gate'
           }
+          # 第 112 件：按 tag 查 unbound release 必 404——一律走 release.id 数据通道
           try {
-            $rel = Invoke-RestMethod -Headers $relHeaders -Uri "https://api.github.com/repos/$repo/releases/tags/$tag"
+            $rel = Invoke-RestMethod -Headers $relHeaders -Uri "https://api.github.com/repos/$repo/releases/$env:RELEASE_ID"
           } catch {
             $pcode = $null; if ($_.Exception.Response) { $pcode = [int]$_.Exception.Response.StatusCode }
-            Write-Host "::error::[pub-chain] releases/tags/$tag fetch failed: HTTP=$pcode msg=$($_.Exception.Message) tag_name=$tag ref_name=$env:REF_NAME"
-            throw "releases/tags/$tag not reachable (HTTP=$pcode) — $($_.Exception.Message)"
+            Write-Host "::error::[pub-chain] releases/{id} fetch failed: id=$env:RELEASE_ID HTTP=$pcode msg=$($_.Exception.Message) tag_name=$tag ref_name=$env:REF_NAME"
+            throw "releases/{id} not reachable (HTTP=$pcode, id=$env:RELEASE_ID) — $($_.Exception.Message)"
           }
           $assetNames = @($rel.assets | ForEach-Object { $_.name })
-          Write-Host "release state: draft=$($rel.draft) prerelease=$($rel.prerelease) id=$($rel.id) body_len=$($rel.body.Length) assets=$($assetNames.Count) names=$($assetNames -join ', ')"
+          Write-Host "release state: draft=$($rel.draft) prerelease=$($rel.prerelease) id=$($rel.id) tag_name=$($rel.tag_name) body_len=$($rel.body.Length) assets=$($assetNames.Count) names=$($assetNames -join ', ')"
           if ($assetNames -notcontains $urlName) {
             Write-Host "::error::[pub-chain] manifest url asset not in release: expected='$urlName' actual=[$($assetNames -join ', ')] draft=$($rel.draft) tag_name=$tag ref_name=$env:REF_NAME"
             throw "manifest url asset '$urlName' not in release assets: $($assetNames -join ', ')"
@@ -166,6 +180,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REF_NAME: ${{ github.ref_name }}
+          RELEASE_ID: ${{ github.event.release.id }}
         run: |
           $ErrorActionPreference = 'Stop'
           $repo = '${{ github.repository }}'
@@ -176,10 +191,11 @@ jobs:
             'X-GitHub-Api-Version' = '2022-11-28'
             'User-Agent' = 'studio-release-gate'
           }
+          # 第 112 件：按 tag 查 unbound release 必 404——一律走 release.id 数据通道
           try {
-            $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/tags/$tag"
+            $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$env:RELEASE_ID"
           } catch {
-            Write-Host "::error::[revert-to-draft] fetch release by tag failed: tag=$tag ref_name=$env:REF_NAME msg=$($_.Exception.Message) — cannot revert, release state unknown"
+            Write-Host "::error::[revert-to-draft] fetch release by id failed: id=$env:RELEASE_ID tag=$tag ref_name=$env:REF_NAME msg=$($_.Exception.Message) — cannot revert, release state unknown"
             throw
           }
           Write-Host "::error::[revert-to-draft] reverting: tag=$tag id=$($rel.id) draft_before=$($rel.draft) ref_name=$env:REF_NAME — public update chain failed its gate"
@@ -190,6 +206,6 @@ jobs:
             Write-Host "::error::[revert-to-draft] PATCH draft=true failed: id=$($rel.id) tag=$tag msg=$($_.Exception.Message) — release may still be PUBLIC"
             throw
           }
-          $rel2 = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/tags/$tag"
+          $rel2 = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$env:RELEASE_ID"
           Write-Host "::error::[revert-to-draft] reverted: tag=$tag id=$($rel.id) draft_after=$($rel2.draft)"
           exit 1

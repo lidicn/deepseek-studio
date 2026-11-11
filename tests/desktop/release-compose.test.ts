@@ -574,6 +574,8 @@ describe('v0.14.13 卡 E/F：打包工具预取＋发布正文显式 PATCH（#48
     }).join('\n');
     // 检 run: 脚本体全量（剥注释后），只放行 steps.<id>.outputs.<name> 形态
     const allExprs = runNoComments.match(/\$\{\{[^}]+\}\}/g) ?? [];
+    // 第 G-d 件：过滤类断言须证"被检查对象非空"（判据：allExprs 空 ⇒ illegalExprs 必空 ⇒ 锁空跑假绿）
+    expect(allExprs.length, 'patch run: 体无任何 ${{ }} 插值——注入锁空跑（被检查对象为空）').toBeGreaterThan(0);
     const illegalExprs = allExprs.filter(e => !/\$\{\{\s*steps\.\w+\.(outputs|result)\.\w+\s*\}\}/.test(e));
     expect(illegalExprs, `patch run: 脚本体内出现非法 ${{ }} 插值（只允许 steps.<id>.outputs.<name> 数据通道）：${illegalExprs.join('; ')}`).toHaveLength(0);
     // 位置：Create draft release < Patch < Preflight gate
@@ -648,7 +650,11 @@ describe('第 107/108/110 件：发布后闸可观测性＋草稿 target 钉 tag
       '::error::[pub-chain] tag-asset latest.json fetch failed',
       '::error::[pub-chain] manifest version mismatch',
       '::error::[pub-chain] manifest missing url/signature',
-      '::error::[pub-chain] releases/tags/$tag fetch failed',
+      '::error::[pub-chain] releases/{id} fetch failed',
+      '::notice::[pub-chain] release context: id=$env:RELEASE_ID',
+      '$rawVersion = $env:RELEASE_NAME',
+      'git_ref_tags/$tag=$gitRefState',
+      'tag_name=$($rel.tag_name)',
       '::error::[pub-chain] manifest url asset not in release',
       '::error::[pub-chain] manifest url asset name contains a space',
       '::error::[pub-chain] public download url not reachable',
@@ -726,6 +732,29 @@ describe('第 107/108/110 件：发布后闸可观测性＋草稿 target 钉 tag
       .replace('github.sha=$env:GH_SHA', 'github.sha=$env:REMOVED');
     expect(mutated).not.toBe(pubGate);
     expect(hasCommitish(mutated), '负控失效：抹掉 github.sha 后判据仍绿 ⇒ 锁无判别力').toBe(false);
+  });
+
+  it('G-f（第 112 件）：release 取数走 id 数据通道＋版本号从 release.name 推＋git 标签绑定三方并排（unbound release 的 tag_name 是合成名）', () => {
+    const hasByIdAndNameVersion = (body: string): boolean =>
+      body.includes('RELEASE_ID: ${{ github.event.release.id }}') &&
+      body.includes('/releases/$env:RELEASE_ID') &&
+      body.includes('::notice::[pub-chain] release context: id=$env:RELEASE_ID') &&
+      body.includes('$rawVersion = $env:RELEASE_NAME') &&
+      body.includes('git_ref_tags/$tag=$gitRefState');
+    expect(hasByIdAndNameVersion(pubGate), 'step4 缺 release.id 数据通道或版本号仍依赖 tag_name').toBe(true);
+    // 负控：把 by-id 退回按 tag 查＋版本号改回 $tag ⇒ 同一判据必红
+    const mutated = pubGate.replaceAll('/releases/$env:RELEASE_ID', '/releases/tags/$tag')
+      .replace('$rawVersion = $env:RELEASE_NAME', '$rawVersion = $tag');
+    expect(mutated).not.toBe(pubGate);
+    expect(hasByIdAndNameVersion(mutated), '负控失效：退回按 tag 查/按 tag 推版本后判据仍绿 ⇒ 锁无判别力').toBe(false);
+  });
+});
+
+describe('G-e：发布链 runner 侧取数工具统一（不出现裸 curl）', () => {
+  it('.github/workflows/*.yml 内不出现裸 curl（runner 侧统一 Invoke-RestMethod／Invoke-WebRequest）', () => {
+    for (const w of ['.github/workflows/release.yml', '.github/workflows/release-published.yml', '.github/workflows/ci.yml']) {
+      expect(read(w), `${w} 含裸 curl（runner 侧 curl／Invoke-WebRequest 混用是隐患）`).not.toMatch(/\bcurl\b/);
+    }
   });
 });
 

@@ -89,16 +89,16 @@ describe('tools/audit/workflow-pwsh-compile.cjs 正负控', () => {
     expect(r.code, `篡改后应 exit 1，实际 ${r.code}\n${r.output}`).toBe(1);
     // 必须红在"语法错"上，不能红在"目录找不到"上（后者是假负控）。
     expect(r.output, '负控红在别的原因上（找不到目录/文件），不是解析失败').not.toMatch(/not found at/);
-    // 报错必须可复盘——锁**整段自有结构**（PM 2026-11-11 G-1 裁定）：
-    // 真格式＝`[workflow-pwsh-compile] release.yml step#8: L26: <解析器消息>`
-    // 前缀/文件名/step 号/行号**全是我们自己的标记**（语言无关），解析器消息只在末尾当附带信息。
+    // 报错必须可复盘——锁**整段自有结构**（PM 2026-11-11 G-1 裁定；G-c 2026-11-11 加 UI=N+1 双标）：
+    // 真格式＝`[workflow-pwsh-compile] release.yml step#8（UI=9）: L26: <解析器消息>`
+    // 前缀/文件名/step 号/UI 号/行号**全是我们自己的标记**（语言无关），解析器消息只在末尾当附带信息。
     // 以前锁的是解析器原文（中文正则）⇒ CI runner 报英文必红（G-1 事故）。**任何语言串都不许锁。**
     expect(
       r.output,
-      `报错缺"自有结构整段"（应为 [workflow-pwsh-compile] <file> step#N: LN: <msg>），实际输出：${r.output}`,
-    ).toMatch(/\[workflow-pwsh-compile\]\s+\S*release\.ya?ml\s+step#\d+:\s*L\d+:\s*\S/);
+      `报错缺"自有结构整段"（应为 [workflow-pwsh-compile] <file> step#N（UI=N+1）: LN: <msg>），实际输出：${r.output}`,
+    ).toMatch(/\[workflow-pwsh-compile\]\s+\S*release\.ya?ml\s+step#\d+（UI=\d+）:\s*L\d+:\s*\S/);
     // 报错行数 ≥ 1（与上面同源，但独立成格：结构对了却一行都没报，说明筛掉了真错误）
-    const errLines = r.output.split(/\r?\n/).filter((l) => /\[workflow-pwsh-compile\].*step#\d+:/.test(l));
+    const errLines = r.output.split(/\r?\n/).filter((l) => /\[workflow-pwsh-compile\].*step#\d+（UI=\d+）:/.test(l));
     expect(errLines.length, '报错行数应 ≥1').toBeGreaterThanOrEqual(1);
 }, 120_000);
 
@@ -137,4 +137,12 @@ describe('tools/audit/workflow-pwsh-compile.cjs 正负控', () => {
     expect(m, `输出里没有 blocksSkipped=N\n${r.output}`).not.toBeNull();
     expect(Number(m![1]), 'blocksSkipped 必须 >= 1 —— 合成 bash 块没被计数，说明判据没信息量').toBeGreaterThanOrEqual(1);
 }, 120_000);
+
+  it('G-b 契约：编译脚本临时文件名含 pid＋时间戳（EBUSY 缓解不退化）', () => {
+    const src = fs.readFileSync(SCRIPT, 'utf-8');
+    expect(src, '临时文件名缺 process.pid（EBUSY 同名冲突会复发）').toContain('process.pid');
+    expect(src, '临时文件名缺 Date.now()（EBUSY 同名冲突会复发）').toContain('Date.now()');
+    expect(src, '临时文件名缺 os.tmpdir()').toContain('os.tmpdir()');
+    expect(src, '临时名未提为公共函数 tmpPwshPath').toContain('tmpPwshPath');
+  });
 });

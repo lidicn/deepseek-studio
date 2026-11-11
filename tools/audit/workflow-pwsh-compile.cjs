@@ -58,6 +58,13 @@ function replaceExpr(s) {
   });
 }
 
+// 临时文件名含进程 PID＋时间戳：防闸内 vitest 与 gate 步并行跑同一脚本时同名冲突（EBUSY）。
+// 维持 per-block spawn（PM G-b 回退口径）：单 spawn 是更优解但会动 G-1 契约锁的输出格式，
+// 五件清理卡里风险不成比例；靠唯一名兜底＋契约断言（tools-workflow-pwsh-compile.test.ts G-b it）固化缓解。
+function tmpPwshPath(wfFile, jobId, si) {
+  return path.join(os.tmpdir(), `wf-pwsh-${wfFile}-${jobId}-${si}-${process.pid}-${Date.now()}.ps1`);
+}
+
 let blocksParsed = 0;
 let blocksSkipped = 0;
 const allErrors = [];
@@ -94,8 +101,7 @@ for (const wfFile of wfFiles) {
       const cleaned = replaceExpr(step.run);
 
       // 落盘再 ParseFile（跨进程传串会丢 CRLF ⇒ 假绿）
-      // 临时文件名加进程 PID + 随机后缀，防闸内 vitest 与 gate 步并行跑同一脚本时同名冲突（EBUSY）
-      const tmpFile = path.join(os.tmpdir(), `wf-pwsh-${wfFile}-${jobId}-${si}-${process.pid}-${Date.now()}.ps1`);
+      const tmpFile = tmpPwshPath(wfFile, jobId, si);
       fs.writeFileSync(tmpFile, cleaned, 'utf8');
 
       try {
@@ -130,7 +136,7 @@ if (blocksParsed === 0) {
 
 if (allErrors.length > 0) {
   for (const e of allErrors) {
-    console.error(`[workflow-pwsh-compile] ${e.file} step#${e.stepLine}: ${e.msg}`);
+    console.error(`[workflow-pwsh-compile] ${e.file} step#${e.stepLine}（UI=${e.stepLine + 1}）: ${e.msg}`);
   }
   process.exit(1);
 }
