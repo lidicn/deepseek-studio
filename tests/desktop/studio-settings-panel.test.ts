@@ -393,3 +393,68 @@ describe('设置面板：手动「检查更新」入口（C-2 卡，诊断页）
     handle.destroy();
   });
 });
+
+/**
+ * 待修② UI 文案卡（0.14.19，PM 19:5x 放窗）：rate-limited 终局改冷却后，
+ * 设置页「宿主未连接，读不到」是误报（宿主活着、取券通道在冷却）。
+ * 文案口径（PM 定字）：「宿主限流（冷却中），30 秒后自动重试一次」——与
+ * entry.ts surfaceGrantFailure stopNote（rate-limited 分支）逐字一致、不许第二套说法。
+ * 面板经页端痕迹 window.__studioGrantStatus（entry.ts setGrantStatus 写入）识别限流态。
+ * 负控：把限流分支摘掉／把文案改成「已是最新」类 ⇒ 下述必红。
+ */
+describe('设置面板：限流态误报文案（待修②，noDataNote 分支）', () => {
+  const RATE_LIMIT_NOTE = '宿主限流（冷却中），30 秒后自动重试一次';
+  const g = globalThis as { __studioGrantStatus?: unknown };
+
+  function setGrantStatus(st: unknown): void {
+    if (st === undefined) delete g.__studioGrantStatus;
+    else g.__studioGrantStatus = st;
+  }
+
+  afterEach(() => {
+    setGrantStatus(undefined); // 防痕迹泄漏到后续用例（其他用例的「宿主未连接」断言依赖无痕迹）
+    setHostBridge(deadBridge);
+    document.body.innerHTML = '';
+  });
+
+  function mountDiag() {
+    const handle = createSettingsPanel({});
+    document.body.appendChild(handle.container);
+    handle.open('diagnostics');
+    return handle;
+  }
+
+  it('限流态（__studioGrantStatus lastError=rate-limited）＋取不到数据 ⇒ 路径行显示限流冷却文案、不出现「宿主未连接」（误报回归锁）', async () => {
+    setHostBridge(deadBridge); // settings.get 无数据
+    setGrantStatus({ stage: 'resolver-invoked', failed: true, aud: 'main', lastError: 'rate-limited', cause: null, ts: 1_000 });
+    const handle = mountDiag();
+    await flushOneTick();
+    const lines = allTextLines(handle.container);
+    expect(lines).toContain(`sidecar 日志：不可用（${RATE_LIMIT_NOTE}） · 宿主 trace：不可用（${RATE_LIMIT_NOTE}）`);
+    expect(lines).toContain(`不可用（${RATE_LIMIT_NOTE}）`);
+    expect(lines.join('\n')).not.toContain('宿主未连接'); // 限流态宿主活着，「未连接」是误报
+    handle.destroy();
+  });
+
+  it('取不到数据但痕迹非限流（lastError=host-down）⇒ 仍走旧文案「宿主未连接，读不到」（旧分支不被误伤）', async () => {
+    setHostBridge(deadBridge);
+    setGrantStatus({ stage: 'resolver-invoked', failed: true, aud: 'main', lastError: 'host-down', cause: null, ts: 1_000 });
+    const handle = mountDiag();
+    await flushOneTick();
+    const lines = allTextLines(handle.container);
+    expect(lines).toContain('sidecar 日志：不可用（宿主未连接，读不到） · 宿主 trace：不可用（宿主未连接，读不到）');
+    expect(lines.join('\n')).not.toContain(RATE_LIMIT_NOTE);
+    handle.destroy();
+  });
+
+  it('取到数据（宿主可达）⇒ 即使痕迹在限流态也不显示限流注记（数据在就不注记）', async () => {
+    setHostBridge(settingsBridge({ logDir: '/opt/studio/logs', logDirSource: 'env', configDir: '/opt/studio/config' }));
+    setGrantStatus({ stage: 'resolver-invoked', failed: true, aud: 'main', lastError: 'rate-limited', cause: null, ts: 1_000 });
+    const handle = mountDiag();
+    await flushOneTick();
+    const text = allTextLines(handle.container).join('\n');
+    expect(text).toContain('/opt/studio/logs');
+    expect(text).not.toContain(RATE_LIMIT_NOTE);
+    handle.destroy();
+  });
+});

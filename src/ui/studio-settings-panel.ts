@@ -679,7 +679,20 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
     // P4 UX 卡（0.14.10）：「不可用」要说清「是宿主没连上、不是路径不存在」——
     // settings.get 取不到可用数据（宿主通道未连）→ 附「宿主未连接，读不到」；
     // 宿主可达但某字段缺 → 保持朴素「不可用」（该字段本就未提供，别误标成宿主没连）。
-    const noDataNote = gotData ? '' : '（宿主未连接，读不到）';
+    // 0.14.19 误报修（待修②，Verify 取证）：限流态下宿主活着、取券通道在冷却，
+    // 「宿主未连接」是误报——用页端痕迹 window.__studioGrantStatus（entry.ts setGrantStatus
+    // 写入、取券失败 lastError='rate-limited'）区分。文案与 entry.ts surfaceGrantFailure
+    // 的 stopNote（rate-limited 分支）逐字一致，不许第二套说法；「30 秒」真值源＝
+    // src/desktop/grant-acquire.ts GRANT_RATE_LIMITED_RETRY_MS=30_000（ui 层自包含、不跨层 import）。
+    const grantStatus = (
+      globalThis as { __studioGrantStatus?: { failed?: boolean; lastError?: string | null } }
+    ).__studioGrantStatus;
+    const grantRateLimited = grantStatus?.failed === true && grantStatus.lastError === 'rate-limited';
+    const noDataNote = gotData
+      ? ''
+      : grantRateLimited
+        ? '（宿主限流（冷却中），30 秒后自动重试一次）'
+        : '（宿主未连接，读不到）';
     const logValue =
       typeof info.logDir === 'string' && info.logDir.length > 0
         ? info.logDir + (info.logDirSource === 'fallback' ? '（回落值，非注入）' : '')
