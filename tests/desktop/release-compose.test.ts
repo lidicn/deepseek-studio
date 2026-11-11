@@ -711,6 +711,22 @@ describe('第 107/108/110 件：发布后闸可观测性＋草稿 target 钉 tag
     expect(mutated).not.toBe(cleanup);
     expect(hasFailLoud(mutated), '负控失效：退回静默通过后判据仍绿 ⇒ 锁无判别力').toBe(false);
   });
+
+  it('第 110 件验证面：step4 步首 ::notice:: 打 github.ref＋github.sha＋target_commitish（匿名可读注解，一发定案"闸读 tag 提交还是分支尖端"）', () => {
+    const hasCommitish = (body: string): boolean =>
+      body.includes('GH_REF: ${{ github.ref }}') &&
+      body.includes('GH_SHA: ${{ github.sha }}') &&
+      body.includes('TARGET_COMMITISH: ${{ github.event.release.target_commitish }}') &&
+      body.includes('::notice::[pub-chain] commitish:') &&
+      body.includes('github.sha=$env:GH_SHA') &&
+      body.includes('target_commitish=$env:TARGET_COMMITISH');
+    expect(hasCommitish(pubGate), 'step4 缺 commitish 三件 ::notice::（第 110 件待验推论的验证面）').toBe(true);
+    // 负控：抹掉 github.sha 两处 ⇒ 同一判据必红
+    const mutated = pubGate.replace('GH_SHA: ${{ github.sha }}', 'GH_SHA: ${{ REMOVED }}')
+      .replace('github.sha=$env:GH_SHA', 'github.sha=$env:REMOVED');
+    expect(mutated).not.toBe(pubGate);
+    expect(hasCommitish(mutated), '负控失效：抹掉 github.sha 后判据仍绿 ⇒ 锁无判别力').toBe(false);
+  });
 });
 
 describe('CI-H（#50）：cargo-check job 前置产物步骤锁', () => {

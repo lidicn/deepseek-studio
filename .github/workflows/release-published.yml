@@ -34,6 +34,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REF_NAME: ${{ github.ref_name }}
+          GH_REF: ${{ github.ref }}
+          GH_SHA: ${{ github.sha }}
+          TARGET_COMMITISH: ${{ github.event.release.target_commitish }}
         run: |
           $ErrorActionPreference = 'Stop'
           $repo = '${{ github.repository }}'
@@ -43,6 +46,8 @@ jobs:
           $tagLatestUrl = "https://github.com/$repo/releases/download/$tag/latest.json"
           # 现场诊断（第 107 件）：tag_name 与 ref_name 两个都打，一眼分 ③A（结构性 404）/③B（API 现算字段）
           Write-Host "[pub-chain] diag: repo=$repo tag_name=$tag ref_name=$env:REF_NAME version=$version latest_url=$latestUrl tag_url=$tagLatestUrl"
+          # 第 110 件验证面：commitish 三件进 ::notice::（匿名可读注解，一发定案"闸读 tag 提交还是分支尖端"）
+          Write-Host "::notice::[pub-chain] commitish: github.ref=$env:GH_REF github.sha=$env:GH_SHA target_commitish=$env:TARGET_COMMITISH tag_name=$tag ref_name=$env:REF_NAME"
 
           # 1) 取 latest.json：优先读**客户端实际用的** Latest 端点；若刚发布的不是 Latest，退回本 tag 的资产
           $manifestSource = $null
