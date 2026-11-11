@@ -369,10 +369,11 @@ jobs:
             'X-GitHub-Api-Version' = '2022-11-28'
             'User-Agent' = 'studio-release-gate'
           }
-          # 查草稿：优先用 step15 的 action 输出 id（列表端点有最终一致性延迟，首查可能空）
+          # 查草稿：优先用 step15 的 action 输出 id（列表端点首查可能不返回刚建的草稿——候选原因：
+          # 最终一致性延迟或 draft 的 tag_name 状态差异，均未证实，待 step17 现场三件注解实证）
           # 注：${{ steps.create_release.outputs.id }} 在 runner 上展开为数字 id；本地/离线跑时是字面量非空串
           $draftId = '${{ steps.create_release.outputs.id }}'
-          Write-Host "::error::[patch-body] draftId=$draftId"
+          Write-Host "::notice::[patch-body] draftId=$draftId"
           $rel = $null
           # 首查也纳入重试（action 自己是 3 次×1s；我们至少 3 次×2s）
           for ($findAttempt = 1; $findAttempt -le 3; $findAttempt++) {
@@ -380,7 +381,8 @@ jobs:
               $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$draftId" -ErrorAction SilentlyContinue
             }
             if (-not $rel) {
-              # 回退：列表端点按 tag 过滤（GET /releases/tags/{tag} 不返回 draft——与 Preflight gate 同坑）
+              # 回退：列表端点按 tag 过滤（GET /releases/tags/{tag} 不返回 draft——run#12 实证；
+              # 列表首查未命中的原因未证实，见 step17 现场注解）
               $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases?per_page=100" -ErrorAction SilentlyContinue |
                 Where-Object { $_.tag_name -eq $tag -and $_.draft } | Select-Object -First 1
             }
@@ -399,11 +401,11 @@ jobs:
             Write-Host "::error::[patch-body] PATCH failed: HTTP=$pcode msg=$($_.Exception.Message)"
             throw "[patch-body] PATCH request failed (HTTP=$pcode)"
           }
-          # 回读逐字符等值（卡 F 第 0 条硬判据）：GitHub 列表接口有最终一致性延迟，
-          # 轮询到等值或超时（5 次 × 2s），而不是一次定生死。
+          # 回读逐字符等值（卡 F 第 0 条硬判据）：列表接口首查可能不返回刚写入的内容（原因未证实、
+          # 候选同 step17 现场注解）——轮询到等值或超时（5 次 × 2s），而不是一次定生死。
           # 回读为空时不许直接炸 .Trim()——先打印诊断再抛，诊断必须含 rel2 是否为空。
           # 顺序：先取值 → 先打印三件套 → 再判等值（旧版先解引用再打印 ⇒ 真因格下诊断全丢）。
-          # 回读走 by-id（GET /releases/{id}），不用列表端点（列表有缓存/旧快照风险）。
+          # 回读走 by-id（GET /releases/{id}），不用列表端点（列表端点旧快照为候选原因、未证实；by-id 另有 PATCH 返回体兜底）。
           # 兜底成功后 $lastEmpty 必须复位（v3 bug：置 true 后不复位 ⇒ "先空后对"假红）。
           $actual = $null
           $lastEmpty = $false
@@ -454,6 +456,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
           REPOSITORY: ${{ github.repository }}
+          RELEASE_ID: ${{ steps.create_release.outputs.id }}
         run: |
           $ErrorActionPreference = 'Stop'
           # 诊断通道：闸的任何失败都写 ::error:: 注解（公开 API 可读；job logs 需管理员令牌）
@@ -469,15 +472,44 @@ jobs:
             'X-GitHub-Api-Version' = '2022-11-28'
             'User-Agent' = 'studio-release-gate'
           }
-          # 注意：GET /releases/tags/{tag} 不返回 draft（GitHub 已知行为，run#12 的 404 根因），
-          # draft 必须走全量列表按 tag 过滤。
-          $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases?per_page=100" |
-            Where-Object { $_.tag_name -eq $tag -and $_.draft } | Select-Object -First 1
-          if (-not $rel) { throw "draft release for tag $tag not found" }
+          # 查草稿：与 Patch draft release body 同一套确定性形态——优先用 step15 的 action 输出 id
+          # （RELEASE_ID 走 env 数据通道，run 体零插值锁不破；GET /releases/{id} 返回 draft 本身）。
+          # GET /releases/tags/{tag} 不返回 draft（GitHub 已知行为，run#12 的 404 根因）。
+          # v0.14.16 run：step17 首跑死于一次列表查询未命中（列表当时内容未观测——现场三件注解即为此设）；
+          # step16 已修同坑、本步漏修（第 89 件同族重演）。
+          $draftId = $env:RELEASE_ID
+          $rel = $null
+          $listCount = 0
+          $listDraftCount = 0
+          $listFirst = '<none>'
+          for ($findAttempt = 1; $findAttempt -le 3; $findAttempt++) {
+            if ($draftId) {
+              $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$draftId" -ErrorAction SilentlyContinue
+            }
+            if (-not $rel) {
+              # 回退：列表端点按 tag＋draft 过滤
+              $listArr = @(Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases?per_page=100" -ErrorAction SilentlyContinue)
+              $listCount = $listArr.Count
+              $listDraftCount = @($listArr | Where-Object { $_.draft }).Count
+              $listFirst = if ($listCount -gt 0) { "id=$($listArr[0].id) tag=$($listArr[0].tag_name)" } else { '<empty>' }
+              $rel = $listArr | Where-Object { $_.tag_name -eq $tag -and $_.draft } | Select-Object -First 1
+            }
+            if ($rel) { break }
+            if ($findAttempt -lt 3) {
+              Write-Host "[preflight-gate] find attempt $findAttempt/3: draft not found, waiting $($findAttempt * 2)s"
+              Write-Host "::error::[preflight-gate] list diagnostic: returned=$listCount drafts=$listDraftCount first=$listFirst"
+              Start-Sleep -Seconds ($findAttempt * 2)
+            }
+          }
+          if (-not $rel) {
+            Write-Host "::error::[preflight-gate] draft release for tag $tag not found after 3 attempts (by-id=$([bool]$draftId))"
+            Write-Host "::error::[preflight-gate] list diagnostic (final): returned=$listCount drafts=$listDraftCount first=$listFirst"
+            throw "draft release for tag $tag not found after 3 find attempts"
+          }
           Write-Host "release id=$($rel.id) draft=$($rel.draft) assets=$($rel.assets.Count)"
           # v0.14.12：draft body 非空断言（fail-closed 落点＝本步失败走 Delete draft on failure，
           # 删的是草稿、公开链一根毛都没动；且在点 Publish 之前就报红）。
-          if ([string]::IsNullOrWhiteSpace($rel.body)) { throw "draft release body is empty — body_path did not take effect" }
+          if ([string]::IsNullOrWhiteSpace($rel.body)) { Write-Host "::error::[preflight-gate] draft release body is empty (body_path did not take effect)"; throw "draft release body is empty — body_path did not take effect" }
           Write-Host "draft body length=$($rel.body.Length)"
           # v0.14.13 卡 F：非空之外再验等值（PATCH 步同判据的双保险；本步失败同样走 Delete draft on failure）。
           # 旧非空断言保留（抓"完全空"灾难态），等值断言抓"70 字 tag 注释残留"这类部分态。
@@ -507,7 +539,7 @@ jobs:
           $msi = (Get-ChildItem 'src-tauri/target/release/bundle/msi/*.msi' -File | Select-Object -First 1).Name
           if ($urlName -ne $nsis) { throw "latest.json url basename '$urlName' != uploaded nsis asset '$nsis'" }
           foreach ($expected in @($nsis, "$nsis.sig", $msi, "$msi.sig", 'latest.json')) {
-            if ($names -notcontains $expected) { throw "release is missing uploaded asset: $expected" }
+            if ($names -notcontains $expected) { Write-Host "::error::[preflight-gate] release is missing uploaded asset: $expected"; throw "release is missing uploaded asset: $expected" }
           }
           foreach ($n in $names) {
             if ($n -match ' ') { throw "uploaded asset name contains a space: '$n'" }
@@ -543,6 +575,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
           REPOSITORY: ${{ github.repository }}
+          RELEASE_ID: ${{ steps.create_release.outputs.id }}
         run: |
           $tag = $env:TAG_NAME
           $repo = "$env:REPOSITORY"
@@ -552,8 +585,22 @@ jobs:
             'X-GitHub-Api-Version' = '2022-11-28'
             'User-Agent' = 'studio-release-gate'
           }
-          $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases?per_page=100" |
-            Where-Object { $_.tag_name -eq $tag -and $_.draft } | Select-Object -First 1
+          # 同族修（第 89 件）：by-id 优先（RELEASE_ID 走 env 数据通道），列表端点仅回退——
+          # 列表端点首查可能不返回刚建的草稿（原因未证实，step17 现场三件注解待实证）；清理步漏删 draft 同样不可接受。
+          $draftId = $env:RELEASE_ID
+          $rel = $null
+          if ($draftId) {
+            $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$draftId" -ErrorAction SilentlyContinue
+          }
+          if (-not $rel) {
+            $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases?per_page=100" |
+              Where-Object { $_.tag_name -eq $tag -and $_.draft } | Select-Object -First 1
+          }
+          # 构造保证「绝不删已发布」不许丢：by-id 取回后仍须核 draft 才删
+          if ($rel -and -not $rel.draft) {
+            Write-Host "release $($rel.id) for $tag is not a draft (draft=$($rel.draft)) — refuse to delete"
+            exit 0
+          }
           if (-not $rel) {
             Write-Host "no draft release for $tag, nothing to clean"
             exit 0

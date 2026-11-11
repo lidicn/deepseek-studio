@@ -591,6 +591,48 @@ describe('v0.14.13 卡 E/F：打包工具预取＋发布正文显式 PATCH（#48
     expect(gate).toContain('$notesExpected');
     expect(gate).toContain('$bodyActual');
   });
+
+  // v0.14.16 run 真因（第 89 件同族重演）：step17 草稿查找只走列表端点、一次查询、无重试、无现场数据；
+  // 列表首查未命中 ⇒ "[preflight-gate] draft release for tag v0.14.16 not found"（为何未命中未证实——现场三件注解即为此设）。
+  // 修＝与 Patch 步同一套确定性形态：RELEASE_ID 走 env 数据通道（run 体零插值锁 L61 不破）
+  // → GET /releases/{id} by-id 优先 → 列表仅回退 → 3 次带退避。
+  const gateByIdFirst = (gate: string): boolean => {
+    const byIdIdx = gate.indexOf('/releases/$draftId');
+    const listIdx = gate.indexOf('/releases?per_page=100');
+    return byIdIdx >= 0 && listIdx >= 0 && byIdIdx < listIdx;
+  };
+
+  it('卡 F：Preflight gate 草稿查找 by-id 优先（RELEASE_ID env 数据通道→GET /releases/{id}，列表仅回退、3 次退避、现场三件进注解）＋Delete draft 同族 by-id', () => {
+    const gate = step(release, 'Preflight gate (G1/G2/G5)');
+    // ① id 来源＝env 数据通道（env 段在 run: 之前、不在零插值被检面内）
+    expect(gate).toContain('RELEASE_ID: ${{ steps.create_release.outputs.id }}');
+    expect(gate).toContain('$draftId = $env:RELEASE_ID');
+    // ② 顺序锁：by-id 直查先于列表回退（防静默退回列表端点）
+    expect(gateByIdFirst(gate), 'Preflight gate 未走 by-id 优先（by-id 查询缺失或晚于列表回退）').toBe(true);
+    // ③ 首查重试（3 次带退避）＋查不到 ::error:: 注解
+    expect(gate).toContain('find attempt');
+    expect(gate).toContain('::error::[preflight-gate] draft release for tag');
+    // ④ 现场三件进注解（列表返回条数／draft 条数／首条 id+tag）——"没找到"之外必须有现场
+    expect(gate).toContain('list diagnostic: returned=$listCount drafts=$listDraftCount first=$listFirst');
+    // ⑤ run: 体零插值不破（与 L61 注入回归锁同判据，双保险）
+    const runStart = gate.indexOf('run: |');
+    expect(runStart, 'gate 无 run: 块').toBeGreaterThanOrEqual(0);
+    expect(gate.slice(runStart)).not.toContain('${{');
+    // ⑥ 同族：Delete draft on failure 同样 by-id 优先（清理步漏删＝draft 泄漏）；列表端点保留为回退
+    const cleanup = step(release, 'Delete draft on failure (fail-closed)');
+    expect(cleanup).toContain('RELEASE_ID: ${{ steps.create_release.outputs.id }}');
+    expect(cleanup).toContain('/releases/$draftId');
+    expect(cleanup).toContain('/releases?per_page=100');
+    // ⑦ 绝不删已发布的构造保证不许丢：by-id 取回后仍须核 draft 才删
+    expect(cleanup).toContain('-not $rel.draft');
+  });
+
+  it('负控：把 Preflight gate 的 by-id 查询摘掉 ⇒ by-id 顺序判定必红（判据有判别力）', () => {
+    const gate = step(release, 'Preflight gate (G1/G2/G5)');
+    // 变异：抹掉 by-id 查询串（模拟退回纯列表端点——v0.14.16 step17 死法）
+    const mutated = gate.replace('/releases/$draftId', '/releases/REMOVED-BY-ID');
+    expect(gateByIdFirst(mutated), '负控失效：摘掉 by-id 后顺序判定仍通过 ⇒ 判据无判别力').toBe(false);
+  });
 });
 
 describe('CI-H（#50）：cargo-check job 前置产物步骤锁', () => {
