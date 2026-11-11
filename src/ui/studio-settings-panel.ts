@@ -13,6 +13,8 @@
 
 import { el, icon, Icons, injectStyles, createShadowContainer, globalEvents, globalState, callHostTool, openMcpSettings } from './studio-ui-core';
 import { escapeHtml } from './sanitizer';
+import { checkUpdateManual, showUpdateCard, UPDATE_CHECK_NO_RESULT_TEXT } from './update-card';
+import type { TauriInternals, UpdateCardHandle, UpdateInfo } from './update-card';
 
 /**
  * 版本真值（2026-11-05 假路径卡）：由构建脚本 esbuild.inject.mjs 经 esbuild define
@@ -569,12 +571,43 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
     <div class="studio-info-row"><span class="studio-info-label">版本</span><span class="studio-info-value" data-settings-version></span></div>
     <div class="studio-info-row"><span class="studio-info-label">日志路径</span><span class="studio-info-value" data-settings-logpath>加载中…</span></div>
     <div class="studio-info-row"><span class="studio-info-label">配置路径</span><span class="studio-info-value" data-settings-configpath>加载中…</span></div>
+    <div class="studio-info-row"><span class="studio-info-label">更新</span><span class="studio-info-value"><button type="button" class="studio-btn" data-settings-check-update>检查更新</button> <span class="studio-form-hint" data-settings-updater-status></span></span></div>
     <p class="studio-form-hint">旧外部集成入口已归档；安全执行审计和聊天室审计会议仍保留。</p>
   `;
   // P4 UX 卡（0.14.10）：「诊断与关于」是用户查版本号的自然去处 → 补版本行。
   // 值仍走 runtimeAppVersion()（构建期 define 注入真值；dev 树/无 define → 'unknown'，绝不手写常量、不读 package.json）。
   // 与通用页版本行同源，两页都可见（通用页那行是否撤出归后续产品决定，本卡只加诊断页）。
   diagnosticsTab.querySelector('[data-settings-version]')!.textContent = runtimeAppVersion();
+  // C-2 卡（手动「检查更新」入口）：诊断页一枚按钮，`invoke('updater_check', { force: true })`
+  // 绕过进程内一次性缓存（updater.rs L102-108：force 不读缓存、重跑 do_check 并写回缓存）——
+  // 真机不重启即可再查一次，「更新卡首弹」取证不再每次重启＋等 60s。
+  // 返回 null ⇒ 两态合一文案 UPDATE_CHECK_NO_RESULT_TEXT（do_check 把 Err 吞成 None，
+  // 「无更新」与「检查失败」物理同形，不得写「已是最新版本」＝假绿）；
+  // 非 null ⇒ 走现有更新卡（与启动 +60s 自动检查同一入口），旧卡先关再开、不叠卡。
+  // src-tauri/** 一字节未动（force 参数 Rust 侧已留好）。
+  const checkUpdateBtn = diagnosticsTab.querySelector<HTMLButtonElement>('[data-settings-check-update]')!;
+  const updaterStatusEl = diagnosticsTab.querySelector<HTMLElement>('[data-settings-updater-status]')!;
+  let updaterChecking = false;
+  let currentUpdateCard: UpdateCardHandle | null = null;
+  checkUpdateBtn.addEventListener('click', () => {
+    if (updaterChecking) return; // 重入保护：一次检查在飞时连点不叠发
+    updaterChecking = true;
+    checkUpdateBtn.textContent = '检查中…';
+    const internals = (globalThis as { __TAURI_INTERNALS__?: TauriInternals }).__TAURI_INTERNALS__;
+    void checkUpdateManual(internals ?? {}).then((info: UpdateInfo | null) => {
+      updaterChecking = false;
+      checkUpdateBtn.textContent = '检查更新';
+      if (info) {
+        updaterStatusEl.textContent = `发现新版本 v${info.version}`;
+        if (document.body) {
+          currentUpdateCard?.close();
+          currentUpdateCard = showUpdateCard(info, internals ?? {});
+        }
+      } else {
+        updaterStatusEl.textContent = UPDATE_CHECK_NO_RESULT_TEXT;
+      }
+    });
+  });
   tabContents['diagnostics'] = diagnosticsTab;
   contentPane.appendChild(diagnosticsTab);
 

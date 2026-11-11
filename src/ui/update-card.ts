@@ -52,9 +52,30 @@ export function skipUpdateVersion(version: string): void {
   }
 }
 
-/** 调 `updater_check`（null = 无更新/失败，fail-safe，绝不抛给用户）。 */
+/** 调 `updater_check`（null = 无更新/失败，fail-safe，绝不抛给用户）。不带 force ⇒ Rust 侧走进程内一次性缓存。 */
 export function checkUpdate(internals: TauriInternals): Promise<UpdateInfo | null> {
-  return Promise.resolve(internals.invoke?.('updater_check'))
+  return runUpdaterCheck(internals);
+}
+
+/**
+ * C-2 卡（手动「检查更新」入口）：显式 `force: true` 调 `updater_check`——Rust 侧
+ * （updater.rs L100-113）force 时不读一次性缓存、重跑 `do_check` 并把结果写回缓存
+ * ⇒ 真机不重启即可再查一次（「更新卡首弹」取证的前置：不再每次重启＋等 60s）。
+ * 返回语义与 `checkUpdate` 相同：
+ *   - 非 null＝有更新（调用方走 `showUpdateCard`）；
+ *   - null＝「无更新」**或**「检查失败」——`do_check` 把 Err 吞成 None（updater.rs L88-92），
+ *     前端物理上分不出二者 ⇒ 显示层必须用 `UPDATE_CHECK_NO_RESULT_TEXT` 两态合一文案，
+ *     **不得写「已是最新版本」（假绿）**。
+ */
+export function checkUpdateManual(internals: TauriInternals): Promise<UpdateInfo | null> {
+  return runUpdaterCheck(internals, { force: true });
+}
+
+/** 两态合一文案（C-2 卡验收判据②）：null＝「无更新」或「本次检查未成功」。 */
+export const UPDATE_CHECK_NO_RESULT_TEXT = '没有可用更新，或本次检查未成功';
+
+function runUpdaterCheck(internals: TauriInternals, args?: Record<string, unknown>): Promise<UpdateInfo | null> {
+  return Promise.resolve(internals.invoke?.('updater_check', args))
     .then((r): UpdateInfo | null => {
       if (!r || typeof r !== 'object') return null;
       const v = (r as UpdateInfo).version;

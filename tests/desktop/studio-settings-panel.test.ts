@@ -287,3 +287,109 @@ describe('设置面板：假路径/假版本防线（形态断言）', () => {
     expect('运行时数据目录：~/.config/deepseek-studio/').not.toMatch(DRIVE_ABS_PATH);
   });
 });
+
+/**
+ * C-2 卡（手动「检查更新」入口，PM 16:3x 派卡＋预批验收口径）：
+ * 诊断页一枚「检查更新」按钮 ⇒ `invoke('updater_check', { force: true })`（绕过进程内一次性缓存，
+ * 真机不重启即可再查一次）；null ⇒ 状态行＝两态合一文案「没有可用更新，或本次检查未成功」
+ * （不得写「已是最新」＝假绿）；非 null ⇒ 走现有更新卡（字段不破、不叠卡）。
+ * 负控：摘掉 force 实参／改两态文案 ⇒ 下述必红。
+ */
+describe('设置面板：手动「检查更新」入口（C-2 卡，诊断页）', () => {
+  const tauriGlobal = globalThis as { __TAURI_INTERNALS__?: { invoke?: (cmd: string, args?: Record<string, unknown>) => unknown } };
+
+  afterEach(() => {
+    delete tauriGlobal.__TAURI_INTERNALS__;
+    setHostBridge(deadBridge);
+    document.body.innerHTML = '';
+  });
+
+  function mountDiag() {
+    const handle = createSettingsPanel({});
+    document.body.appendChild(handle.container);
+    handle.open('diagnostics');
+    return handle;
+  }
+
+  it('诊断页有按钮；点击 ⇒ invoke 实参带 { force: true }（PM 判据①：绕过一次性缓存）；null ⇒ 状态行＝两态合一文案（判据②：不写「已是最新」）', async () => {
+    setHostBridge(settingsBridge({ logDir: '/tmp/x' }));
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
+    tauriGlobal.__TAURI_INTERNALS__ = {
+      invoke: (cmd, args) => { calls.push({ cmd, args }); return null; }, // updater_check → null（无更新/检查失败，两态合一）
+    };
+    const handle = mountDiag();
+    const btn = handle.container.querySelector('[data-settings-check-update]') as HTMLButtonElement;
+    expect(btn).toBeTruthy();
+    btn.click();
+    await flushOneTick();
+    const checkCalls = calls.filter((c) => c.cmd === 'updater_check');
+    expect(checkCalls.length).toBe(1);
+    expect(checkCalls[0].args).toEqual({ force: true });
+    const status = handle.container.querySelector('[data-settings-updater-status]')!;
+    expect(status.textContent).toBe('没有可用更新，或本次检查未成功');
+    expect(status.textContent).not.toContain('已是最新');
+    handle.destroy();
+  });
+
+  it('非 null ⇒ 现有更新卡落地（判据③：字段不破、不叠卡）；不重启再点一次仍能发起检查（invoke 两次、每次 force: true）', async () => {
+    setHostBridge(settingsBridge({ logDir: '/tmp/x' }));
+    let checkInvocations = 0;
+    const checkArgs: Array<Record<string, unknown> | undefined> = [];
+    tauriGlobal.__TAURI_INTERNALS__ = {
+      invoke: (cmd, args) => {
+        if (cmd === 'updater_check') {
+          checkInvocations += 1;
+          checkArgs.push(args);
+          return { version: '9.9.9', notes: '测试说明', currentVersion: '9.9.8' };
+        }
+        if (cmd === 'updater_progress') return { state: 'idle' };
+        return undefined;
+      },
+    };
+    const handle = mountDiag();
+    const btn = handle.container.querySelector('[data-settings-check-update]') as HTMLButtonElement;
+    btn.click();
+    await flushOneTick();
+    const cards = document.querySelectorAll('#studio-update-card');
+    expect(cards.length).toBe(1);
+    expect(cards[0].textContent).toContain('v9.9.9');
+    expect(handle.container.querySelector('[data-settings-updater-status]')!.textContent).toContain('发现新版本 v9.9.9');
+    // 不重启再点一次 ⇒ 仍发起新检查（UI 无短路；缓存旁路由 Rust 侧 force 语义保证）
+    btn.click();
+    await flushOneTick();
+    expect(checkInvocations).toBe(2);
+    expect(checkArgs).toEqual([{ force: true }, { force: true }]);
+    // 旧卡先关再开：全 DOM 仍只有一枚卡（不叠卡）
+    expect(document.querySelectorAll('#studio-update-card').length).toBe(1);
+    handle.destroy();
+  });
+
+  it('重入保护：检查在飞时连点只发一次；完成后新点击发起新检查', async () => {
+    setHostBridge(settingsBridge({ logDir: '/tmp/x' }));
+    let calls = 0;
+    let resolveCheck: ((v: unknown) => void) | null = null;
+    tauriGlobal.__TAURI_INTERNALS__ = {
+      invoke: (cmd) => {
+        if (cmd === 'updater_check') {
+          calls += 1;
+          return new Promise((res) => { resolveCheck = res; });
+        }
+        return undefined;
+      },
+    };
+    const handle = mountDiag();
+    const btn = handle.container.querySelector('[data-settings-check-update]') as HTMLButtonElement;
+    btn.click();
+    await flushOneTick();
+    btn.click();
+    btn.click();
+    await flushOneTick();
+    expect(calls).toBe(1); // 在飞守卫：连点不叠发
+    resolveCheck!(null);
+    await flushOneTick();
+    btn.click();
+    await flushOneTick();
+    expect(calls).toBe(2); // 检查结束后可再发起
+    handle.destroy();
+  });
+});

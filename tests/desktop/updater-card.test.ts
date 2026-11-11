@@ -2,6 +2,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   checkUpdate,
+  checkUpdateManual,
   isUpdateSkipped,
   showUpdateCard,
   skipUpdateVersion,
@@ -88,6 +89,42 @@ describe('update-card：checkUpdate', () => {
   it('返回值缺 version（坏形状）→ 按 null 处理', async () => {
     const internals = makeInternals({ updater_check_result: { notes: 'x' } });
     expect(await checkUpdate(internals)).toBeNull();
+  });
+});
+
+/**
+ * C-2 卡（手动「检查更新」入口，PM 16:3x 派卡）：`checkUpdateManual` 显式 `force: true`
+ * 绕过 Rust 侧进程内一次性缓存（updater.rs L100-113）——真机不重启即可再查一次，
+ * 是「更新卡首弹」真机取证的前置。负控：摘掉 force 实参 ⇒ 本 describe 必红。
+ */
+describe('update-card：checkUpdateManual（手动检查，force=true）', () => {
+  it('invoke 实参带 { force: true }；null（无更新/失败两态合一）→ resolve null 不抛', async () => {
+    const internals = makeInternals({ updater_check_result: null });
+    expect(await checkUpdateManual(internals)).toBeNull();
+    expect(callsOf(internals).updater_check).toEqual([{ force: true }]);
+  });
+
+  it('同一实例连续两次（不重启）⇒ 两次 invoke 都带 force: true（UI 侧无短路，缓存旁路归 Rust 侧 force 语义）', async () => {
+    // 独立累积录制（makeInternals 的 __calls 是「最后一次调用」语义、不累积，计数须自造）
+    const argsSeen: Array<Record<string, unknown> | undefined> = [];
+    const internals: TauriInternals = {
+      invoke: (cmd, args) => {
+        if (cmd === 'updater_check') {
+          argsSeen.push(args);
+          return { version: '0.14.1', notes: 'x', currentVersion: '0.14.0' };
+        }
+        return undefined;
+      },
+    };
+    expect(await checkUpdateManual(internals)).not.toBeNull();
+    expect(await checkUpdateManual(internals)).not.toBeNull();
+    expect(argsSeen).toEqual([{ force: true }, { force: true }]);
+  });
+
+  it('自动检查路径（checkUpdate）不带 force —— 与启动 +60s 自动检查同走缓存（回归锁：别把 force 漏进自动路径）', async () => {
+    const internals = makeInternals();
+    await checkUpdate(internals);
+    expect(callsOf(internals).updater_check).toEqual([]);
   });
 });
 
