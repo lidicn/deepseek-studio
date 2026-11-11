@@ -156,10 +156,13 @@ describe('#55 验收断言：L3062/L3104 收尾带原因（现状锁已随批翻
       const pfEnds = interceptorTraceSnapshot().filter((e) => e.t === 'turn.end' && e.stopReason === 'protocol-repair-failed');
       expect(pfEnds.length).toBeGreaterThan(0);
       expect(pfEnds.at(-1)).toMatchObject({ finished: false });
-      // 验收：appendError 触达定字句
+      // 验收：appendError 触达定字句。
+      // 0.14.19-F3（PM 卡 0.14.19-F1F3，验收口径变更经卡面批准）：旧 #55 定字「模型回复不完整且修复失败，
+      // 本轮结果已丢弃，请重试或换个说法。」作废，换成上游真因句——可见提示不得静默（回归锁 (b)：
+      // 断言的是 appendError 触达，不是只 return）。
       const call = chatUI.appendError.mock.calls.find((c) => String(c[0]) === 'protocol-repair-failed');
       expect(call).toBeDefined();
-      expect(String(call![1])).toBe('模型回复不完整且修复失败，本轮结果已丢弃，请重试或换个说法。');
+      expect(String(call![1])).toBe('上游服务器暂时不可用，本轮已中断，请重试。');
     } finally { handle.stop(); vi.useRealTimers(); }
   });
 });

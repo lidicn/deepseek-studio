@@ -13,6 +13,7 @@ import { StreamingToolCallParser } from '../../src/inject/streaming-tool-parser'
 import {
   capabilityPromptText,
   capabilityPromptToolNames,
+  catalogText,
   catalogTextToolNames,
   formatExplicitSkillsBlock,
   type StudioSkillDescriptor,
@@ -314,5 +315,34 @@ describe('QD-R8: prompt examples and explicit skill selection', () => {
     const block = formatExplicitSkillsBlock('使用 deepseek-pp-audit 技能检查', skills);
     expect(block).toContain('deepseek-pp-audit');
     expect(block).not.toContain('lever-hub');
+  });
+});
+
+/**
+ * 0.14.19-F1（PM 卡 0.14.19-F1F3）：shell_exec 工具说明与执行器判据自相矛盾——
+ * 旧说明「优先用 PowerShell」但执行器把双引号外 $ ; | > < & 全判 shell-syntax-unsupported，
+ * 且回给模型的 hint 未登记 argv 参数 ⇒ 模型照旧说明写 PowerShell 脚本串必被拒、无从改对。
+ * 新说明两处（TOOL_CAPABILITY_PROMPT＋TOOL_CATALOG_TEXT）同文：单条命令边界＋argv 可照抄示例。
+ * 负控（回归锁 (a)）：把说明改回旧文案 / 删示例 ⇒ 本组必红。
+ * 关键词按 PM 定稿锁**空格形态 `powershell -NoProfile -Command`**（人手照抄面），不锁 JSON 逗号形态（脆锁）。
+ */
+describe('0.14.19-F1: shell_exec 工具说明（两处一致＋可照抄 argv 示例）', () => {
+  function shellExecLine(text: string): string {
+    const line = text.split('\n').find((l) => l.startsWith('- shell_exec'));
+    expect(line, 'shell_exec 工具说明行缺失').toBeTruthy();
+    return line!;
+  }
+
+  it('两处说明（能力 prompt＋续跑目录）同时含 argv 与空格形态 powershell -NoProfile -Command；旧矛盾句「优先用 PowerShell」不得复活', () => {
+    for (const text of [capabilityPromptText(), catalogText()]) {
+      const line = shellExecLine(text);
+      expect(line).toContain('argv');
+      expect(line).toContain('powershell -NoProfile -Command');
+      expect(line).not.toContain('优先用 PowerShell');
+    }
+  });
+
+  it('shell_exec 行两处逐字一致（防 TOOL_CAPABILITY_PROMPT 与 TOOL_CATALOG_TEXT 脱节漂移）', () => {
+    expect(shellExecLine(capabilityPromptText())).toBe(shellExecLine(catalogText()));
   });
 });

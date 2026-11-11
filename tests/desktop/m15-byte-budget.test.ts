@@ -11,20 +11,40 @@ import { buildContinuationPrompt } from '../../src/shared/continuation-prompt';
 /**
  * M1.5 字节账（契约 §6）。
  *
- * 删掉续跑 prompt 里的重复工具目录后，每轮省 **1,177 B 恒定**
- * （1,155 B 目录原文 + 22 B 分隔行 `\n\n### Available Tools\n`）。
+ * 删掉续跑 prompt 里的重复工具目录后，每轮省 **目录原文 B + 固定分隔开销 B**。
  *
  * ⚠️ 头号误判防线（写在这里，别让后人踩）：
  *   **Verify 的 13,078 B 稳定前缀基线一个字节都不动** —— S3（重复目录）在 tail 内，
  *   不在前缀里。所以「首差字节变了」**就是回归**，不是预期变化。
  *   本文件断言的正是这件事：删目录只动 tail，head-A 前缀逐字节不变。
+ *
+ * 2026-11-11（0.14.19 F1）：本文件原先把收益写死成 `1_177`（1,155 B 目录原文 + 22 B 分隔行）。
+ * F1 把 `shell_exec` 说明写长 232 B 后目录变成 1,387 B，写死的数字就必然假红——
+ * 而这条断言要守的是「删目录恰好省掉目录段本身」，不是某个历史字节数。
+ * 现改为**自证式推导**：分隔开销由 `buildContinuationPrompt` 自身用探针测出，
+ * 收益 = 分隔开销 + `catalogText()` 实际字节数。目录再改也不会假红，
+ * 但「目录被塞回 tail / 省多省少」的真回归照样抓得住。
  */
 
-const EXPECTED_SAVING_BYTES = 1_177;
 const CAP_MARKER = '[studio-tool-capability]';
 
 function byteLength(text: string): number {
   return new TextEncoder().encode(text).byteLength;
+}
+
+/**
+ * 目录段的固定外壳开销（`\n\n### Available Tools\n` 之类），由实现自身测出：
+ * 用 1 字节探针目录跑一次差分，减去探针本身即得外壳。**不写死数字。**
+ */
+function catalogOverheadBytes(): number {
+  const withProbe = buildContinuationPrompt('probe', [] as never, 'X');
+  const withoutProbe = buildContinuationPrompt('probe', [] as never);
+  return byteLength(withProbe) - byteLength(withoutProbe) - byteLength('X');
+}
+
+/** 每轮省下的字节 = 固定外壳开销 + 目录原文实际字节数。 */
+function expectedSavingBytes(): number {
+  return catalogOverheadBytes() + byteLength(catalogText());
 }
 
 function promptOfAssembled(rawBody: string, taskText = '帮我跑个命令'): string {
@@ -34,20 +54,20 @@ function promptOfAssembled(rawBody: string, taskText = '帮我跑个命令'): st
 }
 
 describe('M1.5 字节账：删重复目录的收益与 head-A 不动', () => {
-  it('续跑 prompt：带目录 vs 不带目录，恒定省 1,177 B（与结果条数无关）', () => {
+  it('续跑 prompt：带目录 vs 不带目录，恒定省＝目录段本身（与结果条数无关）', () => {
     const catalog = catalogText();
     const exec: Array<{ name: string; result: string }> = [];
 
     const withCatalog = buildContinuationPrompt('原始任务', exec as never, catalog);
     const withoutCatalog = buildContinuationPrompt('原始任务', exec as never);
 
-    expect(byteLength(withCatalog) - byteLength(withoutCatalog)).toBe(EXPECTED_SAVING_BYTES);
+    expect(byteLength(withCatalog) - byteLength(withoutCatalog)).toBe(expectedSavingBytes());
     // 目录原文在「带目录」那份里，「不带目录」那份里没有
     expect(withCatalog).toContain(catalog);
     expect(withoutCatalog).not.toContain(catalog);
   });
 
-  it('最终 body 的 prompt：同样恒定省 1,177 B（head 不变，tail 变短）', () => {
+  it('最终 body 的 prompt：同样恒定省目录段本身（head 不变，tail 变短）', () => {
     const catalog = catalogText();
     const tailWith = buildContinuationPrompt('原始任务', [] as never, catalog);
     const tailWithout = buildContinuationPrompt('原始任务', [] as never);
@@ -55,7 +75,7 @@ describe('M1.5 字节账：删重复目录的收益与 head-A 不动', () => {
     const bodyWith = promptOfAssembled(JSON.stringify({ prompt: tailWith }));
     const bodyWithout = promptOfAssembled(JSON.stringify({ prompt: tailWithout }));
 
-    expect(byteLength(bodyWith) - byteLength(bodyWithout)).toBe(EXPECTED_SAVING_BYTES);
+    expect(byteLength(bodyWith) - byteLength(bodyWithout)).toBe(expectedSavingBytes());
   });
 
   it('head-A 前缀逐字节不变（13,078 B 稳定前缀基线不受本卡影响）', () => {

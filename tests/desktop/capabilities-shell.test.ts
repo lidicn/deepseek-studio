@@ -59,6 +59,46 @@ describe('shell.exec —— argv 执行与安全红线', () => {
     expect(r.error).toBe('shell-syntax-unsupported');
   });
 
+  // 0.14.19 F2 回归锁：拒绝时的 hint 必须**可照抄**——模型只读这一行，缺了示例就等于
+  // 「告诉它改 argv 却不告诉它 argv 长什么样」，现场会在 shell-syntax-unsupported 上死循环
+  // （logs/sidecar-1794401274010.log L455）。
+  it('shell-syntax-unsupported 的 hint 可照抄：同时含 argv 与 powershell -NoProfile -Command 示例', async () => {
+    const cap = createShellCapability();
+    const r = await cap.execute({ command: 'Get-ChildItem | Select-Object -First 5' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('shell-syntax-unsupported');
+    const hint = String((r.data as { hint?: unknown }).hint ?? '');
+    expect(hint).toContain('argv');
+    expect(hint).toContain('powershell -NoProfile -Command');
+    // 示例必须是**可粘**的 JSON 形态（缺了它就只是又一句「改用数组」）。
+    expect(hint).toContain('{"argv":["powershell","-NoProfile","-Command"');
+  });
+
+  // 0.14.19 F1+F2 漂移锁：工具说明（`main-world-interceptor.ts` L1104/L1122，UI 席位）
+  // 与执行器 hint（本文件被测的 `shell.ts`）**必须说同一件事**——两处漂移＝模型照说明写必被拒
+  // （现场 `logs/sidecar-1794401274010.log` L455），这是本条故障的**结构性**原因。
+  // 只读文本、不改 UI 的文件域。
+  it('工具说明 × 执行器 hint 不漂移：两处都给出同一条可粘 argv 示例与同一份禁用字符表', async () => {
+    const interceptorSrc = await fsp.readFile(path.join(process.cwd(), 'src/inject/main-world-interceptor.ts'), 'utf8');
+    const r = await createShellCapability().execute({ command: 'Get-ChildItem | Select-Object -First 5' });
+    const hint = String((r.data as { hint?: unknown }).hint ?? '');
+    // ① 两处都登记 argv 这条出路（只写「改用数组」而说明里没有 argv ＝ 无从改对）
+    expect(interceptorSrc).toContain('params.argv');
+    expect(hint).toContain('params.argv');
+    // ② 两处都给同一条可粘示例（JSON 形态是唯一能直接进 params 的形态）
+    const example = '{"argv":["powershell","-NoProfile","-Command"';
+    expect(interceptorSrc).toContain(example);
+    expect(hint).toContain(example);
+    // ③ 两处都列出同一份「双引号外禁用」字符表（说明与判据对不上＝模型必被拒）
+    for (const text of [interceptorSrc, hint]) {
+      expect(text).toContain('$ ; | > < &');
+    }
+    // ④ 说明里两处（L1104/L1122）必须逐字一致（同一条工具被写两遍，改一处漏一处就漂）
+    const descriptionLines = interceptorSrc.split('\n').filter((line) => line.includes('- shell_exec — 执行命令行'));
+    expect(descriptionLines.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(descriptionLines.map((line) => line.trim())).size).toBe(1);
+  });
+
   // v1.9：双引号内元字符命令注入修复（审计补丁）。
   // 漏洞链：echo "x&calc" → hasShellSyntax 判安全（双引号内跳过 &）→
   // tokenizeCommand 剥离双引号 → argv=['echo','x&calc'] → cmd /c echo x&calc →

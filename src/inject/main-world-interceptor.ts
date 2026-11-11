@@ -1101,7 +1101,7 @@ const TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
 - local_file_stat — 查看文件/目录信息，参数：path
 - file_edit — 局部改写文件（优先于整文件覆写），参数：path、edits（[{oldString,newString}]）、expectedSha256（可选）、dryRun（可选）
 - search_files — 检索文件/内容，参数：operation（list/grep）、root、query、pattern、regex（可选）、glob（可选）、limit（可选）
-- shell_exec — 执行命令行，参数：command（优先用 PowerShell，路径用正斜杠）
+- shell_exec — 执行命令行，参数：command（单条命令；双引号外不得含 $ ; | > < &）。需要多语句或变量时改用 params.argv 数组（等价于 powershell -NoProfile -Command "<整段脚本>"），例如 {"argv":["powershell","-NoProfile","-Command","<整段脚本>"]}，不要写 PowerShell 脚本串
 - memory_save — 保存长期记忆，参数：type（user/project）、name、content、tags（可选）、pinned（可选，布尔）
 - python_exec — 执行 Python 代码，参数：code（Python 源代码字符串）
 - mcp_list — 列出已配置的 MCP 服务器及其工具（无参数）
@@ -1119,7 +1119,7 @@ const TOOL_CATALOG_TEXT = `## 可用工具
 - local_file_stat — 查看文件/目录信息，参数：path
 - file_edit — 局部改写文件（优先于整文件覆写），参数：path、edits（[{oldString,newString}]）、expectedSha256（可选）、dryRun（可选）
 - search_files — 检索文件/内容，参数：operation（list/grep）、root、query、pattern、regex（可选）、glob（可选）、limit（可选）
-- shell_exec — 执行命令行，参数：command（优先用 PowerShell，路径用正斜杠）
+- shell_exec — 执行命令行，参数：command（单条命令；双引号外不得含 $ ; | > < &）。需要多语句或变量时改用 params.argv 数组（等价于 powershell -NoProfile -Command "<整段脚本>"），例如 {"argv":["powershell","-NoProfile","-Command","<整段脚本>"]}，不要写 PowerShell 脚本串
 - memory_save — 保存长期记忆，参数：type（user/project）、name、content、tags（可选）、pinned（可选，布尔）
 - python_exec — 执行 Python 代码，参数：code（Python 源代码字符串）
 - mcp_list — 列出已配置的 MCP 服务器及其工具（无参数）
@@ -3120,11 +3120,15 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                   // 修复轮后仍不完整：抑制半截回复，明确以协议修复失败收尾。
                   try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
                   d('auto-continue protocol repair failed: suppress incomplete reply');
-                  // #55：协议修复失败收尾带原因（用户可见）
+                  // 0.14.19-F3（PM 卡）：预算耗尽收尾不得静默——保留 d() 日志，同时走现有 UI 提示通道
+                  //（finishStepFlow → chatUI.appendError）给用户一条可见提示；文案按 PM 卡定字
+                  //（#55 旧句「模型回复不完整且修复失败…请重试或换个说法。」作废：现场真因是上游服务器
+                  // 暂时不可用（generation_err），「换个说法」不解病，只会诱导用户反复无效重试）。
                   finishStepFlow({
                     code: 'protocol-repair-failed',
-                    message: '模型回复不完整且修复失败，本轮结果已丢弃，请重试或换个说法。',
+                    message: '上游服务器暂时不可用，本轮已中断，请重试。',
                   });
+
                   interceptorTrace.record({
                     t: 'turn.end',
                     turnId: traceTurnId,

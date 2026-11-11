@@ -182,12 +182,18 @@ export function createShellCapability(options: ShellCapabilityOptions = {}): Exe
       } else {
         const command = typeof params.command === 'string' ? params.command : typeof params.cmd === 'string' ? params.cmd : '';
         if (command.trim().length === 0) return { ok: false, error: 'missing-command' };
-        // 含 shell 语法 → 明示拒绝，而不是把 '|' 之类的字符当普通参数传下去
+        // 含 shell 语法 → 明示拒绝，而不是把 '|' 之类的字符当普通参数传下去。
+        // 0.14.19 F2：hint 必须**可照抄**——旧文案只说「改用 argv 数组」，模型不知道 argv 长什么样，
+        // 现场（`logs/sidecar-1794401274010.log` L455）就卡在 `shell-syntax-unsupported` 上打转。
+        // 这里给一条**完整可粘**的示例（`powershell -NoProfile -Command "<整段脚本>"`），
+        // 与 `main-world-interceptor` 的工具说明逐字一致（两处漂移＝模型照说明写必被拒）。
         if (hasShellSyntax(command)) {
           return {
             ok: false,
             error: 'shell-syntax-unsupported',
-            data: { hint: '不支持管道/重定向等 shell 语法，请改用 argv 数组或单条命令' },
+            data: {
+              hint: '不支持管道/重定向/命令串联（含双引号外的 $ ; | > < &）。单条命令请直接写；需要多语句请改用 params.argv 数组（等价于 powershell -NoProfile -Command "<整段脚本>"），例如 {"argv":["powershell","-NoProfile","-Command","Get-ChildItem | Select-Object -First 5"]}',
+            },
           };
         }
         argv = tokenizeCommand(command);
