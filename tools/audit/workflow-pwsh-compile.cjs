@@ -71,7 +71,7 @@ for (const wfFile of wfFiles) {
     allErrors.push({ file: wfFile, stepLine: 0, msg: `YAML parse failed: ${e.message}` });
     continue;
   }
-  if (!doc.jobs) continue;
+  if (!doc || !doc.jobs) continue;
 
   for (const [jobId, job] of Object.entries(doc.jobs)) {
     const runsOn = job['runs-on'] || '';
@@ -94,7 +94,8 @@ for (const wfFile of wfFiles) {
       const cleaned = replaceExpr(step.run);
 
       // 落盘再 ParseFile（跨进程传串会丢 CRLF ⇒ 假绿）
-      const tmpFile = path.join(os.tmpdir(), `wf-pwsh-${wfFile}-${jobId}-${si}.ps1`);
+      // 临时文件名加进程 PID + 随机后缀，防闸内 vitest 与 gate 步并行跑同一脚本时同名冲突（EBUSY）
+      const tmpFile = path.join(os.tmpdir(), `wf-pwsh-${wfFile}-${jobId}-${si}-${process.pid}-${Date.now()}.ps1`);
       fs.writeFileSync(tmpFile, cleaned, 'utf8');
 
       try {

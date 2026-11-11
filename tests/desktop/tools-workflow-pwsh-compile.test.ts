@@ -89,11 +89,17 @@ describe('tools/audit/workflow-pwsh-compile.cjs 正负控', () => {
     expect(r.code, `篡改后应 exit 1，实际 ${r.code}\n${r.output}`).toBe(1);
     // 必须红在"语法错"上，不能红在"目录找不到"上（后者是假负控）。
     expect(r.output, '负控红在别的原因上（找不到目录/文件），不是解析失败').not.toMatch(/not found at/);
-    // 报错必须可复盘——三格分开断，别合成一条宽正则（否则看不出是哪半挂了）：
-    expect(r.output, '报错缺文件名').toMatch(/release\.ya?ml/);
-    expect(r.output, '报错缺 step 序号').toMatch(/step#\d+/);
-    expect(r.output, '报错缺块内行号（形如 L26）').toMatch(/L\d+/);
-    expect(r.output, '报错缺解析器原文（变量引用无效）').toMatch(/变量引用无效|InvalidVariableReference|变量名称字符/);
+    // 报错必须可复盘——锁**整段自有结构**（PM 2026-11-11 G-1 裁定）：
+    // 真格式＝`[workflow-pwsh-compile] release.yml step#8: L26: <解析器消息>`
+    // 前缀/文件名/step 号/行号**全是我们自己的标记**（语言无关），解析器消息只在末尾当附带信息。
+    // 以前锁的是解析器原文（中文正则）⇒ CI runner 报英文必红（G-1 事故）。**任何语言串都不许锁。**
+    expect(
+      r.output,
+      `报错缺"自有结构整段"（应为 [workflow-pwsh-compile] <file> step#N: LN: <msg>），实际输出：${r.output}`,
+    ).toMatch(/\[workflow-pwsh-compile\]\s+\S*release\.ya?ml\s+step#\d+:\s*L\d+:\s*\S/);
+    // 报错行数 ≥ 1（与上面同源，但独立成格：结构对了却一行都没报，说明筛掉了真错误）
+    const errLines = r.output.split(/\r?\n/).filter((l) => /\[workflow-pwsh-compile\].*step#\d+:/.test(l));
+    expect(errLines.length, '报错行数应 ≥1').toBeGreaterThanOrEqual(1);
 }, 120_000);
 
   it('反误伤：含 shell: bash 的块必须被跳过（blocksSkipped >= 1 且 exit 0）', () => {

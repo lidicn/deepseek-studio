@@ -547,11 +547,32 @@ describe('v0.14.13 卡 E/F：打包工具预取＋发布正文显式 PATCH（#48
     expect(patch).toContain('actual_len=');
     expect(patch).toContain('firstDiff=');
     expect(patch).toContain('<end>');
-    expect(patch).toContain('throw "draft release body != notes file after PATCH"');
+    expect(patch).toContain('throw "draft release body != notes file after PATCH');
+    // v5 补：锁 by-id 回读路径存在（主路径改走 GET /releases/{id}，列表端点仅回退）
+    expect(patch).toContain('/releases/$($rel.id)"');
+    // v5 补：锁 ::error:: 诊断前缀（匿名可读通道，下一发再红时真因直接可读）
+    expect(patch).toContain('::error::[patch-body] body mismatch:');
     // run: 块零插值（与既有注入锁同判据，新增步也必须合规）
+    // PM ④ 裁口径：脚本体内只允许 ${{ steps.<id>.outputs.<name> }}（action 输出取值＝数据通道），
+    // 其余任何 ${{ }} 形态一律判红（含 github.token/env.X/表达式/函数调用）。
+    // 旧版"排除 env 段"是假绿：indexOf('env:') 命中脚本体内的 $env:TAG_NAME，把 5736 字节截成 67 字节。
+    // PM ②③ 要求：剥注释再查（甲案），防注释里的 ${{ }} 举例误红。
     const runStart = patch.indexOf('run: |');
     expect(runStart, 'patch 无 run: 块').toBeGreaterThanOrEqual(0);
-    expect(patch.slice(runStart), 'patch run: 块内出现 ${{ 插值').not.toContain('${{');
+    const runBody = patch.slice(runStart);
+    // 剥注释：逐行去掉行内 # 之后的内容（PowerShell 注释语法），再扫插值
+    const runNoComments = runBody.split('\n').map(l => {
+      const hashIdx = l.indexOf('#');
+      // 只剥行内注释（# 前有空格或行首 #），不剥字符串内的 #
+      if (hashIdx >= 0 && (hashIdx === 0 || /\s/.test(l[hashIdx - 1]))) {
+        return l.substring(0, hashIdx);
+      }
+      return l;
+    }).join('\n');
+    // 检 run: 脚本体全量（剥注释后），只放行 steps.<id>.outputs.<name> 形态
+    const allExprs = runNoComments.match(/\$\{\{[^}]+\}\}/g) ?? [];
+    const illegalExprs = allExprs.filter(e => !/\$\{\{\s*steps\.\w+\.(outputs|result)\.\w+\s*\}\}/.test(e));
+    expect(illegalExprs, `patch run: 脚本体内出现非法 ${{ }} 插值（只允许 steps.<id>.outputs.<name> 数据通道）：${illegalExprs.join('; ')}`).toHaveLength(0);
     // 位置：Create draft release < Patch < Preflight gate
     const iDraft = release.indexOf('- name: Create draft release');
     const iPatch = release.indexOf('- name: Patch draft release body');
@@ -590,5 +611,37 @@ describe('CI-H（#50）：cargo-check job 前置产物步骤锁', () => {
     expect(jobBody).toContain('fetch-node.mjs');
     // cargo check 本体仍在
     expect(jobBody).toContain('cargo check --tests');
+  });
+});
+
+describe('卡 F 注入锁负控：steps.<id>.outputs.<name> 放行绿、github.token 判红（PM ②③ 仓内真负控）', () => {
+  const patch = step(release, 'Patch draft release body');
+  const runStart = patch.indexOf('run: |');
+  expect(runStart, 'patch 无 run: 块').toBeGreaterThanOrEqual(0);
+  const runBody = patch.slice(runStart);
+  // 剥注释（与主断言同法）
+  const runNoComments = runBody.split('\n').map(l => {
+    const h = l.indexOf('#');
+    if (h >= 0 && (h === 0 || /\s/.test(l[h - 1]))) return l.substring(0, h);
+    return l;
+  }).join('\n');
+  // allowlist（与主断言同判据）
+  const allowlist = (body: string) => {
+    const exprs = body.match(/\$\{\{[^}]+\}\}/g) ?? [];
+    return exprs.filter(e => !/\$\{\{\s*steps\.\w+\.(outputs|result)\.\w+\s*\}\}/.test(e));
+  };
+
+  it('正控：steps.create_release.outputs.id 是合法数据通道 ⇒ illegalExprs 为空', () => {
+    expect(allowlist(runNoComments), `正控：合法 steps.*.outputs.* 应放行`).toHaveLength(0);
+  });
+
+  it('负控：变异成 github.token ⇒ 必须红（illegalExprs 非空且含 github.token）', () => {
+    const mutated = runNoComments.replace(
+      /\$\{\{\s*steps\.create_release\.outputs\.id\s*\}\}/g,
+      '${{ github.token }}'
+    );
+    const illegal = allowlist(mutated);
+    expect(illegal.length, `负控：变异成 github.token 后必须被判非法（实际 ${illegal.length} 处）`).toBeGreaterThan(0);
+    expect(illegal.some(e => e.includes('github.token')), '负控：变异后的非法表达式必须含 github.token').toBe(true);
   });
 });
