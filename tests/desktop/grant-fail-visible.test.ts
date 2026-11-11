@@ -8,6 +8,15 @@
  * 负控（PM 原话）：模拟闭包抛 `Command … not allowed by ACL` → 必须出横幅；静默判红。
  * `host-down` 停止不重试的语义不变（本测试只验「停止必须可见」）。
  */
+// 掐掉 `src/desktop/entry.ts:666` 的**顶层 auto-init**：它在模块 import 期执行，而下面 describe 里的
+// 守卫写在 `beforeEach`（import 之后才跑）——**对首次 import 无效**。auto-init 会多装一个宿主客户端，
+// 它的 30s 冷却定时器在假定时器推进时照样调 `acquireGrant`，把本文件的 `calls` 计数从 2 抬到 4。
+// GATE#87 attempt 1 即红于此（attempt 2 绿、单跑 3/3 绿、满载 4/4 绿 ⇒ 执行序相关）。
+// `vi.hoisted` 在 import 之前运行，故这条守卫**先于** auto-init 生效，本文件从此不依赖"前一个文件留没留全局"。
+vi.hoisted(() => {
+  (globalThis as { __deepseekStudio?: unknown }).__deepseekStudio = {};
+});
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   acquireGrant,
