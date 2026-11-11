@@ -380,7 +380,7 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   const skillsTab = el('div', { className: 'studio-tab-content' });
   skillsTab.dataset.tabPanel = 'skills';
   const skillsDirRow = el('div', { className: 'studio-workspace-row' });
-  const skillsDirInput = el('input', { className: 'studio-input studio-workspace-input', attrs: { placeholder: '技能目录路径（留空用默认 ~/.agents/skills）' } });
+  const skillsDirInput = el('input', { className: 'studio-input studio-workspace-input', attrs: { placeholder: '技能目录路径（留空＝默认两枚：~/.agents/skills 与配置目录下 skills）' } });
   const skillsScanBtn = el('button', { className: 'studio-btn primary sm', text: '扫描' });
 
   /**
