@@ -369,27 +369,76 @@ jobs:
             'X-GitHub-Api-Version' = '2022-11-28'
             'User-Agent' = 'studio-release-gate'
           }
-          # 查草稿必须走全量列表按 tag 过滤（GET /releases/tags/{tag} 不返回 draft——与 Preflight gate 同坑）
-          $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases?per_page=100" |
-            Where-Object { $_.tag_name -eq $tag -and $_.draft } | Select-Object -First 1
-          if (-not $rel) { throw "draft release for tag $tag not found" }
+          # 查草稿：优先用 step15 的 action 输出 id（列表端点有最终一致性延迟，首查可能空）
+          # 注：${{ steps.create_release.outputs.id }} 在 runner 上展开为数字 id；本地/离线跑时是字面量非空串
+          $draftId = '${{ steps.create_release.outputs.id }}'
+          Write-Host "::error::[patch-body] draftId=$draftId"
+          $rel = $null
+          # 首查也纳入重试（action 自己是 3 次×1s；我们至少 3 次×2s）
+          for ($findAttempt = 1; $findAttempt -le 3; $findAttempt++) {
+            if ($draftId) {
+              $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$draftId" -ErrorAction SilentlyContinue
+            }
+            if (-not $rel) {
+              # 回退：列表端点按 tag 过滤（GET /releases/tags/{tag} 不返回 draft——与 Preflight gate 同坑）
+              $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases?per_page=100" -ErrorAction SilentlyContinue |
+                Where-Object { $_.tag_name -eq $tag -and $_.draft } | Select-Object -First 1
+            }
+            if ($rel) { break }
+            if ($findAttempt -lt 3) { Write-Host "[patch-body] find attempt $findAttempt/3: draft not found, waiting $($findAttempt * 2)s"; Start-Sleep -Seconds ($findAttempt * 2) }
+          }
+          if (-not $rel) { Write-Host "::error::[patch-body] draft release for tag $tag not found after 3 attempts (first query: by-id=$([bool]$draftId) list-fallback=$($null -ne $rel))"; throw "draft release for tag $tag not found after 3 find attempts" }
           $expected = ((Get-Content "docs/release-notes-$tag.md" -Raw).Trim()) -replace "`r`n", "`n"
           $payload = @{ body = $expected } | ConvertTo-Json
-          Invoke-RestMethod -Method Patch -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$($rel.id)" -ContentType 'application/json; charset=utf-8' -Body $payload
-          # 回读逐字符等值（卡 F 第 0 条硬判据）：不等即 throw，报错打三件套（两枚长度＋firstDiff 下标＋该位字符或 <end>）
-          $rel2 = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases?per_page=100" |
-            Where-Object { $_.tag_name -eq $tag -and $_.draft } | Select-Object -First 1
-          $actual = ($rel2.body.Trim()) -replace "`r`n", "`n"
-          if ($actual -ne $expected) {
-            Write-Host "body mismatch: expected_len=$($expected.Length) actual_len=$($actual.Length)"
+          # PATCH 返回体就是刚写入的对象（含 body）——接住作第一证据源，不靠列表端点回读
+          $patchResult = $null
+          try {
+            $patchResult = Invoke-RestMethod -Method Patch -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$($rel.id)" -ContentType 'application/json; charset=utf-8' -Body $payload
+          } catch {
+            $pcode = $null; if ($_.Exception.Response) { $pcode = [int]$_.Exception.Response.StatusCode }
+            Write-Host "::error::[patch-body] PATCH failed: HTTP=$pcode msg=$($_.Exception.Message)"
+            throw "[patch-body] PATCH request failed (HTTP=$pcode)"
+          }
+          # 回读逐字符等值（卡 F 第 0 条硬判据）：GitHub 列表接口有最终一致性延迟，
+          # 轮询到等值或超时（5 次 × 2s），而不是一次定生死。
+          # 回读为空时不许直接炸 .Trim()——先打印诊断再抛，诊断必须含 rel2 是否为空。
+          # 顺序：先取值 → 先打印三件套 → 再判等值（旧版先解引用再打印 ⇒ 真因格下诊断全丢）。
+          # 回读走 by-id（GET /releases/{id}），不用列表端点（列表有缓存/旧快照风险）。
+          # 兜底成功后 $lastEmpty 必须复位（v3 bug：置 true 后不复位 ⇒ "先空后对"假红）。
+          $actual = $null
+          $lastEmpty = $false
+          for ($poll = 1; $poll -le 5; $poll++) {
+            $lastEmpty = $false
+            $rel2 = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$($rel.id)" -ErrorAction SilentlyContinue
+            if (-not $rel2 -or $null -eq $rel2.body) {
+              $lastEmpty = $true
+              # poll1 优先用 PATCH 返回体（它就是刚写入的对象）
+              if ($poll -eq 1 -and $patchResult -and $patchResult.body) {
+                $rel2 = $patchResult
+                $lastEmpty = $false
+              } else {
+                Write-Host "[patch-body] poll $poll/5: rel2 is null or body is null — waiting ${poll}s"
+                Start-Sleep -Seconds ($poll * 2)
+                continue
+              }
+            }
+            $actual = ($rel2.body.Trim()) -replace "`r`n", "`n"
+            if ($actual -eq $expected) {
+              $lastEmpty = $false
+              Write-Host "draft body patched and verified: $($actual.Length) chars (poll $poll)"
+              break
+            }
+            # 不等：先打印三件套（旧版在判等值之前就炸 .Trim() ⇒ 诊断全丢）
+            Write-Host "::error::[patch-body] body mismatch: expected_len=$($expected.Length) actual_len=$($actual.Length)"
             $min = [Math]::Min($expected.Length, $actual.Length)
             $firstDiff = -1
             for ($i = 0; $i -lt $min; $i++) { if ($expected[$i] -cne $actual[$i]) { $firstDiff = $i; break } }
-            if ($firstDiff -ge 0) { Write-Host "firstDiff=$firstDiff expected_char='$($expected[$firstDiff])' actual_char='$($actual[$firstDiff])'" }
-            else { Write-Host "firstDiff=<end> (one side is a prefix of the other)" }
-            throw "draft release body != notes file after PATCH"
+            if ($firstDiff -ge 0) { Write-Host "::error::firstDiff=$firstDiff expected_char='$($expected[$firstDiff])' actual_char='$($actual[$firstDiff])'" }
+            else { Write-Host "::error::firstDiff=<end> (one side is a prefix of the other)" }
+            if ($poll -lt 5) { Start-Sleep -Seconds 2 }
           }
-          Write-Host "draft body patched and verified: $($actual.Length) chars"
+          if ($lastEmpty) { Write-Host "::error::[patch-body] rel2 is null or body is null after 5 polls (final)"; throw "draft release body is null or rel2 not found after 5 polls — PATCH may have failed or API is stale" }
+          if ($null -eq $actual -or $actual -ne $expected) { Write-Host "::error::[patch-body] body mismatch persists after 5 polls (last actual_len=$($actual.Length))"; throw "draft release body != notes file after PATCH (5 polls exhausted, last actual_len=$($actual.Length))" }
 
       # ③ G 闸（Gate 增补判据 G1/G2/G5）：**draft 建好之后**跑，只认 GitHub 上的实际结果。
       #    G1：资产名取自 Release assets API（实际上传名），不许用本地文件名自证；
