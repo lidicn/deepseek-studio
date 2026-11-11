@@ -5,7 +5,7 @@
 - 派卡前验依赖：想「等 A 做完再做 B」时，必须先确认 A 和 B 之间有真依赖；没验就不许拿「在等」当不开卡的挡箭牌。用户拍板 ≠ 技术阻塞——用户没回的那件事如果跟要写的代码零依赖，就照常开卡。
 - 回报：每张派单卡带 `report_back`；席位做完必须在群聊里 `@Studio-PM` 开头交一行摘要+路径，没做完不许静默结束，交接必须 @ 下一个席位。群里非 @ 发言不会唤醒任何人——漏 @ 就会让链条卡死。
 - 提交：提交前必须跑全量 gate（`npm run gate`），但全量 gate 由私聊 PM 统一执行；其他 bot 在等待期间不要并行跑全量 gate / `npm test`，避免 OOM。两 PM 防撞车通过 `PM-LOG.md`（已 gitignore）协调：派卡前先查日志 + `git status`（同一写域不重复派）；日志有 RUNNING 无收口行时另一方不开跑 gate；commit/push/tag 由私聊 PM 统一执行。中间态允许红，但每次改完需自行跑 `npx tsc --noEmit` 确认无红色。
-- 发版：Publish 是用户的网页操作，须等 CI 全绿、资产齐全后再叫用户点；用 API 建的草稿发布时默认不带 Latest 标记，必须让用户在编辑页勾「Set as the latest release」，否则 `releases/latest` 指针不推进（已两次踩坑）。发版前还需确认 tag = package.json = tauri.conf.json 三向版本一致，否则 workflow 校验直接挡下。
+- 发版：Publish 是用户的网页操作，须等 CI 全绿、资产齐全后再叫用户点；用 API 建的草稿发布时默认不带 Latest 标记，必须让用户在编辑页勾「Set as the latest release」，否则 `releases/latest` 指针不推进（已两次踩坑）。发版前还需确认 tag = package.json = tauri.conf.json 三向版本一致，否则 workflow 校验直接挡下；必须用 PowerShell 官方解析器逐段校验 release workflow 中的脚本，不能只做文本扫描或依赖现有 gate。
 - 开发规范：遵循 `E:\NAS\开发规范.md` 及 `docs/` 下文档。
 - 工具页面：Studio 仅在 DeepSeek 聊天页启用工具桥，不以豆包等其他聊天站作为支持页面；排查日志时须区分 DeepSeek 页面自身的后台流量与实际聊天域名。
 - 权限审批：审批界面须独立于当前页面 DOM，agent 不得控制或影响其内容；审批范围按对话划分：单次放行只覆盖本次操作，「本对话始终允许」覆盖整个对话，「完全放开」彻底关闭审批且不再弹窗。审批窗口不可用时须 fail-closed，不得回退到 agent 可控的页内弹窗。
