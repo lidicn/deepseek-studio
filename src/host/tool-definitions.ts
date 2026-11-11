@@ -135,6 +135,21 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     allowedOrigins: [DEEPSEEK_ORIGIN],
     approvalClass: 'none',
   },
+  // 2026-11-11：设置面板「技能目录」保存（写 config.json 的 `skillsDir`）。
+  //
+  // 为什么 approvalClass 是 `none` 而 risk 是 `privileged`：本工具**只对页端 UI 开放**
+  // （不在 `SUPPORTED_INVOCATION_NAMES` 里，模型直调会被拒），唯一的调用方是设置面板
+  // 那枚「扫描」按钮——**用户点按即同意**，再弹一次原生确认只是噪音。若将来把它放进模型面，
+  // 这行必须同步改成 `always`（参考 `workspace.set` 的 QD-R2-04 教训）。
+  {
+    id: 'skill.dir.set',
+    title: '设置技能目录',
+    description: '把技能目录保存到用户配置（改写后续技能扫描的根目录，仅页端设置面板可调）。',
+    risk: 'privileged',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
+  },
   // ORD-001：本地文件检索（listFiles + grepFiles）。
   {
     id: 'search_files',

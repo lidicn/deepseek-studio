@@ -1,9 +1,16 @@
 /**
  * tests/desktop/distribution-shape.test.ts
  *
- * **批 N+1 口径**（2026-11-06）：D 组（装版不写示例 / 装版不建技能目录 / 装版跳过
- * `~/.agents/skills`）与段 2 路径注入、段 3 首启迁移**同批落地**（PM 裁定③）。
- * 批 N 期间以 `it.skip` 留住的 3 条口径**已解开并全部执行**（不许永久留在跳过态）。
+ * **批 N+1 口径**（2026-11-06）：D 组（装版不写示例 / 装版不建技能目录）与段 2 路径注入、
+ * 段 3 首启迁移**同批落地**（PM 裁定③）。批 N 期间以 `it.skip` 留住的 3 条口径
+ * **已解开并全部执行**（不许永久留在跳过态）。
+ *
+ * **2026-11-11 口径反转（用户拍板）**：原批 N+1 第③条「装版跳过 `~/.agents/skills`」**作废**。
+ * 依据 Agent Skills 官方实施指南（agentskills.io/client-implementation/adding-skills-support）：
+ * `.agents/skills/` 是「跨客户端共享技能的广泛采纳约定」，官方要求 User scope 扫
+ * `~/.agents/skills/`；规范只定义 `SKILL.md` 内容、不规定目录位置，**不扫**就等于看不到别的
+ * 合规客户端装的技能。原顾虑（装版误命中＝污染用户机）不成立：只 `existsSync` 只读判断，
+ * 创建与否由 `ensureSkillsDir` 单独管（装版仍不创建）。
  *
  * 本文件覆盖：
  * 1. 形态判定 fail-safe（缺失/非法 → installed）、`resolveConfigDir` 回落；
@@ -99,11 +106,15 @@ describe('批 N 不变量：装版与 dev 的路径行为都不变（改前改�
     expect(fs.existsSync(p)).toBe(false);
   });
 
-  it('批 N+1 反转：装版形态下第 ③ 位不再命中 ~/.agents/skills', () => {
+  it('2026-11-11 口径反转：装版形态下 `~/.agents/skills` 存在即命中（跨客户端互操作）', () => {
     process.env.STUDIO_DISTRIBUTION = 'installed';
-    const resolved = resolveSkillsDir();
-    expect(resolved).toBe(path.join(tmp, 'skills'));
-    expect(resolved).not.toBe(agentsDir);
+    const home = path.join(tmp, 'home');
+    fs.mkdirSync(path.join(home, '.agents', 'skills'), { recursive: true });
+    expect(resolveSkillsDir(undefined, home)).toBe(path.join(home, '.agents', 'skills'));
+    // 负控：该目录不存在时不得凭空指过去，必须回落 <config>/skills
+    const homeEmpty = path.join(tmp, 'home-empty');
+    fs.mkdirSync(homeEmpty, { recursive: true });
+    expect(resolveSkillsDir(undefined, homeEmpty)).toBe(path.join(tmp, 'skills'));
   });
 
   it('显式传入 skillsDir 仍按原语义创建（面板「添加技能目录」不受形态影响）', () => {
@@ -143,15 +154,19 @@ describe('批 N+1（D 组）：解跳后的回归断言（批 N 时以 it.skip �
     expect(fs.existsSync(p)).toBe(false);
   });
 
-  it('installed → resolveSkillsDir 返回 <STUDIO_CONFIG_DIR>/skills，且不命中 ~/.agents/skills', () => {
+  it('installed → 无任何配置时 resolveSkillsDir 返回 <STUDIO_CONFIG_DIR>/skills（负控：不凭猜）', () => {
     process.env.STUDIO_DISTRIBUTION = 'installed';
-    expect(resolveSkillsDir()).toBe(path.join(tmp, 'skills'));
-    expect(resolveSkillsDir()).not.toBe(agentsDir);
+    const home = path.join(tmp, 'home-plain');
+    fs.mkdirSync(home, { recursive: true });
+    expect(resolveSkillsDir(undefined, home)).toBe(path.join(tmp, 'skills'));
+    expect(resolveSkillsDir(undefined, home)).not.toBe(agentsDir);
   });
 
   it('installed → ensureSkillsDir 直接 return，不创建 <config>/skills', () => {
     process.env.STUDIO_DISTRIBUTION = 'installed';
-    expect(ensureSkillsDir()).toBe(path.join(tmp, 'skills'));
+    const home = path.join(tmp, 'home-plain2');
+    fs.mkdirSync(home, { recursive: true });
+    expect(ensureSkillsDir(undefined, home)).toBe(path.join(tmp, 'skills'));
     expect(fs.existsSync(path.join(tmp, 'skills'))).toBe(false);
   });
 });

@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { scanSkills, ensureSkillsDir, resolveSkillsDir } from '../../src/host/skill-store';
+import { scanSkills, ensureSkillsDir, resolveSkillsDir, readConfiguredSkillsDir, persistSkillsDir } from '../../src/host/skill-store';
 import { DEFAULT_TOOL_DEFINITIONS, DEEPSEEK_ORIGIN } from '../../src/host/tool-definitions';
 import {
   mapUpstreamToolInvocation,
@@ -70,6 +70,38 @@ describe('v0.9: 本地技能系统（skill-store）', () => {
     } finally {
       if (prev === undefined) delete process.env.STUDIO_SKILLS_DIR;
       else process.env.STUDIO_SKILLS_DIR = prev;
+    }
+  });
+
+  it('2026-11-11 回归：设置面板「扫描」必须落盘——持久化的 skillsDir 压过默认链', () => {
+    // 根因：面板过去只把路径当**单次调用参数**（`skill.list {dir}`），从不写 config.json。
+    // 于是 `/` 弹层与 interceptor 传 `{}` 走默认链（`<config>/skills`，不存在）⇒ 弹层恒空；
+    // 重开面板输入框又被 `data.dir` 反向覆盖回默认值 ⇒ 用户观感「指定了路径却没跟着改」。
+    const prevConfig = process.env.STUDIO_CONFIG_DIR;
+    try {
+      process.env.STUDIO_CONFIG_DIR = tmpDir;
+      const home = path.join(tmpDir, 'home');
+      fs.mkdirSync(path.join(home, '.agents', 'skills'), { recursive: true });
+      const custom = path.join(tmpDir, 'custom-skills');
+      fs.mkdirSync(custom, { recursive: true });
+
+      // 未配置 → 默认链命中 ~/.agents/skills（Agent Skills 跨客户端互操作约定，存在即用）
+      expect(persistSkillsDir('').ok).toBe(true);
+      expect(readConfiguredSkillsDir()).toBeNull();
+      expect(resolveSkillsDir(undefined, home)).toBe(path.join(home, '.agents', 'skills'));
+
+      // 保存后 → 配置压过默认链（`skill.list {}` 这类无参调用也走它，弹层才有内容）
+      expect(persistSkillsDir(custom).ok).toBe(true);
+      expect(readConfiguredSkillsDir()).toBe(custom);
+      expect(resolveSkillsDir(undefined, home)).toBe(custom);
+
+      // 清空输入框再扫描＝清除配置，回落默认链（不留残余）
+      expect(persistSkillsDir('').ok).toBe(true);
+      expect(readConfiguredSkillsDir()).toBeNull();
+      expect(resolveSkillsDir(undefined, home)).toBe(path.join(home, '.agents', 'skills'));
+    } finally {
+      if (prevConfig === undefined) delete process.env.STUDIO_CONFIG_DIR;
+      else process.env.STUDIO_CONFIG_DIR = prevConfig;
     }
   });
 

@@ -188,6 +188,8 @@ const UI_ONLY_TOOLS: Record<string, UpstreamToolMapping> = Object.assign(
   'project.create': { id: 'project.create', adapt: (p) => p },
   'folder.pick': { id: 'folder.pick', adapt: (p) => p },
   'skill.list': { id: 'skill.list', adapt: (p) => p },
+  // 设置面板「技能目录」保存：把路径写回 config.json，让 `/` 弹层与 interceptor 走默认链时也能看到。
+  'skill.dir.set': { id: 'skill.dir.set', adapt: (p) => ({ dir: String(p.dir ?? '') }) },
   } as Record<string, UpstreamToolMapping>,
 );
 

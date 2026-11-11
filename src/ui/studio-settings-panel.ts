@@ -383,11 +383,16 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   const skillsDirInput = el('input', { className: 'studio-input studio-workspace-input', attrs: { placeholder: '技能目录路径（留空用默认 ~/.agents/skills）' } });
   const skillsScanBtn = el('button', { className: 'studio-btn primary sm', text: '扫描' });
 
-  async function loadSkills(): Promise<void> {
-    const dir = (skillsDirInput as HTMLInputElement).value.trim();
+  /**
+   * 只读拉取技能列表（面板打开 / 刷新走这里）。
+   *
+   * **不许在这里写配置**：`open()` 首帧输入框是空的（还没回填），此时若把空串写回
+   * `config.json` 就会把用户已保存的目录清掉。
+   */
+  async function fetchSkills(): Promise<void> {
     let result: { ok: boolean; data?: unknown } | null = null;
     try {
-      result = await callHostTool('skill.list', dir ? { dir } : {});
+      result = await callHostTool('skill.list', {});
     } catch {
       result = null; // 真拉取失败（宿主不可达/未就绪）：落到下方 fail-visible 提示
     }
@@ -411,7 +416,28 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
     }
     // ok:false / 无 data：保留现有列表（既有语义，不强制出错态）。
   }
-  skillsScanBtn.addEventListener('click', () => void loadSkills());
+
+  /**
+   * 「扫描」＝**先保存再扫描**。
+   *
+   * 用户点了这枚按钮，语义就是「我要用这个目录」——只扫不存等于什么也没留下：
+   * `/` 弹层与 interceptor 走的是默认链（`resolveSkillsDir()`），不认面板输入框里的字面值。
+   */
+  async function saveAndScanSkills(): Promise<void> {
+    const dir = (skillsDirInput as HTMLInputElement).value.trim();
+    try {
+      const saved = await callHostTool('skill.dir.set', { dir });
+      if (!saved.ok) {
+        // 保存失败不阻断扫描（用户至少能看到这个目录里有什么），但必须可见。
+        skillsList.replaceChildren();
+        skillsList.appendChild(el('div', { className: 'studio-form-hint', style: { color: '#c0392b' }, text: `技能目录保存失败：${saved.error ?? '未知错误'}` }));
+      }
+    } catch {
+      // 宿主不可达：交给 fetchSkills 的 fail-visible 分支统一提示。
+    }
+    await fetchSkills();
+  }
+  skillsScanBtn.addEventListener('click', () => void saveAndScanSkills());
   skillsDirRow.appendChild(skillsDirInput);
   skillsDirRow.appendChild(skillsScanBtn);
   skillsTab.appendChild(skillsDirRow);
@@ -746,7 +772,7 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
     // 保留旧快照（控制区停在 loading/旧值，可见），不把 unhandled rejection 丢给页面。
     void controls.refresh().catch(() => { /* 旧快照保留；下次成功 refresh 恢复 */ });
     void loadMcp();
-    void loadSkills();
+    void fetchSkills();
     // M10-5：面板打开就从宿主拉一次，别只等广播（否则打开早于首帧广播时永远空）。
     void reloadActive();
     void reloadArchived();

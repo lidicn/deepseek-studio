@@ -61,6 +61,8 @@ const BASELINE: Record<string, ApprovalClass> = {
   echo: 'none',
   'chat-read': 'none',
   'skill.list': 'none',
+  // 2026-11-11：设置面板「技能目录」保存。只对页端 UI 开放（不入模型面），用户点按即同意。
+  'skill.dir.set': 'none',
   web_fetch: 'none',
   web_search: 'none',
   'memory.save': 'none',

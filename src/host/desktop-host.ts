@@ -123,7 +123,7 @@ import { createFileTools } from '../capabilities/file';
 import { createFileEditCapability } from '../capabilities/edit-engine';
 import { getMemoryStore } from './memory-store';
 import { normalizeMemorySaveParams } from './memory-tool-params';
-import { scanSkills, ensureSkillsDir, resolveSkillsDir } from './skill-store';
+import { scanSkills, ensureSkillsDir, resolveSkillsDir, persistSkillsDir } from './skill-store';
 import { getMcpController, ensureMcpConfig, getMcpServer, removeMcpServer, maskMcpServerSecrets, mergeMaskedSecretsChecked, toMcpServerSummary, type McpServerConfig } from './mcp-controller';
 import { createAutomationManager, type AutomationManager } from './automation';
 import { execPythonInSandbox } from './sandbox-executor';
@@ -685,6 +685,22 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
                 })),
               },
             };
+          },
+        },
+        // 设置面板「技能目录」保存：把路径写回 `config.json`。
+        //
+        // 为什么必须有这一步（真机现场 2026-11-11）：面板原本只把输入框的值当**单次调用参数**
+        // 发给 `skill.list`，从不落盘 ⇒ 面板自己列得出技能，但 `/` 弹层与 interceptor 传 `{}`
+        // 走默认链（`<config>/skills`，不存在）⇒ 弹层恒为空；且重开面板时输入框被 `data.dir`
+        // 反向覆盖回默认值，用户观感是「指定了路径却没跟着改」。
+        // 空串＝清除配置、回落默认链（用户清空输入框再扫描的语义）。
+        'skill.dir.set': {
+          id: 'skill.dir.set',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const dir = typeof params.dir === 'string' ? params.dir.trim() : '';
+            const persist = persistSkillsDir(dir);
+            if (!persist.ok) return { ok: false, error: persist.error ?? 'skills-dir-persist-failed' };
+            return { ok: true, data: { dir: resolveSkillsDir() } };
           },
         },
         // v1.0：长期记忆保存（移植自 deepseek++ memory_save）。
