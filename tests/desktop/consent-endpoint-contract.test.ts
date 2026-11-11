@@ -24,6 +24,7 @@ import { createBearerAuthenticator } from '../../src/api/auth';
 import { createFakeOfficialBackend, chunk } from '../../src/api/official-backend';
 import type { ApiConfig } from '../../src/api/types';
 import type { PendingConsentEntry } from '../../src/host/consent-queue';
+import { startListenable } from './_host-port-guard';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const CONSENT_RS = path.join(REPO_ROOT, 'src-tauri', 'src', 'consent_window.rs');
@@ -48,10 +49,11 @@ afterEach(async () => {
 
 async function startServer(queue: FakeQueue | null): Promise<string> {
   const config: ApiConfig = { host: '127.0.0.1', port: 0, token: TOKEN };
-  const server = createApiServer({
-    config,
-    backend: createFakeOfficialBackend({ chunks: [chunk('deepseek-chat', 'hi')], models: ['deepseek-chat'] }),
-    authenticator: createBearerAuthenticator(TOKEN),
+  const server = await startListenable(() =>
+    createApiServer({
+      config,
+      backend: createFakeOfficialBackend({ chunks: [chunk('deepseek-chat', 'hi')], models: ['deepseek-chat'] }),
+      authenticator: createBearerAuthenticator(TOKEN),
     ...(queue
       ? {
           consentQueue: {
@@ -66,8 +68,9 @@ async function startServer(queue: FakeQueue | null): Promise<string> {
           },
         }
       : {}),
-  });
-  await server.start();
+    }),
+  );
+
   activeServer = server;
   return server.url;
 }

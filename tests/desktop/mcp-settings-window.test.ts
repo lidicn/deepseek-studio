@@ -23,6 +23,7 @@ import { createBearerAuthenticator } from '../../src/api/auth';
 import { createFakeOfficialBackend, chunk } from '../../src/api/official-backend';
 import { decideAgentAccess } from '../../src/api/agent-lan-access';
 import type { ApiConfig } from '../../src/api/types';
+import { startListenable } from './_host-port-guard';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const MAIN_RS = path.join(REPO_ROOT, 'src-tauri', 'src', 'main.rs');
@@ -112,16 +113,18 @@ afterEach(async () => {
 
 async function startServer(opts: { withPage?: boolean } = {}): Promise<{ base: string; port: number }> {
   const config: ApiConfig = { host: '127.0.0.1', port: 0, token: TOKEN };
-  const server = createApiServer({
-    config,
-    backend: createFakeOfficialBackend({
-      chunks: [chunk('deepseek-chat', 'hi')],
-      models: ['deepseek-chat'],
+  const server = await startListenable(() =>
+    createApiServer({
+      config,
+      backend: createFakeOfficialBackend({
+        chunks: [chunk('deepseek-chat', 'hi')],
+        models: ['deepseek-chat'],
+      }),
+      authenticator: createBearerAuthenticator(TOKEN),
+      ...(opts.withPage ? { mcpSettingsPage: makeFixtures() } : {}),
     }),
-    authenticator: createBearerAuthenticator(TOKEN),
-    ...(opts.withPage ? { mcpSettingsPage: makeFixtures() } : {}),
-  });
-  await server.start();
+  );
+
   activeServer = server;
   const url = new URL(server.url);
   return { base: server.url, port: Number(url.port) };

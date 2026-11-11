@@ -12,6 +12,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createDesktopHost } from '../../src/host/desktop-host';
 import { getEchoLastExecutedAt } from '../../src/capabilities/echo';
+import { startListenable } from '../desktop/_host-port-guard';
 import type { ApiConfig } from '../../src/api/types';
 
 const TOKEN = 'e2e-token';
@@ -23,8 +24,8 @@ describe('v0.2 最小闭环', () => {
 
   beforeAll(async () => {
     const config: ApiConfig = { host: '127.0.0.1', port: 0, token: TOKEN };
-    host = createDesktopHost({ config, secret: SECRET });
-    await host.start();
+    // 端口交给 OS 分配 + 校验 undici 禁用表（机制见 ../desktop/_host-port-guard.ts）
+    host = await startListenable(() => createDesktopHost({ config, secret: SECRET }));
     base = host.url;
   });
   afterAll(async () => {

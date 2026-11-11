@@ -8,14 +8,16 @@ import { createBearerAuthenticator } from '../../src/api/auth';
 import { createFakeOfficialBackend, chunk } from '../../src/api/official-backend';
 import type { ApiConfig } from '../../src/api/types';
 import type { OfficialBackend } from '../../src/api/official-backend';
+import { startListenable } from './_host-port-guard';
 
 const TOKEN = 'audit-token';
 let base = '';
 
 async function startServer(backend: OfficialBackend) {
   const config: ApiConfig = { host: '127.0.0.1', port: 0, token: TOKEN };
-  const server = createApiServer({ config, backend, authenticator: createBearerAuthenticator(TOKEN) });
-  await server.start();
+  const server = await startListenable(() =>
+    createApiServer({ config, backend, authenticator: createBearerAuthenticator(TOKEN) }),
+  );
   base = server.url;
   return server;
 }

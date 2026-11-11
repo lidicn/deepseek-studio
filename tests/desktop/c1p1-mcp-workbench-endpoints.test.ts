@@ -32,6 +32,7 @@ import { createApiServer, type McpServerConfigDto, type McpServersApi } from '..
 import { createBearerAuthenticator } from '../../src/api/auth';
 import { createFakeOfficialBackend, chunk } from '../../src/api/official-backend';
 import type { ApiConfig } from '../../src/api/types';
+import { startListenable } from './_host-port-guard';
 
 const TOKEN = 'test-token';
 const DEEPSEEK_ORIGIN = 'https://chat.deepseek.com';
@@ -83,13 +84,15 @@ async function startServer() {
     chunks: [chunk('deepseek-chat', 'Hello')],
     models: ['deepseek-chat'],
   });
-  const server = createApiServer({
-    config,
-    backend,
-    authenticator: createBearerAuthenticator(TOKEN),
-    mcpServers: fakeApi,
-  });
-  await server.start();
+  const server = await startListenable(() =>
+    createApiServer({
+      config,
+      backend,
+      authenticator: createBearerAuthenticator(TOKEN),
+      mcpServers: fakeApi,
+    }),
+  );
+
   base = server.url;
   return server;
 }

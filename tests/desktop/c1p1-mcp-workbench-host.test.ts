@@ -29,6 +29,7 @@ import fs from 'node:fs';
 // 这正是全量 gate 偶发红的直接机制。单例是懒建的（`new McpController()` 才读 env），
 // 所以只要 bootHost() 在 start 前设好 STUDIO_MCP_CONFIG，静态导入安全。
 import { createDesktopHost } from '../../src/host/desktop-host';
+import { startListenable } from './_host-port-guard';
 
 /**
  * 20261105（全量 gate 两轮 flaky 定位后重构）：
@@ -59,12 +60,14 @@ function writeCfg(servers: Record<string, unknown>): void {
 /** 起一个真宿主；控制器单例在 start() 内首次构造时读 env。 */
 async function bootHost() {
   process.env.STUDIO_MCP_CONFIG = cfgPath;
-  const host = createDesktopHost({
-    config: { host: '127.0.0.1', port: 0, token: TOKEN },
-    secret: 's',
-  });
-  await host.start();
-  return host;
+  // 端口交给 OS 分配 + 校验 undici 禁用表（机制见 _host-port-guard.ts）：
+  // CI 与本机动态范围不同，用 fetch 打本机 host 的测试都要过这一层。
+  return startListenable(() =>
+    createDesktopHost({
+      config: { host: '127.0.0.1', port: 0, token: TOKEN },
+      secret: 's',
+    }),
+  );
 }
 
 afterAll(() => {

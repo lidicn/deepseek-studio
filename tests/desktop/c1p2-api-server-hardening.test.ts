@@ -16,6 +16,7 @@ import { createApiServer, type ApiServer } from '../../src/api/server';
 import { createBearerAuthenticator } from '../../src/api/auth';
 import { createFakeOfficialBackend, chunk } from '../../src/api/official-backend';
 import type { ApiConfig } from '../../src/api/types';
+import { startListenable } from './_host-port-guard';
 
 const TOKEN = 'c1p2-token';
 
@@ -38,7 +39,8 @@ async function startServer(opts: {
     chunks: [chunk('deepseek-chat', 'Hello')],
     models: ['deepseek-chat'],
   });
-  const server = createApiServer({
+  const server = await startListenable(() =>
+    createApiServer({
     config,
     backend,
     authenticator: createBearerAuthenticator(
@@ -63,8 +65,9 @@ async function startServer(opts: {
         },
       }
       : {}),
-  });
-  await server.start();
+    }),
+  );
+
   activeServer = server;
   const url = new URL(server.url);
   return { base: server.url, port: Number(url.port), server };
