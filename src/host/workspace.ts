@@ -267,6 +267,16 @@ export function persistConfigPatch(
     bag = {};
   }
   bag = { ...bag, ...patch };
+  // 0.14.20：`undefined` ⇒ **删键**（不是写 null / 空串）。
+  // 用途＝"清空配置项回默认"：留下 `"skillsDir": ""` 这种空键会让配置文件语义含混
+  // （读侧得靠 `trim()` 才知道它等于没配），下一个人还要再猜一次。
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) {
+      delete bag[key];
+    } else {
+      bag[key] = value;
+    }
+  }
   try {
     const data = JSON.stringify(bag, null, 2);
     if (options.writeFile) {

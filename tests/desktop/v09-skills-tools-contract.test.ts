@@ -11,7 +11,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { scanSkills, ensureSkillsDir, resolveSkillsDir, readConfiguredSkillsDir, persistSkillsDir } from '../../src/host/skill-store';
+import { scanSkills, ensureSkillsDir, resolveSkillsDir, resolveSkillRoots, readConfiguredSkillsDir, persistSkillsDir } from '../../src/host/skill-store';
+import { persistConfigPatch } from '../../src/host/workspace';
 import { DEFAULT_TOOL_DEFINITIONS, DEEPSEEK_ORIGIN } from '../../src/host/tool-definitions';
 import {
   mapUpstreamToolInvocation,
@@ -85,17 +86,18 @@ describe('v0.9: 本地技能系统（skill-store）', () => {
       const custom = path.join(tmpDir, 'custom-skills');
       fs.mkdirSync(custom, { recursive: true });
 
-      // 未配置 → 默认链命中 ~/.agents/skills（Agent Skills 跨客户端互操作约定，存在即用）
+      // 未配置 → 默认集合（多根，第一个是 ~/.agents/skills）
       expect(persistSkillsDir('').ok).toBe(true);
       expect(readConfiguredSkillsDir()).toBeNull();
       expect(resolveSkillsDir(undefined, home)).toBe(path.join(home, '.agents', 'skills'));
 
-      // 保存后 → 配置压过默认链（`skill.list {}` 这类无参调用也走它，弹层才有内容）
+      // 保存后 → 配置**压过整个默认集合**（只返回它一枚；`skill.list {}` 也走它，弹层才有内容）
       expect(persistSkillsDir(custom).ok).toBe(true);
       expect(readConfiguredSkillsDir()).toBe(custom);
       expect(resolveSkillsDir(undefined, home)).toBe(custom);
+      expect(resolveSkillRoots(undefined, home)).toEqual([custom]);
 
-      // 清空输入框再扫描＝清除配置，回落默认链（不留残余）
+      // 清空输入框再扫描＝清除配置，回落默认集合
       expect(persistSkillsDir('').ok).toBe(true);
       expect(readConfiguredSkillsDir()).toBeNull();
       expect(resolveSkillsDir(undefined, home)).toBe(path.join(home, '.agents', 'skills'));
@@ -103,6 +105,82 @@ describe('v0.9: 本地技能系统（skill-store）', () => {
       if (prevConfig === undefined) delete process.env.STUDIO_CONFIG_DIR;
       else process.env.STUDIO_CONFIG_DIR = prevConfig;
     }
+  });
+
+  // 0.14.20 收口：清空必须**删键**，不是留一个 `skillsDir: ""` 的空键。
+  // 旧锁只断 `readConfiguredSkillsDir() === null`（空串也满足），抓不到"键还在"。
+  it('清空技能目录＝从 config.json 里删除 skillsDir 键（不是留空串）', () => {
+    const prevConfig = process.env.STUDIO_CONFIG_DIR;
+    try {
+      process.env.STUDIO_CONFIG_DIR = tmpDir;
+      const configPath = path.join(tmpDir, 'config.json');
+      const custom = path.join(tmpDir, 'custom-skills');
+      fs.mkdirSync(custom, { recursive: true });
+
+      expect(persistSkillsDir(custom).ok).toBe(true);
+      const afterSet = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+      expect(afterSet.skillsDir).toBe(custom);
+
+      // 先落一个**已知**的无关键，才能证"删键只针对被清空的那个键，不是整份覆盖"。
+      // （旧版这里写 `expect(Object.keys(afterClear).length).toBeGreaterThanOrEqual(0)`，
+      //  对任何对象恒真、零判别力，等于这条语义没锁。）
+      expect(persistConfigPatch({ policyMode: 'full' }).ok).toBe(true);
+      const afterPatch = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+      expect(afterPatch.policyMode).toBe('full');
+      expect(afterPatch.skillsDir).toBe(custom); // 打补丁不清掉别的键
+
+      expect(persistSkillsDir('').ok).toBe(true);
+      const afterClear = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+      // 负控：改成写空串（`{ skillsDir: '' }`）⇒ 本断言必红
+      expect(Object.prototype.hasOwnProperty.call(afterClear, 'skillsDir')).toBe(false);
+      // 未知键必须原样保留（删键只针对被清空的那个键，不是整份覆盖）
+      // 负控：把删键改成 `bag = { ...patch }` 整份覆盖 ⇒ 本断言必红（policyMode 丢失）
+      expect(afterClear.policyMode).toBe('full');
+    } finally {
+      if (prevConfig === undefined) delete process.env.STUDIO_CONFIG_DIR;
+      else process.env.STUDIO_CONFIG_DIR = prevConfig;
+    }
+  });
+
+  // 0.14.20（出资人拍板「两个都要」）：默认集合是**两枚**，不是首匹配即返回的单值链。
+  it('默认技能集合＝两枚根：~/.agents/skills 与 <configDir>/skills（存在与否都列）', () => {
+    const prevConfig = process.env.STUDIO_CONFIG_DIR;
+    try {
+      process.env.STUDIO_CONFIG_DIR = tmpDir;
+      const home = path.join(tmpDir, 'home-two-roots');
+      fs.mkdirSync(home, { recursive: true });
+      const roots = resolveSkillRoots(undefined, home);
+      expect(roots).toHaveLength(2);
+      // 负控：删掉第一根 ⇒ 这两条必红（旧单值链就是"有第一根就没第二根"）
+      expect(roots[0]).toBe(path.join(home, '.agents', 'skills'));
+      expect(roots[1]).toBe(path.join(tmpDir, 'skills'));
+      // 两个目录都**不存在**时也照样列出（面板要显示路径告诉用户往哪放）
+      expect(fs.existsSync(roots[0])).toBe(false);
+      expect(fs.existsSync(roots[1])).toBe(false);
+      // 单一取值入口＝第一根（向后兼容）
+      expect(resolveSkillsDir(undefined, home)).toBe(roots[0]);
+    } finally {
+      if (prevConfig === undefined) delete process.env.STUDIO_CONFIG_DIR;
+      else process.env.STUDIO_CONFIG_DIR = prevConfig;
+    }
+  });
+
+  it('scanSkills 多根合并：同一个 id（目录名）先到先得（roots 顺序＝优先级）', () => {
+    const rootA = path.join(tmpDir, 'rootA');
+    const rootB = path.join(tmpDir, 'rootB');
+    for (const [root, body] of [[rootA, 'A 版'], [rootB, 'B 版']] as const) {
+      fs.mkdirSync(path.join(root, 'dup-skill'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'dup-skill', 'SKILL.md'), `---\nname: ${body}\n---\n正文\n`, 'utf8');
+      fs.mkdirSync(path.join(root, `only-${path.basename(root)}`), { recursive: true });
+      fs.writeFileSync(path.join(root, `only-${path.basename(root)}`, 'SKILL.md'), `# ${root}\n`, 'utf8');
+    }
+    const merged = scanSkills([rootA, rootB]);
+    const dup = merged.filter((s) => s.id === 'dup-skill');
+    expect(dup).toHaveLength(1); // 同名只出现一次
+    expect(dup[0].name).toBe('A 版'); // 第一根先到先得
+    expect(merged.map((s) => s.id).sort()).toEqual(['dup-skill', 'only-rootA', 'only-rootB']);
+    // 负控：只给第二根 ⇒ 拿到的就是 B 版（证明"先到先得"不是随便取的）
+    expect(scanSkills([rootB]).find((s) => s.id === 'dup-skill')?.name).toBe('B 版');
   });
 
   it('ensureSkillsDir 创建空目录，不写入示例技能', () => {

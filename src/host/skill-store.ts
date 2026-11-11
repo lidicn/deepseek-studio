@@ -46,11 +46,16 @@ export function readConfiguredSkillsDir(homedir: string = os.homedir()): string 
 }
 
 /**
- * 把技能目录写回 `config.json`（空串＝清除，回落默认链）。
+ * 把技能目录写回 `config.json`（**空串＝删除该键**，回落默认集合）。
  * 走 `persistConfigPatch` 以沿用既有原子写与 0600 权限（配置里可能有 token）。
+ *
+ * 为什么空串走 `undefined` 而不是写 `''`（0.14.20 收口）：
+ * 写空串会在配置文件里留一个**空键**，用户看不懂、下一个人也得靠 `trim()` 才知道它等于没配；
+ * `undefined` 在 `persistConfigPatch` 里是**删键**语义（见 `workspace.ts` 的合并分支）。
  */
 export function persistSkillsDir(dir: string): { ok: boolean; error?: string } {
-  return persistConfigPatch({ [SKILLS_DIR_CONFIG_KEY]: dir.trim() });
+  const trimmed = dir.trim();
+  return persistConfigPatch({ [SKILLS_DIR_CONFIG_KEY]: trimmed.length > 0 ? trimmed : undefined });
 }
 
 export interface SkillInfo {
@@ -65,38 +70,62 @@ export interface SkillInfo {
 }
 
 /**
- * 解析技能目录，优先级：
- *   1. 显式传入（面板扫描时输入框里的路径）
- *   2. `STUDIO_SKILLS_DIR` 环境变量
- *   3. `config.json` 里保存的 `skillsDir`（设置面板「扫描」写入）
- *   4. `~/.agents/skills`（Agent Skills 跨客户端互操作约定，存在则用）
- *   5. `<STUDIO_CONFIG_DIR>/skills`（本项目默认；缺省 `~/.config/deepseek-studio/skills`）
+ * 解析技能**根目录集合**（0.14.20，出资人拍板：`~/.agents/skills` 与
+ * `<configDir>/skills` **两个都要**，不是二选一）。
  *
- * **2026-11-11 口径反转（用户拍板）**：装版**不再**跳过第 ④ 位。
- * 依据是 Agent Skills 官方实施指南（agentskills.io/client-implementation/adding-skills-support）：
- * `.agents/skills/` 是「跨客户端共享技能的广泛采纳约定」，官方明确要求 User scope 扫
- * `~/.agents/skills/`；规范本身只定义 `SKILL.md` 内容、不规定目录位置，**不扫**就等于
- * 看不到别的合规客户端装的技能。原「装版不猜」的顾虑是**怕污染用户机**，而本函数只做
- * `existsSync` 判断、绝不创建目录（创建与否见 `ensureSkillsDir`），该顾虑不成立。
+ * 判定（顺序即优先级）：
+ *   1. `explicit` / `STUDIO_SKILLS_DIR` / `config.json` 的 `skillsDir` **任一非空**
+ *      ⇒ **只返回它一枚**（用户显式指定＝覆盖默认集合，行为与改前一致）；
+ *   2. 否则默认集合**两枚都列**（**存在与否都列**——面板要把这两条路径显示给用户，
+ *      告诉他技能该往哪放；跳过不存在的等于把路径藏起来）：
+ *      - `~/.agents/skills`（跨客户端互操作约定，见 `resolveSkillsDir` 注释里的官方原文）
+ *      - `<configDir>/skills`（装版 = `%APPDATA%\com.deepseek.studio\config\skills`）
+ *
+ * 为什么要多根：旧实现是**首匹配即返回**的单值链——`~/.agents/skills` 一存在就 `return`，
+ * `<configDir>/skills` **永远走不到**，装版用户放在安装目录 `config\skills` 下的技能扫不到。
  */
-export function resolveSkillsDir(explicit?: string, homedir: string = os.homedir()): string {
+export function resolveSkillRoots(explicit?: string, homedir: string = os.homedir()): string[] {
   const trimmed = explicit?.trim();
-  if (trimmed) return trimmed;
+  if (trimmed) return [trimmed];
   const envDir = process.env.STUDIO_SKILLS_DIR?.trim();
-  if (envDir) return envDir;
+  if (envDir) return [envDir];
   const configured = readConfiguredSkillsDir(homedir);
-  if (configured) return configured;
-  try {
-    const agentsDir = agentsSkillsDir(homedir);
-    if (fs.existsSync(agentsDir)) return agentsDir;
-  } catch {
-    // 目录不可访问（权限 / IO）：不阻断，回落客户端原生目录
-  }
-  return path.join(resolveConfigDir(process.env, homedir), 'skills');
+  if (configured) return [configured];
+  return [agentsSkillsDir(homedir), path.join(resolveConfigDir(process.env, homedir), 'skills')];
 }
 
+/**
+ * 解析技能目录（**单值**，向后兼容）：取 `resolveSkillRoots()` 的首根。
+ *
+ * 优先级与官方依据见 `resolveSkillRoots`。
+ *
+ * **2026-11-11 口径反转（用户拍板）**：装版**不再**跳过 `~/.agents/skills`。
+ * 官方实施指南原文（`https://agentskills.io/client-implementation/adding-skills-support`）：
+ *
+ *   > The `.agents/skills/` paths **have emerged as a widely-adopted convention** for
+ *   > cross-client skill sharing. While the Agent Skills specification **does not mandate**
+ *   > where skill directories live (it only defines what goes inside them), scanning
+ *   > `.agents/skills/` means skills installed by other compliant clients are automatically
+ *   > visible to yours, and vice versa.
+ *
+ * 这句 "widely-adopted convention" 正是用户判据要的证据；本函数只做 `existsSync` 只读判断、
+ * **绝不创建目录**（创建与否见 `ensureSkillsDir`），所以「怕污染用户机」的顾虑不成立。
+ */
+export function resolveSkillsDir(explicit?: string, homedir: string = os.homedir()): string {
+  return resolveSkillRoots(explicit, homedir)[0];
+}
+
+/**
+ * 「**本客户端自己**的默认技能目录」＝默认集合的**最后一根**（`<configDir>/skills`）。
+ *
+ * 为什么不是 `resolveSkillsDir()`（＝集合第一根 `~/.agents/skills`）：
+ * 两者语义不同——**读**要广（跨客户端互操作目录也要扫），**建**要专（只在自己地盘建）。
+ * `~/.agents/skills` 是**跨客户端共享约定目录**，任何客户端都不该"顺手"在里面创建；
+ * 旧实现在 dev 下也只在它**已存在**时才复用、从不创建，本函数保持这条语义。
+ */
 function defaultSkillsDir(homedir?: string): string {
-  return resolveSkillsDir(undefined, homedir);
+  const roots = resolveSkillRoots(undefined, homedir);
+  return roots[roots.length - 1];
 }
 
 /**
@@ -142,15 +171,38 @@ function parseSkillMd(content: string): { name: string; description: string } {
 /**
  * 扫描技能目录，返回可用技能列表。
  * 每个技能必须是包含 SKILL.md 的子目录。
+ *
+ * 0.14.20：支持**多根**（`~/.agents/skills` ＋ `<configDir>/skills` 两个都要）。
+ * 合并规则＝**同一个 `id`（目录名）先到先得**（roots 顺序即优先级），最后按 `name` 排序
+ * （排序行为与改前一致，面板/`/` 弹层的展示顺序不变）。
+ *
+ * @param skillsDirs 单个目录或目录数组；缺省走 `resolveSkillRoots()`（默认集合）
  */
-export function scanSkills(skillsDir?: string, homedir?: string): SkillInfo[] {
-  const dir = skillsDir ?? defaultSkillsDir(homedir);
+export function scanSkills(skillsDirs?: string | readonly string[], homedir?: string): SkillInfo[] {
+  const roots =
+    skillsDirs === undefined
+      ? resolveSkillRoots(undefined, homedir)
+      : (Array.isArray(skillsDirs) ? skillsDirs : [skillsDirs as string])
+          .map((d) => d.trim())
+          .filter((d) => d.length > 0);
   const skills: SkillInfo[] = [];
+  const seen = new Set<string>();
 
+  for (const dir of roots) {
+    scanOneRoot(dir, skills, seen);
+  }
+
+  return skills.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** 扫**一个**根目录，把新技能追加进 `out`；`seen` 保证同 id 先到先得。 */
+function scanOneRoot(dir: string, out: SkillInfo[], seen: Set<string>): void {
   try {
-    if (!fs.existsSync(dir)) return skills;
+    if (!fs.existsSync(dir)) return;
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
+      // 同 id 先到先得：前面的根已经收过这个名字就不再覆盖（roots 顺序＝优先级）
+      if (seen.has(entry.name)) continue;
       const skillDir = path.join(dir, entry.name);
       // readdirSync(withFileTypes) 对 junction / symlink 只报 isSymbolicLink()，
       // isDirectory() 为 false。技能目录经常用 junction 挂载（如 ego-browser），
@@ -169,7 +221,8 @@ export function scanSkills(skillsDir?: string, homedir?: string): SkillInfo[] {
       try {
         const content = fs.readFileSync(skillMd, 'utf8');
         const { name, description } = parseSkillMd(content);
-        skills.push({
+        seen.add(entry.name);
+        out.push({
           id: entry.name,
           name: name || entry.name,
           description: description || '(无描述)',
@@ -180,10 +233,8 @@ export function scanSkills(skillsDir?: string, homedir?: string): SkillInfo[] {
       }
     }
   } catch {
-    // 目录不可访问，返回空列表
+    // 目录不可访问：跳过这一根，不影响其它根
   }
-
-  return skills.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**

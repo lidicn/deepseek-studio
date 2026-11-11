@@ -31,7 +31,7 @@ import {
   resolveConfigDir,
 } from '../../src/shared/distribution';
 import { ensureMcpConfig } from '../../src/host/mcp-controller';
-import { resolveSkillsDir, ensureSkillsDir } from '../../src/host/skill-store';
+import { resolveSkillsDir, resolveSkillRoots, ensureSkillsDir } from '../../src/host/skill-store';
 
 const ENV_KEYS = ['STUDIO_DISTRIBUTION', 'STUDIO_CONFIG_DIR', 'STUDIO_SKILLS_DIR'] as const;
 const agentsDir = path.join(os.homedir(), '.agents', 'skills');
@@ -106,15 +106,15 @@ describe('批 N 不变量：装版与 dev 的路径行为都不变（改前改�
     expect(fs.existsSync(p)).toBe(false);
   });
 
-  it('2026-11-11 口径反转：装版形态下 `~/.agents/skills` 存在即命中（跨客户端互操作）', () => {
+  it('2026-11-11 口径反转：装版形态下默认技能集合含 `~/.agents/skills`（跨客户端互操作）', () => {
     process.env.STUDIO_DISTRIBUTION = 'installed';
     const home = path.join(tmp, 'home');
     fs.mkdirSync(path.join(home, '.agents', 'skills'), { recursive: true });
+    // 0.14.20：默认集合是**两枚**（出资人拍板「两个都要」），第一枚是 ~/.agents/skills
+    expect(resolveSkillRoots(undefined, home)[0]).toBe(path.join(home, '.agents', 'skills'));
     expect(resolveSkillsDir(undefined, home)).toBe(path.join(home, '.agents', 'skills'));
-    // 负控：该目录不存在时不得凭空指过去，必须回落 <config>/skills
-    const homeEmpty = path.join(tmp, 'home-empty');
-    fs.mkdirSync(homeEmpty, { recursive: true });
-    expect(resolveSkillsDir(undefined, homeEmpty)).toBe(path.join(tmp, 'skills'));
+    // 负控：显式指定 ⇒ 只返回那一枚，默认集合整体让位（不并列）
+    expect(resolveSkillRoots(path.join(tmp, 'mine'), home)).toEqual([path.join(tmp, 'mine')]);
   });
 
   it('显式传入 skillsDir 仍按原语义创建（面板「添加技能目录」不受形态影响）', () => {
@@ -154,12 +154,16 @@ describe('批 N+1（D 组）：解跳后的回归断言（批 N 时以 it.skip �
     expect(fs.existsSync(p)).toBe(false);
   });
 
-  it('installed → 无任何配置时 resolveSkillsDir 返回 <STUDIO_CONFIG_DIR>/skills（负控：不凭猜）', () => {
+  it('installed → 无配置时默认集合＝两枚（agents 在前、<config>/skills 在后；负控：不凭猜单值）', () => {
     process.env.STUDIO_DISTRIBUTION = 'installed';
     const home = path.join(tmp, 'home-plain');
     fs.mkdirSync(home, { recursive: true });
-    expect(resolveSkillsDir(undefined, home)).toBe(path.join(tmp, 'skills'));
-    expect(resolveSkillsDir(undefined, home)).not.toBe(agentsDir);
+    const roots = resolveSkillRoots(undefined, home);
+    expect(roots).toHaveLength(2);
+    expect(roots[1]).toBe(path.join(tmp, 'skills'));
+    // 旧口径（单值链：存在才取、否则回落 <config>/skills）已被"两个都要"取代：
+    // 第二根仍在集合里，但**不再**是唯一取值
+    expect(resolveSkillsDir(undefined, home)).toBe(roots[0]);
   });
 
   it('installed → ensureSkillsDir 直接 return，不创建 <config>/skills', () => {

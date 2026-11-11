@@ -123,7 +123,7 @@ import { createFileTools } from '../capabilities/file';
 import { createFileEditCapability } from '../capabilities/edit-engine';
 import { getMemoryStore } from './memory-store';
 import { normalizeMemorySaveParams } from './memory-tool-params';
-import { scanSkills, ensureSkillsDir, resolveSkillsDir, persistSkillsDir } from './skill-store';
+import { scanSkills, ensureSkillsDir, resolveSkillsDir, resolveSkillRoots, persistSkillsDir } from './skill-store';
 import { getMcpController, ensureMcpConfig, getMcpServer, removeMcpServer, maskMcpServerSecrets, mergeMaskedSecretsChecked, toMcpServerSummary, type McpServerConfig } from './mcp-controller';
 import { createAutomationManager, type AutomationManager } from './automation';
 import { execPythonInSandbox } from './sandbox-executor';
@@ -670,13 +670,22 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         'skill.list': {
           id: 'skill.list',
           async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
-            // dir 可选：面板输入框传路径时按该路径扫描；缺省按 resolveSkillsDir 优先级解析。
-            const dir = typeof params.dir === 'string' && params.dir.trim() ? params.dir.trim() : undefined;
-            const skills = scanSkills(dir);
+            // dir 可选：面板输入框传路径时按该路径扫描；缺省按 resolveSkillRoots() 解析默认集合。
+            // 0.14.20：`dir` 接受**单值或数组**——数组＝多根扫描（`~/.agents/skills` ＋
+            // `<configDir>/skills` 两个都要），单值＝用户显式指定（覆盖默认集合）。
+            const requested: string[] | undefined = Array.isArray(params.dir)
+              ? (params.dir as unknown[]).filter((d): d is string => typeof d === 'string' && d.trim().length > 0).map((d) => d.trim())
+              : typeof params.dir === 'string' && params.dir.trim()
+                ? [params.dir.trim()]
+                : undefined;
+            const dirs = requested ?? resolveSkillRoots();
+            const skills = scanSkills(dirs);
             return {
               ok: true,
               data: {
-                dir: resolveSkillsDir(dir),
+                // `dir` 保留＝`dirs[0]`（旧调用方只看单值），`dirs` 是完整集合（面板要显示两条路径）
+                dir: dirs[0],
+                dirs,
                 skills: skills.map((s) => ({
                   id: s.id,
                   name: s.name,
@@ -1103,6 +1112,10 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
                 policyMode,
                 mcpServers: controller.listServerIds(),
                 skillsDir: resolveSkillsDir(),
+                // 0.14.20：默认集合是**两枚**（`~/.agents/skills` ＋ `<configDir>/skills`，
+                // 出资人拍板"两个都要"）。面板要显示这两条让用户知道往哪放技能；
+                // `skillsDir` 保留＝`skillsDirs[0]`，旧面板不受影响。
+                skillsDirs: resolveSkillRoots(),
                 configPath: defaultConfigPath(),
                 // C1 可观测性缺口的面板侧闭环（PM 裁定十 2026-11-06）：面板要显示**真实路径**，
                 // 不再逐字硬编码模板串（`<用户配置目录>/deepseek-studio/logs/` 那种）。
