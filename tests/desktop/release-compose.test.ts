@@ -190,11 +190,14 @@ describe('0.14.11 卡：notes 剥 markdown ＋ 截最近句号（弹窗 textCont
     expect(compose).toContain("-replace '\\*\\*'");
   });
 
-  it('截到 500 内最近「。」，<200 退回硬切（负控 #3：先比较后截取、-1 不进 Substring）', () => {
+  it('第 0.14.18 改：notes 不截断（全文进 latest.json、与 Release 正文一致）', () => {
     const compose = step(release, 'Compose latest.json');
-    expect(compose).toContain("LastIndexOf('。'");
-    expect(compose).toContain('if ($idx -ge 200)');
-    expect(compose).toContain('$cut = $idx + 1');
+    // 截断已撤：旧 500/LastIndexOf/Substring+… 三件不得复现
+    expect(compose, '旧 500 截断残留（notes 不再截断）').not.toContain('$notes.Length -gt 500');
+    expect(compose, '旧 LastIndexOf 截断残留').not.toContain("LastIndexOf('。'");
+    expect(compose, '旧 Substring 截断残留').not.toContain('$notes.Substring(0, $cut)');
+    // 全文标记在（证明有意撤截、非遗漏）
+    expect(compose).toContain('notes 不再截断');
   });
 
   it('剥后纯空白 ⇒ 回落泛化串（fail-closed 不丢，负控 #2）', () => {
@@ -213,9 +216,6 @@ describe('0.14.11 卡：notes 管线行为判据（与 release.yml 同配方的 
     backtick: '`',
     bold: '\\*\\*',
     newlines: '(\\r?\\n){3,}',
-    periodCheck: 'if ($idx -ge 200)',
-    cutAdjust: '$cut = $idx + 1',
-    ellipsis: "+ '…'",
   };
 
   function stripNotes(body: string): string {
@@ -226,14 +226,6 @@ describe('0.14.11 卡：notes 管线行为判据（与 release.yml 同配方的 
     s = s.replace(new RegExp(PIPELINE.newlines, 'g'), '\n\n');
     s = s.trim();
     if (!s || /^\s*$/.test(s)) return '';
-    if (s.length > 500) {
-      let cut = 500;
-      const code = s.charCodeAt(cut - 1);
-      if (code >= 0xD800 && code <= 0xDBFF) cut--;
-      const idx = s.lastIndexOf('。', cut - 1);
-      if (idx >= 200) cut = idx + 1;
-      return s.substring(0, cut) + '…';
-    }
     return s;
   }
 
@@ -246,9 +238,6 @@ describe('0.14.11 卡：notes 管线行为判据（与 release.yml 同配方的 
     backtick: "-replace '`', ''",
     bold: "-replace '\\*\\*'",
     newlines: "-replace '(\\r?\\n){3,}'",
-    periodCheck: 'if ($idx -ge 200)',
-    cutAdjust: '$cut = $idx + 1',
-    ellipsis: "+ '…'",
   };
 
   it('同构锁①：ARTIFACT ⊂ compose（锁产物——翻 release.yml 红、翻 PIPELINE 不红）', () => {
@@ -257,9 +246,6 @@ describe('0.14.11 卡：notes 管线行为判据（与 release.yml 同配方的 
     expect(compose).toContain(ARTIFACT.backtick);
     expect(compose).toContain(ARTIFACT.bold);
     expect(compose).toContain(ARTIFACT.newlines);
-    expect(compose).toContain(ARTIFACT.periodCheck);
-    expect(compose).toContain(ARTIFACT.cutAdjust);
-    expect(compose).toContain(ARTIFACT.ellipsis);
   });
 
   it('同构锁②：PIPELINE ≡ ARTIFACT（锁副本不漂——只翻 PIPELINE 就红）', () => {
@@ -269,9 +255,6 @@ describe('0.14.11 卡：notes 管线行为判据（与 release.yml 同配方的 
     expect(ARTIFACT.backtick).toBe(`-replace '${PIPELINE.backtick}', ''`);
     expect(ARTIFACT.bold).toBe(`-replace '${PIPELINE.bold}'`);
     expect(ARTIFACT.newlines).toBe(`-replace '${PIPELINE.newlines}'`);
-    expect(ARTIFACT.periodCheck).toBe(PIPELINE.periodCheck);
-    expect(ARTIFACT.cutAdjust).toBe(PIPELINE.cutAdjust);
-    expect(ARTIFACT.ellipsis).toBe(PIPELINE.ellipsis);
   });
 
   it('(a) 剥净 markdown 标记：零 #／零反引号／零 **', () => {
@@ -293,30 +276,22 @@ describe('0.14.11 卡：notes 管线行为判据（与 release.yml 同配方的 
   // 分工注（群 PM 15:3x 实测）：(c) 样本里 `###` 直接接在重复段后、不在行首，
   // (?m)^[ \t]*#{1,6}[ \t]* 不匹配它 ⇒ (c) 不走标题剥离路径、(a) 才走——两枚分工不同，
   // 勿以为 (c) 顺带验了剥标题。
-  it('(c) 截句分支末两字符＝「。」＋「…」、长度钉 499；硬切分支末字符＝「…」、长度钉 501', () => {
-    // 截句分支：正文 >500 且 500 内有「。」≥200（样本固定 ⇒ 长度确定，toBe 比上界强——第 24 枚同族）
+  // 第 0.14.18 改：notes 不截断——全文进 latest.json。旧 (c)/(c+) 锁的是 500 截断行为，撤截断后换型：
+  // 长文本经 stripNotes 后保持原长（剥 markdown 标记后不截断、不加 …）。
+  it('(c) 全文不截断：>500 字符经 stripNotes 后保持原长、末尾无「…」', () => {
     const long = '引言。' + '填充文本。'.repeat(100) + '### 标题\n\n`code` **bold** 末句。';
     const out = stripNotes(long);
-    expect(out.length).toBe(499);   // stripped 524 → idx=497 → cut=498 → +…＝499
-    expect(out[out.length - 2]).toBe('。');
-    expect(out[out.length - 1]).toBe('…');
-
-    // 硬切分支：正文 >500 且 500 内无「。」≥200（'A'.repeat(600) 无代理对 ⇒ 无回退，钉 501）
-    const noPeriod = 'A'.repeat(600);
-    const hard = stripNotes(noPeriod);
-    expect(hard.length).toBe(501);  // 500 + …
-    expect(hard[hard.length - 1]).toBe('…');
+    expect(out.length, '长文本被截断到 500（应全文）').toBeGreaterThan(500);
+    expect(out[out.length - 1], '末尾被加了「…」（应无截断标记）').not.toBe('…');
+    expect(out, '末句仍在（未被截掉）').toContain('末句。');
   });
 
-  it('(c+) 最坏情况：idx 落 499（。恰在 $cut-1 位）⇒ 输出恰 501、末三「a。…」（上限 501 的机器锁）', () => {
-    // 上界推导：LastIndexOf('。', $cut-1=499) 可命中 idx=499 → cut=500 → Substring(0,500)+'…'＝501
-    // （不是 500：搜索起点就是 499、idx 可达 499）。样本固定 ⇒ toBe 钉死。
-    const worst = 'a'.repeat(499) + '。' + 'b'.repeat(120);  // 620 字符，。在 idx=499
+  it('(c+) 全文不截断：620 字符样本经 stripNotes 后保持原长 620、末字符 b、无「…」', () => {
+    const worst = 'a'.repeat(499) + '。' + 'b'.repeat(120);  // 620 字符、无 markdown
     const out = stripNotes(worst);
-    expect(out.length).toBe(501);
-    expect(out[out.length - 3]).toBe('a');
-    expect(out[out.length - 2]).toBe('。');
-    expect(out[out.length - 1]).toBe('…');
+    expect(out.length, '620 字符被截断到 501（应全文 620）').toBe(620);
+    expect(out[out.length - 1], '末尾被加了「…」').toBe('b');
+    expect(out, '不含「…」截断标记').not.toContain('…');
   });
 });
 
@@ -758,6 +733,23 @@ describe('G-e：发布链 runner 侧取数工具统一（不出现裸 curl）', 
     for (const w of ['.github/workflows/release.yml', '.github/workflows/release-published.yml', '.github/workflows/ci.yml']) {
       expect(read(w), `${w} 含裸 curl（runner 侧 curl／Invoke-WebRequest 混用是隐患）`).not.toMatch(/\bcurl\b/);
     }
+  });
+});
+
+describe('第 112 件 fail-fast：草稿建完立刻断言 tag_name（release.yml）', () => {
+  it('step15 后、PATCH 前断言 draft tag_name == ref_name（untagged ⇒ fail-closed before PATCH/Preflight/Publish）', () => {
+    const assertStep = step(release, 'Assert draft bound to tag (fail-fast)');
+    expect(assertStep).toContain('RELEASE_ID: ${{ steps.create_release.outputs.id }}');
+    expect(assertStep).toContain('TAG_NAME: ${{ github.ref_name }}');
+    expect(assertStep).toContain('/releases/$env:RELEASE_ID');
+    expect(assertStep).toContain('::error::[assert-bind] draft not bound to git tag');
+    expect(assertStep).toContain('::notice::[assert-bind] draft created:');
+    // 位置：Create draft < Assert < Patch（fail-fast 拦在 PATCH 前）
+    const iDraft = release.indexOf('- name: Create draft release');
+    const iAssert = release.indexOf('- name: Assert draft bound to tag');
+    const iPatch = release.indexOf('- name: Patch draft release body');
+    expect(iAssert, 'assert step missing').toBeGreaterThan(iDraft);
+    expect(iPatch, 'patch must come after assert (fail-fast before PATCH)').toBeGreaterThan(iAssert);
   });
 });
 

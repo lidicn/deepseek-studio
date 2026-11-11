@@ -298,16 +298,8 @@ jobs:
             $notes = $notes.Trim()
             if ([string]::IsNullOrWhiteSpace($notes)) { $notes = "Release $tag" }
           }
-          # 截断：先按 500 截（代理对回退 1 位），再退到 500 内最近的「。」（<200 退回硬切）。
-          # 上限 501（含省略号）：LastIndexOf('。', $cut-1) 从 499 回扫、idx 可达 499 → cut=500 → Substring(0,500)+'…'＝501。
-          # 两分支均加「…」（硬切与句号截断两种出口都留截断痕迹、1 字符成本；与 overflow:auto 滚动条并存，不冲突）。
-          if ($notes.Length -gt 500) {
-            $cut = 500
-            if ([char]::IsHighSurrogate($notes[$cut - 1])) { $cut = $cut - 1 }
-            $idx = $notes.LastIndexOf('。', $cut - 1)
-            if ($idx -ge 200) { $cut = $idx + 1 }
-            $notes = $notes.Substring(0, $cut) + '…'
-          }
+          # 第 0.14.18 改：notes 不再截断（全文进 latest.json、与 Release 正文一致；原 500 截断已撤）。
+          # 弹窗 overflow:auto 可滚动——若长文本溢出是 UI 渲染问题、不在 latest.json 侧截。
           $latest = @{ version = $version; notes = $notes; pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"); platforms = $platform }
           ($latest | ConvertTo-Json -Depth 6) | Set-Content -Path "src-tauri/target/release/latest.json" -Encoding UTF8
           Get-Content "src-tauri/target/release/latest.json"
@@ -346,6 +338,32 @@ jobs:
             src-tauri/target/release/latest.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 第 112 件 fail-fast：草稿建完立刻断言 tag_name == vX.Y.Z（拦在 PATCH／Preflight／Publish 前）。
+      # step15 传了 tag_name，但 GitHub 对 draft 可能返回合成名 untagged-…（机制未证、v0.14.18 重演）。
+      # action 的 create＋upload 同步一步、无法插中间——此步在资产上传之后、PATCH 之前。
+      - name: Assert draft bound to tag (fail-fast)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.create_release.outputs.id }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = '${{ github.repository }}'
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+            'User-Agent' = 'studio-release-gate'
+          }
+          $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$env:RELEASE_ID"
+          Write-Host "::notice::[assert-bind] draft created: id=$($rel.id) tag_name=$($rel.tag_name) expected=$env:TAG_NAME target_commitish=$($rel.target_commitish) html_url=$($rel.html_url)"
+          if ($rel.tag_name -ne $env:TAG_NAME) {
+            Write-Host "::error::[assert-bind] draft not bound to git tag: expected=$env:TAG_NAME actual_tag_name=$($rel.tag_name) id=$($rel.id) html_url=$($rel.html_url) — fail-closed before PATCH/Preflight/Publish"
+            throw "draft tag_name '$($rel.tag_name)' != expected '$env:TAG_NAME' — release not bound to git tag, must delete and investigate"
+          }
+          Write-Host "draft bound to tag $env:TAG_NAME (id=$($rel.id))"
 
       # ── v0.14.13 卡 F：发布正文显式覆盖（PATCH ＋ 回读等值）────────────────────────────
       # 取证（run 42468047633 job 128772059929 attempt=2 日志 L987-989 原文）：
