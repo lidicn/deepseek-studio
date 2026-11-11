@@ -139,7 +139,10 @@ describe('发布后公开链路闸（G4：draft 的公开 url 恒 404，只能�
     expect(published, '发布后公开链路的重试已无睡眠退避').toContain('Start-Sleep -Seconds');
     expect(published, '公网 HEAD 可达后的 break 丢失（会白跑满次数）').toContain('$reachable = $true; break');
     expect(published).toContain('-Method Head');
-    expect(published).toContain('if (-not $reachable) { throw');
+    // 旧锁 `if (-not $reachable) { throw` 的行已被第 107 件改成多行形态（::error:: 注解在 throw 前），
+    // 等强替换为两段：fail-closed throw 本体＋九格注解锁（missingPubDiags）另盖注解面。
+    expect(published, '发布后公开链路可达性 fail-closed throw 丢失').toContain('if (-not $reachable) {');
+    expect(published, '发布后公开链路可达性 fail-closed throw 文案丢失').toContain('throw "public download url not reachable after 3 attempts');
   });
 
   it('下载公开 url 的真包并校验签名（客户端链路）', () => {
@@ -632,6 +635,81 @@ describe('v0.14.13 卡 E/F：打包工具预取＋发布正文显式 PATCH（#48
     // 变异：抹掉 by-id 查询串（模拟退回纯列表端点——v0.14.16 step17 死法）
     const mutated = gate.replace('/releases/$draftId', '/releases/REMOVED-BY-ID');
     expect(gateByIdFirst(mutated), '负控失效：摘掉 by-id 后顺序判定仍通过 ⇒ 判据无判别力').toBe(false);
+  });
+});
+
+describe('第 107/108/110 件：发布后闸可观测性＋草稿 target 钉 tag 提交＋清理步 fail-loud（20261111 pub-chain 自撤事件）', () => {
+  const pubGate = step(published, 'Verify public update chain (G1/G4)');
+  const revert = step(published, 'Revert to draft on failure');
+  // 判据函数：九格失败分支 ::error:: 全在＋诊断行（tag_name/ref_name 双打）＋红前 draft 状态（含 body_len）⇒ 空=合格
+  const missingPubDiags = (body: string): string[] => {
+    const markers = [
+      '[pub-chain] diag: repo=$repo tag_name=$tag ref_name=$env:REF_NAME',
+      '::error::[pub-chain] tag-asset latest.json fetch failed',
+      '::error::[pub-chain] manifest version mismatch',
+      '::error::[pub-chain] manifest missing url/signature',
+      '::error::[pub-chain] releases/tags/$tag fetch failed',
+      '::error::[pub-chain] manifest url asset not in release',
+      '::error::[pub-chain] manifest url asset name contains a space',
+      '::error::[pub-chain] public download url not reachable',
+      '::error::[pub-chain] downloaded size mismatch',
+      '::error::[pub-chain] signature verification failed',
+      'release state: draft=$($rel.draft)',
+      'body_len=$($rel.body.Length)',
+    ];
+    return markers.filter(m => !body.includes(m));
+  };
+  // 撤回步可观测判据（第 107 件）：PATCH 前/失败/后三处 ::error:: 全在
+  const missingRevertDiags = (body: string): string[] => {
+    const markers = [
+      '::error::[revert-to-draft] reverting: tag=$tag id=$($rel.id) draft_before=',
+      '::error::[revert-to-draft] PATCH draft=true failed',
+      '::error::[revert-to-draft] reverted: tag=$tag id=$($rel.id) draft_after=',
+    ];
+    return markers.filter(m => !body.includes(m));
+  };
+  const hasTargetPin = (body: string): boolean => body.includes('target_commitish: ${{ github.sha }}');
+  const hasFailLoud = (body: string): boolean =>
+    body.includes('::error::[delete-draft] fail-closed branch entered but no draft found') &&
+    body.includes('throw "no draft release found for $tag in fail-closed branch') &&
+    body.includes('::error::[delete-draft] release $($rel.id) for $tag is not a draft') &&
+    body.includes('if ($rel -and -not $rel.draft)');
+
+  it('第 107 件：step4 九格 throw 点前打 ::error:: 现场（tag_name/ref_name/HTTP/version/资产名/body_len）＋红前打 draft 状态（注解匿名可读，下一发红不用日志正文定字）', () => {
+    const missing = missingPubDiags(pubGate);
+    expect(missing, `发布后闸诊断缺失：${missing.join('; ')}`).toHaveLength(0);
+  });
+
+  it('第 107 件：step5 撤回动作自身可观测——PATCH 前/失败/后三处 ::error::（分清"撤回了/没撤成"）', () => {
+    const missing = missingRevertDiags(revert);
+    expect(missing, `撤回步诊断缺失：${missing.join('; ')}`).toHaveLength(0);
+  });
+
+  it('负控：抹掉任一枚 ::error:: 标记 ⇒ 诊断锁必红（判据有判别力）', () => {
+    const mutated = pubGate.replace('::error::[pub-chain] manifest version mismatch', '::error::[REMOVED]');
+    expect(mutated).not.toBe(pubGate);
+    expect(missingPubDiags(mutated).length, '负控失效：抹掉诊断标记后判据仍通过 ⇒ 锁无判别力').toBeGreaterThan(0);
+    const mutatedRevert = revert.replace('::error::[revert-to-draft] reverted:', '::error::[REMOVED]');
+    expect(mutatedRevert).not.toBe(revert);
+    expect(missingRevertDiags(mutatedRevert).length, '负控失效：抹掉撤回标记后判据仍通过 ⇒ 锁无判别力').toBeGreaterThan(0);
+  });
+
+  it('第 110 件：step15 建草稿显式钉 target＝tag 提交（不许继承分支名——两发 head_sha=master 尖端即此坑）', () => {
+    const draftStep = step(release, 'Create draft release');
+    expect(hasTargetPin(draftStep), 'step15 缺 target_commitish 钉 tag 提交').toBe(true);
+    // 负控：抹掉 target 行 ⇒ 同一判据必红
+    const mutated = draftStep.replace('          target_commitish: ${{ github.sha }}\n', '');
+    expect(mutated).not.toBe(draftStep);
+    expect(hasTargetPin(mutated), '负控失效：抹掉 target 后判据仍通过 ⇒ 锁无判别力').toBe(false);
+  });
+
+  it('第 108 件：step18 清理步 fail-loud——查不到目标/目标非 draft 必须 ::error::＋throw，不许静默 exit 0（v0.14.16 draft 存活至 13:38 即此坑）', () => {
+    const cleanup = step(release, 'Delete draft on failure (fail-closed)');
+    expect(hasFailLoud(cleanup), 'step18 清理步缺 fail-loud（::error::＋throw）或丢「绝不删已发布」守卫').toBe(true);
+    // 负控：把 throw 退回静默 exit 0 ⇒ 同一判据必红
+    const mutated = cleanup.replace('throw "no draft release found for $tag in fail-closed branch', 'exit 0 #');
+    expect(mutated).not.toBe(cleanup);
+    expect(hasFailLoud(mutated), '负控失效：退回静默通过后判据仍绿 ⇒ 锁无判别力').toBe(false);
   });
 });
 

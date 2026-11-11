@@ -334,6 +334,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
+          target_commitish: ${{ github.sha }}
           draft: true
           prerelease: false
           body_path: docs/release-notes-${{ github.ref_name }}.md
@@ -596,14 +597,15 @@ jobs:
             $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases?per_page=100" |
               Where-Object { $_.tag_name -eq $tag -and $_.draft } | Select-Object -First 1
           }
-          # 构造保证「绝不删已发布」不许丢：by-id 取回后仍须核 draft 才删
+          # 第 108 件：清理步"目标查不到"必须是红，不能静默通过
+          # （v0.14.16 draft 441194408 存活至 13:38 被 Publish——step18 success 但未删净即此坑）
           if ($rel -and -not $rel.draft) {
-            Write-Host "release $($rel.id) for $tag is not a draft (draft=$($rel.draft)) — refuse to delete"
-            exit 0
+            Write-Host "::error::[delete-draft] release $($rel.id) for $tag is not a draft (draft=$($rel.draft)) — refuse to delete AND fail-loud in fail-closed branch"
+            throw "release $($rel.id) for $tag is not a draft — refuse to delete in fail-closed branch"
           }
           if (-not $rel) {
-            Write-Host "no draft release for $tag, nothing to clean"
-            exit 0
+            Write-Host "::error::[delete-draft] fail-closed branch entered but no draft found for $tag (by-id=$([bool]$draftId)) — draft may have leaked or was never created"
+            throw "no draft release found for $tag in fail-closed branch — expected to delete a draft"
           }
           Invoke-RestMethod -Method Delete -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$($rel.id)"
           Write-Host "deleted draft release $($rel.id) for $tag"

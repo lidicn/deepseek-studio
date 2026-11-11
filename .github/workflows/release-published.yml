@@ -33,6 +33,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           $ErrorActionPreference = 'Stop'
           $repo = '${{ github.repository }}'
@@ -40,6 +41,8 @@ jobs:
           $version = $tag.TrimStart('v')
           $latestUrl = "https://github.com/$repo/releases/latest/download/latest.json"
           $tagLatestUrl = "https://github.com/$repo/releases/download/$tag/latest.json"
+          # 现场诊断（第 107 件）：tag_name 与 ref_name 两个都打，一眼分 ③A（结构性 404）/③B（API 现算字段）
+          Write-Host "[pub-chain] diag: repo=$repo tag_name=$tag ref_name=$env:REF_NAME version=$version latest_url=$latestUrl tag_url=$tagLatestUrl"
 
           # 1) 取 latest.json：优先读**客户端实际用的** Latest 端点；若刚发布的不是 Latest，退回本 tag 的资产
           $manifestSource = $null
@@ -56,14 +59,26 @@ jobs:
             Write-Warning "Latest endpoint not usable yet: $($_.Exception.Message)"
           }
           if (-not $manifest) {
-            $manifest = Invoke-RestMethod -Uri $tagLatestUrl -Headers @{ 'User-Agent' = 'studio-release-gate' } -TimeoutSec 60
-            $manifestSource = $tagLatestUrl
+            try {
+              $manifest = Invoke-RestMethod -Uri $tagLatestUrl -Headers @{ 'User-Agent' = 'studio-release-gate' } -TimeoutSec 60
+              $manifestSource = $tagLatestUrl
+            } catch {
+              $pcode = $null; if ($_.Exception.Response) { $pcode = [int]$_.Exception.Response.StatusCode }
+              Write-Host "::error::[pub-chain] tag-asset latest.json fetch failed: url=$tagLatestUrl HTTP=$pcode msg=$($_.Exception.Message) tag_name=$tag ref_name=$env:REF_NAME"
+              throw "tag-asset latest.json not reachable (HTTP=$pcode): $tagLatestUrl — $($_.Exception.Message)"
+            }
           }
-          Write-Host "manifest=$manifestSource version=$($manifest.version)"
-          if ($manifest.version -ne $version) { throw "manifest version $($manifest.version) != tag version $version" }
+          Write-Host "manifest source=$manifestSource manifest_version=$($manifest.version) tag_version=$version tag_name=$tag ref_name=$env:REF_NAME"
+          if ($manifest.version -ne $version) {
+            Write-Host "::error::[pub-chain] manifest version mismatch: manifest=$($manifest.version) tag=$version source=$manifestSource tag_name=$tag ref_name=$env:REF_NAME"
+            throw "manifest version $($manifest.version) != tag version $version (source=$manifestSource)"
+          }
 
           $plat = $manifest.platforms.'windows-x86_64'
-          if (-not $plat.url -or -not $plat.signature) { throw 'manifest missing url/signature for windows-x86_64' }
+          if (-not $plat.url -or -not $plat.signature) {
+            Write-Host "::error::[pub-chain] manifest missing url/signature: version=$($manifest.version) url=$($plat.url) signature=$($plat.signature) source=$manifestSource tag_name=$tag ref_name=$env:REF_NAME"
+            throw "manifest missing url/signature for windows-x86_64 (version=$($manifest.version) source=$manifestSource)"
+          }
           $url = $plat.url
           $urlName = [uri]::UnescapeDataString(($url -split '/')[-1])
           Write-Host "download url: $url"
@@ -75,12 +90,23 @@ jobs:
             'X-GitHub-Api-Version' = '2022-11-28'
             'User-Agent' = 'studio-release-gate'
           }
-          $rel = Invoke-RestMethod -Headers $relHeaders -Uri "https://api.github.com/repos/$repo/releases/tags/$tag"
+          try {
+            $rel = Invoke-RestMethod -Headers $relHeaders -Uri "https://api.github.com/repos/$repo/releases/tags/$tag"
+          } catch {
+            $pcode = $null; if ($_.Exception.Response) { $pcode = [int]$_.Exception.Response.StatusCode }
+            Write-Host "::error::[pub-chain] releases/tags/$tag fetch failed: HTTP=$pcode msg=$($_.Exception.Message) tag_name=$tag ref_name=$env:REF_NAME"
+            throw "releases/tags/$tag not reachable (HTTP=$pcode) — $($_.Exception.Message)"
+          }
           $assetNames = @($rel.assets | ForEach-Object { $_.name })
+          Write-Host "release state: draft=$($rel.draft) prerelease=$($rel.prerelease) id=$($rel.id) body_len=$($rel.body.Length) assets=$($assetNames.Count) names=$($assetNames -join ', ')"
           if ($assetNames -notcontains $urlName) {
+            Write-Host "::error::[pub-chain] manifest url asset not in release: expected='$urlName' actual=[$($assetNames -join ', ')] draft=$($rel.draft) tag_name=$tag ref_name=$env:REF_NAME"
             throw "manifest url asset '$urlName' not in release assets: $($assetNames -join ', ')"
           }
-          if ($urlName -match ' ') { throw "manifest url asset name contains a space: '$urlName'" }
+          if ($urlName -match ' ') {
+            Write-Host "::error::[pub-chain] manifest url asset name contains a space: name='$urlName' tag_name=$tag ref_name=$env:REF_NAME"
+            throw "manifest url asset name contains a space: '$urlName'"
+          }
 
           # 2.5) G4-body 可见性（不杀伤）：body 空只 Write-Warning 不 throw——本 job 失败会触发
           #      Revert to draft，把已发布、验签全过的正式版撤下公开口（升级全员中断），
@@ -103,7 +129,10 @@ jobs:
             }
             Start-Sleep -Seconds 10
           }
-          if (-not $reachable) { throw "public download url not reachable after 3 attempts: $url" }
+          if (-not $reachable) {
+            Write-Host "::error::[pub-chain] public download url not reachable after 3 attempts: url=$url urlName='$urlName' tag_name=$tag ref_name=$env:REF_NAME last_head=$($resp.StatusCode)"
+            throw "public download url not reachable after 3 attempts: $url"
+          }
 
           # 4) 下载真包字节（用户链路）并校验签名 —— 与客户端 verify_signature 同判据
           $tmp = Join-Path $env:RUNNER_TEMP 'public-setup.exe'
@@ -112,20 +141,28 @@ jobs:
           $asset = $rel.assets | Where-Object { $_.name -eq $urlName } | Select-Object -First 1
           Write-Host "downloaded=$downloadedSize asset.size=$($asset.size)"
           if ($downloadedSize -ne [int64]$asset.size) {
+            Write-Host "::error::[pub-chain] downloaded size mismatch: downloaded=$downloadedSize asset_size=$($asset.size) urlName='$urlName' tag_name=$tag ref_name=$env:REF_NAME"
             throw "downloaded size $downloadedSize != release asset size $($asset.size) (truncated or wrong file)"
           }
           $pubkey = (Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json).plugins.updater.pubkey
           node src-tauri/verify-sig.mjs --pubkey $pubkey --signature $plat.signature --file $tmp
-          if ($LASTEXITCODE -ne 0) { throw "signature verification failed for published artifact (exit $LASTEXITCODE)" }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::[pub-chain] signature verification failed: exit=$LASTEXITCODE urlName='$urlName' sig_len=$($plat.signature.Length) tag_name=$tag ref_name=$env:REF_NAME"
+            throw "signature verification failed for published artifact (exit $LASTEXITCODE)"
+          }
           Write-Host 'published chain OK'
 
       # fail-closed：公开链路不通 → 打回 draft（Latest 指针随之离开它），Tag 保留，修好可重发。
+      # 撤回动作自身可观测（第 107 件）：PATCH 前后各打状态，注解匿名可读——
+      # 分不清"撤回了/没撤成"会让读数与事实互相矛盾。
       - name: Revert to draft on failure
         if: failure()
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
+          $ErrorActionPreference = 'Stop'
           $repo = '${{ github.repository }}'
           $tag = '${{ github.event.release.tag_name }}'
           $headers = @{
@@ -134,8 +171,20 @@ jobs:
             'X-GitHub-Api-Version' = '2022-11-28'
             'User-Agent' = 'studio-release-gate'
           }
-          $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/tags/$tag"
+          try {
+            $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/tags/$tag"
+          } catch {
+            Write-Host "::error::[revert-to-draft] fetch release by tag failed: tag=$tag ref_name=$env:REF_NAME msg=$($_.Exception.Message) — cannot revert, release state unknown"
+            throw
+          }
+          Write-Host "::error::[revert-to-draft] reverting: tag=$tag id=$($rel.id) draft_before=$($rel.draft) ref_name=$env:REF_NAME — public update chain failed its gate"
           $body = @{ draft = $true } | ConvertTo-Json
-          Invoke-RestMethod -Method Patch -Headers $headers -Body $body -ContentType 'application/json' -Uri "https://api.github.com/repos/$repo/releases/$($rel.id)"
-          Write-Host "reverted $tag to draft — public update chain failed its gate"
+          try {
+            Invoke-RestMethod -Method Patch -Headers $headers -Body $body -ContentType 'application/json' -Uri "https://api.github.com/repos/$repo/releases/$($rel.id)"
+          } catch {
+            Write-Host "::error::[revert-to-draft] PATCH draft=true failed: id=$($rel.id) tag=$tag msg=$($_.Exception.Message) — release may still be PUBLIC"
+            throw
+          }
+          $rel2 = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/tags/$tag"
+          Write-Host "::error::[revert-to-draft] reverted: tag=$tag id=$($rel.id) draft_after=$($rel2.draft)"
           exit 1
