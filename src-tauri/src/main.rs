@@ -1739,15 +1739,46 @@ fn resolve_host_entry(
     resolve_host_entry_with_data_dir(!cfg!(debug_assertions), resource_dir, project_root, data_dir)
 }
 
+/// N4-01（2026-11-12 续审第 4 轮）：WebView2 远程调试口（CDP）的开关判定。
+///
+/// **为什么必须是纯函数**：`cfg!(debug_assertions)` 在 release 装包里恒 false，
+/// 而「装版默认不开 CDP」正是本条的验收口径 —— 只有把构建形态做成**入参**，
+/// 单测才能在不做 release 构建的前提下锁住两条分支。
+///
+/// 语义（presence-based，与改前 `STUDIO_DISABLE_CDP` 一致）：
+/// - `STUDIO_DISABLE_CDP` 出现 → 关（任何构建都优先，显式关永远赢）；
+/// - debug（开发树）→ 缺省**开**（本地工具/自动化直连 WebView2，旧行为不变）；
+/// - release（装版）→ 缺省**关**，必须显式 `STUDIO_ENABLE_CDP=1` 才开。
+///
+/// 改前 release 也常开 9222/9223：那是一个**完整 DevTools 控制面**，
+/// 任何本机进程连上即可读写装版 WebView 里的全部页面与令牌 —— 装版不该有这条后门。
+fn cdp_enabled(
+    debug_build: bool,
+    disable_env: Option<&std::ffi::OsStr>,
+    enable_env: Option<&std::ffi::OsStr>,
+) -> bool {
+    if disable_env.is_some() {
+        return false;
+    }
+    if debug_build {
+        return true;
+    }
+    enable_env.is_some()
+}
+
 fn main() {
     hide_orphan_console();
 
-    // 远程调试口：默认常开 CDP，便于本地工具/自动化直连 WebView2。
-    // 关闭方式：设置 STUDIO_DISABLE_CDP=1；换端口：STUDIO_CDP_PORT=<port>。
+    // 远程调试口（CDP，N4-01 改口径）：
+    // - 开发树（debug）：缺省常开，便于本地工具/自动化直连 WebView2。关闭：STUDIO_DISABLE_CDP=1。
+    // - 装版（release）：缺省**关闭**；需要时显式 STUDIO_ENABLE_CDP=1 打开。
+    //   `STUDIO_DISABLE_CDP` 在两种构建下都是「强制关」，优先级最高。
     // 端口选择：9222 是历史默认口，旧脚本都连它；空闲时优先用它，
-    // 被 Chrome/Edge 等占用时退回 9223，避免互相抢占。
+    // 被 Chrome/Edge 等占用时退回 9223，避免互相抢占。换端口：STUDIO_CDP_PORT=<port>。
     // 若外部已自行设置 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS，则只做合并，不覆盖。
-    if std::env::var_os("STUDIO_DISABLE_CDP").is_none() {
+    let cdp_disable = std::env::var_os("STUDIO_DISABLE_CDP");
+    let cdp_enable = std::env::var_os("STUDIO_ENABLE_CDP");
+    if cdp_enabled(cfg!(debug_assertions), cdp_disable.as_deref(), cdp_enable.as_deref()) {
         let port = std::env::var("STUDIO_CDP_PORT").unwrap_or_else(|_| {
             let is_free = |p: u16| std::net::TcpListener::bind(("127.0.0.1", p)).is_ok();
             if is_free(9222) {
@@ -3109,6 +3140,60 @@ mod tests {
         });
         assert_eq!(strict, None);
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    // ── N4-01：CDP 门控（装版缺省关闭）────────────────────────────────
+    //
+    // 改前门控只有 `if env::var_os("STUDIO_DISABLE_CDP").is_none()`：
+    // **没有 cfg!(debug_assertions)**，release 装包同样开 9222/9223 ——
+    // 那是完整 DevTools 控制面，任何本机进程连上即可读写装版 WebView。
+    //
+    // 判别力：把 `debug_build` 入参改回常量 true / 删掉 `enable_env` 分支，
+    // 下面「release 缺省关」用例立刻红（见负控用例）。
+    #[test]
+    fn cdp_default_on_in_debug_build() {
+        // 开发树：无任何环境变量 → 开（本地工具/自动化依赖这条）。
+        assert!(cdp_enabled(true, None, None));
+        // 显式关永远赢。
+        assert!(!cdp_enabled(
+            true,
+            Some(std::ffi::OsStr::new("1")),
+            None
+        ));
+    }
+
+    #[test]
+    fn cdp_default_off_in_release_build() {
+        // 装版：无环境变量 → **关**（N4-01 的红线）。
+        assert!(!cdp_enabled(false, None, None));
+        // 显式开才开。
+        assert!(cdp_enabled(
+            false,
+            None,
+            Some(std::ffi::OsStr::new("1"))
+        ));
+        // 同时给了 disable/enable → 关优先（显式关 > 显式开）。
+        assert!(!cdp_enabled(
+            false,
+            Some(std::ffi::OsStr::new("1")),
+            Some(std::ffi::OsStr::new("1"))
+        ));
+    }
+
+    /// 负控：**改前的判据**（只看 `STUDIO_DISABLE_CDP` 在不在）在 release 下恒开。
+    /// 这条把「旧语义」写成断言，防止有人把门控改回去而测试还绿。
+    #[test]
+    fn legacy_gate_would_keep_cdp_open_in_release() {
+        let legacy = |disable: Option<&std::ffi::OsStr>| disable.is_none();
+        assert!(
+            legacy(None),
+            "旧门控在 release 下开 CDP —— 正是 N4-01 要堵的洞"
+        );
+        assert_ne!(
+            legacy(None),
+            cdp_enabled(false, None, None),
+            "新门控必须在 release 缺省关，否则这条负控失效"
+        );
     }
 }
 
