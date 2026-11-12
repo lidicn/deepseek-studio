@@ -740,3 +740,72 @@ describe('Studio 主视图', () => {
     });
   });
 });
+
+/**
+ * U1-02（TD 续审第 1 轮，R6-02→P2）：重发清理原语 discardOpenAssistantBubble。
+ * 语义＝**整条删除**（节点 remove＋状态清零），不是固化成消息（那是 finishAssistantMessage 的职责）。
+ * 契约（Core）：方法名/非可选/无开泡 no-op；重发路径上它是 finish 的**替换**不是追加
+ * （finish 收尾置 currentAssistant=null，「先 finish 再 discard」必空转、用户仍见两段）。
+ * 负控：把 discard 实现改成空函数 ⇒ 「整条删除」「新节点」两枚必红。
+ */
+describe('U1-02 discardOpenAssistantBubble（重发清理原语）', () => {
+  let ui: StudioChatUIHandle | null = null;
+
+  beforeEach(() => {
+    document.head.innerHTML = '';
+    document.body.innerHTML = '';
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 1;
+    });
+    addMeasuredComposer();
+    ui = mount();
+  });
+
+  afterEach(() => {
+    ui?.destroy();
+    ui = null;
+    vi.unstubAllGlobals();
+    document.body.innerHTML = '';
+  });
+
+  it('整条删除：append 半截 → discard ⇒ 气泡节点出 DOM、状态清零；再开泡只剩新泡（非固化）', () => {
+    ui!.appendToAssistantMessage('半截');
+    ui!.discardOpenAssistantBubble();
+    expect(ui!.hasOpenAssistantBubble()).toBe(false);
+    expect(ui!.container.querySelectorAll('.ds-sc-msg-assistant')).toHaveLength(0);
+    ui!.startAssistantMessage();
+    expect(ui!.container.querySelectorAll('.ds-sc-msg-assistant')).toHaveLength(1);
+    expect(ui!.container.textContent).not.toContain('半截');
+  });
+
+  it('无开泡时 no-op（幂等）：连调不抛、不碰用户消息（与 clearMessagesForSession 划界）', () => {
+    ui!.addUserMessage('用户提问');
+    expect(() => {
+      ui!.discardOpenAssistantBubble();
+      ui!.discardOpenAssistantBubble();
+    }).not.toThrow();
+    expect(ui!.container.querySelectorAll('.ds-sc-msg-user')).toHaveLength(1);
+    expect(ui!.container.textContent).toContain('用户提问');
+  });
+
+  it('卡面场景：append 半截 → finish(recordFinal:false) → 重开 ⇒ 开泡（在流）气泡只有 1 枚（新泡）', () => {
+    ui!.appendToAssistantMessage('半截');
+    ui!.finishAssistantMessage({ recordFinal: false });
+    ui!.startAssistantMessage();
+    // 开泡＝带 .ds-sc-streaming；旧泡被 finish 固化（保留是预期，收尾支不用 discard）
+    expect(ui!.container.querySelectorAll('.ds-sc-msg-assistant .ds-sc-streaming')).toHaveLength(1);
+    expect(ui!.hasOpenAssistantBubble()).toBe(true);
+  });
+
+  it('语义分离：discard 后下一次 startAssistantMessage 是新节点（旧节点已断连）', () => {
+    ui!.startAssistantMessage();
+    const first = ui!.container.querySelector('.ds-sc-msg-assistant')!;
+    expect(first).toBeTruthy();
+    ui!.discardOpenAssistantBubble();
+    ui!.startAssistantMessage();
+    const second = ui!.container.querySelector('.ds-sc-msg-assistant')!;
+    expect(second).not.toBe(first);
+    expect(first.isConnected).toBe(false);
+  });
+});

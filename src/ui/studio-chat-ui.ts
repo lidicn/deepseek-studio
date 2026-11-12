@@ -65,6 +65,9 @@ export interface StudioChatUIHandle {
   appendReasoning(text: string): void;
   /** 流结束：移除光标，最终 renderMarkdown 格式化替换 */
   finishAssistantMessage(options?: { recordFinal?: boolean; fallbackText?: string }): void;
+  /** 丢弃「正在流式输出」的助手气泡：删节点 + 清 currentAssistant / currentRawText / recordFinalPending。
+   *  无开泡时 no-op（幂等）。与 finishAssistantMessage 的区别是**整条删除**，不是固化成消息。 */
+  discardOpenAssistantBubble(): void;
   /** 设置状态栏忙碌/完成状态 */
   setBusy(busy: boolean): void;
   /** 在当前助手消息中创建/更新工具卡；无 Studio 助手节点时返回 false，不触碰原生 DOM。 */
@@ -931,6 +934,23 @@ export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioCha
     scrollToBottom();
   }
 
+  /** U1-02（TD 续审第 1 轮 R6-02→P2，卡面定字）：丢弃在飞助手气泡，供重发路径使用。
+   *  语义＝**整条删除**（节点 remove＋状态清零），不是固化成消息（那是 finishAssistantMessage 的职责）。
+   *  重发路径上本方法必须**替换** finish、不是追加：finish 首行 `if (!currentAssistant) return`、
+   *  收尾置 null——「先 finish 再 discard」会让 discard 空转、用户照样看到两段（假绿坑，Core 契约）。
+   *  无开泡时 no-op（幂等）；不清用户消息（与 clearMessagesForSession 无关）。 */
+  function discardOpenAssistantBubble(): void {
+    if (!currentAssistant) return;
+    // 先摘在飞的 80ms 节流 timer（同 finishAssistantMessage 首段；见 startAssistantMessage 的 QD-R2-15 注释）
+    if (streamRenderTimer) { clearTimeout(streamRenderTimer); streamRenderTimer = null; }
+    currentAssistant.remove();
+    currentAssistant = null;
+    currentRawText = '';
+    currentReasoning = '';
+    thinkUserToggled = false;
+    recordFinalPending = false;
+  }
+
   function setBusy(busy: boolean): void {
     statusDot.className = busy ? 'ds-sc-status-dot busy' : 'ds-sc-status-dot done';
     statusText.textContent = busy ? '执行中…' : '完成';
@@ -1438,6 +1458,7 @@ export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioCha
     appendToAssistantMessage,
     appendReasoning,
     finishAssistantMessage,
+    discardOpenAssistantBubble,
     setBusy,
     startToolCard,
     finishToolCard,

@@ -68,6 +68,7 @@ function makeChatUI() {
     appendToAssistantMessage: vi.fn(),
     appendReasoning: vi.fn(),
     finishAssistantMessage: vi.fn(),
+    discardOpenAssistantBubble: vi.fn(),
     appendError: vi.fn(),
     setBusy: vi.fn(),
     setContextNotice: vi.fn(),
@@ -205,6 +206,50 @@ describe('QD-R5-01 首轮断流自动重试', () => {
       const messages = chatUI.appendError.mock.calls.map((c) => c[1] as string);
       expect(messages.some((m) => m.includes('正在自动重试'))).toBe(false);
       expect(chatUI.appendError.mock.calls).toEqual([]);
+    } finally {
+      handle.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * U1-02 接线锁（2026-11-12）：重发前**丢弃**半截气泡，终局才固化。
+   *
+   * 这条锁的是接线不是原语：`finishAssistantMessage` 会把已流出的半截正文固化成
+   * 列表里的一条静态消息（并置 `currentAssistant=null`），随后重发再开新泡 ⇒
+   * 同一轮出现两条助手消息。所以重发支必须 discard，且**不能**先 finish（先 finish
+   * 会让随后的 discard 空转，计数上就露馅）。
+   *
+   * 反面同样锁住：预算耗尽那一步**只** finish、不再 discard——若在 escalate 之外先
+   * discard，重发后的半截正文会被整条删掉（探针实测过：末步 discard→finish 顺序
+   * 意味着正文没了，用户看到的只有错误卡）。
+   *
+   * 判别力：把任一重发支改回 finish ⇒ 重试阶段 finish 计数 > 0，红；
+   *          把 discard 挪到 escalate 之前 ⇒ 末步 discard 计数多 1，红。
+   */
+  it('重发前丢弃半截气泡、终局才固化（U1-02 接线）', async () => {
+    vi.useFakeTimers();
+    const { FakeXHR, handle, chatUI } = installHarness();
+    try {
+      const first = pageSend(FakeXHR, { prompt: 'hello', chat_session_id: 's-u102' });
+      first.respond(0, '');
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      // 第一次失败 → 排上重发：必须 discard，且此时**一次**都不能固化。
+      expect(chatUI.discardOpenAssistantBubble).toHaveBeenCalledTimes(1);
+      expect(chatUI.finishAssistantMessage).not.toHaveBeenCalled();
+
+      // 重试#1 也失败 → 第二次 discard，仍未固化。
+      chatRequests(FakeXHR)[1].respond(0, '');
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(chatUI.discardOpenAssistantBubble).toHaveBeenCalledTimes(2);
+      expect(chatUI.finishAssistantMessage).not.toHaveBeenCalled();
+
+      // 重试#2 失败 → 预算耗尽，**终局**：只固化、不再丢弃（半截正文要留给用户看）。
+      chatRequests(FakeXHR)[2].respond(0, '');
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(chatUI.discardOpenAssistantBubble).toHaveBeenCalledTimes(2);
+      expect(chatUI.finishAssistantMessage).toHaveBeenCalledTimes(1);
     } finally {
       handle.stop();
       vi.useRealTimers();

@@ -389,6 +389,15 @@ export interface ConversationRound {
   readonly errors?: Readonly<Record<string, string>>;
   /** 本轮结束后解析出的接力目标（下一轮的入参）。 */
   readonly pendingHandoff: readonly string[];
+  /**
+   * N2-02：合成 round 的来源标记，让下游能区分「命令回执」与「讨论完成」。
+   *
+   * 缺省（undefined）= 真实讨论轮（由 orchestrator.planRound 产出）。
+   *   - 'command'：会议控制指令（start/end/summarize）的回执，members 为空；
+   *   - 'audit'：审计命令（@main 审计 / 审计）的离线派发回执，members 为空；
+   *   - 'error'：早退路径抛错时补推的解锁 round（只用于解锁输入框，无正文）。
+   */
+  readonly reason?: 'command' | 'audit' | 'error';
 }
 
 /** 轮次编排器：决定一整个轮次里谁回、什么顺序、要不要接力。 */

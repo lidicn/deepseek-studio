@@ -369,165 +369,195 @@ export function createChatRoomRuntime(options: ChatRoomRuntimeOptions): ChatRoom
   }
 
   async function handleUserMessage(roomId: string, text: string, userId = 'user'): Promise<ConversationRound> {
-    const room = findRoom(roomId);
-    if (!room) throw new Error(`chat-room-runtime: room not found: ${roomId}`);
-
-    // 动态构建 participants（bot 可运行时增删）
-    const participants = buildParticipants(room, registry);
-
-    // v0.29 会议命令路由 —— 必须在 stripMentionTokens 之前对原始 text 判定。
-    // 约束：main 若将来进 memberPersonas，@main 会被 mention-parser 剥掉 → 命令丢失。
-    // 此处先用原始 text 检测命令，命中则走会议控制分支，不进正常聊天流程。
-    const cmd = detectMeetingCommand(text);
-    if (cmd.kind !== 'none') {
-      await handleMeetingCommand(roomId, cmd, room, userId);
-      // 控制指令不参与讨论：合成空 round 返回（caller agent-channel.ts 忽略返回值，
-      // 但 ConversationRound 全字段 mandatory，不可 throw 否则 unhandled rejection）。
-      // v0.29：仍需推 round-complete —— UI submitMessage 对任何消息都置 roundInProgress=true，
-      // 不推 round-complete 会让控制指令后输入框锁死。
-      onRoundComplete?.({ roomId, triggerMessageId: '', members: [], contents: {}, pendingHandoff: [] });
-      return { roomId, triggerMessageId: '', members: [], contents: {}, pendingHandoff: [] };
-    }
-
-    // v0.30 审计命令路由 —— 检测到 @main 审计 / /审计 时走离线执行分支。
-    // 必须在 @提及解析之前对原始 text 判定（同会议命令约束：@main 若被剥掉命令丢失）。
-    // 命中时跳过内联 planRound，落盘用户审计指令（真实任务起点，同 meeting start），
-    // dispatch 走离线执行器（N bot 并行 → SubBotReport → 汇总 → report-ready），
-    // 推 round-complete 解锁输入框。
-    const auditCmd = detectAuditCommand(text);
-    if (auditCmd.kind === 'audit' && auditDispatcher) {
-      messageStore.append({
-        roomId,
-        senderId: userId,
-        senderType: 'user',
-        content: text,
-        timestamp: Date.now(),
-        mentions: [],
-      });
-      const batchId = `batch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-      await auditDispatcher.dispatch(roomId, batchId, auditCmd.target, auditCmd.dimensions);
-      onRoundComplete?.({ roomId, triggerMessageId: '', members: [], contents: {}, pendingHandoff: [] });
-      return { roomId, triggerMessageId: '', members: [], contents: {}, pendingHandoff: [] };
-    }
-
-    // 1. 解析 @提及
-    const mentions = mentionParser.resolveMentions(text, participants);
-    // 2. 剥离 @路由标记得净内容
-    const cleanContent = mentionParser.stripMentionTokens(text, participants);
-
-    // 3. 存用户消息（净内容，契约要求剥离 @路由标记）
-    const storedMsg = messageStore.append({
+    // N2-01（2026-11-12 续审第 2 轮）：轮次结束信号必须覆盖**任何**退出路径。
+    // 此前 try 从「逐条落盘」才开始，room-not-found / 会议命令 / 审计 dispatch / planRound
+    // 四个 await 都在 try 之外：它们抛错就不推 round-complete，而 UI 的 submitMessage
+    // 对任何消息都置 roundInProgress=true ⇒ 输入框永久锁死（**不断线也能复现**，U1-01 的前端修复盖不住）。
+    // 这里用一次性守卫把「恰好推一次」收口；正常路径语义不变（真 round 由内层 finally 推）。
+    let roundCompleteSent = false;
+    const notifyRoundComplete = (r: ConversationRound): void => {
+      if (roundCompleteSent) return;
+      roundCompleteSent = true;
+      onRoundComplete?.(r);
+    };
+    // N2-02：合成 round 带 reason，让下游能区分「命令回执」与「讨论完成」。
+    const emptyRound = (reason: 'command' | 'audit' | 'error'): ConversationRound => ({
       roomId,
-      senderId: userId,
-      senderType: 'user',
-      content: cleanContent,
-      timestamp: Date.now(),
-      mentions,
+      triggerMessageId: '',
+      members: [],
+      contents: {},
+      pendingHandoff: [],
+      reason,
     });
 
-    // 路由触发器携带原始文本（含 @提及），供 MentionRouter 解析 @目标。
-    // 存储消息是净内容（契约 + 上下文注入用），路由触发器是原始文本——两者分离是接线层职责。
-    const trigger: ChatMessage = { ...storedMsg, content: text };
-
-    // 4. 动态重建 resolver/router（每次按当前 participants）
-    const resolver = new MapParticipantResolver(participants);
-    const router = new DefaultMentionRouter(mentionParser, resolver);
-
-    // 5. createGenerateReply（闭包记 rawReplyMap 供取 unresolved）
-    const rawReplyMap = new Map<string, string>();
-    const generateReply = createGenerateReply(options, room, participants, rawReplyMap);
-
-    // 6. orchestrator
-    const orchestrator = new DefaultRoundOrchestrator({
-      router,
-      handoffParser,
-      participantResolver: resolver,
-      generateReply,
-      maxDepth,
-    });
-
-    // 7. planRound
-    const round = await orchestrator.planRound({ trigger, room, participants });
-
-    let persistedReplies = 0;
     try {
-      // 8. 逐个回复落盘 + 推 UI（结构化 ChatRoomBotReplyEvent）。
-      // 空正文不落盘；失败原因单独推 chat-bot-error，避免产生空气泡。
-      for (const persona of round.members) {
-        const participant = participants.find((p) => p.name === persona);
-        if (!participant) continue;
-        const content = round.contents[persona] ?? '';
-        const botId = participant.botId;
-        if (content.trim() === '') {
-          onBotError?.({
-            kind: 'chat-bot-error',
-            roomId,
-            persona,
-            botId,
-            error: round.errors?.[persona] ?? 'empty-response',
-            timestamp: Date.now(),
-          });
-          continue;
-        }
-        const senderType: 'main-bot' | 'sub-bot' = botId === 'main' ? 'main-bot' : 'sub-bot';
-        const stored = messageStore.append({
+      const room = findRoom(roomId);
+      if (!room) throw new Error(`chat-room-runtime: room not found: ${roomId}`);
+
+      // 动态构建 participants（bot 可运行时增删）
+      const participants = buildParticipants(room, registry);
+
+      // v0.29 会议命令路由 —— 必须在 stripMentionTokens 之前对原始 text 判定。
+      // 约束：main 若将来进 memberPersonas，@main 会被 mention-parser 剥掉 → 命令丢失。
+      // 此处先用原始 text 检测命令，命中则走会议控制分支，不进正常聊天流程。
+      const cmd = detectMeetingCommand(text);
+      if (cmd.kind !== 'none') {
+        await handleMeetingCommand(roomId, cmd, room, userId);
+        // 控制指令不参与讨论：合成空 round 返回（caller agent-channel.ts 忽略返回值，
+        // 但 ConversationRound 全字段 mandatory，不可 throw 否则 unhandled rejection）。
+        // v0.29：仍需推 round-complete —— UI submitMessage 对任何消息都置 roundInProgress=true，
+        // 不推 round-complete 会让控制指令后输入框锁死。
+        // N2-02：命令回执是合成 round，标 reason 让下游能区分「命令回执」与「讨论完成」。
+        const ack = emptyRound('command');
+        notifyRoundComplete(ack);
+        return ack;
+      }
+
+      // v0.30 审计命令路由 —— 检测到 @main 审计 / /审计 时走离线执行分支。
+      // 必须在 @提及解析之前对原始 text 判定（同会议命令约束：@main 若被剥掉命令丢失）。
+      // 命中时跳过内联 planRound，落盘用户审计指令（真实任务起点，同 meeting start），
+      // dispatch 走离线执行器（N bot 并行 → SubBotReport → 汇总 → report-ready），
+      // 推 round-complete 解锁输入框。
+      const auditCmd = detectAuditCommand(text);
+      if (auditCmd.kind === 'audit' && auditDispatcher) {
+        messageStore.append({
           roomId,
-          senderId: botId,
-          senderType,
-          content,
+          senderId: userId,
+          senderType: 'user',
+          content: text,
           timestamp: Date.now(),
           mentions: [],
         });
-        persistedReplies += 1;
-        onBotReply?.({
-          kind: 'chat-bot-reply',
-          roomId,
-          persona,
-          botId,
-          senderType,
-          content,
-          messageId: stored.id,
-          timestamp: stored.timestamp,
-        });
+        const batchId = `batch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+        await auditDispatcher.dispatch(roomId, batchId, auditCmd.target, auditCmd.dimensions);
+        const ack = emptyRound('audit');
+        notifyRoundComplete(ack);
+        return ack;
       }
 
-      // 9. unresolved 上报：重新 parse 原始回复取未注册 @名
-      const unresolvedAll: string[] = [];
-      for (const persona of round.members) {
-        const raw = rawReplyMap.get(persona);
-        if (!raw) continue;
-        const res: HandoffResolution = handoffParser.parse(raw, participants);
-        if (res.unresolved.length > 0) {
-          unresolvedAll.push(...res.unresolved);
+      // 1. 解析 @提及
+      const mentions = mentionParser.resolveMentions(text, participants);
+      // 2. 剥离 @路由标记得净内容
+      const cleanContent = mentionParser.stripMentionTokens(text, participants);
+
+      // 3. 存用户消息（净内容，契约要求剥离 @路由标记）
+      const storedMsg = messageStore.append({
+        roomId,
+        senderId: userId,
+        senderType: 'user',
+        content: cleanContent,
+        timestamp: Date.now(),
+        mentions,
+      });
+
+      // 路由触发器携带原始文本（含 @提及），供 MentionRouter 解析 @目标。
+      // 存储消息是净内容（契约 + 上下文注入用），路由触发器是原始文本——两者分离是接线层职责。
+      const trigger: ChatMessage = { ...storedMsg, content: text };
+
+      // 4. 动态重建 resolver/router（每次按当前 participants）
+      const resolver = new MapParticipantResolver(participants);
+      const router = new DefaultMentionRouter(mentionParser, resolver);
+
+      // 5. createGenerateReply（闭包记 rawReplyMap 供取 unresolved）
+      const rawReplyMap = new Map<string, string>();
+      const generateReply = createGenerateReply(options, room, participants, rawReplyMap);
+
+      // 6. orchestrator
+      const orchestrator = new DefaultRoundOrchestrator({
+        router,
+        handoffParser,
+        participantResolver: resolver,
+        generateReply,
+        maxDepth,
+      });
+
+      // 7. planRound
+      const round = await orchestrator.planRound({ trigger, room, participants });
+
+      let persistedReplies = 0;
+      try {
+        // 8. 逐个回复落盘 + 推 UI（结构化 ChatRoomBotReplyEvent）。
+        // 空正文不落盘；失败原因单独推 chat-bot-error，避免产生空气泡。
+        for (const persona of round.members) {
+          const participant = participants.find((p) => p.name === persona);
+          if (!participant) continue;
+          const content = round.contents[persona] ?? '';
+          const botId = participant.botId;
+          if (content.trim() === '') {
+            onBotError?.({
+              kind: 'chat-bot-error',
+              roomId,
+              persona,
+              botId,
+              error: round.errors?.[persona] ?? 'empty-response',
+              timestamp: Date.now(),
+            });
+            continue;
+          }
+          const senderType: 'main-bot' | 'sub-bot' = botId === 'main' ? 'main-bot' : 'sub-bot';
+          const stored = messageStore.append({
+            roomId,
+            senderId: botId,
+            senderType,
+            content,
+            timestamp: Date.now(),
+            mentions: [],
+          });
+          persistedReplies += 1;
+          onBotReply?.({
+            kind: 'chat-bot-reply',
+            roomId,
+            persona,
+            botId,
+            senderType,
+            content,
+            messageId: stored.id,
+            timestamp: stored.timestamp,
+          });
         }
+
+        // 9. unresolved 上报：重新 parse 原始回复取未注册 @名
+        const unresolvedAll: string[] = [];
+        for (const persona of round.members) {
+          const raw = rawReplyMap.get(persona);
+          if (!raw) continue;
+          const res: HandoffResolution = handoffParser.parse(raw, participants);
+          if (res.unresolved.length > 0) {
+            unresolvedAll.push(...res.unresolved);
+          }
+        }
+        if (unresolvedAll.length > 0) {
+          onUnresolved?.(roomId, unresolvedAll);
+        }
+
+        // 10. pendingHandoff 不执行（maxDepth=1 默认）；接线层可据此决定续轮策略
+        // （v0.27 阶段：调用方连续调 handleUserMessage 续轮，不在此自动续）
+
+        // v0.29：仅真正落盘的 bot 回复才算讨论轮，空回复/失败不污染门控。
+        if (persistedReplies > 0) stateStore.incrementRounds(roomId);
+
+        // 11. 摘要触发 —— v0.29 改为会议驱动门控（替换原「每轮无条件 summarize」）：
+        //   status === 'active' 且 roundsSinceSummary >= 阈值 → 摘要 + 推送 + 清零计数
+        //   status === 'active' 未达阈值                          → 跳过（等讨论累积）
+        //   status !== 'active'（无会议）                         → 跳过（无会议不总结）
+        // 门控的是「是否调 summarize()」本身 —— CB 的 CAS/租约守卫不受影响。
+        const st = stateStore.get(roomId);
+        if (st?.status === 'active' && st.strategy && st.roundsSinceSummary >= st.strategy.minRoundsBeforeAutoSummary) {
+          // 达阈值才摘要（门控的是「是否调 summarize()」，不是 CB 内部的 CAS/租约）。
+          // 摘要失败不重置轮数 —— 轮数反映「已总结覆盖到的进度」，
+          // 没提交成功就该保留，下一轮继续重试。
+          if (await runSummarize(roomId)) stateStore.resetRounds(roomId);
+        }
+
+        return round;
+      } finally {
+        // 落盘或摘要抛错也必须解锁 UI，否则输入框永久停在 roundInProgress。
+        notifyRoundComplete(round);
       }
-      if (unresolvedAll.length > 0) {
-        onUnresolved?.(roomId, unresolvedAll);
-      }
-
-      // 10. pendingHandoff 不执行（maxDepth=1 默认）；接线层可据此决定续轮策略
-      // （v0.27 阶段：调用方连续调 handleUserMessage 续轮，不在此自动续）
-
-      // v0.29：仅真正落盘的 bot 回复才算讨论轮，空回复/失败不污染门控。
-      if (persistedReplies > 0) stateStore.incrementRounds(roomId);
-
-      // 11. 摘要触发 —— v0.29 改为会议驱动门控（替换原「每轮无条件 summarize」）：
-      //   status === 'active' 且 roundsSinceSummary >= 阈值 → 摘要 + 推送 + 清零计数
-      //   status === 'active' 未达阈值                          → 跳过（等讨论累积）
-      //   status !== 'active'（无会议）                         → 跳过（无会议不总结）
-      // 门控的是「是否调 summarize()」本身 —— CB 的 CAS/租约守卫不受影响。
-      const st = stateStore.get(roomId);
-      if (st?.status === 'active' && st.strategy && st.roundsSinceSummary >= st.strategy.minRoundsBeforeAutoSummary) {
-        // 达阈值才摘要（门控的是「是否调 summarize()」，不是 CB 内部的 CAS/租约）。
-        // 摘要失败不重置轮数 —— 轮数反映「已总结覆盖到的进度」，
-        // 没提交成功就该保留，下一轮继续重试。
-        if (await runSummarize(roomId)) stateStore.resetRounds(roomId);
-      }
-
-      return round;
-    } finally {
-      // 落盘或摘要抛错也必须解锁 UI，否则输入框永久停在 roundInProgress。
-      onRoundComplete?.(round);
+    } catch (err) {
+      // 任何未捕获异常都要解锁输入框：否则用户只能重启窗口才能再发消息。
+      notifyRoundComplete(emptyRound('error'));
+      throw err;
     }
   }
 

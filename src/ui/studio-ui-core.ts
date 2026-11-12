@@ -207,16 +207,15 @@ export function injectStyles(_shadow: HTMLElement, css: string): void {
  */
 export function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
-  props?: { className?: string; text?: string; html?: string; attrs?: Record<string, string>; style?: Partial<CSSStyleDeclaration> },
+  props?: { className?: string; text?: string; attrs?: Record<string, string>; style?: Partial<CSSStyleDeclaration> },
   children?: Node[],
 ): HTMLElementTagNameMap[K] {
   const element = document.createElement(tag);
   if (props?.className) element.className = props.className;
   if (props?.text) element.textContent = props.text;
-  // W4：props.html 仅接受「静态模板」或「已经过 DOMPurify.sanitize 的安全 HTML」，
-  // 禁止直接拼接用户输入/工具输出；不可信文本请用 props.text（textContent）。
-  // security-ok: 公共构造器契约，调用方只可传静态模板或已消毒 HTML
-  if (props?.html) element.innerHTML = props.html;
+  // U1-03（TD 续审第 1 轮 P3）：删除死分支 `props.html`（全仓零调用方）——
+  // innerHTML 通道只留 renderMarkdown/DOMPurify 产出（各调用点自带 security-ok 注释），
+  // 公共构造器不再暴露任意 HTML 直写口；残留调用方会编译报错（= 验收本身）。
   if (props?.attrs) {
     for (const [k, v] of Object.entries(props.attrs)) element.setAttribute(k, v);
   }

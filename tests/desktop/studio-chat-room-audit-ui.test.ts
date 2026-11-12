@@ -156,3 +156,68 @@ describe('v0.30 审计报告卡 UI', () => {
     h.destroy();
   });
 });
+
+/**
+ * U1-01（TD 续审第 1 轮，P2）：断线重连后 `roundInProgress` 永久锁死——
+ * 「发送后断线」时服务端 done/round-complete 事件随断线丢失，本地无人复位
+ * `roundInProgress` ⇒ 发送硬门（`!text || roundInProgress || !connected`）永久挡住发送。
+ * 修法：`ws.onopen` 无条件状态对齐（`roundInProgress=false; thinkingBots.clear(); updateComposerState()`）。
+ * 验收（卡面）：重连后 `input.disabled===false`、发送钮文案回「发送」。
+ * thinkingBots 全仓零渲染消费者，不锁不可见状态；composer 解锁＋可再发是它的可观测面。
+ * 负控：摘掉 onopen 里三行对齐 ⇒ 本条的「重连后 input.disabled===false」必红。
+ */
+describe('U1-01 断线重连状态对齐（roundInProgress 不得永久锁 composer）', () => {
+  beforeEach(() => {
+    lastWs = null;
+    document.body.innerHTML = '';
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('发送 → 断线 → 重连 ⇒ composer 解锁（input 可用、钮「发送」）、轮次指示清除、可再发', () => {
+    vi.useFakeTimers();
+    try {
+      const h = mkRoom();
+      const ws1 = lastWs as unknown as { onopen?: () => void; onclose?: (ev: { code: number }) => void };
+      expect(ws1).toBeTruthy();
+      ws1.onopen?.(); // 连接建立：connected=true
+
+      const input = document.querySelector('.studio-chat-input') as HTMLTextAreaElement;
+      const sendBtn = document.querySelector('.studio-chat-send') as HTMLButtonElement;
+      expect(input).toBeTruthy();
+      expect(sendBtn).toBeTruthy();
+
+      // 发送 ⇒ roundInProgress=true，composer 锁住
+      input.value = '审计这个项目';
+      sendBtn.click();
+      expect(input.disabled).toBe(true);
+      expect(sendBtn.textContent).toBe('进行中…');
+      expect(document.querySelector('.studio-chat-round-indicator')).not.toBeNull();
+
+      // 断线：服务端 done 随断线丢失 ⇒ 本地无人复位
+      ws1.onclose?.({ code: 1006 });
+      expect(input.disabled).toBe(true); // 断开期间保持锁
+
+      // 重连：定时器驱动新 ws；onopen 状态对齐
+      vi.advanceTimersByTime(600); // 初始 backoff 500ms
+      const ws2 = lastWs as unknown as { onopen?: () => void };
+      expect(ws2).not.toBe(ws1);
+      ws2.onopen?.();
+
+      // 卡面验收：input.disabled===false、钮文案回「发送」
+      expect(input.disabled).toBe(false);
+      expect(sendBtn.textContent).toBe('发送');
+      expect(document.querySelector('.studio-chat-round-indicator')).toBeNull();
+      // 可再发（未修时硬门把这次发送拦死、input 不清）
+      input.value = '继续审计';
+      sendBtn.click();
+      expect(input.value).toBe('');
+      h.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

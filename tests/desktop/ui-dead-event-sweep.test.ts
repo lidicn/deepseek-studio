@@ -7,6 +7,7 @@
  * 活链不受伤：ui:projects-updated（picker loadProjects 发射、sidebar 唯一订阅）仍发射。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { createInputBar } from '../../src/ui/studio-input-bar';
 import { createProjectPicker } from '../../src/ui/studio-project-picker';
 import { createRightSidebar } from '../../src/ui/studio-right-sidebar';
@@ -196,5 +197,19 @@ describe('skills「打开目录」失败可见（卡 A①：879e7ac 范式，静
     expect(hint.hidden).toBe(false);
     expect(hint.textContent).toContain('打开目录失败');
     panel.close();
+  });
+});
+
+/**
+ * U1-03（TD 续审第 1 轮，P3）：`studio-ui-core.ts` 的 `el()` 死原语 `props.html`
+ * （全仓零调用方）已删——innerHTML 任意写口收敛到 renderMarkdown/DOMPurify 产出各点。
+ * 回流锁（源扫）：类型成员与分支再现必红；安全 text 通道保留（防过删）。
+ */
+describe('U1-03 el() 死分支 props.html 删除（防回流）', () => {
+  it('studio-ui-core.ts 不再有 props.html 分支与类型成员；text 通道保留', () => {
+    const src = readFileSync('src/ui/studio-ui-core.ts', 'utf8');
+    expect(src).not.toMatch(/props\?\.html/);
+    expect(src).not.toMatch(/html\?:\s*string/);
+    expect(src).toMatch(/element\.textContent = props\.text/);
   });
 });

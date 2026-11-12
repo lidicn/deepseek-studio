@@ -1674,14 +1674,18 @@ function installFetchHook(
     const response = await origFetch(input, init);
     if (loopState && !response.ok) {
       const verdict = classifyResponse(response.status, null);
-      loopState.chatUI?.finishAssistantMessage({ recordFinal: false });
       // QD-R5-01：首轮 retryable 失败先原样重发，封顶 2 次；预算耗尽才上报。
       // 与 XHR 路径共用 escalateFirstAttemptFailure，避免两条路径各写一套重试语义。
       if (verdict.verdict === 'retryable') {
+        // U1-02 接线（2026-11-12）：这里**不碰气泡**——重发还是收尾由 escalate 决定：
+        // 重发支丢弃（否则同一轮出现两条助手消息），预算耗尽支固化（半截正文要留给用户看）。
+        // 在这里先 discard 会在「重发后仍失败、预算耗尽」那一步把半截吞掉（探针实测过）。
         loopState.streamActive = false;
         escalateFirstAttemptFailure?.(verdict.reason, '服务器暂时无法访问');
         return response;
       }
+      // 终局（不再重发）：半截正文要留给用户看 ⇒ 仍走 finish 固化，不 discard。
+      loopState.chatUI?.finishAssistantMessage({ recordFinal: false });
       loopState.chatUI?.appendError(
         verdict.reason,
         firstAttemptBudget(traceTurnId).sent > 0
@@ -2669,7 +2673,11 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     d(`first-attempt retryable: reason=${code} scheduled retry ${budget.scheduled}/${FIRST_ATTEMPT_MAX_RETRIES} in ${delay}ms (sent so far=${budget.sent})`);
     interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'first-attempt-retry', triggered: true });
     loopState.streamActive = false;
-    try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+    // U1-02 接线：下面 `scheduleFirstAttemptResend` 必然重发（→ autoContinueWithPow
+    // → startAssistantMessage 开新泡），所以这里丢弃半截气泡而不是固化。
+    // 这是 R6-01 重发链的**唯一收口**：XHR/fetch 两个执行器的 retryable 分支都升到这里，
+    // 在它们各自的位置改会漏（L2222 那条就没有先 finish），漏一处就是同一轮两条助手消息。
+    try { loopState.chatUI?.discardOpenAssistantBubble(); } catch { /* ignore */ }
     loopState.chatUI?.appendError(
       code,
       `${why}，正在自动重试（${budget.scheduled}/${FIRST_ATTEMPT_MAX_RETRIES}）...`,
@@ -2997,9 +3005,10 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
             if (firstAttemptResendActive) {
               firstAttemptResendActive = false;
               loopState.streamActive = false;
-              try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
               if (verdict.verdict === 'fatal') {
                 // 重发后撞上 401/403/402：再重发必然同样失败，直接停。
+                // 终局 ⇒ 半截正文留给用户看（finish 固化），不 discard。
+                try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
                 interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'first-attempt-fatal' });
                 finishStepFlow({
                   code: verdict.reason,
@@ -3007,6 +3016,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                 });
                 loopDepth = 0;
               } else if (verdict.verdict === 'retryable') {
+                // U1-02 接线：同样交给 escalate 决定丢弃/固化，见 fetch 路径同款注释。
                 escalateFirstAttemptFailure(verdict.reason, '服务器暂时无法访问');
               }
               resolve();
@@ -3048,7 +3058,9 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               // 429/断连/5xx/200错误体：独立错误预算 + 指数退避，不占用工具续跑/nudge 预算。
               errorRetryCount += 1;
               loopState.streamActive = false;
-              try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+              // U1-02 接线：下面必重发（定时器 → autoContinueWithPow → startAssistantMessage），
+              // 所以这里丢弃半截气泡而不是固化——否则重发后同一轮出现两条助手消息。
+              try { chatUI?.discardOpenAssistantBubble(); } catch { /* ignore */ }
               if (autoContinueTimer) clearTimeout(autoContinueTimer);
               const delay = verdict.retryAfterMs ?? errorBackoffMs(errorRetryCount - 1);
               d(`auto-continue retryable: status=${xhr.status} reason=${verdict.reason}, retry ${errorRetryCount}/${MAX_ERROR_RETRIES} in ${delay}ms`);
@@ -3062,7 +3074,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               // 走与 retryable 同构的退避重发（continuationRetryPending=true），不记 completed。
               errorRetryCount += 1;
               loopState.streamActive = false;
-              try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+              // U1-02 接线：同 retryable 支，重发前丢弃半截气泡。
+              try { chatUI?.discardOpenAssistantBubble(); } catch { /* ignore */ }
               if (autoContinueTimer) clearTimeout(autoContinueTimer);
               const delay = errorBackoffMs(errorRetryCount - 1);
               d(`auto-continue truncated continuation: bytes=${loopState.streamBytes}, retry ${errorRetryCount}/${MAX_ERROR_RETRIES} in ${delay}ms`);

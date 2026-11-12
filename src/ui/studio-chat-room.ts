@@ -200,6 +200,12 @@ export function createChatRoom(config: ChatRoomRuntimeConfig): ChatRoomHandle {
       connected = true;
       connDot.className = 'studio-chat-conn-dot ok';
       connText.textContent = '已连接';
+      // U1-01（TD 续审第 1 轮 P2）：重连状态对齐——「发送后断线」时服务端的 done/round-complete
+      // 事件随断线丢失，roundInProgress 无人复位 ⇒ 发送硬门（:539）永久锁死 composer。
+      // 重连即无条件对齐回 idle：thinkingBots 只吃服务端事件、不跨连接成立，直接清空。
+      roundInProgress = false;
+      thinkingBots.clear();
+      updateComposerState();
     };
     ws.onclose = (ev) => {
       connected = false;

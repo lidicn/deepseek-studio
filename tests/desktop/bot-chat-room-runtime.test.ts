@@ -23,6 +23,8 @@ import { SqliteRoomSummaryService } from '../../src/host/bot/room-summary';
 import type { ToolExecutionResult } from '../../src/host/desktop-host';
 import type { EngineSendResult, ModelEngine } from '../../src/host/engine/model-engine';
 import type { Persona, PersonaRegistry, RoomConfig } from '../../src/host/bot/types';
+import type { AuditDispatcher } from '../../src/host/bot/audit-meeting';
+import type { StrategyGenerator } from '../../src/host/bot/strategy-generator';
 import type { AgentLoop, AgentLoopEvent } from '../../src/host/agent-loop';
 import { MemoryStore } from '../../src/host/memory-store';
 
@@ -84,7 +86,16 @@ function makeScriptedEngines(): {
 }
 
 // ── 装配 ───────────────────────────────────────────────
-async function setup(room: RoomConfig, opts?: { maxDepth?: number }) {
+async function setup(
+  room: RoomConfig,
+  opts?: {
+    maxDepth?: number;
+    /** N2-01 用：让会议命令（start 分支的 genStrategy）可控地抛错。 */
+    strategyGenerator?: StrategyGenerator;
+    /** N2-01 用：让审计 dispatch 可控地抛错。 */
+    auditDispatcher?: AuditDispatcher;
+  },
+) {
   const script = makeScriptedEngines();
   const { events } = script;
 
@@ -144,6 +155,8 @@ async function setup(room: RoomConfig, opts?: { maxDepth?: number }) {
     onAgentEvent, rooms: [room], maxDepth: opts?.maxDepth,
     onBotReply, onUnresolved, onRoundComplete,
     onBotError,
+    strategyGenerator: opts?.strategyGenerator,
+    auditDispatcher: opts?.auditDispatcher,
   });
 
   return { runtime, registry, script, events, messageStore, bots, onBotReply, onBotError, onUnresolved, onRoundComplete, summarizer };
@@ -434,5 +447,99 @@ describe('chat-room-runtime 真摘要器', () => {
     expect(created.loop.running).toBe(true);
     releaseSend?.({ content: '', toolCalls: 0 });
     await vi.waitFor(() => expect(created.loop.running).toBe(false));
+  });
+});
+
+/**
+ * N2-01（2026-11-12 续审第 2 轮）：轮次结束信号必须覆盖**任何**退出路径。
+ *
+ * 修复前 `handleUserMessage` 的 try 从「逐条落盘」才开始，room-not-found / 会议命令 /
+ * 审计 dispatch / planRound 四个 await 都在 try 之外；它们抛错就不推 round-complete，
+ * 而 UI 的 submitMessage 对任何消息都置 roundInProgress=true ⇒ 输入框永久锁死。
+ * **不断线也能复现**，U1-01 的前端修复盖不住。
+ *
+ * 判别力：把守卫拆掉（回到各分支自己推）⇒ 抛错路径 0 次调用，红。
+ */
+describe('N2-01 轮次结束信号覆盖任何退出路径', () => {
+  it('会议命令抛错 → onRoundComplete 恰推一次，且错误照常上抛', async () => {
+    const ctx = await setup(ROOM, {
+      strategyGenerator: async () => {
+        throw new Error('strategy-boom');
+      },
+    });
+
+    await expect(ctx.runtime.handleUserMessage('r1', '/开会 组件状态管理')).rejects.toThrow('strategy-boom');
+
+    expect(ctx.onRoundComplete).toHaveBeenCalledTimes(1);
+    // 抛错路径的合成 round 标 reason='error'：下游据此知道这不是讨论完成。
+    expect(ctx.onRoundComplete.mock.calls[0][0]).toMatchObject({
+      roomId: 'r1',
+      reason: 'error',
+      members: [],
+      pendingHandoff: [],
+    });
+  });
+
+  it('审计 dispatch 抛错 → onRoundComplete 恰推一次', async () => {
+    const ctx = await setup(ROOM, {
+      auditDispatcher: {
+        async dispatch() {
+          throw new Error('audit-boom');
+        },
+      },
+    });
+
+    await expect(ctx.runtime.handleUserMessage('r1', '@main 审计 src/host')).rejects.toThrow('audit-boom');
+
+    expect(ctx.onRoundComplete).toHaveBeenCalledTimes(1);
+    expect(ctx.onRoundComplete.mock.calls[0][0]).toMatchObject({ roomId: 'r1', reason: 'error' });
+  });
+
+  it('room 不存在 → 抛错也要推一次（否则输入框永久锁死）', async () => {
+    const ctx = await setup(ROOM);
+
+    await expect(ctx.runtime.handleUserMessage('no-such-room', '随便聊聊')).rejects.toThrow(/room not found/);
+
+    expect(ctx.onRoundComplete).toHaveBeenCalledTimes(1);
+    expect(ctx.onRoundComplete.mock.calls[0][0]).toMatchObject({
+      roomId: 'no-such-room',
+      reason: 'error',
+      members: [],
+    });
+  });
+});
+
+/**
+ * N2-02：合成 round 带 `reason`，让下游能区分「命令回执」与「讨论完成」。
+ * 缺省（真讨论轮）不带 reason —— 这是区分两者的唯一判据。
+ */
+describe('N2-02 合成 round 的 reason 标记', () => {
+  it('会议命令回执 reason=command，真讨论轮无 reason', async () => {
+    const ctx = await setup(ROOM);
+
+    const ack = await ctx.runtime.handleUserMessage('r1', '/开会 组件状态管理');
+    expect(ack.reason).toBe('command');
+    expect(ack.members).toEqual([]);
+    expect(ack.contents).toEqual({});
+    expect(ctx.onRoundComplete).toHaveBeenCalledTimes(1);
+
+    ctx.script.setReply('frontend-expert', '前端视角：用 zustand。');
+    const round = await ctx.runtime.handleUserMessage('r1', '@frontend-expert 你怎么看？');
+    expect(round.reason).toBeUndefined();
+    expect(round.members).toEqual(['frontend-expert']);
+  });
+
+  it('审计命令回执 reason=audit', async () => {
+    const dispatch = vi.fn(async () => undefined);
+    const ctx = await setup(ROOM, { auditDispatcher: { dispatch } });
+
+    const ack = await ctx.runtime.handleUserMessage('r1', '@main 审计 src/host 维度 安全');
+    expect(ack.reason).toBe('audit');
+    expect(ack.members).toEqual([]);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    // 审计指令是真实任务起点，必须落盘（同 meeting start）。
+    const stored = ctx.messageStore.getMessages('r1').map((m) => m.content);
+    expect(stored).toContain('@main 审计 src/host 维度 安全');
+    expect(ctx.onRoundComplete).toHaveBeenCalledTimes(1);
   });
 });
