@@ -92,4 +92,27 @@ describe('chat-send 发送确认（R2-C2 回归）', () => {
     // 且因为输入框没被清空，Enter 回退同样判 send-unconfirmed（不假成功）。
     expect(r.ok).toBe(false);
   });
+
+  // N3-02 后续卡：**空输入框按 Enter 什么都没发，不得报 sent**。
+  //
+  // 改前：`before.length === 0` 与「已清空」同走 `ok:true` 分支 —— 空框报成功，
+  // 宿主据此去等一条永远不来的回复（静默挂死）。这是「假成功」的另一副面孔：
+  // 不是「发失败报成功」，而是「根本没东西可发也报成功」。
+  //
+  // 判别力：把 `if (before.length === 0) return { ok:false, error:'input-empty' }`
+  // 删掉（退回原来的 `before.length === 0 || ...` 分支）→ 本条红（ok 变 true）。
+  it('N3-02 后续：输入框为空 → ok:false/input-empty，且不许按 Enter', async () => {
+    document.body.innerHTML = '<textarea id="chat-input"></textarea>';
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement;
+    makeVisible(ta);
+    let enterPressed = 0;
+    ta.addEventListener('keydown', () => { enterPressed++; });
+
+    const r = await createChatSendCapability().execute({});
+
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('input-empty');
+    // 空框连 Enter 都不该按：按了也不会发出去，只是给站点塞一个空提交。
+    expect(enterPressed).toBe(0);
+  });
 });

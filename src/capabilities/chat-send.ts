@@ -108,11 +108,16 @@ export function createChatSendCapability(): ContentCapabilityController & Execut
       // 就是同一条消息发两遍。等一帧再读。
       if (input) {
         const before = readInputValue(input);
+        // **空输入框不许报成功**（续审 N3-02 后续卡）。
+        // 改前 `before.length === 0` 走的是 `ok:true` 分支——按 Enter 什么都发不出去，
+        // 却报 `sent:true`，宿主据此去等一条永远不来的回复（静默挂死）。
+        // 空就是空：连 Enter 都不必按，直接判 input-empty，交给上层报错。
+        if (before.length === 0) return { ok: false, error: 'input-empty' };
         pressEnter(input);
         await sleep(50);
         const after = readInputValue(input);
-        // 输入框原为空，或 Enter 后已被清空 → 视为发送成功
-        if (before.length === 0 || after.length === 0 || after !== before) {
+        // Enter 后已被清空（或文本已变）→ 视为发送成功
+        if (after.length === 0 || after !== before) {
           return { ok: true, data: { sent: true, via: 'enter-key' } };
         }
         return {
