@@ -438,5 +438,14 @@ html.is-mobile .workbench-layout.is-compact .inspector-drawer { width: min(320px
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; resize: vertical;
 }
 .mcp-editor-input:disabled, .mcp-editor-textarea:disabled { opacity: 0.5; }
+
+/* Headers 行式编辑器（2026-11-12 参考豆包「自定义连接器」）。
+   名称/值两栏 + 删除，结构由 UI 表达，不再靠解析 `KEY=VALUE` 猜分隔符。 */
+.mcp-editor-field[hidden] { display: none; }
+.mcp-editor-rows { display: flex; flex-direction: column; gap: 6px; }
+.mcp-editor-row { display: flex; gap: 6px; align-items: center; }
+.mcp-editor-row .mcp-editor-input { flex: 1 1 0; min-width: 0; }
+.mcp-editor-row-remove { flex-shrink: 0; }
+.mcp-editor-add-row { align-self: flex-start; }
 .mcp-editor-actions { display: flex; gap: 8px; justify-content: flex-end; }
 #btn-mcp.active { background: var(--studio-primary-soft); color: var(--studio-primary-fill); }

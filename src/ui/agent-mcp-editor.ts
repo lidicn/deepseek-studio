@@ -68,13 +68,25 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-/** `KEY=VALUE` 多行文本 ⇄ 记录。空行与 `#` 开头行忽略。 */
+/**
+ * `KEY=VALUE` 多行文本 ⇄ 记录。空行与 `#` 开头行忽略。
+ *
+ * 分隔符**同时接受 `=` 与 `:`**（2026-11-12 真机复现）：
+ * - `Headers` 框按 HTTP 标准写法填的是 `Authorization: Bearer xxx`（冒号、**没有等号**），
+ *   原实现只认 `=` ⇒ `indexOf('=') === -1` ⇒ `continue` ⇒ **整行被静默丢弃**，
+ *   保存后 `headers` 恒为 `{}`，请求不带 Authorization，服务器回 403，而界面不报任何错。
+ * - 取「两者中先出现的那个」而非固定优先级，保证 `URL=http://x`（等号在前）
+ *   仍按等号切，不会被人肉 URL 里的冒号抢走。
+ */
 export function parseKeyValueLines(text: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const raw of text.split('\n')) {
     const line = raw.trim();
     if (!line || line.startsWith('#')) continue;
-    const idx = line.indexOf('=');
+    const eq = line.indexOf('=');
+    const colon = line.indexOf(':');
+    if (eq < 0 && colon < 0) continue;
+    const idx = eq < 0 ? colon : colon < 0 ? eq : Math.min(eq, colon);
     if (idx <= 0) continue;
     out[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
   }
@@ -170,6 +182,23 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
     return { ok: res.ok, status: res.status, data };
   }
 
+  /**
+   * 从失败响应里取宿主给的 `error.message`（2026-11-12 真机复现）。
+   *
+   * 原实现失败只渲染 `连接失败（HTTP 400）`——**宿主已经写明原因**
+   * （`src/api/server.ts:406-408` → `{error:{code:'mcp_test_failed',message:'fetch failed'}}`），
+   * 前端却把 message 丢了。用户看到一串无信息量的状态码，只能猜是 URL 错、网络错还是配置错。
+   */
+  function errorDetailOf(data: unknown): string {
+    const msg = (data as { error?: { message?: unknown } } | null)?.error?.message;
+    return typeof msg === 'string' && msg.trim().length > 0 ? msg.trim() : '';
+  }
+
+  function failureText(prefix: string, status: number, data: unknown): string {
+    const detail = errorDetailOf(data);
+    return detail ? `${prefix}：${detail}（HTTP ${status}）` : `${prefix}（HTTP ${status}）`;
+  }
+
   function renderList(): void {
     list.replaceChildren();
     if (servers.length === 0) {
@@ -224,9 +253,82 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
     cwd: HTMLInputElement;
     env: HTMLTextAreaElement;
     url: HTMLInputElement;
-    headers: HTMLTextAreaElement;
+    /** Headers 的**行容器**（名称/值成对，参考豆包「自定义连接器」）。 */
+    headers: HTMLElement;
+    /** 按传输类型显示的字段组（stdio 独占 / 远程独占）。 */
+    groups: { stdio: HTMLElement[]; remote: HTMLElement[] };
   }
   let fields: McpEditorFields | null = null;
+  /** Headers 行容器（`buildForm` 里建，`openForm` 回填时用）。 */
+  let headersRows: HTMLElement | null = null;
+
+  /**
+   * 追加一行 Headers（名称 / 值 / 删除）。
+   *
+   * 2026-11-12 定稿：**不再用 `KEY=VALUE` 文本框**。原实现把结构化数据塞进
+   * 一个文本框，靠 `parseKeyValueLines` 猜分隔符——用户按 HTTP 标准写
+   * `Authorization: Bearer xxx` 时整行被 `continue` 静默丢弃（真机复现：
+   * 保存后 `headers:{}`，请求不带 Authorization，服务器回 403，界面零报错）。
+   * 只要「分隔符靠猜」这条路还在，就还有下一种写法能被吃掉；改成名称/值两栏，
+   * 结构由 UI 表达，不再存在「解析失败」这个分支。
+   */
+  function addHeaderRow(key = '', value = ''): void {
+    const rows = headersRows;
+    if (!rows) return;
+    const row = el('div', { className: 'mcp-editor-row' });
+    const keyInput = el('input', {
+      className: 'mcp-editor-input mcp-editor-row-key',
+      attrs: { type: 'text', placeholder: 'Header 名称' },
+    });
+    keyInput.value = key;
+    const valueInput = el('input', {
+      className: 'mcp-editor-input mcp-editor-row-value',
+      attrs: { type: 'text', placeholder: 'Header 值' },
+    });
+    valueInput.value = value;
+    const removeBtn = el('button', {
+      className: 'btn btn-ghost mcp-editor-row-remove',
+      attrs: { type: 'button' },
+      text: '删除',
+    });
+    removeBtn.addEventListener('click', () => {
+      row.remove();
+      // 全删完后留一行空的：否则表单上没有可填的位置，只能关掉重开。
+      if (!rows.querySelector('.mcp-editor-row')) addHeaderRow();
+    });
+    row.appendChild(keyInput);
+    row.appendChild(valueInput);
+    row.appendChild(removeBtn);
+    rows.appendChild(row);
+  }
+
+  /** 记录 → 行（无记录时留一行空的）。 */
+  function setHeaderRows(record: Record<string, string> | undefined): void {
+    const rows = headersRows;
+    if (!rows) return;
+    rows.replaceChildren();
+    const entries = Object.entries(record ?? {});
+    if (entries.length === 0) {
+      addHeaderRow();
+      return;
+    }
+    for (const [k, v] of entries) addHeaderRow(k, v);
+  }
+
+  /** 行 → 记录。名称留空的行整行跳过（用户没填名称，值无处安放）。 */
+  function readHeaderRows(): Record<string, string> {
+    const out: Record<string, string> = {};
+    const rows = headersRows;
+    if (!rows) return out;
+    for (const row of Array.from(rows.querySelectorAll('.mcp-editor-row'))) {
+      const keyInput = row.querySelector('.mcp-editor-row-key') as HTMLInputElement | null;
+      const valueInput = row.querySelector('.mcp-editor-row-value') as HTMLInputElement | null;
+      const k = (keyInput?.value ?? '').trim();
+      if (!k) continue;
+      out[k] = (valueInput?.value ?? '').trim();
+    }
+    return out;
+  }
 
   function buildForm(): void {
     form.replaceChildren();
@@ -273,9 +375,16 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
     envGroup.appendChild(envArea);
 
     const headersGroup = el('div', { className: 'mcp-editor-field' });
-    headersGroup.appendChild(el('label', { className: 'mcp-editor-label', text: 'Headers（每行 KEY=VALUE，http / sse）' }));
-    const headersArea = el('textarea', { className: 'mcp-editor-textarea', attrs: { rows: '3' } });
-    headersGroup.appendChild(headersArea);
+    headersGroup.appendChild(el('label', { className: 'mcp-editor-label', text: '自定义 Headers' }));
+    const headersRowsEl = el('div', { className: 'mcp-editor-rows', attrs: { id: 'mcp-editor-headers-rows' } });
+    headersGroup.appendChild(headersRowsEl);
+    const addHeaderBtn = el('button', {
+      className: 'btn btn-ghost mcp-editor-add-row',
+      attrs: { type: 'button', id: 'btn-mcp-add-header' },
+      text: '添加',
+    });
+    addHeaderBtn.addEventListener('click', () => { addHeaderRow(); });
+    headersGroup.appendChild(addHeaderBtn);
 
     const actions = el('div', { className: 'mcp-editor-actions' });
     const testBtn = el('button', { className: 'btn btn-ghost', attrs: { type: 'button' }, text: '测试连接' });
@@ -304,8 +413,16 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
       cwd: cwdInput,
       env: envArea,
       url: urlInput,
-      headers: headersArea,
+      headers: headersRowsEl,
+      // stdio 独占：启动命令 / 参数 / 工作目录 / 环境变量
+      // 远程独占：服务器 URL / 自定义 Headers
+      groups: {
+        stdio: [commandGroup, argsGroup, cwdGroup, envGroup],
+        remote: [urlGroup, headersGroup],
+      },
     };
+    headersRows = headersRowsEl;
+    addHeaderRow();
 
     transportSelect.addEventListener('change', syncTransportFields);
     cancelBtn.addEventListener('click', closeForm);
@@ -313,15 +430,18 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
     testBtn.addEventListener('click', () => { void testServer(); });
   }
 
+  /**
+   * 按传输类型**显示/隐藏**对应字段组（2026-11-12 参考豆包「自定义连接器」）。
+   *
+   * 原实现是 `disabled` 而不隐藏——HTTP 模式下「启动命令 *」「参数」「工作目录」
+   * 仍留在界面上、标签还带必填星号，看图填表的人会以为 HTTP 也要命令行。
+   */
   function syncTransportFields(): void {
     const f = fields;
     if (!f) return;
     const isStdio = f.transport.value === 'stdio';
-    f.command.disabled = !isStdio;
-    f.args.disabled = !isStdio;
-    f.cwd.disabled = !isStdio;
-    f.url.disabled = isStdio;
-    f.headers.disabled = isStdio;
+    for (const group of f.groups.stdio) group.hidden = !isStdio;
+    for (const group of f.groups.remote) group.hidden = isStdio;
   }
 
   function collectConfig(): { id: string; config: McpServerConfigView } | null {
@@ -352,7 +472,7 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
         return null;
       }
       config.url = url;
-      config.headers = parseKeyValueLines(f.headers.value);
+      config.headers = readHeaderRows();
     }
     config.env = parseKeyValueLines(f.env.value);
     return { id, config };
@@ -368,7 +488,7 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
     try {
       const r = await request(isNew ? 'POST' : 'PUT', path, { id: collected.id, config: collected.config });
       if (!r.ok) {
-        setStatus(`保存失败（HTTP ${r.status}）`, 'err');
+        setStatus(failureText('保存失败', r.status, r.data), 'err');
         return;
       }
       setStatus('已保存', 'ok');
@@ -427,7 +547,7 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
         config: collected.config,
       }, controller.signal);
       if (timedOut) return; // 已报超时：迟到响应不再改写状态机
-      setStatus(r.ok ? '连接成功' : `连接失败（HTTP ${r.status}）`, r.ok ? 'ok' : 'err');
+      setStatus(r.ok ? '连接成功' : failureText('连接失败', r.status, r.data), r.ok ? 'ok' : 'err');
     } catch (e) {
       if (timedOut) return; // 已报超时：abort 引起的 reject 不再改写状态机
       setStatus(`连接失败：${e instanceof Error ? e.message : String(e)}`, 'err');
@@ -453,7 +573,7 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
     f.cwd.value = cfg?.cwd ?? '';
     f.url.value = cfg?.url ?? '';
     f.env.value = formatKeyValueLines(cfg?.env);
-    f.headers.value = formatKeyValueLines(cfg?.headers);
+    setHeaderRows(cfg?.headers);
     syncTransportFields();
     form.style.display = 'flex';
     setStatus('');
@@ -462,6 +582,7 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
   function closeForm(): void {
     editingId = null;
     testBtnRef = null;
+    headersRows = null;
     form.style.display = 'none';
     form.replaceChildren();
     fields = null;

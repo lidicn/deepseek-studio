@@ -90,6 +90,25 @@ describe('工作台 MCP 编辑器：纯函数', () => {
     expect(parseKeyValueLines('TOKEN=abc=def')).toEqual({ TOKEN: 'abc=def' });
   });
 
+  it('Headers 也接受 HTTP 标准写法 `KEY: VALUE`（2026-11-12 真机：此前整行被静默丢弃）', () => {
+    // 两态读数：修前 RED = `indexOf('=') === -1` ⇒ continue ⇒ `{}`（Authorization 丢失 → 服务器 403）；
+    // 修后 GREEN = 冒号分隔同样解析。
+    expect(parseKeyValueLines('Authorization: Bearer af_5ae4d63c')).toEqual({
+      Authorization: 'Bearer af_5ae4d63c',
+    });
+    // 混合写法（env 用等号、headers 用冒号）
+    expect(parseKeyValueLines('REGION=cn\nAuthorization: Bearer x')).toEqual({
+      REGION: 'cn',
+      Authorization: 'Bearer x',
+    });
+    // 等号在前时按等号切，不会被人肉 URL 里的冒号抢走
+    expect(parseKeyValueLines('URL=http://192.168.2.200:8787/mcp')).toEqual({
+      URL: 'http://192.168.2.200:8787/mcp',
+    });
+    // 没有分隔符的行仍然忽略（不是静默丢内容，是空行/垃圾行）
+    expect(parseKeyValueLines('nonsense\n')).toEqual({});
+  });
+
   it('格式化与解析互逆', () => {
     const rec = { API_KEY: 'secret', REGION: 'cn' };
     expect(parseKeyValueLines(formatKeyValueLines(rec))).toEqual(rec);
@@ -334,6 +353,23 @@ describe('工作台 MCP 编辑器：测试连接反馈（P1 2026-11-06）', () =
     expect(testBtn.textContent).toBe('测试连接');
   });
 
+  it('测试失败时把宿主的 error.message 显示出来（此前只有 HTTP 400，看不出原因）', async () => {
+    // 两态读数：修前 RED = 文案停在「连接失败（HTTP 400）」，宿主给的 `fetch failed` 被丢弃；
+    // 修后 GREEN = 文案含 `fetch failed` 与状态码。
+    vi.useFakeTimers();
+    const { testBtn, status } = openFilledForm();
+    // 必须在 openFilledForm() 之后覆盖：该 helper 内部先 mockResolvedValue（列表刷新用）。
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: { code: 'mcp_test_failed', message: 'fetch failed' } }),
+    });
+    testBtn.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(status.textContent).toContain('fetch failed');
+    expect(status.textContent).toContain('HTTP 400');
+  });
+
   it('状态机单调锁（mock 忽略 signal）：已报超时后，迟到的成功响应不再覆盖「测试超时」文案', async () => {
     // 本用例的 fetch 是 **mock 忽略 signal**：abort 后不 reject，我们手动在 15s 之后 resolve，
     // 模拟「宿主迟到的回包」。断言对象是**面板状态机**（文案不被二次改写），不是 socket。
@@ -374,5 +410,120 @@ describe('工作台 MCP 编辑器：测试连接反馈（P1 2026-11-06）', () =
       expect(testBtn.disabled).toBe(false);
       done();
     }, 0));
+  });
+});
+
+/**
+ * Headers 行式编辑器（2026-11-12，参考豆包「自定义连接器」）。
+ *
+ * 真机事故链：用户按 HTTP 标准在 Headers 文本框写 `Authorization: Bearer xxx`
+ * → `parseKeyValueLines` 只认 `=` → 整行 `continue` 静默丢弃 → 保存后
+ * `headers:{}` → 请求不带 Authorization → 服务器 403 → 界面零报错。
+ * 治法是**让结构化数据由 UI 表达**（名称/值两栏），从根上没有「解析失败」这条分支。
+ */
+describe('工作台 MCP 编辑器：Headers 行式编辑器', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** 挂载并打开「添加服务器」表单，传输类型切到 http。 */
+  function openHttpForm(): HTMLElement {
+    fetchMock.mockResolvedValue(okResponse({ servers: [] }));
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    mountMcpEditor({ root, token: 'tok-h', origin: 'http://127.0.0.1:8760' });
+    (root.querySelector('#btn-mcp-add') as HTMLButtonElement).click();
+    const form = root.querySelector('#mcp-editor-form') as HTMLElement;
+    const select = form.querySelector('select') as HTMLSelectElement;
+    select.value = 'http';
+    select.dispatchEvent(new Event('change'));
+    return form;
+  }
+
+  /** 表单里的 text 输入，按 DOM 顺序：[0]名称 [1]命令 [2]cwd [3]URL [4]Header 名称 [5]Header 值。 */
+  function textInputs(form: HTMLElement): HTMLInputElement[] {
+    return Array.from(form.querySelectorAll('input[type="text"]')) as HTMLInputElement[];
+  }
+
+  function buttonByText(form: HTMLElement, text: string): HTMLButtonElement {
+    return Array.from(form.querySelectorAll('button'))
+      .find((b) => (b.textContent ?? '').trim() === text) as HTMLButtonElement;
+  }
+
+  it('默认一行空的「名称 / 值 / 删除」；点「添加」再加一行', () => {
+    const form = openHttpForm();
+    const rows = form.querySelectorAll('.mcp-editor-row');
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.querySelectorAll('input').length).toBe(2);
+    expect(rows[0]!.querySelector('.mcp-editor-row-remove')!.textContent).toBe('删除');
+    buttonByText(form, '添加').click();
+    expect(form.querySelectorAll('.mcp-editor-row').length).toBe(2);
+  });
+
+  it('保存时把两栏收集成 headers 对象（Authorization 不再被丢弃）', async () => {
+    vi.useFakeTimers();
+    const form = openHttpForm();
+    const inputs = textInputs(form);
+    inputs[0]!.value = 'AutoForge';
+    inputs[3]!.value = 'http://192.168.2.200:8787/mcp';
+    inputs[4]!.value = 'Authorization';
+    inputs[5]!.value = 'Bearer af_5ae4d63c';
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(okResponse({ ok: true }));
+    buttonByText(form, '保存').click();
+    await vi.advanceTimersByTimeAsync(0);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    const body = JSON.parse(String(init.body)) as { config: { headers: Record<string, string>; url: string } };
+    // 两态读数：修前（文本框 + 只认 `=`）这里是 {}，Authorization 整行丢失。
+    expect(body.config.headers).toEqual({ Authorization: 'Bearer af_5ae4d63c' });
+    expect(body.config.url).toBe('http://192.168.2.200:8787/mcp');
+  });
+
+  it('名称为空的行整行跳过（不会写出空 key）', async () => {
+    vi.useFakeTimers();
+    const form = openHttpForm();
+    const inputs = textInputs(form);
+    inputs[0]!.value = 'X';
+    inputs[3]!.value = 'http://127.0.0.1:1/mcp';
+    // 唯一一行：名称留空、值有内容 → 必须整行跳过
+    inputs[4]!.value = '';
+    inputs[5]!.value = 'orphan';
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(okResponse({ ok: true }));
+    buttonByText(form, '保存').click();
+    await vi.advanceTimersByTimeAsync(0);
+    const body = JSON.parse(String((fetchMock.mock.calls[0]![1] as RequestInit).body)) as {
+      config: { headers: Record<string, string> };
+    };
+    expect(body.config.headers).toEqual({});
+  });
+
+  it('删掉唯一一行后自动补一行空的（否则表单上没有可填位置）', () => {
+    const form = openHttpForm();
+    (form.querySelector('.mcp-editor-row-remove') as HTMLButtonElement).click();
+    expect(form.querySelectorAll('.mcp-editor-row').length).toBe(1);
+    expect((form.querySelector('.mcp-editor-row-key') as HTMLInputElement).value).toBe('');
+  });
+
+  it('HTTP 模式隐藏 stdio 字段组；切回 stdio 再显示（参考豆包的按类型显示）', () => {
+    const form = openHttpForm();
+    const groupOf = (labelText: string): HTMLElement => {
+      const label = Array.from(form.querySelectorAll('.mcp-editor-label'))
+        .find((l) => (l.textContent ?? '').includes(labelText)) as HTMLElement;
+      return label.parentElement as HTMLElement;
+    };
+    // HTTP：stdio 独占组必须隐藏，URL / Headers 必须可见
+    expect(groupOf('启动命令').hidden).toBe(true);
+    expect(groupOf('参数').hidden).toBe(true);
+    expect(groupOf('工作目录').hidden).toBe(true);
+    expect(groupOf('环境变量').hidden).toBe(true);
+    expect(groupOf('服务器 URL').hidden).toBe(false);
+    expect(groupOf('自定义 Headers').hidden).toBe(false);
+    // 切回 stdio：反过来
+    const select = form.querySelector('select') as HTMLSelectElement;
+    select.value = 'stdio';
+    select.dispatchEvent(new Event('change'));
+    expect(groupOf('启动命令').hidden).toBe(false);
+    expect(groupOf('服务器 URL').hidden).toBe(true);
   });
 });
