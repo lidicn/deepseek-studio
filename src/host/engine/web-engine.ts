@@ -167,8 +167,10 @@ export interface WebEngineOptions {
    */
   onDelta?: (text: string) => void;
   /**
-   * S8：send() 初始请求（chat-insert/chat-send）失败时的重试次数（默认 2）。
+   * S8：send() 初始请求的 `chat-insert` 失败重试次数（默认 2）。
    * 指数退避：500ms / 1500ms。仅重试幂等的初始发送，不重试已发 tool call 的轮次。
+   *
+   * **N3-02 A：只管 `chat-insert`，不管 `chat-send`** —— 见 send() 里的重试循环。
    */
   maxSendRetries?: number;
   /** S21：每轮结束输出结构化事件，未注入则静默。 */
@@ -477,14 +479,26 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
       );
 
       // S8：初始发送带指数退避重试
-      const maxSendRetries = options.maxSendRetries ?? 2;
+      //
+      // N3-02 A：**只重试 `chat-insert`，`chat-send` 只发一次。**
+      //
+      // 为什么必须分开：`chat-send` 的失败判据不可靠 —— `clickElement` 只判「元素存在
+      // 且 click 派发成功」就 ok（不查 disabled），Enter 兜底曾同步读 after（React 清空
+      // 是异步的），所以**消息真发出去也可能报 ok:false**。此时重试＝同一段 text 再插
+      // 一遍（insert 是覆盖，不是追加）再点一次 → **同一条消息发两遍**，用户看得见。
+      //
+      // 取舍：「宁可少发一条（返回 disconnected，让用户自己重发）不可多发一条」。
+      // insert 是幂等的（整段覆盖），重试它安全；send 不是。
+      const maxInsertRetries = options.maxSendRetries ?? 2;
       let insOk = false, sentOk = false;
-      for (let attempt = 0; attempt <= maxSendRetries; attempt++) {
+      for (let attempt = 0; attempt <= maxInsertRetries; attempt++) {
         if (attempt > 0) await sleep(500 * Math.pow(3, attempt - 1)); // 500ms, 1500ms
         const ins = await options.dispatch('chat-insert', { text });
         if (!ins.ok) continue;
-        const sent = await options.dispatch('chat-send', {});
-        if (sent.ok) { insOk = true; sentOk = true; break; }
+        insOk = true;
+        // 插入成功 → 发送**只试这一次**（失败即 disconnected，不回到循环顶部）。
+        sentOk = (await options.dispatch('chat-send', {})).ok;
+        break;
       }
       if (!insOk || !sentOk) {
         closeRoundForMetrics('disconnected');

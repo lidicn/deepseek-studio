@@ -99,25 +99,34 @@ describe('WebEngine S8: send() retry with backoff', () => {
     expect(insertCalls).toBe(1);
   });
 
-  it('6. retry succeeds on chat-send failure', async () => {
+  // N3-02 A：**`chat-send` 失败不重试**。
+  //
+  // 改前这里断言的是 `sendCalls === 2`（重试到成功）—— 那正是重复发送的成因：
+  // `chat-send` 的失败判据不可靠（不查 disabled、Enter 兜底同步读），
+  // 一次「假失败」后再发一遍就是同一条消息发两遍。
+  // 取舍改成「宁可少发一条（disconnected，用户自己重发）不可多发一条」。
+  //
+  // 判别力：把 web-engine 的 `break` 去掉、恢复成「send 失败 continue」→ 本条红。
+  it('6. chat-send 失败不重试：insert 只调 1 次，直接 disconnected', async () => {
+    let insertCalls = 0;
     let sendCalls = 0;
-    let readCount = 0;
     const dispatch = async (tool: string): Promise<ExecuteResult> => {
-      if (tool === 'chat-insert') return okResult();
+      if (tool === 'chat-insert') { insertCalls++; return okResult(); }
       if (tool === 'chat-send') {
         sendCalls++;
-        if (sendCalls === 1) return { ok: false, error: 'flaky' } as ExecuteResult;
+        // 第二次一定成功 —— 用来证明「即使重试会成功，也不许重试」。
+        if (sendCalls === 1) return { ok: false, error: 'send-unconfirmed' } as ExecuteResult;
         return okResult();
       }
-      readCount++;
-      return okResult({ messages: [{ text: readCount <= 1 ? '' : 'done' }], count: 1 });
+      return okResult({ messages: [{ text: 'done' }], count: 1 });
     };
     const engine = createWebEngine({
       dispatch, toolCallCounter: { current: 0 },
       pollIntervalMs: 1, stepTimeoutMs: 500, reconnectBackoffMs: 1,
     });
     const r = await engine.send('hi');
-    expect(sendCalls).toBe(2);
-    expect(r.completion).toBe('complete');
+    expect(insertCalls).toBe(1);
+    expect(sendCalls).toBe(1);
+    expect(r.completion).toBe('disconnected');
   });
 });

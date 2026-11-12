@@ -1,4 +1,4 @@
-﻿// @vitest-environment jsdom
+// @vitest-environment jsdom
 /**
  * R2-C2 回归：chat-send 的 Enter 回退不得「未经验证即报成功」。
  *
@@ -45,5 +45,51 @@ describe('chat-send 发送确认（R2-C2 回归）', () => {
 
     expect(r.ok).toBe(true);
     expect((r.data as { via?: string }).via).toBe('enter-key');
+  });
+
+  // N3-02 B：**React 的异步清空不得误判成 send-unconfirmed**。
+  //
+  // 站点真实路径是 onKeyDown 里 setState → 下一次渲染才把 value 写回 ''，
+  // 所以「按下 Enter 之后同步读」必然读到旧值。改前那条同步读 + web-engine 的重试
+  // ＝ 同一条消息发两遍（用户看得见的重复）。
+  //
+  // 判别力：把 chat-send 里的 `await sleep(50)` 删掉（退回同步读）→ 本条红。
+  it('N3-02 B：站点在下一个宏任务才清空输入框 → 仍判发送成功', async () => {
+    document.body.innerHTML = '<textarea id="chat-input">hi</textarea>';
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement;
+    makeVisible(ta);
+    // 异步清空（模拟 React 受控输入在下一帧写回）
+    ta.addEventListener('keydown', () => {
+      setTimeout(() => { ta.value = ''; }, 0);
+    });
+
+    const r = await createChatSendCapability().execute({});
+
+    expect(r.ok).toBe(true);
+    expect((r.data as { via?: string }).via).toBe('enter-key');
+  });
+
+  // N3-02 B：**禁用态的发送按钮不能算发送成功**。
+  // `clickElement` 不查 disabled（点了就 return true），改前点一个灰按钮照样 ok:true
+  // ＝ 什么都没发却报成功，AgentLoop 接着等一条永远不来的回复。
+  it('N3-02 B：圆形按钮 aria-disabled=true → 不得假成功（落到 Enter 回退）', async () => {
+    document.body.innerHTML = `
+      <div>
+        <textarea id="chat-input">hi</textarea>
+        <div class="ds-button--circle" role="button" aria-disabled="true"></div>
+      </div>`;
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement;
+    makeVisible(ta);
+    const btn = document.querySelector('.ds-button--circle') as HTMLElement;
+    makeVisible(btn);
+    let clicked = 0;
+    btn.addEventListener('click', () => { clicked++; });
+
+    const r = await createChatSendCapability().execute({});
+
+    // 灰色按钮不许点：点了也不算发送成功。
+    expect(clicked).toBe(0);
+    // 且因为输入框没被清空，Enter 回退同样判 send-unconfirmed（不假成功）。
+    expect(r.ok).toBe(false);
   });
 });

@@ -49,6 +49,22 @@ function findGlobalSendButton(doc: Document): HTMLElement | null {
   ]) as HTMLElement | null;
 }
 
+/**
+ * N3-02 B：按钮是否处于禁用态。
+ *
+ * `clickElement`（dom.ts）只做 `el.click(); return true`，**不查 disabled** ——
+ * 点一个灰按钮照样 ok:true，等于「什么都没发却报成功」。而发送中／生成中时站点
+ * 恰好会把圆形主按钮置灰，所以这一判必须补在点击之前。
+ *
+ * 只在本能力内判，不动 `clickElement` 的公共语义（其它调用方依赖「点了就算点了」）。
+ */
+function isDisabled(el: Element): boolean {
+  if (el.getAttribute('aria-disabled') === 'true') return true;
+  return el.hasAttribute('disabled');
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 /** 读取输入框当前文本（textarea / input 用 value，contenteditable 用 textContent）。 */
 function readInputValue(el: HTMLElement): string {
   if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) return el.value;
@@ -65,26 +81,35 @@ export function createChatSendCapability(): ContentCapabilityController & Execut
       if (!doc) return { ok: false, error: 'no-document' };
 
       const input = findInput(doc);
-      // 策略 1/2：圆形发送按钮（输入框邻近 → 全局）
+      // 策略 1/2：圆形发送按钮（输入框邻近 → 全局）。禁用态点它等于空转，不算成功。
       if (input) {
         const near = findSendButtonNear(input);
-        if (near && clickElement(near)) return { ok: true, data: { sent: true, via: 'circle-button-near' } };
+        if (near && !isDisabled(near) && clickElement(near)) {
+          return { ok: true, data: { sent: true, via: 'circle-button-near' } };
+        }
       }
       const globalBtn = findGlobalSendButton(doc);
-      if (globalBtn && clickElement(globalBtn)) {
+      if (globalBtn && !isDisabled(globalBtn) && clickElement(globalBtn)) {
         return { ok: true, data: { sent: true, via: 'circle-button-global' } };
       }
       // 策略 3：传统候选（R2-C2 修复：原先 `input ? null : ...` 使有输入框时
       // 传统候选永不尝试，回退链实际少一环；改为无条件尝试）。
       const legacy = queryFirst(doc, LEGACY_SEND_SELECTORS);
-      if (legacy && clickElement(legacy)) return { ok: true, data: { sent: true, via: 'legacy-button' } };
+      if (legacy && !isDisabled(legacy) && clickElement(legacy)) {
+        return { ok: true, data: { sent: true, via: 'legacy-button' } };
+      }
       // 策略 4：对输入框合成 Enter。
       // R2-C2 修复：合成 Enter 常被 React 受控输入忽略，此时消息并未发出。
       // 必须验证「输入框确已被清空」这一可判定证据，否则报 send-unconfirmed，
       // 不允许把「调用没抛错」当成「事情做成了」（假成功）。
+      //
+      // N3-02 B：清空是**异步**的（站点 onKeyDown 更新 state → 下一次渲染才写回 DOM），
+      // 同步读 after 会把「真的发出去了」判成 send-unconfirmed，再叠上 web-engine 的重试
+      // 就是同一条消息发两遍。等一帧再读。
       if (input) {
         const before = readInputValue(input);
         pressEnter(input);
+        await sleep(50);
         const after = readInputValue(input);
         // 输入框原为空，或 Enter 后已被清空 → 视为发送成功
         if (before.length === 0 || after.length === 0 || after !== before) {
