@@ -123,9 +123,50 @@ jobs:
           # （今晚三发起红处在其上游的版本等值比对，绑定关系与红点的因果未证）
           $expectedTag = $env:RELEASE_NAME
           if (-not $expectedTag -or $expectedTag -like 'untagged-*') { $expectedTag = $env:REF_NAME }
-          if (-not $expectedTag -or $rel.tag_name -ne $expectedTag -or $rel.html_url -notlike "*/releases/tag/$expectedTag") {
-            Write-Host "::error::[pub-chain] release not bound to git tag: expected=$expectedTag actual_tag_name=$($rel.tag_name) html_url=$($rel.html_url) release.id=$env:RELEASE_ID release.name=$env:RELEASE_NAME"
-            throw "release tag_name '$($rel.tag_name)' != expected '$expectedTag' or html_url not /releases/tag/$expectedTag — unbound draft, must revert and rebuild"
+
+          # ── 0.14.20 自愈（用户拍板 2026-11-12）───────────────────────────────────────
+          # 现场：v0.14.20 草稿建时 tag_name=v0.14.20，点 Publish 后被 GitHub 绑成合成 tag
+          # `untagged-59ce0733f11ad98a73b5`；而 v0.14.19 同构却成功 ⇒ 侧不可预测（release.yml L343
+          # 注释「机制未证」），**断言拦不住**——旧实现只会 throw＋撤稿，等于白跑一轮。
+          # 改为：先把 release 显式重绑回真 tag（PATCH tag_name），删掉那个 stray 合成 tag，再回读确认；
+          # 修不好才走原来的 fail-closed 撤稿。
+          # 为什么重绑是安全的：release 资产下载 URL 由 tag_name 决定，而 latest.json 里的 url 是
+          # release.yml 用 github.ref_name（真 tag）拼的 ⇒ 重绑后两者重新对齐，资产字节一个不动。
+          $unbound = (-not $expectedTag) -or ($rel.tag_name -ne $expectedTag) -or ($rel.html_url -notlike "*/releases/tag/$expectedTag")
+          if ($unbound) {
+            $strayTag = $rel.tag_name
+            Write-Host "::warning::[pub-chain] release unbound: expected=$expectedTag actual_tag_name=$strayTag html_url=$($rel.html_url) id=$($rel.id) — attempting self-heal (rebind tag_name)"
+            $healBody = @{ tag_name = $expectedTag } | ConvertTo-Json
+            try {
+              $healed = Invoke-RestMethod -Method Patch -Headers $relHeaders -Uri "https://api.github.com/repos/$repo/releases/$($rel.id)" -ContentType 'application/json' -Body $healBody
+            } catch {
+              $hcode = $null; if ($_.Exception.Response) { $hcode = [int]$_.Exception.Response.StatusCode }
+              Write-Host "::error::[pub-chain] release not bound to git tag: expected=$expectedTag actual_tag_name=$strayTag id=$($rel.id) — self-heal PATCH failed HTTP=$hcode msg=$($_.Exception.Message)"
+              throw "release unbound and self-heal PATCH failed (HTTP=$hcode) — expected tag_name '$expectedTag' got '$strayTag'"
+            }
+            Write-Host "::notice::[pub-chain] self-heal PATCH ok: tag_name=$($healed.tag_name) html_url=$($healed.html_url)"
+            # 删 stray 合成 tag（只删 untagged-* 形态，绝不碰真版本 tag）
+            if ($strayTag -like 'untagged-*') {
+              try {
+                Invoke-RestMethod -Method Delete -Headers $relHeaders -Uri "https://api.github.com/repos/$repo/git/refs/tags/$strayTag"
+                Write-Host "::notice::[pub-chain] self-heal: deleted stray tag $strayTag"
+              } catch {
+                $dcode = $null; if ($_.Exception.Response) { $dcode = [int]$_.Exception.Response.StatusCode }
+                Write-Host "::warning::[pub-chain] self-heal: delete stray tag $strayTag failed HTTP=$dcode msg=$($_.Exception.Message)（不阻断，release 已重绑）"
+              }
+            }
+            # 回读确认（GitHub 最终一致性，给 2s）
+            Start-Sleep -Seconds 2
+            $rel = Invoke-RestMethod -Headers $relHeaders -Uri "https://api.github.com/repos/$repo/releases/$($rel.id)"
+            $assetNames = @($rel.assets | ForEach-Object { $_.name })
+            Write-Host "::notice::[pub-chain] self-heal verify: draft=$($rel.draft) tag_name=$($rel.tag_name) html_url=$($rel.html_url) assets=$($assetNames.Count)"
+            if ($rel.tag_name -ne $expectedTag -or $rel.html_url -notlike "*/releases/tag/$expectedTag") {
+              Write-Host "::error::[pub-chain] release not bound to git tag: expected=$expectedTag actual_tag_name=$($rel.tag_name) html_url=$($rel.html_url) id=$($rel.id) — self-heal attempt did not take"
+              throw "release still unbound after self-heal — expected '$expectedTag' got '$($rel.tag_name)'"
+            }
+            Write-Host "release re-bound to $expectedTag by self-heal (id=$($rel.id))"
+          } else {
+            Write-Host "release bound to git tag $expectedTag (id=$($rel.id))"
           }
           if ($assetNames -notcontains $urlName) {
             Write-Host "::error::[pub-chain] manifest url asset not in release: expected='$urlName' actual=[$($assetNames -join ', ')] draft=$($rel.draft) tag_name=$tag ref_name=$env:REF_NAME"
