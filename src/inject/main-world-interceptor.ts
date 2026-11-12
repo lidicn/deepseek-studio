@@ -2348,14 +2348,27 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     // R4-02：半截工具标签一定伴随无哨兵（流断了），但反过来不成立。
     // 先报更具体的那个，用户才知道是「模型想调工具但没调成」。
     if (loopState.streamTruncatedTag) {
-      d('stream end: truncated tool tag detected, report to user');
+      d('stream end: truncated tool tag detected');
       interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'truncated-tool-tag' });
       try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
-      loopState.chatUI?.appendError(
-        'tool-call-truncated',
-        '模型输出的工具调用被网络中断截断，本轮不会自动重试。请重新发送该请求。',
-      );
-      loopState.chatUI?.setBusy(false);
+      // R7（2026-11-12 实跑现场）：截断是瞬态传输故障——同一轮的下一次请求通常就成功
+      //（现场日志：tool-call-truncated 之后紧接着 python_exec 成功 1303ms）。
+      // R4-02 当初直接硬停「本轮不会自动重试」，用户只能手动重发，而手动重发照样撞限流，
+      // 表现就是「不断的出现错误，完不成」。改走首轮重试预算：
+      //   - 工具尚未执行（0 次 invocation），重发无副作用；
+      //   - 受 FIRST_ATTEMPT_MAX_RETRIES 封顶，不会无限重发；
+      //   - 重试过程有可见进度（「正在自动重试 n/2」），耗尽再报错。
+      // 续跑轮由 autoContinueWithPow 的执行器分类（与下面 L2385 同口径），这里只接首轮原始请求。
+      if (loopState.inAutoContinue) {
+        // R6-01（2026-11-12 TD 审计）：续跑轮截断必须释放 streamActive，
+        // 否则 onStreamEnd → scheduleAutoContinue 的 `!streamActive` 守卫（L2536）
+        // 会把续跑挡回去，表现为「转圈停了、答案停在半截、既不重试也不报错」的静默停摆。
+        // 与 L2215 的降级块同口径：先收口、再交回 onStreamEnd 调度。
+        loopState.streamActive = false;
+        loopState.chatUI?.setBusy(false);
+        return false;
+      }
+      escalateFirstAttemptFailure('tool-call-truncated', '模型输出的工具调用被网络中断截断');
       return true;
     }
     // QD-R7-01（F2）：三态判定 —— complete / truncated / no-stream。
@@ -3021,9 +3034,14 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                 code: stopReason,
                 message: isTruncated
                   ? `模型回复持续不完整（${MAX_ERROR_RETRIES} 次重发仍截断），已停止自动续跑。请手动重试。`
-                  : verdict.reason === 'network-error'
-                    ? '服务器暂时无法访问，已停止自动续跑。请检查网络后手动重试。'
-                    : `自动续跑失败（${verdict.reason}），已停止重试。`,
+                  : verdict.reason.startsWith('sse-hint-')
+                    // R6（2026-11-12 实跑现场）：上游以 event:hint 下发 generation_err /
+                    // rate_limit_reached。文案给用户看「暂时不可用 + 稍后重试」，
+                    // 不暴露 sse-hint-* 内部 reason 串。
+                    ? `上游服务暂时不可用（已重试 ${MAX_ERROR_RETRIES} 次），请稍后重试。`
+                    : verdict.reason === 'network-error'
+                      ? '服务器暂时无法访问，已停止自动续跑。请检查网络后手动重试。'
+                      : `自动续跑失败（${verdict.reason}），已停止重试。`,
               });
               loopDepth = 0;
             } else if (verdict.verdict === 'retryable') {

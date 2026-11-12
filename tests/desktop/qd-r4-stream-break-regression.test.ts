@@ -197,7 +197,7 @@ describe('QD-R4-01 自动续跑的重试不再被自己的 pending 守卫挡死'
 });
 
 describe('QD-R4-02 被截断的工具标签不再静默消失', () => {
-  it('流在工具标签中间结束时报错，且不当成正常完成', async () => {
+  it('流在工具标签中间结束时报错，并自动重试', async () => {
     vi.useFakeTimers();
     const { FakeXHR, handle, sender, chatUI } = installHarness();
     try {
@@ -210,9 +210,11 @@ describe('QD-R4-02 被截断的工具标签不再静默消失', () => {
       // 修复前：appendError 0 次、finishAssistantMessage 把它当最终答案收尾。
       expect(chatUI.appendError.mock.calls.length).toBeGreaterThan(0);
       expect(chatUI.appendError.mock.calls[0]?.[0]).toBe('tool-call-truncated');
-      expect(chatUI.setBusy).toHaveBeenCalledWith(false);
-      // 截断轮不得触发任何续跑请求。
-      expect(chatRequests(FakeXHR)).toHaveLength(1);
+      // R7（2026-11-12）：截断是瞬态传输故障，走首轮重试预算——
+      // 工具尚未执行，重发无副作用；重试期间 UI 保持 busy，不再硬停。
+      expect(chatUI.setBusy).not.toHaveBeenCalledWith(false);
+      // 截断轮自动重发（受 FIRST_ATTEMPT_MAX_RETRIES 封顶），不再只发 1 次。
+      expect(chatRequests(FakeXHR).length).toBeGreaterThan(1);
     } finally {
       handle.stop();
       vi.useRealTimers();

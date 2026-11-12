@@ -63,6 +63,36 @@ describe('classifySseFrame — 流内错误帧（R0-R5）', () => {
   it('正常帧 → null', () => {
     expect(classifySseFrame('message', { v: [{ type: 'RESPONSE', content: 'hi' }] })).toBeNull();
   });
+  // R6 回归锁（2026-11-12 实跑现场）：DeepSeek 的瞬态上游故障以 event:hint 下发，
+  // 没有 code/status/error/message 字段；旧实现当正常帧放行，空回复烧掉唯一一次
+  // protocol repair 后硬失败，MAX_ERROR_RETRIES 退避链一次都用不上。
+  it('event=hint generation_err → retryable（不得当正常帧）', () => {
+    const v = classifySseFrame('hint', {
+      type: 'error',
+      content: '服务器暂时不可用',
+      clear_response: false,
+      finish_reason: 'generation_err',
+    });
+    expect(v?.verdict).toBe('retryable');
+    expect(v?.reason).toBe('sse-hint-generation_err');
+  });
+  it('event=hint rate_limit_reached → retryable', () => {
+    const v = classifySseFrame('hint', {
+      type: 'error',
+      content: '消息发送过于频繁，请稍后重试',
+      clear_response: true,
+      finish_reason: 'rate_limit_reached',
+    });
+    expect(v?.verdict).toBe('retryable');
+    expect(v?.reason).toBe('sse-hint-rate_limit_reached');
+  });
+  it('event=hint 非 error 类型 → null（正常提示帧不受影响）', () => {
+    expect(classifySseFrame('hint', { type: 'info', content: '提示' })).toBeNull();
+  });
+  it('event=hint 带 finish_reason 但无 type → retryable', () => {
+    const v = classifySseFrame('hint', { content: '服务器暂时不可用', finish_reason: 'generation_err' });
+    expect(v?.verdict).toBe('retryable');
+  });
 });
 
 describe('errorBackoffMs — 指数退避（R0-R2）', () => {

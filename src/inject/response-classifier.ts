@@ -149,10 +149,33 @@ function parseRetryAfterMs(bodyText: string | null): number | undefined {
 /**
  * R0-R5：SSE 错误帧分类。event=error 或载荷带 status=0/error 即视为异常帧；
  * 正常帧返回 null。供 XHR/fetch hook 在流过程中识别「服务端在流里报错」。
+ *
+ * R6（2026-11-12 实跑现场）：DeepSeek 的瞬态上游故障以 `event: hint` + `type:error` 下发：
+ *   - {type:'error', content:'服务器暂时不可用',   finish_reason:'generation_err'}
+ *   - {type:'error', content:'消息发送过于频繁，请稍后重试', finish_reason:'rate_limit_reached'}
+ * 这类帧**没有** code/status/error/message 四个字段，旧实现落到
+ * classifyErrorPayload(undefined, '') 直接 return null，被当正常帧放行。后果：
+ * 空回复（autoReplyLen=0）进 shouldNudge('') 的 nudge 分支 → 烧掉唯一一次 protocol repair →
+ * 下一帧同样被忽略 → protocol-repair-failed 硬失败，MAX_ERROR_RETRIES=3 的退避重试
+ * 一次都用不上。两者都是瞬态可重试错误，必须交给独立错误预算处理。
  */
 export function classifySseFrame(eventType: string | null, parsed: unknown): ClassifiedResponse | null {
-  if (eventType && eventType.toLowerCase() === 'error') {
+  const et = (eventType ?? '').toLowerCase();
+  if (et === 'error') {
     return { verdict: 'fatal', status: 200, reason: 'sse-error-frame' };
+  }
+  if (et === 'hint' && parsed && typeof parsed === 'object') {
+    const hint = parsed as Record<string, unknown>;
+    const hintType = typeof hint.type === 'string' ? hint.type.toLowerCase() : '';
+    const finishReason = typeof hint.finish_reason === 'string' ? hint.finish_reason : '';
+    if (hintType === 'error' || finishReason === 'generation_err' || finishReason === 'rate_limit_reached') {
+      return {
+        verdict: 'retryable',
+        status: 200,
+        reason: `sse-hint-${finishReason || 'error'}`,
+      };
+    }
+    return null;
   }
   if (!parsed || typeof parsed !== 'object') return null;
   const o = parsed as Record<string, unknown>;
