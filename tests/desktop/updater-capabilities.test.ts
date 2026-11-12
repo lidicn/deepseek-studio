@@ -79,4 +79,30 @@ describe('updater ACL（真机 P1 回归面）', () => {
       }
     }
   });
+
+  /**
+   * N-02（2026-11-12 回归审计）：**签名校验不得被跳过**。
+   *
+   * 更新包是「从网络下载后直接执行」的代码，签名校验就是它唯一的完整性防线。
+   * Tauri 提供 `dangerousSkipSignatureVerification` 这个逃生舱（CI/无签名环境常用），
+   * 一旦被写进 `tauri.conf.json` 就**静默关掉**全链路验签 —— 而所有既有用例仍会绿。
+   * 本断言把它钉死：出现即红。
+   *
+   * 配套（同一条 N-02 的另一半）：`updater_install` 的真实点击证明顺序不变式在
+   * `src-tauri/src/updater.rs` 的 `confirm_runs_before_any_download_state` 里锁。
+   */
+  it('⑤ 不得跳过更新包签名校验（dangerousSkipSignatureVerification 必须缺席）', () => {
+    const confPath = path.join(repoRoot, 'src-tauri/tauri.conf.json');
+    const raw = fs.readFileSync(confPath, 'utf-8');
+    expect(
+      raw.includes('dangerousSkipSignatureVerification'),
+      'tauri.conf.json 出现 dangerousSkipSignatureVerification ⇒ 全链路验签被静默关闭',
+    ).toBe(false);
+
+    // 装置自检：配置文件确实带 updater 段与 pubkey，否则本断言是空转（恒绿）。
+    const conf = JSON.parse(raw) as { plugins?: { updater?: { pubkey?: unknown } } };
+    const updater = conf.plugins?.updater;
+    expect(updater, '装置自检：tauri.conf.json 应有 plugins.updater 段').toBeDefined();
+    expect(updater?.pubkey, '装置自检：plugins.updater 应配 pubkey（否则验签无从谈起）').toBeDefined();
+  });
 });

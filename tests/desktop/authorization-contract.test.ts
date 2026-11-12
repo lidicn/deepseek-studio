@@ -26,6 +26,11 @@ import {
   GRANT_SCOPES,
   type ApprovalClass,
 } from '../../src/shared/consent-contract';
+import { canonicalTargetOf } from '../../src/host/authorization';
+import {
+  mapUpstreamToolInvocation,
+  SUPPORTED_INVOCATION_NAMES,
+} from '../../src/shared/tool-contract';
 
 /** PM 批准的分级基准表（§1.3）。键为工具 id，值为 [approvalClass, canonicalTargetKind]。 */
 const BASELINE: Record<string, ApprovalClass> = {
@@ -65,7 +70,10 @@ const BASELINE: Record<string, ApprovalClass> = {
   'skill.dir.set': 'none',
   web_fetch: 'none',
   web_search: 'none',
-  'memory.save': 'none',
+  // R2-07（2026-11-12 回归审计）：none → mode。
+  // 记忆库跨会话回灌进上下文 ⇒ 模型一次写入会在后续每次会话生效（提示注入的持久化落点），
+  // 不能零审批。目标绑定记忆名（save 是 name 键 upsert，无 id）。
+  'memory.save': 'mode',
   'mcp.list': 'none',
   'memory.list': 'none',
   'memory.listArchived': 'none',
@@ -133,6 +141,70 @@ describe('A1 · 工具审批分级契约', () => {
       expect(def.canonicalTargetKind, `mode 工具缺规范目标：${def.id}`).toBeDefined();
       expect(def.grantScopes ?? [], `mode 工具至少能发 session：${def.id}`).toContain('session');
     }
+  });
+
+  /**
+   * N-01（2026-11-12 回归审计）：**反向断言** —— 零审批的特权能力不得进模型白名单。
+   *
+   * 原状：`skill.dir.set` 是 `risk:'privileged'` + `approvalClass:'none'`，安全性**只靠**
+   * `tool-definitions.ts:140-143` 那段注释（「只对页端 UI 开放、不在 SUPPORTED_INVOCATION_NAMES」）。
+   * 注释不是闸门：任何人把它的 id 加进 `MODEL_INVOCATION_TOOLS` 都不会有测试变红，
+   * 而那一刻模型就获得了一个「privileged + 零审批」的写配置能力（审批面直接消失）。
+   *
+   * 判据为什么是 `privileged && approvalClass==='none'` 而不是光 `privileged`：
+   * `python.exec` 就是 `privileged` + `always` 且在模型面里——它没问题（每次都要新鲜确认）。
+   * 越权风险只来自**两者叠加**：特权触达面 ＋ 不问人。
+   *
+   * 负控：把 `skill.dir.set` 临时挪进 `MODEL_INVOCATION_TOOLS` ⇒ 本用例立即变红。
+   */
+  it('N-01 零审批的特权能力不得进模型白名单（注释级约束的反向锁）', () => {
+    // ⚠️ 模型面的键是**上游拼写**（`shell_exec` / `search_files`），不是工具 id；
+    // 且映射表本身不导出。拿 `SUPPORTED_INVOCATION_NAMES.has(def.id)` 判会**恒假**（假绿）。
+    // 这里走运行时同一条 `mapUpstreamToolInvocation` 把白名单翻成规范 id ——
+    // 断言的就是「模型实际够得着哪些 id」，而不是某份手工清单。
+    const modelFace = new Set(
+      SUPPORTED_INVOCATION_NAMES.map((name) => mapUpstreamToolInvocation(name, {})?.id).filter(
+        (id): id is string => typeof id === 'string' && id.length > 0,
+      ),
+    );
+    // 装置自检①：每个白名单名都必须能映射出 id（否则下面的过滤条件可能整体失效）。
+    expect(modelFace.size, '白名单里有名字映射不出 id，本用例会假绿').toBe(
+      SUPPORTED_INVOCATION_NAMES.length,
+    );
+    // 装置自检②：模型面确实非空，且已知的 privileged+always 工具在（证明 id 对得上）。
+    // 刻意**不**硬编码「skill.dir.set 不在模型面」——那会把将来「显式批准它进模型面且改 always」
+    // 也判红；本用例要锁的是通用不变量，不是某一个工具的名字。
+    expect(modelFace.size).toBeGreaterThan(5);
+    expect(modelFace.has('python.exec'), '装置自检：python.exec 应在模型面').toBe(true);
+
+    const offenders = DEFAULT_TOOL_DEFINITIONS.filter(
+      (def) => def.risk === 'privileged' && def.approvalClass === 'none' && modelFace.has(def.id),
+    ).map((def) => def.id);
+    expect(
+      offenders,
+      'privileged + approvalClass:none 的工具出现在模型白名单里 ⇒ 模型可无审批触达特权能力',
+    ).toEqual([]);
+  });
+
+  /**
+   * R2-07：`memory.save` 的规范目标必须绑定**记忆名**。
+   *
+   * 没有这条兜底，`memory-id` 分支只认 id/memoryId（save 参数里没有）⇒ 目标恒为空串 ⇒
+   * 「同意保存 A」与「保存 B」算同一格授权，审批等于摆设。
+   * 三条断言：同参数稳定、同名同格、异名分格。
+   */
+  it('R2-07 memory.save 目标绑定记忆名：同名复用、异名分格', () => {
+    const def = byId['memory.save']!;
+    expect(def.approvalClass).toBe('mode');
+    expect(def.canonicalTargetKind).toBe('memory-id');
+    expect(def.grantScopes ?? []).toContain('session');
+
+    const a1 = canonicalTargetOf(def, { name: '甲', content: '内容1' });
+    const a2 = canonicalTargetOf(def, { name: '甲', content: '内容2' });
+    const b = canonicalTargetOf(def, { name: '乙', content: '内容1' });
+    expect(a1.target, '同名保存必须落到同一格授权').toBe(a2.target);
+    expect(a1.target, '目标不得为空串').not.toBe('');
+    expect(b.target, '异名保存必须分格（否则审批形同虚设）').not.toBe(a1.target);
   });
 
   it('宿主侧特权能力的执行侧必须是 host', () => {

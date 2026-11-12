@@ -226,12 +226,36 @@ describe('A2 · workspace / auto 档既有语义不回归', () => {
     expect(r.outsideApproved).toBe(false);
   });
 
-  it('none 类工具自动放行（memory.save / skill.list / settings.get）', () => {
-    for (const tool of ['memory.save', 'skill.list', 'settings.get', 'chat-read']) {
+  it('none 类工具自动放行（skill.list / settings.get）', () => {
+    // R2-07：memory.save 已提为 mode（记忆库跨会话回灌 ⇒ 零审批不可接受），
+    // 故不在本组；它现在归「mode 类在 workspace 档要问」那条。
+    for (const tool of ['skill.list', 'settings.get', 'chat-read']) {
       const r = resolveAuthorization(mk({ tool, mode: 'workspace' }));
       expect(r.decision, tool).toBe('allow');
       expect(r.approvalClass, tool).toBe('none');
     }
+  });
+
+  /**
+   * R2-07 配套：`memory.save` 是**全表唯一「非 governed 的 mode 工具」**。
+   * 它没有 policyVerdict，若不特判就会连 full 档也弹窗 —— 与「full 完全放开不会弹窗」
+   * （2026-11-08 卡 H）冲突。三条断言把边界钉死：full 放行、workspace 仍问、
+   * 越界即使 full 也要问（§1.4 硬规则 5 不得被本条绕过）。
+   */
+  it('R2-07 memory.save 档位语义：full 放行 / workspace 要问 / 越界 full 也要问', () => {
+    const full = resolveAuthorization(mk({ tool: 'memory.save', mode: 'full', params: { name: 'x' } }));
+    expect(full.decision).toBe('allow');
+    expect(full.reason).toBe('full-mode-allow');
+
+    const ws = resolveAuthorization(mk({ tool: 'memory.save', mode: 'workspace', params: { name: 'x' } }));
+    expect(ws.decision).toBe('ask');
+
+    // 负控（守 `!policyVerdict` 那道门）：governed 的 mode 工具在 full 档**不得**被本条放行。
+    // 策略层 deny 仍然生效 —— 否则这条就是「full 绕过策略拒绝」的后门。
+    const denied = resolveAuthorization(
+      mk({ tool: 'shell.exec', mode: 'full', policyVerdict: verdict('deny', 'missing-command'), params: { command: '' } }),
+    );
+    expect(denied.decision).toBe('deny');
   });
 });
 
@@ -346,6 +370,7 @@ describe('A2 · fail-closed 兜底', () => {
     expect(allowedGrantScopesFor(byId['memory.delete'])).toEqual(['once', 'temporary']);
     expect(allowedGrantScopesFor(byId['policy.set'])).toEqual(['once']);
     expect(allowedGrantScopesFor(byId['file.write'])).toContain('session');
-    expect(allowedGrantScopesFor(byId['memory.save'])).toEqual(['once']);
+    // R2-07：memory.save 已从 none 提为 mode ⇒ 可发 session（无 session 就无法「同目标二次不问」）。
+    expect(allowedGrantScopesFor(byId['memory.save'])).toEqual(['once', 'session']);
   });
 });

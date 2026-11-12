@@ -193,6 +193,19 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     approvalClass: 'none',
   },
   // v1.0：长期记忆（移植自 deepseek++）。
+  //
+  // R2-07（2026-11-12 回归审计）：`none` → `mode`。
+  //
+  // 原为 `none`（零审批）——模型**一次调用**就能把任意内容写进用户的长期记忆库，
+  // 而记忆库会跨会话回灌进上下文：写进去的假事实/指令会在**后续每一次**会话里生效，
+  // 这是「提示注入的持久化落点」，比一次性的越界读危险得多（同族：`mcp.get` R2-02）。
+  //
+  // 现在走正常审批闸门：workspace 档下首次保存要人工确认，`full` 档按 A2 语义放行。
+  //
+  // 目标绑定 = **记忆名**（save 是 name 键 upsert，见 `memory-store.mergeUpdateGovernance`，
+  // 参数里没有 id）⇒ 复用 `memory-id` 目标种类，由 `canonicalTargetOf` 的 `name` 兜底取值。
+  // 没有这条兜底，目标恒为空串 → 所有保存共用同一格授权
+  // （「同意保存 A」会顺带放行保存 B），等于把审批做成摆设。
   {
     id: 'memory.save',
     title: '保存记忆',
@@ -200,7 +213,9 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     risk: 'read',
     execution: 'host',
     allowedOrigins: [DEEPSEEK_ORIGIN],
-    approvalClass: 'none',
+    approvalClass: 'mode',
+    canonicalTargetKind: 'memory-id',
+    grantScopes: ['once', 'session'],
   },
   // v1.0：Python 代码执行（移植自 deepseek++）。
   {

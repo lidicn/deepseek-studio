@@ -266,10 +266,14 @@ export function persistConfigPatch(
     // 不存在 / 不可解析：以空配置起步（与 loadConfig 的容错口径一致）
     bag = {};
   }
-  bag = { ...bag, ...patch };
   // 0.14.20：`undefined` ⇒ **删键**（不是写 null / 空串）。
   // 用途＝"清空配置项回默认"：留下 `"skillsDir": ""` 这种空键会让配置文件语义含混
   // （读侧得靠 `trim()` 才知道它等于没配），下一个人还要再猜一次。
+  //
+  // 0.14.21（2026-11-12 回归审计）：删掉本行原处的 `bag = { ...bag, ...patch };`。
+  // 它是死代码 —— 下面这个循环会把每个 patch 键**重新赋一遍**，展开结果被整体覆盖；
+  // 而展开还会把 `undefined` 写成「键存在但值为 undefined」，靠循环再删一次才正确，
+  // 等于两步做一件事、且第二步一旦被删就静默改变语义。合并只保留循环这一处。
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) {
       delete bag[key];

@@ -13,6 +13,7 @@
  *
  * 这是最小安全面：不做账号体系、不做令牌轮换、不做 HTTPS。
  */
+import { timingSafeEqual } from 'node:crypto';
 
 /** loopback 主机名集合（与 server.ts 的 LOCAL_HOSTS 同源，但这里只判回路）。 */
 const LOOPBACK_HOSTS: ReadonlySet<string> = new Set([
@@ -71,7 +72,17 @@ export function decideAgentAccess(
   if (!expected) return { allowed: false, reason: 'missing-code' };
 
   if (!providedCode) return { allowed: false, reason: 'missing-code' };
-  if (providedCode !== expected) return { allowed: false, reason: 'bad-code' };
+  // TD-14（2026-11-12 回归审计）：普通字符串比较是**短路**的 —— 逐字节比到第一个不同就返回，
+  // 比中前缀越多耗时越长，同局域网的攻击者可用响应时间把配对码一位一位试出来
+  // （经典 timing attack，在「8 位手输码 + 局域网可达」这个场景里特别现实）。
+  //
+  // 改常数时间比较。`timingSafeEqual` 要求两边等长（不等长直接抛），所以先比长度：
+  // **长度差异本身会泄露**（这是该 API 的固有边界，也是所有实现的通行做法），
+  // 但它只泄露「码有多长」，不泄露任何一位的内容 —— 配对码长度不是秘密。
+  const given = Buffer.from(providedCode, 'utf8');
+  const want = Buffer.from(expected, 'utf8');
+  if (given.length !== want.length) return { allowed: false, reason: 'bad-code' };
+  if (!timingSafeEqual(given, want)) return { allowed: false, reason: 'bad-code' };
 
   return { allowed: true, reason: 'paired' };
 }

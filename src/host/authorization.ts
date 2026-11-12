@@ -151,7 +151,11 @@ export function canonicalTargetOf(
       return { kind, target: cwd ? `${cmd}@${cwd}` : cmd };
     }
     case 'memory-id':
-      return { kind, target: str(['id', 'memoryId']) };
+      // R2-07：`memory.save` 是 **name 键 upsert**（`memory-store.mergeUpdateGovernance`
+      // 用 `params.name` 合并），参数里根本没有 `id`。原实现只认 id/memoryId ⇒
+      // save 的目标恒为空串 ⇒ 所有保存共用同一格授权（「同意保存 A」顺带放行保存 B），
+      // 审批形同虚设。补 `name` 兜底：删除类仍以 id 为准（id 优先级在前，行为不变）。
+      return { kind, target: str(['id', 'memoryId', 'name']) };
     case 'mcp-call': {
       // C1 P1 安全批 R2-02：MCP 目标的 id 键是 `serverId`（见 tool-contract 的
       // 'mcp.get' 适配与 desktop-host 的 mcp.get handler），**不是** `server`/`name`。
@@ -378,6 +382,20 @@ export function resolveAuthorization(input: AuthorizationInput): AuthorizationRe
     }
 
     // 8) 档位判定：auto / workspace / ask 在这里收敛。
+    //
+    // R2-07 配套（2026-11-12）：`memory.save` 提为 mode 后是**全表唯一「非 governed 的 mode 工具」**
+    // （`governed` 只含文件/搜索/进程/执行类，见 desktop-host.ts:1917）。它没有 policyVerdict，
+    // 于是掉到本段末尾的 `policy-unresolved` ⇒ **连 full 档都会弹窗**，与
+    // 「full 档完全放开不会弹窗」（2026-11-08 卡 H 出资人拍板）直接冲突。
+    //
+    // 这里补 full 档放行，条件收得极窄：
+    //   · `!policyVerdict` —— 只作用于**非 governed** 工具（governed 的 mode 工具继续走下面的
+    //     策略判定，绝不因为本条绕过 policy deny / require-consent）；
+    //   · `!outsideRequested` —— 越界仍必须逐次确认（§1.4 硬规则 5）；
+    //   · `FULL_MODE_STILL_ASKS` 已在第 6 步之前 return，不可撤销操作不受影响。
+    if (input.mode === 'full' && !policyVerdict && !outsideRequested) {
+      return { ...base, decision: 'allow', reason: FULL_MODE_ALLOW_REASON, outsideApproved: false };
+    }
     if (policyVerdict) {
       if (policyVerdict.decision === 'allow') {
         return { ...base, decision: 'allow', reason: policyVerdict.reason, outsideApproved: outsideRequested };
