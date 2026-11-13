@@ -646,6 +646,47 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
     // 有在途 pending 才会被写出来；页端正常断开时运行时**什么都不会打**，
     // 出问题时无法取证（20261031 Verify 复验时 `logs/` 里 0 命中，只能判「证据缺失」）。
     // 记 `kind`（close/error）、`botId`、剩余可信页数、以及本次清理的在途请求数。
+    /**
+     * D3（账号误判链修复）：连接离开后重算账号锁。
+     *
+     * 原实现 `untrusted` 只粘不放 —— `clients.delete(id)` 之后没有任何一处把它改回 false。
+     * 单窗口重连时（旧 socket 未断 → 新连接 hello 被判重复 → 旧 socket 随后关闭），
+     * 新连接永远 untrusted → 所有宿主调用 page-not-ready
+     * （真机误判现场：mcp.list 拿不到任何工具，模型只能手写裸 XML）。
+     *
+     * 重算规则（按 accountFingerprint 分组，**每组最多保留一条 trusted**）：
+     * - 组内已有 trusted → 不解封任何 untrusted：同账号真并发两窗仍然 fail-closed，铁律不拆；
+     * - 组内没有 trusted → 解封**最早创建**的那条 untrusted（Map 保持插入序），其余保持封禁。
+     *
+     * 为什么不是「逐个 untrusted 独立判」：组内若有两條 untrusted，逐条判会双双满足
+     * 「没有其他 trusted」而同时解封 → 同指纹两条 trusted 并存，正好破了铁律。
+     */
+    function reevaluateAccountLocks(): void {
+      const byFingerprint = new Map<
+        string,
+        Array<{ id: string; rec: { ws: WebSocket; untrusted: boolean; ready: boolean } }>
+      >();
+      for (const [cid, c] of clients.entries()) {
+        if (!c.accountFingerprint) continue;
+        const list = byFingerprint.get(c.accountFingerprint) ?? [];
+        list.push({ id: cid, rec: c });
+        byFingerprint.set(c.accountFingerprint, list);
+      }
+      for (const [fp, group] of byFingerprint) {
+        // 组内仍有可信页 → 保持现状（重复方继续 fail-closed）。
+        if (group.some((g) => !g.rec.untrusted && g.rec.ready)) continue;
+        // 组内已无任何 trusted：只解封最早创建的那条（插入序），避免一次解封多条。
+        const candidate = group.find((g) => g.rec.untrusted && g.rec.ready);
+        if (!candidate) continue;
+        candidate.rec.untrusted = false;
+        safeSend(candidate.rec.ws, { type: 'account-duplicate-cleared' });
+        console.log(
+          `[page-runtime] account lock cleared id=${candidate.id.slice(0, 8)} fp=${fp.slice(0, 8)} ` +
+            `(no trusted peer left)`,
+        );
+      }
+    }
+
     const logPageGone = (kind: 'close' | 'error'): void => {
       // 注意：必须**在 failAllPending 之前**取计数，之后 pending 已被清空恒为 0。
       const pendingFailed = pendingDispatch.size + pendingConsent.size;
@@ -659,11 +700,15 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
     ws.on('close', () => {
       clients.delete(id);
       logPageGone('close');
+      // D3：占位者离开后重算账号锁（重复方可能因此恢复可用）。
+      reevaluateAccountLocks();
       options.onDisconnect?.({ id, botId: rec.botId, kind: 'close' });
     });
     ws.on('error', () => {
       clients.delete(id);
       logPageGone('error');
+      // D3：同上（error 路径同样会让连接消失）。
+      reevaluateAccountLocks();
       options.onDisconnect?.({ id, botId: rec.botId, kind: 'error' });
     });
   });

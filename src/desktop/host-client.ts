@@ -11,7 +11,7 @@
 import type { ExecutableCapability, ExecuteResult } from '../capabilities/types';
 import type { HostToPageMessage, PageToHostMessage } from '../host/protocol';
 import { showConsent } from '../ui/consent';
-import { showAccountBlockOverlay } from '../ui/account-block';
+import { showAccountBlockOverlay, hideAccountBlockOverlay } from '../ui/account-block';
 
 export interface WebSocketLike {
   send(data: string): void;
@@ -101,12 +101,31 @@ export interface HostClient {
 
 const OPEN = 1;
 
+/**
+ * D1：重复 `connect()` 的去抖窗口。
+ *
+ * 同一轮在飞时由 `roundActive` 挡住；但同步连调（entry.ts 初始化 + 调用方各调一次）
+ * 落在 microtask 之外，需要时间窗兜住，否则会各开一条 socket（真机误判的物理来源）。
+ *
+ * 为什么不能按 readyState 判「已连接就不重连」：取券失败时 `urlResolver` 返回 fallbackUrl
+ * （不抛错），socket 可能**裸连成功**（OPEN）——但它没有有效 grant，是坏连接。
+ * 30s 冷却重连（entry.ts:311）必须能换新券，所以超过本窗口的 `connect()` 一律
+ * 「关旧 → 摘引用 → 主动开新一轮」，而不是直接 return。
+ *
+ * **2026-11-13 PM 裁定**：卡面字面 `OPEN || CONNECTING → return` 会挡死 30s 冷却重连
+ * （实证：`grant-fail-visible` 第 8 条 `expected 1 to be 2`），改为时间窗去抖。
+ * 这不是随手写的容错，是裁定过的口径——后来人不要改回 readyState 判据。
+ */
+const CONNECT_DEBOUNCE_MS = 500;
+
 export function createHostClient(options: HostClientOptions): HostClient {
   const capabilities = new Map(options.capabilities.map((c) => [c.id, c]));
   const origin = options.origin ?? globalThis.location?.origin ?? 'https://chat.deepseek.com';
   const maxBackoff = options.maxBackoffMs ?? 10_000;
   const toolCallTimeoutMs = options.toolCallTimeoutMs ?? DEFAULT_TOOL_CALL_TIMEOUT_MS;
   let ws: WebSocketLike | null = null;
+  /** D1：当前 socket 的创建时刻（判断 CONNECTING 是否已僵死）。 */
+  let wsCreatedAt = 0;
   let stopped = false;
   let backoff = 500;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -304,6 +323,10 @@ export function createHostClient(options: HostClientOptions): HostClient {
       // v0.31 账号身份锁：宿主检测到本页账号已在另一窗口登录 → fail-closed。
       // 同账号多窗口会触发 DeepSeek 封号（设计稿 §6 铁律），覆盖层挡住一切交互。
       showAccountBlockOverlay(msg.reason, msg.duplicateOf);
+    } else if (msg.type === 'account-duplicate-cleared') {
+      // D3/D4（账号误判链修复）：占用该账号的另一条连接已断开 → 本页不再是重复方，
+      // 撤掉阻塞覆盖层、恢复交互。原实现 untrusted 只粘不放，单窗口重连会被永久封住。
+      hideAccountBlockOverlay();
     }
   }
 
@@ -333,6 +356,7 @@ export function createHostClient(options: HostClientOptions): HostClient {
         options.wsFactory ?? ((u: string) => new (globalThis.WebSocket as new (u: string) => WebSocketLike)(u));
       const socket = make(url);
       ws = socket;
+      wsCreatedAt = Date.now();
       socket.onopen = () => {
         backoff = 500;
         // v0.24：上报本页所属 botId，宿主据此把工具派发/同意闸门路由到本窗口。
@@ -349,7 +373,14 @@ export function createHostClient(options: HostClientOptions): HostClient {
       };
       socket.onmessage = (ev: { data: unknown }) => onMessage(ev.data);
       socket.onclose = () => {
+        // D2（误判链修复）：旧 socket 迟到的 close 不能抹掉**新**连接。
+        // 原实现无条件 `ws = null`：页面 reload / 限流重试时，旧 socket 的 close 晚于
+        // 新 socket 的 hello 到达，就会把新连接引用清掉 → 页面以为断线 → 再重连 →
+        // 8760 上的连接数只增不减（真机 netstat：1 ESTABLISHED + 5 FIN_WAIT_1）。
+        // 引用已被更新的 socket 接管时，这条 close 只代表「旧的那条彻底没了」，与当前连接无关。
+        if (ws !== socket) return;
         ws = null;
+        wsCreatedAt = 0;
         failAllPending('disconnected');
         if (!stopped) scheduleReconnect();
       };
@@ -417,6 +448,33 @@ export function createHostClient(options: HostClientOptions): HostClient {
     },
     connect() {
       stopped = false;
+      // D1（误判链修复）：connect() 必须幂等 —— 同一时刻只允许一条在线 socket。
+      //
+      // 原实现只靠 `roundActive` 防重入，而它在 finally 里立刻归 false，所以：
+      // entry.ts 的 30s 限流重试再调一次 connect()，就会**再开一条 socket**，旧的还开着
+      // → 宿主看到同指纹两条连接 → 第二条被判「同账号多窗口」→ untrusted → page-not-ready
+      // → 所有宿主调用失败（真机：mcp.list 拿不到工具，模型只能手写裸 XML）。
+      //
+      // 注意：**真正的断线重连不经过这里**（走 onclose → scheduleReconnect → connectWsRound），
+      // 所以这里的幂等不会挡住重连；它只挡住「重复调用 connect()」这种叠加。
+      const now = Date.now();
+      // 去抖窗口内的重复调用 = 同一意图的冗余调用 → 只保留已开的那条。
+      if (ws && now - wsCreatedAt < CONNECT_DEBOUNCE_MS) return;
+      // 超出窗口：要换新连接（典型：30s 冷却到点，用新券重连）。
+      // **先摘引用再关，然后主动开新一轮** —— 不能只关不摘、等 onclose 接力：
+      // 实测 close() 的 onclose 在假定时器下与真实环境「关闭卡住」时都可能永不到来，
+      // 链条一断就再也连不上。摘引用后旧 socket 迟到的 close 会被 D2 的
+      // `ws !== socket` 挡掉，不会误清新连接。
+      if (ws) {
+        const stale = ws;
+        ws = null;
+        wsCreatedAt = 0;
+        try {
+          stale.close();
+        } catch {
+          /* ignore */
+        }
+      }
       // v0.31：userToken 变更（登出/换号）→ 重新 hello 上报最新账号指纹。
       // 宿主据此重新做同账号去重（换号可能解除/触发重复）。
       if (!tokenStorageHandler && typeof globalThis.addEventListener === 'function') {

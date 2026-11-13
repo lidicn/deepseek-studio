@@ -24,6 +24,17 @@ export type HostToPageMessage =
   // 已登记页重复）→ 令该页 fail-closed。页端应渲染阻塞覆盖层并停止一切工具调用。
   // 这是防封号铁律「1 槽位 : 1 账号 : 1 窗口」的执行手段——同账号多窗口必封。
   | { type: 'account-duplicate-block'; reason: string; duplicateOf?: string }
+  /**
+   * D3（账号误判链修复）：占用该账号的**另一条**连接已断开 → 本页不再是重复方，恢复可用。
+   *
+   * 背景：`untrusted` 原实现只粘不放（`clients.delete` 之后没有任何一处把它改回 false）。
+   * 单窗口场景下，页面重连时旧连接尚未断开 → 新连接被判重复 → 旧连接随后关闭 →
+   * 新连接永远 untrusted → 所有宿主调用 page-not-ready（真机误判现场）。
+   *
+   * 页端收到本条应**撤掉阻塞覆盖层**并恢复交互（宿主侧同步把该连接 untrusted 置回 false）。
+   * 注意：这是「另一个窗口让位」的通知，不是信任放宽 —— 同账号**同时**两窗仍然 block。
+   */
+  | { type: 'account-duplicate-cleared' }
   // v0.24：botId 全程可选，缺省='main'（单窗口/旧注入脚本行为不变）。
   | { type: 'dispatch'; callId: string; tool: string; params: unknown; botId?: string }
   | { type: 'consent-required'; callId: string; tool: string; params: unknown; meta?: ConsentMeta; botId?: string; nonce?: string }

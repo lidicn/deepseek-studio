@@ -94,3 +94,23 @@ export function showAccountBlockOverlay(reason: string, duplicateOf?: string): v
   doc.body.append(overlay);
   overlayEl = overlay;
 }
+
+/**
+ * D3/D4（账号误判链修复）：撤掉阻塞覆盖层，恢复本页交互。
+ *
+ * 何时调用：宿主下发 `account-duplicate-cleared` —— 即「占着该账号的另一条连接已断开，
+ * 本页不再是重复方」。单窗口重连场景下（旧 socket 断开 → 新 socket 曾因重叠被判重复），
+ * 没有这条撤销能力，页面会永远停在被封状态（真机实测：所有宿主调用 page-not-ready）。
+ *
+ * 幂等：未显示时调用不抛错、不产生副作用。
+ * 注意：这只是**撤销一次误判**，不放宽铁律 —— 同账号真并发两窗时宿主仍会下发 block。
+ */
+export function hideAccountBlockOverlay(): void {
+  if (!overlayEl) return;
+  try {
+    overlayEl.remove();
+  } catch {
+    /* ignore（DOM 已分离/宿主环境异常时不影响状态清零） */
+  }
+  overlayEl = null;
+}

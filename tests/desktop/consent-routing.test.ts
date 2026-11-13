@@ -55,15 +55,31 @@ function connectPage(port: number, helloExtra: Record<string, unknown> = {}): Pr
 
 const consentReqs = (p: FakePage): HostToPageMessage[] => p.seen.filter((m) => m.type === 'consent-required');
 
-/** 等某条 ws 真正关闭（close 事件回调后宿主才会 clients.delete，避免与 close 赛跑）。 */
-function closeAndWait(ws: WebSocket): Promise<void> {
-  return new Promise((resolve) => {
-    if (ws.readyState === WebSocket.CLOSED) {
-      resolve();
-      return;
+/**
+ * 页端发一条 `tool-call` 并等对应回执——用来探测「这条连接还活着，但宿主已不认它」。
+ * （`page-runtime.ts:426-433`：untrusted 连接的任何 tool-call 一律回 `page-not-ready`。）
+ */
+function callFromPage(p: FakePage, invocationName: string): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve, reject) => {
+    const callId = `probe-${Math.random().toString(36).slice(2)}`;
+    const timer = setTimeout(() => {
+      p.ws.off('message', onMsg);
+      reject(new Error('tool-call 回执超时（页可能已被 close）'));
+    }, 2000);
+    function onMsg(raw: unknown): void {
+      let m: { type?: string; callId?: string; ok?: boolean; error?: string };
+      try {
+        m = JSON.parse(String(raw)) as typeof m;
+      } catch {
+        return;
+      }
+      if (m.type !== 'tool-call-result' || m.callId !== callId) return;
+      clearTimeout(timer);
+      p.ws.off('message', onMsg);
+      resolve({ ok: m.ok === true, ...(m.error ? { error: m.error } : {}) });
     }
-    ws.once('close', () => resolve());
-    ws.close();
+    p.ws.on('message', onMsg);
+    p.ws.send(JSON.stringify({ type: 'tool-call', callId, invocationName, params: {} }));
   });
 }
 
@@ -128,12 +144,18 @@ describe('卡 J · 高风险询问路由（三态双向锁）', () => {
   });
 
   it('② 降级：只剩 untrusted 页 ⇒ 宿主框；页面 0 次、审计有 degraded', async () => {
-    // 三步配方（Chief 版，PM 采纳）：
-    //   ① 连 A（带指纹 X）⇒ trusted
-    //   ② 连 B（同 X）⇒ `page-runtime:401` 把 B 置 untrusted，**且不 close**（只推 account-duplicate-block）
-    //   ③ **关掉 A 并等 `clients.delete`（L660）执行完**；请求**不带 botId**
-    // ⇒ `connectedPages` 只剩 B（untrusted）：L2157 门（length===0）不成立 ⇒ 放行；
-    //   L2219 `pageAvailable`（`p.untrusted === false` + `!botId` 恒真）⇒ false ⇒ **进降级分支**。
+    // 构造（PM 2026-11-13 裁定，方案 A：**只换构造，断言一行不动**）：
+    //   ① 连一条**不带 accountFingerprint** 的页 ⇒ trusted；
+    //   ② 该页自报注入被篡改（`integrity-alert`）⇒ `page-runtime.ts:447-450` 置 `untrusted = true`，**不 close**；
+    // ⇒ `connectedPages` 仍非空（L2311 那道 `length === 0` 的门不拦），
+    //   但 L2417-2419 的 `pageAvailable`（**只看 `untrusted`，不看 `ready`**）⇒ false ⇒ **进降级分支**。
+    //
+    // 为什么不用旧配方「连 A/B 同指纹 → 关 A → B 承接」：那是借 D3 的缺陷（`untrusted` 只粘不放）
+    // 造一个"永久被封的页"；D3 修好后关掉 A 会把 B 解封回 trusted，该构造随缺陷一起消失了
+    //（「关 A → B 解封」现在由 `account-duplicate-misjudge.test.ts` 的反证锁覆盖，不要重复）。
+    // `integrity-alert` 是**真实存在**的第三条置 untrusted 路径（另两条：origin mismatch、duplicate），
+    // 且不会被 `reevaluateAccountLocks` 解封——那函数开头就是 `if (!c.accountFingerprint) continue;`，
+    // 没指纹的连接根本不参与重算。覆盖面没缩，反而更贴生产（注入被篡改是真会发生的）。
     let nativeCalls = 0;
     const host = await startHost({
       policyMode: 'auto',
@@ -143,16 +165,16 @@ describe('卡 J · 高风险询问路由（三态双向锁）', () => {
       },
     });
     const port = Number(new URL(host.url).port);
-    const a = await connectPage(port, { accountFingerprint: 'fp-j2' });
-    const b = await connectPage(port, { accountFingerprint: 'fp-j2' });
+    const b = await connectPage(port);
     try {
-      await new Promise((r) => setTimeout(r, 150));
-      // ③ 关掉 A，并**等它真的从 clients 里删掉**（不靠猜：用一条不触发 consent 的探测请求观察状态，
-      //    不行的话就等 A 的 close 事件真正回调——close 事件由 ws 客户端触发，最可靠）。
-      await closeAndWait(a.ws);
-      // 前置断言：此时若 A 还在，探测会走页内模态；用一个必然 allow 的低风险工具不足以判别，
-      // 所以这里直接断言"协议层只剩 B 那条连接"——通过再连一条探针看是否有 account-duplicate-block
-      // 无法判别可信性，故改为：等 close 完成后再发请求，并用"宿主框被调用"作为降级已进入的判据。
+      b.ws.send(JSON.stringify({ type: 'integrity-alert', reason: 'injection-tampered' }));
+      await new Promise((r) => setTimeout(r, 100));
+      // 前置：页**还连着**（socket 仍 OPEN），但已被判不可信
+      //（自报 tool-call 拿 `page-not-ready` ⇒ 确系 untrusted，而不是被 close 掉）。
+      expect(b.ws.readyState, '构造失败：页已断开，测不到「页在但不可信」').toBe(WebSocket.OPEN);
+      const probe = await callFromPage(b, 'mcp.list');
+      expect(probe.ok, 'integrity-alert 之后该页必须已 untrusted（fail-closed）').toBe(false);
+      expect(probe.error).toBe('page-not-ready');
       const r = await host.invokeTool('chat-send', { text: 'hi' }, undefined, 'conv-j2');
       expect(nativeCalls, '页内不可用必须降级到宿主框').toBeGreaterThanOrEqual(1);
       expect(consentReqs(b), 'untrusted 页收不到 consent-required').toHaveLength(0);
@@ -161,16 +183,12 @@ describe('卡 J · 高风险询问路由（三态双向锁）', () => {
       expect(degraded.at(-1)?.outcome).toBe('executed');
       expect(r.reason === 'consent-denied' || r.reason === 'consent-unavailable').toBe(false);
     } finally {
-      try {
-        a.ws.close();
-      } catch {
-        /* 已关 */
-      }
       b.ws.close();
     }
   });
 
   it('③ 双失败：只剩 untrusted 页 + 宿主框弹不出（注入实现抛错）⇒ deny；requestConsent 0 次；审计 denied + degraded', async () => {
+    // 与 ② 同一构造（`integrity-alert` 造「页在但不可信」），只把宿主框实现换成"抛错 ⇒ shown=false"。
     // 注入实现抛错 ⇒ `askHostSide` 就地折成 shown=false（不让异常穿出整条授权链）。
     let nativeCalls = 0;
     const host = await startHost({
@@ -181,11 +199,13 @@ describe('卡 J · 高风险询问路由（三态双向锁）', () => {
       },
     });
     const port = Number(new URL(host.url).port);
-    const a = await connectPage(port, { accountFingerprint: 'fp-j3' });
-    const b = await connectPage(port, { accountFingerprint: 'fp-j3' });
+    const b = await connectPage(port);
     try {
-      await new Promise((r) => setTimeout(r, 150));
-      await closeAndWait(a.ws);
+      b.ws.send(JSON.stringify({ type: 'integrity-alert', reason: 'injection-tampered' }));
+      await new Promise((r) => setTimeout(r, 100));
+      expect(b.ws.readyState, '构造失败：页已断开').toBe(WebSocket.OPEN);
+      const probe = await callFromPage(b, 'mcp.list');
+      expect(probe.error, 'integrity-alert 之后该页必须已 untrusted').toBe('page-not-ready');
       const r = await host.invokeTool('chat-send', { text: 'hi' }, undefined, 'conv-j3');
       expect(nativeCalls, '宿主框应被尝试').toBeGreaterThanOrEqual(1);
       // 双失败 ⇒ 拒绝，且**不回到页面**（B 是 untrusted，收不到）
@@ -196,11 +216,6 @@ describe('卡 J · 高风险询问路由（三态双向锁）', () => {
       expect(degraded.length, '降级必须留痕').toBeGreaterThanOrEqual(1);
       expect(degraded.at(-1)?.outcome, '双失败必须记 denied').toBe('denied');
     } finally {
-      try {
-        a.ws.close();
-      } catch {
-        /* 已关 */
-      }
       b.ws.close();
     }
   });
