@@ -9,6 +9,7 @@
  */
 
 import type { ToolExecutor, ToolExecutorResult } from './tool-bridge';
+import { toolFailureDetail } from './tool-bridge';
 import type { ExecutableCapability } from '../../capabilities/types';
 
 export function createHostToolsAdapter(hostTools: ReadonlyMap<string, ExecutableCapability>): ToolExecutor {
@@ -18,7 +19,9 @@ export function createHostToolsAdapter(hostTools: ReadonlyMap<string, Executable
       if (!cap) return { ok: false, error: `unknown tool: ${name}` };
       try {
         const result = await cap.execute((args ?? {}) as Record<string, unknown>);
-        if (!result.ok) return { ok: false, error: result.error ?? 'unknown error' };
+        // 2026-11-13：同类的 `error ?? 'unknown error'`——`??` 兜不住空串。
+        // 统一走 toolFailureDetail：非空原样、空串给可读文本、undefined 保持老文案。
+        if (!result.ok) return { ok: false, error: toolFailureDetail(name, result.error) };
         // data 序列化成字符串塞回 result
         return { ok: true, result: typeof result.data === 'string' ? result.data : JSON.stringify(result.data) };
       } catch (e) {

@@ -27,6 +27,7 @@
 import type { ModelEngine, ToolCallRecord, EngineSendResult, CompletionStatus } from '../engine/model-engine';
 import type { MessageHistory } from './message-history';
 import type { HistoryStore } from './history-store';
+import { toolFailureDetail } from './tool-bridge';
 import { detectPlanRequest } from '../plan-gate';
 
 // ---------------------------------------------------------------- 类型
@@ -180,10 +181,16 @@ function buildPrompt(history: MessageHistory, round = 1): string {
   return out;
 }
 
-/** 把一条工具记录格式化成 role:'tool' 的可见内容。 */
+/**
+ * 把一条工具记录格式化成 role:'tool' 的可见内容。
+ *
+ * 2026-11-13：`rec.error ?? 'unknown error'` 兜不住**空串**（`??` 只认 null/undefined），
+ * 空串时模型看到的是 `[shell.exec] failed: `——冒号后一片空白，工具名之外零定位信息。
+ * 改走 `toolFailureDetail`（非空原样、空串复用 shared 的可读口径、undefined 保持老文案）。
+ */
 function formatToolRecord(rec: ToolCallRecord): string {
   if (rec.ok) return `[${rec.tool}] ok`;
-  return `[${rec.tool}] failed: ${rec.error ?? 'unknown error'}`;
+  return `[${rec.tool}] failed: ${toolFailureDetail(rec.tool, rec.error)}`;
 }
 
 /** S9：给任意引擎调用套一层 abort 竞速；signal 为 undefined 时原样返回。 */

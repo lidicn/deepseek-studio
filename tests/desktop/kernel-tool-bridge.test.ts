@@ -81,10 +81,16 @@ describe('ToolBridge（S8 工具执行桥）', () => {
     expect(r.content).toBe('[shell_exec] ok');
   });
 
-  it('11. 无 error 时 failed content 用 unknown error', async () => {
+  // 口径 2026-11-13 统一（PM 批）：`undefined` 不再吐 `unknown error`，改走 `failureTextFor`
+  // （含工具名 + 「请勿重复相同调用」止损句）。**这不是放宽而是加强**：原来只断言一个
+  // 零可动作信息的字面量，现在同时锁「含工具名」「不含 unknown error」「非空」三件事。
+  it('11. 无 error 时 failed content 给可定位的可读文本（口径 2026-11-13 统一，非放宽）', async () => {
     const ex = createFakeExecutor({ shell_exec: { ok: false } });
     const r = await executeToolRecord(ex, rec('shell_exec'));
-    expect(r.content).toContain('unknown error');
+    expect(r.content).toContain('failed');
+    expect(r.content).toContain('shell_exec');
+    expect(r.content).not.toContain('unknown error');
+    expect(r.content.slice('[shell_exec] failed: '.length).trim().length).toBeGreaterThan(0);
   });
 
   it('12. 多记录依次执行结果顺序正确', async () => {
