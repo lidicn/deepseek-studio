@@ -173,10 +173,20 @@ describe('#55 验收断言：L3062/L3104 收尾带原因（现状锁已随批翻
  *   ⇒ 不提取、不执行（hadTools=false，去重/闸门均不经过）；但 raw-tool-text 兜底
  *   （开标签正则允许属性）能剥掉 ⇒ 剥完 cleanReply 为空。（§4 不对称正是本驱动依赖：
  *   若将来解析器支持属性形态，本驱动变形，需换驱动。）
- * - JSON body 内含 ``` 围栏：`shouldNudge` L142「含代码围栏 ⇒ 不 nudge」
+ * - JSON body 内含 ``` 围栏：`shouldNudge` 的围栏判定「偶数围栏 = 已闭合可交付 ⇒ 不 nudge」
  *   ⇒ incompleteReply=false ⇒ 走 L3126「循环真正结束」（不进协议修复支）。
+ *
+ * ⚠️ **围栏必须成对**（2026-11-14 R4-N6 移植后）：奇数次 = 未闭合 = 模型仍在写，
+ * `shouldNudge` 会判"要继续"，于是本驱动会拐进协议修复轮、拿不到 L3146 支（#55 三条用例
+ * 就是这么红的）。要测"交付了一个代码块"，就给**偶数**枚；要测"未闭合"，用
+ * `sseAttrToolUnclosed()`（单枚）并断言它走修复轮。
  */
 function sseAttrTool(): string {
+  return 'data: {"v":[{"type":"RESPONSE","content":"<shell_exec command=\\"echo ```hi``` hi\\">{\\"command\\":\\"echo hi\\"}</shell_exec>"}]}\n\n';
+}
+
+/** 单枚 ```（未闭合代码块）——模型写到一半被截断的形态；R4-N6 起必须判"继续"、走协议修复轮。 */
+function sseAttrToolUnclosed(): string {
   return 'data: {"v":[{"type":"RESPONSE","content":"<shell_exec command=\\"echo ``` hi\\">{\\"command\\":\\"echo hi\\"}</shell_exec>"}]}\n\n';
 }
 
@@ -257,6 +267,50 @@ describe('T-2b 验收断言：全工具原文收尾的中性说明（L3146 支�
       ui.destroy();
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * R4-N6（2026-11-14 移植 `continuation-prompt` 围栏奇偶）的**净增回归锁**。
+ *
+ * 行为变化本身：奇数次 ``` = 未闭合代码块 = 模型仍在写 ⇒ `shouldNudge` 为 true
+ * ⇒ `shouldAttemptProtocolRepair` 为 true ⇒ 走协议修复轮（L3181 支），**不再**落
+ * L3146「循环真正结束」的中性说明。
+ *
+ * 为什么单独一条：上面三条 T-2b 用例测的是"交付了一个**闭合**代码块"（已改成偶数围栏），
+ * 它们抓不住奇偶判定被改回 `includes('```')` 的回归——那条只有本用例抓得住。
+ * 负控：把 `shouldNudge` 的围栏判定改回 `tail.includes('```')` ⇒ 本用例红（走中性说明支）。
+ */
+describe('R4-N6 奇数围栏（未闭合代码块）⇒ 协议修复轮，不落中性说明', () => {
+  it('单枚 ``` 的回复 ⇒ 走协议修复：trace 记 protocol-repair、发修复请求、无中性说明、无 appendError', async () => {
+    vi.useFakeTimers();
+    const { FakeXHR, handle, chatUI } = installHarness();
+    try {
+      fireFirstRound(FakeXHR, 't2b-unclosed');
+      await vi.advanceTimersByTimeAsync(2_000);
+      // 续跑轮：带属性工具标签 + **单枚** ```（未闭合）
+      const reqs = chatRequests(FakeXHR);
+      reqs[reqs.length - 1].respond(200, sseAttrToolUnclosed() + sseDone());
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      // ① 决策 trace：走协议修复（不是「循环真正结束」）
+      const repairDecision = interceptorTraceSnapshot().filter(
+        (e) => e.t === 'continuation.decision' && e.reason === 'protocol-repair' && e.triggered === true,
+      );
+      expect(repairDecision.length).toBeGreaterThan(0);
+
+      // ② 不落中性说明（L3146 支的字面句）
+      const neutral = chatUI.finishAssistantMessage.mock.calls.find(
+        (c) => (c[0] as { fallbackText?: string })?.fallbackText === NEUTRAL_TOOL_ONLY_REPLY_NOTE,
+      );
+      expect(neutral).toBeUndefined();
+      // 本支非故障收尾：不挂 appendError
+      expect(chatUI.appendError.mock.calls.length).toBe(0);
+
+      // ③ 修复轮真的发出去了：请求体 prompt 带协议修复首句
+      const repairReqs = chatRequests(FakeXHR).filter((x) => (x.body ?? '').includes('未完整遵循工具调用协议'));
+      expect(repairReqs.length).toBeGreaterThan(0);
+    } finally { handle.stop(); vi.useRealTimers(); }
   });
 });
 
