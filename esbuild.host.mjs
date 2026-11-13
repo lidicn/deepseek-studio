@@ -18,35 +18,16 @@ import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
+// 2026-11-13 host-freshness 派卡判据②：build 选项抽到 tools/host-build-options.mjs 单一真源，
+// 构建脚本与新鲜度闸都调它——两份各写一遍，将来改 external/banner 时闸会假绿。
+import { hostBuildOptions } from './tools/host-build-options.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const outfile = path.join(__dirname, 'src-tauri/host/main.mjs');
 fs.mkdirSync(path.dirname(outfile), { recursive: true });
 
-await build({
-  entryPoints: [path.join(__dirname, 'src/api/main.ts')],
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  // 宿主 engines 要求 node >= 24；这里目标压到 node20 保证字节码更保守。
-  target: 'node20',
-  outfile,
-  sourcemap: false,
-  minify: false,
-  // ws 的可选原生加速（bufferutil / utf-8-validate）：装了就用、没装 ws 内部自己
-  // try/catch 回退 JS 实现。原生模块**不能**打进单文件，故 external。
-  // banner 注入的 require 让 esbuild 生成的 __require 走真实 require
-  // （ESM 输出里 __require 本来会抛 "Dynamic require of ... is not supported"）。
-  external: ['bufferutil', 'utf-8-validate'],
-  banner: {
-    js: [
-      "import { createRequire as __dshCreateRequire } from 'node:module';",
-      'const require = __dshCreateRequire(import.meta.url);',
-    ].join('\n'),
-  },
-  logLevel: 'info',
-});
+await build(hostBuildOptions(outfile));
 
 const bytes = fs.statSync(outfile).size;
 console.log(`[host] bundled → ${outfile} (${bytes} B)`);

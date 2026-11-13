@@ -51,6 +51,10 @@ const blockingSteps: Step[] = [
   // 重建到临时文件 → sha256 比对跟踪的 src-tauri/inject/entry.js → 不一致就 exit 1。
   // esbuild 构建确定性（锁版本 + 同参数 → 字节级复现）是前提，已实测为证。
   { name: 'entry-freshness', cmd: 'node tools/audit/entry-freshness.cjs' },
+  // 宿主 bundle 新鲜度机械闸（20261113 PM 派卡）：dev 实例跑 7 小时前的 src-tauri/host/main.mjs、
+  // memory-write-gate 新代码不在其中，验收探针全卡 20s——"闸绿≠实例在跑的宿主是新的"。
+  // 重建到临时目录（单一真源选项 tools/host-build-options.mjs）→ sha256 比对 → 不一致 exit 1。
+  { name: 'host-freshness', cmd: 'node tools/audit/host-freshness.cjs' },
   // 行尾断言（20261106 第三件）：index 侧 i/crlf|i/mixed 判红（读 .gitattributes 豁免 eol=crlf/binary，
   // 不硬编码扩展名）。终结「PowerShell 写文件默认 CRLF → 内容没变却显示 M」的行尾伪影。
   { name: 'lineend-guard', cmd: 'npx tsx tools/audit/lineend-guard.ts' },
