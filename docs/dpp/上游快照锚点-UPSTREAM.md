@@ -29,7 +29,7 @@
 | 产物版本 | `dist/chrome-mv3`，**100** 个文件；`build-stamp.txt` = `1793525684315-5jgij0`；扩展 id `jjjhcjjegfplcfncohmfhbdhcalmijnc`（详见上游封存单 §1） |
 | ⚠ 产物口径 | 树哈希对应 **10-31 11:40** 那版构建（`content.js` `737451ba…` / 890,986 B）；封存时 `dist` 是 **11-01 17:35:30** 重建（`content.js` `84105AF7…` / 891,120 B）。两者差 **2 个文件**（`build-stamp.txt`、`content-scripts/content.js`），其余 98 个逐字节一致。引用树哈希须写明「10-31 11:40 版」，引用真机读数须写明「17:35:30 版」——对账见上游封存单 §1.2 |
 | 版本号 | `package.json` → `1.16.0`（`deepseek-plus-plus`） |
-| 提交总数 | 956（`git rev-list --count HEAD`） |
+| 提交总数 | **958**（`git rev-list --count HEAD`，2026-11-14 实测；956 为 2026-11-01 口径读数，差额 2＝冻结失效注记所记 t3/t5 两笔） |
 
 ### 1.2 冻结后提交（6 个，全部在冻结声明之后；前 4 笔＝2026-11-01 收口窗口，后 2 笔＝2026-11-14 复测发现）
 
