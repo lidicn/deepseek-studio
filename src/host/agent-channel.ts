@@ -19,6 +19,8 @@ import type { ChatRoomEvent } from './bot/types';
 import type { PolicyMode } from './policy';
 import { PANEL_POLICY_MODES } from './policy';
 import { verifyWsQueryToken, type WSQueryTokenSource } from './host-token';
+// 2026-11-13：bot 侧对话键的唯一来源（记忆写入硬闸的取证键，两处必须逐字一致）。
+import { memoryConversationId } from './bot/slot-runtime';
 import type {
   StudioExecutionIndex,
   StudioExecutionSession,
@@ -50,6 +52,16 @@ export interface AgentChannelHost {
   onExecutionCleared?: (cb: () => void) => () => void;
   getExecutionIndex?: () => Promise<StudioExecutionIndex | null>;
   getExecutionSession?: (key: string) => Promise<StudioExecutionSession | null>;
+  /**
+   * 2026-11-13 记忆写入硬闸：记下「本轮用户说了什么」（按对话键）。
+   *
+   * **只在 `send` 分支内部调用一次**（用户原话进通道那一刻）。它不是 RPC：
+   * `handle()` 的 switch 没有对应 case，页端发 `{type:'recordUserTurn'}` 只会落到
+   * `default` 分支（unsupported）——证据源不可由页端伪造，`memory-write-gate` 的
+   * 否定语境与指令闸才有意义。改动这里前先看 `tests/desktop/memory-write-gate.test.ts`
+   * 的「页端伪造」用例。
+   */
+  recordUserTurn?(conversationId: string, text: string, at?: number): void;
   /** 电脑端 DeepSeek 页面是否已连接并可执行。 */
   desktopPageConnected?: () => boolean;
   readonly policyMode: PolicyMode;
@@ -300,6 +312,11 @@ export function createAgentChannel(options: AgentChannelOptions): AgentChannel {
             return;
           }
           ack(true, { botId });
+          // 2026-11-13 长期记忆写入硬闸：**证据只在「用户原话进通道」这一处落**。
+          // `text` 是用户经 `/agent-ws` 发来的原话（上面已 trim 且空串直接 missing-text 拒），
+          // 模型输出、工具结果、系统提示都不经过这里 —— 不会被当成「用户说过记住」。
+          // 键必须与 bot 侧工具调用用的对话键逐字一致（`memoryConversationId`）。
+          options.host.recordUserTurn?.(memoryConversationId(botId), text);
           await bot.sendMessage(text);
           return;
         }

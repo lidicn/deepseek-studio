@@ -234,6 +234,9 @@ describe('M10-6 source 由宿主赋值（宿主 WS，15s 上限）', () => {
       });
       await new Promise((resolve) => setTimeout(resolve, 100));
 
+      // 2026-11-13 记忆写入硬闸前置（断言语义零改动）：先落一条「本轮用户话语」，
+      // 再以同一对话 id 调 memory.save —— 闸门按对话取证，缺证据会 fail-closed。
+      host.recordUserTurn('mem-gate-conv', '记住这个偏好');
       const saved = await host.invokeTool('memory.save', {
         type: 'user',
         name: 'src-probe',
@@ -241,7 +244,7 @@ describe('M10-6 source 由宿主赋值（宿主 WS，15s 上限）', () => {
         source: 'user',
         confidence: 1,
         personaTags: ['audit'],
-      });
+      }, undefined, 'mem-gate-conv');
       expect(saved.ok).toBe(true);
       const id = (saved.data as { id: string }).id;
 

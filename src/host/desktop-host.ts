@@ -153,6 +153,9 @@ import {
   type StudioExecutionIndex,
   type StudioExecutionSession,
 } from '../shared/studio-execution';
+// 2026-11-13：长期记忆写入硬闸（提示词可以被模型无视，写库这一步必须有宿主侧的闸）。
+import { evaluateMemorySaveGate, type MemorySaveGateOptions } from '../shared/memory-write-gate';
+import { createUserTurnLedger } from './user-turn-ledger';
 
 export interface DesktopHostOptions {
   config: ApiConfig;
@@ -176,6 +179,11 @@ export interface DesktopHostOptions {
   policyMode?: PolicyMode;
   /** M7 D3：ApiEngine 配置（真实 API key，缺省走 WebEngine 网页拦截）。 */
   apiEngine?: { baseURL: string; apiKey: string; model: string };
+  /**
+   * 2026-11-13 长期记忆写入硬闸：词表/句式可配（默认见 `src/shared/memory-write-gate.ts`
+   * 的 `DEFAULT_MEMORY_CUE_WORDS` / `DEFAULT_TASK_PHRASES`）。缺省＝默认，只在扩词时提供。
+   */
+  memoryWriteGate?: MemorySaveGateOptions;
   /**
    * C1 墨鉴 R2-2：KV 落盘文件路径（默认 ~/.config/deepseek-studio/storage.json）。
    * 缺省行为不变；显式传（测试用临时目录）才能观测「stop 前 flush 是否落盘」。
@@ -354,6 +362,16 @@ export interface DesktopHost {
   onExecutionCleared(cb: () => void): () => void;
   getExecutionIndex(): Promise<StudioExecutionIndex | null>;
   getExecutionSession(key: string): Promise<StudioExecutionSession | null>;
+  /**
+   * 记一笔「本轮用户说了什么」（`memory.save` 硬闸的证据来源之一）。
+   *
+   * 页端聊天路径的证据由页端自己经 `kv-set` 落进宿主 KV，不需要调这里；
+   * 这个入口给**宿主直接收到用户话语**的路径（聊天室 `handleUserMessage` 等）与测试用。
+   * 只保留每个会话最近一条，带 TTL（见 `user-turn-ledger.ts`）。
+   */
+  recordUserTurn(conversationId: string, text: string, at?: number): void;
+  /** 读当前可用的「本轮用户话语」（台账 → 页端 KV 会话事件），无证据返回 undefined。 */
+  readCurrentUserTurn(conversationId?: string): Promise<string | undefined>;
 }
 
 export interface AgentFacade {
@@ -1852,6 +1870,51 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
    */
   const conversationStore = createConversationApprovalStore();
 
+  /**
+   * 2026-11-13：`memory.save` 硬闸的「本轮用户话语」台账。
+   *
+   * 页端聊天路径的证据在宿主 KV 里（页端 `user-message` 事件，见 `readCurrentUserTurn`）；
+   * 台账补的是**宿主自己收到用户话语**的路径与测试注入。两份来源都过期/缺失时一律拒绝。
+   */
+  const userTurnLedger = createUserTurnLedger();
+
+  /**
+   * 从页端落进宿主 KV 的执行会话里，取该对话**最近一条** `user-message` 原文。
+   *
+   * 现场依据（2026-11-12 `chat:ff7fc62f-…`）：页端 UI 在用户发消息时把
+   * `{type:'user-message', text, turnId, at}` 写进 `studio.execution.v2.session.<hash>`
+   * （`studioExecutionStorageKey(conversationId)`），宿主经 `kv-set` 落盘。
+   * 读不到 / 形状不符 → undefined（调用方 fail-closed 拒绝，不猜）。
+   */
+  async function userTextFromExecutionSession(conversationId: string): Promise<string | undefined> {
+    let raw: unknown;
+    try {
+      raw = await kvGet(studioExecutionStorageKey(conversationId));
+    } catch {
+      return undefined;
+    }
+    if (!isStudioExecutionSession(raw)) return undefined;
+    for (let i = raw.events.length - 1; i >= 0; i -= 1) {
+      const e = raw.events[i];
+      if (e.type !== 'user-message') continue;
+      if (typeof e.text === 'string' && e.text.trim()) return e.text;
+      return undefined;
+    }
+    return undefined;
+  }
+
+  /**
+   * 当前可用的「本轮用户话语」：台账优先（更近、可注入），否则读页端会话事件。
+   * 两者都没有 → undefined，由闸门按 fail-closed 拒绝。
+   */
+  async function readCurrentUserTurn(conversationId?: string): Promise<string | undefined> {
+    const key = typeof conversationId === 'string' ? conversationId : '';
+    if (!key) return undefined;
+    const ledgerHit = userTurnLedger.latest(key);
+    if (ledgerHit) return ledgerHit.text;
+    return userTextFromExecutionSession(key);
+  }
+
   function randomCallId(): string {
     return crypto.randomUUID();
   }
@@ -1902,6 +1965,39 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     const executor = side === 'host' ? hostTools.get(name) : capabilities.get(name);
     if (!executor) {
       return finish('unknown-capability', 'unknown-capability');
+    }
+    // ── 2026-11-13 长期记忆写入硬闸 ──────────────────────────────────────
+    //
+    // 现场（`chat:ff7fc62f`）：用户整轮只说「查询客厅有哪些设备」，模型先调两次
+    // `memory.save`（把一次操作写成用户身份、把一次性任务写成 `type=project` 长期记忆并
+    // 固化工具名 `af_list_entities`），下一次会话据此**原样重放**该调用。
+    // 注入提示词里早就写了「只有用户明确要求才 memory_save」——但提示词不是闸，模型可以不听。
+    //
+    // 闸放在这里而不是 capability 的 execute 里，是因为**只有本函数持有 conversationId**：
+    // 「本轮用户说了什么」必须按对话去查（台账 / 页端 KV 的 `user-message` 事件），
+    // 拿不到证据就 fail-closed 拒绝（`memory-save-no-user-turn`），绝不静默放行。
+    if (name === 'memory.save') {
+      const bag = (params ?? {}) as Record<string, unknown>;
+      const userText = await readCurrentUserTurn(conversationId);
+      const gate = evaluateMemorySaveGate(
+        {
+          type: String(bag.type ?? ''),
+          name: String(bag.name ?? ''),
+          content: String(bag.content ?? ''),
+          userText,
+        },
+        options.memoryWriteGate,
+      );
+      if (!gate.allow) {
+        // 拒绝必须留痕：原因码进审计，人话（含同一个码）进 content 交给模型。
+        audit.record({ ...ctx, outcome: 'denied', reason: gate.code, durationMs: Date.now() - startedAt });
+        return {
+          ok: false,
+          reason: gate.code,
+          isError: true,
+          content: [{ type: 'text', text: gate.error }],
+        };
+      }
     }
     // R2-05：宿主内部 origin（HOST_INTERNAL_ORIGIN）显式放行；页面来源仍必须命中白名单，
     // 闸门不再因硬编码 DEEPSEEK_ORIGIN 而对内部调用恒真。
@@ -2929,6 +3025,13 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     async getExecutionSession(key) {
       const value = await kvGet(studioExecutionStorageKey(key));
       return isStudioExecutionSession(value) ? value : null;
+    },
+    // 2026-11-13：记忆写入硬闸的「本轮用户话语」入口（见 DesktopHost 接口注释）。
+    recordUserTurn(conversationId, text, at) {
+      userTurnLedger.record(conversationId, text, at);
+    },
+    readCurrentUserTurn(conversationId) {
+      return readCurrentUserTurn(conversationId);
     },
   };
 }

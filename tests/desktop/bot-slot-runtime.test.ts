@@ -16,6 +16,7 @@ import {
   PAGE_DRIVING_TOOLS,
   REASON_TOOL_NOT_ALLOWED,
   createPersonaExecutor,
+  memoryConversationId,
   renderPersonaBlock,
   renderTaskText,
 } from '../../src/host/bot/slot-runtime';
@@ -45,8 +46,18 @@ describe('createPersonaExecutor —— 人设工具白名单', () => {
     const r = await exec('file.read', { path: '/etc/hosts' });
     expect(r.ok).toBe(true);
     expect(invokeTool).toHaveBeenCalledTimes(1);
-    // botId 必须透传——否则多窗口寻址失效
-    expect(invokeTool).toHaveBeenCalledWith('file.read', { path: '/etc/hosts' }, 'b1');
+    // botId 必须透传——否则多窗口寻址失效；第 4 参用 memoryConversationId() 取键，不硬编码 'bot:b1'
+    expect(invokeTool).toHaveBeenCalledWith(
+      'file.read',
+      { path: '/etc/hosts' },
+      'b1',
+      memoryConversationId('b1'),
+    );
+    // 记忆取证键＝`bot:<botId>`，与 `agent-channel` 落证据的键逐字一致。
+    // 单独断言一次：toHaveBeenCalledWith 只能证明「传了什么」，这条锁住「键格式本身」——
+    // 若 memoryConversationId 改了前缀（bot: → agent: 之类），这里必须红，不能靠顺带覆盖。
+    expect((invokeTool.mock.calls[0] as unknown[])[3]).toBe('bot:b1');
+    expect((invokeTool.mock.calls[0] as unknown[])[3]).toBe(memoryConversationId('b1'));
   });
 
   it('页面驱动工具不受白名单限制（引擎↔页面通信通道，必须始终可用）', async () => {

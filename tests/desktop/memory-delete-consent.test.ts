@@ -7,6 +7,14 @@ import type { HostToPageMessage } from '../../src/host/protocol';
 import type { DesktopHost } from '../../src/host/desktop-host';
 
 let host: DesktopHost | null = null;
+
+/**
+ * 2026-11-13 记忆写入硬闸前置（断言语义零改动）：memory.save 现在要求「本轮用户话语」
+ * 证据并按对话 id 取证，本文件写入接到同一对话上下文并先落一条记忆指令。
+ */
+const MEM_GATE_CONV = 'mem-gate-conv';
+const saveMem = (params: Record<string, unknown>) =>
+  host!.invokeTool('memory.save', params, undefined, MEM_GATE_CONV);
 let tmpDir = '';
 let previousConfigDir: string | undefined;
 
@@ -53,6 +61,7 @@ beforeEach(async () => {
     policyMode: 'full',
   });
   await host.start();
+  host.recordUserTurn(MEM_GATE_CONV, '记住这个偏好');
 });
 
 afterEach(async () => {
@@ -85,7 +94,7 @@ describe('M10-3 memory.delete broadcast', () => {
     const ws = await connectPage(host!, seen);
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    const saved = await host!.invokeTool('memory.save', {
+    const saved = await saveMem({
       type: 'user',
       name: 'delete-me',
       content: 'temporary',

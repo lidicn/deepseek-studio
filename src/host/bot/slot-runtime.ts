@@ -43,8 +43,23 @@ const MAX_TASK_TEXT_CHARS = 4000;
 
 export type BotExecutor = (tool: string, params: unknown) => Promise<ToolExecutionResult>;
 
-/** 宿主提供的真实执行器：desktop-host.invokeTool（完整授权链 + 同意闸门）。 */
-export type InvokeTool = (tool: string, params: unknown, botId?: string) => Promise<ToolExecutionResult>;
+/**
+ * 宿主提供的真实执行器：desktop-host.invokeTool（完整授权链 + 同意闸门）。
+ *
+ * 2026-11-13：补第 4 参 `conversationId` —— 长期记忆写入硬闸按**对话**取「本轮用户话语」证据，
+ * bot 侧一律用 `memoryConversationId(botId)`（= `bot:<botId>`），否则闸门只能 fail-closed 拒。
+ */
+export type InvokeTool = (
+  tool: string,
+  params: unknown,
+  botId?: string,
+  conversationId?: string,
+) => Promise<ToolExecutionResult>;
+
+/** bot 侧对话键：与 `agent-channel` 落 user-turn 时的键**必须逐字一致**。 */
+export function memoryConversationId(botId: string): string {
+  return `bot:${botId || 'main'}`;
+}
 
 export interface SlotRuntimeOptions {
   /** Bot 注册表（需带 getState 的 BotRegistryInternal）。 */
@@ -106,7 +121,7 @@ export function createPersonaExecutor(opts: {
   const { whitelist, invokeTool, onLog } = opts;
   // 白名单为空/缺省 = 继承全部工具（与 v0.23/v0.24 一致），直接透传不多一层判断。
   if (!whitelist || whitelist.size === 0) {
-    return (tool, params) => invokeTool(tool, params, opts.botId);
+    return (tool, params) => invokeTool(tool, params, opts.botId, memoryConversationId(opts.botId));
   }
   return (tool, params) => {
     if (!whitelist.has(tool) && !PAGE_DRIVING_TOOLS.has(tool)) {
@@ -118,7 +133,7 @@ export function createPersonaExecutor(opts: {
         content: [{ type: 'text', text: `工具 ${tool} 不在当前人设的允许列表中，已拒绝执行。` }],
       });
     }
-    return invokeTool(tool, params, opts.botId);
+    return invokeTool(tool, params, opts.botId, memoryConversationId(opts.botId));
   };
 }
 
@@ -274,3 +289,5 @@ export function createSlotRuntime(options: SlotRuntimeOptions): SlotRuntime {
 
   return { loadPersona, unloadPersona, loaded, executorFor, run, renderPersonaBlock, renderTaskText };
 }
+
+

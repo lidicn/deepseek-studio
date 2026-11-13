@@ -14,6 +14,15 @@ import type { HostToPageMessage } from '../../src/host/protocol';
 import type { DesktopHost } from '../../src/host/desktop-host';
 
 let host: DesktopHost | null = null;
+
+/**
+ * 2026-11-13 记忆写入硬闸前置（断言语义零改动）：
+ * `memory.save` 现在要求「本轮用户话语」证据，并按对话 id 取证。
+ * 本文件全部写入都接到同一个对话上下文，并先落一条明确的记忆指令。
+ */
+const MEM_GATE_CONV = 'mem-gate-conv';
+const saveMem = (params: Record<string, unknown>) =>
+  host!.invokeTool('memory.save', params, undefined, MEM_GATE_CONV);
 let tmpDir = '';
 let previousConfigDir: string | undefined;
 
@@ -57,6 +66,8 @@ beforeEach(async () => {
     policyMode: 'full',
   });
   await host.start();
+  // 2026-11-13 记忆写入硬闸前置：本轮用户明确要求记住（闸门按对话取「本轮用户话语」）。
+  host.recordUserTurn(MEM_GATE_CONV, '记住这个偏好');
 });
 
 afterEach(async () => {
@@ -79,7 +90,7 @@ describe('M10-5 归档生命周期', () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     const { getMemoryStore } = await import('../../src/host/memory-store');
 
-    const saved = await host!.invokeTool('memory.save', {
+    const saved = await saveMem({
       type: 'user',
       name: 'archive-me',
       content: '生命周期用例',
@@ -127,7 +138,7 @@ describe('M10-5 归档生命周期', () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     const canary = 'PHYSICAL-PURGE-CANARY-20261029';
-    const saved = await host!.invokeTool('memory.save', {
+    const saved = await saveMem({
       type: 'user',
       name: canary,
       content: `内容 ${canary}`,
@@ -156,7 +167,7 @@ describe('M10-5 归档生命周期', () => {
     expect(missing.ok).toBe(false);
     expect(missing.reason).toBe('memory-not-found');
 
-    const saved = await host!.invokeTool('memory.save', { type: 'user', name: 'live', content: 'c' });
+    const saved = await saveMem({ type: 'user', name: 'live', content: 'c' });
     const id = (saved.data as { id: string }).id;
     const notArchived = await host!.invokeTool('memory.unarchive', { id });
     expect(notArchived.ok).toBe(false);
@@ -188,10 +199,10 @@ describe('M10-5 归档生命周期', () => {
     const namesOf = (r: { data?: unknown }): string[] =>
       (r.data as { memories: Array<{ name: string }> }).memories.map((m) => m.name);
 
-    await host!.invokeTool('memory.save', { type: 'user', name: 'u-old', content: 'u' });
+    await saveMem({ type: 'user', name: 'u-old', content: 'u' });
     await new Promise((resolve) => setTimeout(resolve, 5));
-    const p = await host!.invokeTool('memory.save', { type: 'project', name: 'p-new', content: 'p' });
-    await host!.invokeTool('memory.save', { type: 'project', name: 'p-pin', content: 'pin', pinned: true });
+    const p = await saveMem({ type: 'project', name: 'p-new', content: 'p' });
+    await saveMem({ type: 'project', name: 'p-pin', content: 'pin', pinned: true });
 
     const listed = await host!.invokeTool('memory.list', {});
     expect(listed.ok).toBe(true);
