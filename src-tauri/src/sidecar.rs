@@ -16,10 +16,21 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-// ── 契约常量（⛔ DCD 禁改：端口 / 端点）──────────────────────────────
+// ── 契约常量（⛔ DCD 禁改：端点 / 默认端口）──────────────────────────
 pub const HEALTH_HOST: &str = "127.0.0.1";
-pub const HEALTH_PORT: u16 = 8760;
+/// **默认**端口。TD-06 起它不再是唯一真相：实际端口由 `health_port()` 解析
+/// （`DEEPSEEK_STUDIO_PORT` → `config.json.port` → 本常量），与 TS `config-loader.parsePort` 同序。
+pub const DEFAULT_HEALTH_PORT: u16 = 8760;
+/// 兼容旧名：语义等同 `DEFAULT_HEALTH_PORT`（既有测试与调用点仍引用它）。
+///
+/// 生产路径**不再使用**它（一律 `health_port()` 解析值），只有 td05 那组
+/// 「默认端口 8760 场景」的装置还在用 —— 故标注 dead_code 而不是删掉：
+/// 删了等于删守卫（PM 判据④：`assert_8760_free_or_die` / `Fake8760` / `td05_*` 保持原样）。
+#[allow(dead_code)]
+pub const HEALTH_PORT: u16 = DEFAULT_HEALTH_PORT;
 pub const HEALTH_PATH: &str = "/healthz";
+/// 端口环境变量名（与 TS `loadConfig` 同一名字，两边必须逐字一致）。
+pub const HEALTH_PORT_ENV: &str = "DEEPSEEK_STUDIO_PORT";
 
 // ── 时间预算（DCD 写死）───────────────────────────────────────────────
 pub const STARTUP_HEALTH_TIMEOUT: Duration = Duration::from_secs(60);
@@ -71,15 +82,88 @@ pub enum SidecarEvent {
     },
 }
 
+// ── 端口解析（TD-06：Rust 侧单一真相）──────────────────────────────────
+
+/// 端口校验：与 `src/api/config-loader.ts:parsePort` **逐条对齐**。
+///
+/// 非有限数 / 非整数 / `<1` / `>65535` / 空串 → `None`（调用方回落默认端口）。
+/// 不 panic、不静默接受非法值：宁可回落到已知可用端口，也不要让非法值走到 `listen()` 才炸。
+pub fn parse_health_port(raw: &str) -> Option<u16> {
+    let text = raw.trim();
+    if text.is_empty() {
+        return None;
+    }
+    // 用 f64 解析，与 TS `Number(text)` 覆盖面一致（`"8760.5"`/`"1e3"`/`"inf"` 都能进来），
+    // 再按 TS 的四条规则逐条判：有限、整数、1..=65535。
+    let n: f64 = text.parse().ok()?;
+    if !n.is_finite() || n.fract() != 0.0 {
+        return None;
+    }
+    if !(1.0..=65535.0).contains(&n) {
+        return None;
+    }
+    Some(n as u16)
+}
+
+/// 解析顺序（**与 TS 同序**）：`DEEPSEEK_STUDIO_PORT` → `config.json.port` → 8760。
+///
+/// ⚠️ 语义细节必须与 TS 一模一样：TS 是 `parsePort(env ?? stored.port ?? 8760)` ——
+/// **env 一旦存在（哪怕非法）就吃掉整条链**，回落默认、不再看 config。
+/// 写成 `parse(env).or(parse(config)).unwrap_or(default)` 会让 "env=abc + config=9000"
+/// 落到 9000，而 TS 落到 8760 —— 那正是「两边各一套口径」的复发形态。
+pub fn resolve_health_port_from(env: Option<&str>, config_port: Option<&str>) -> u16 {
+    if let Some(raw) = env {
+        return parse_health_port(raw).unwrap_or(DEFAULT_HEALTH_PORT);
+    }
+    if let Some(raw) = config_port {
+        return parse_health_port(raw).unwrap_or(DEFAULT_HEALTH_PORT);
+    }
+    DEFAULT_HEALTH_PORT
+}
+
+/// 从 `config.json` 文本里取 `port` 的**原始值**（字符串或数字都保留原样）。
+///
+/// 保留原样而不是先转 `u16`：TS 侧对字符串 `"9000"`、数字 `9000` 一视同仁，
+/// Rust 若只认 `u16` 会在用户手写成字符串时整份配置解析失败 → 静默回到 8760。
+/// 其它类型（bool/object/array）按 TS `Number(x)` 的等价结论——非法 → 交回 `None`。
+fn config_port_raw(config_json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(config_json).ok()?;
+    match v.get("port")? {
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::String(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// 实际端口解析一次的结果（config.json 可能在宿主启动后才写出，重复解析会抖动）。
+static RESOLVED_HEALTH_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+/// 全进程唯一端口真相：env → config.json `port` → 8760（只解析一次）。
+///
+/// 解析一次而不是每次读盘：`config.json` 在首启时由宿主自己写出，
+/// 每次探活都重读会让「窗口 URL 用 A、探活用 B」这种漂移重新长出来。
+pub fn resolve_health_port() -> u16 {
+    let env = std::env::var(HEALTH_PORT_ENV).ok();
+    let cfg = std::fs::read_to_string(crate::config_dir().join("config.json")).ok();
+    let cfg_port = cfg.as_deref().and_then(config_port_raw);
+    resolve_health_port_from(env.as_deref(), cfg_port.as_deref())
+}
+
+/// 取解析后的实际端口（进程内只算一次）。
+pub fn health_port() -> u16 {
+    *RESOLVED_HEALTH_PORT.get_or_init(resolve_health_port)
+}
+
 // ── 健康检查 ───────────────────────────────────────────────────────────
 
-fn probe_health() -> bool {
+/// 在**指定端口**上探活（`GET /healthz` 要 200）。
+fn probe_health_on(port: u16) -> bool {
     let request = format!(
         "GET {} HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\n\r\n",
-        HEALTH_PATH, HEALTH_HOST, HEALTH_PORT
+        HEALTH_PATH, HEALTH_HOST, port
     );
-    // parse() 失败时优雅返回 false，不 panic（防御性编程：常量未来可能改动态配置）
-    let addr = match format!("{}:{}", HEALTH_HOST, HEALTH_PORT).parse() {
+    // parse() 失败时优雅返回 false，不 panic（防御性编程：端口可来自用户配置）
+    let addr = match format!("{}:{}", HEALTH_HOST, port).parse() {
         Ok(a) => a,
         Err(_) => {
             eprintln!("[sidecar] health probe: failed to parse address");
@@ -103,6 +187,20 @@ fn probe_health() -> bool {
         .unwrap_or(false)
 }
 
+/// 默认端口探活（**默认路径逐字节不变**：无 env 且 config 无 port 时就是 8760）。
+///
+/// 既有 td05 那组装置（`assert_8760_free_or_die` / `Fake8760`）测的就是「默认端口场景」，
+/// 它们继续走这条入口；生产路径一律走 `probe_active_health()`（解析后的实际端口）。
+#[allow(dead_code)]
+fn probe_health() -> bool {
+    probe_health_on(HEALTH_PORT)
+}
+
+/// 生产用探活：解析后的实际端口（TD-06 全链替换点之一）。
+fn probe_active_health() -> bool {
+    probe_health_on(health_port())
+}
+
 /// TD-05：组合健康谓词 —— 端口应答 **且** 宿主子进程仍存活。
 ///
 /// 原实现只问 `probe_health()`（纯 TCP/HTTP），不看子进程是否还活着。
@@ -113,6 +211,9 @@ fn probe_health() -> bool {
 /// - `child.try_wait()` 返回 `Ok(None)` = 仍在运行 => 存活；
 /// - 返回 `Ok(Some(_))` = 已退出；`Err(_)` = 无法判定（保守按「不存活」处理，宁可重启）。
 ///
+/// ⚠️ TD-06：探活端口取**解析值**（`health_port()`），不再是常量 8760 ——
+/// 否则用户把 config.json 的 port 改掉后，「宿主在 9000 上活着」会被判成「不健康」。
+///
 /// 这是纯函数，便于单测（`child` 可为任意存活的子进程，端口应答由真实 TCP 给出）。
 pub fn is_healthy(child: &mut Child) -> bool {
     let alive = matches!(child.try_wait(), Ok(None));
@@ -120,7 +221,7 @@ pub fn is_healthy(child: &mut Child) -> bool {
         // 子进程已死 → 无论端口有没有人应答，都不是「我们的」健康宿主。
         return false;
     }
-    probe_health()
+    probe_active_health()
 }
 
 /// TD-09：运行日志保留上限 —— 只保留 `sidecar-<epoch_ms>.log` 里最新的 `keep` 个。
@@ -183,15 +284,20 @@ pub const CRASH_LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
 /// TD-09：sidecar 运行日志保留个数上限（按次命名文件）。
 pub const SIDECAR_LOG_KEEP: usize = 20;
 
-/// 8760 端口上是否仍有人监听（只做 TCP 连通判断，不要求 HTTP 200）。
+/// 指定端口上是否仍有人监听（只做 TCP 连通判断，不要求 HTTP 200）。
+fn port_in_use_on(port: u16) -> bool {
+    match format!("{}:{}", HEALTH_HOST, port).parse() {
+        Ok(addr) => TcpStream::connect_timeout(&addr, HEALTH_PROBE_TIMEOUT).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// 实际端口（TD-06 解析值）上是否仍有人监听。
 ///
 /// 用途：关闭时判断是否还需要跑 `netstat` / PowerShell CIM 这些昂贵兜底。
 /// 端口已经空闲就说明宿主彻底没了，没必要再花 1~2s 扫进程表。
 fn port_in_use() -> bool {
-    match format!("{}:{}", HEALTH_HOST, HEALTH_PORT).parse() {
-        Ok(addr) => TcpStream::connect_timeout(&addr, HEALTH_PROBE_TIMEOUT).is_ok(),
-        Err(_) => false,
-    }
+    port_in_use_on(health_port())
 }
 
 fn terminate_process_tree_by_pid(pid: u32) {
@@ -206,8 +312,9 @@ fn terminate_process_tree_by_pid(pid: u32) {
         let _ = crate::terminate_tree(pid);
         // 端口已空闲说明宿主彻底没了 → 没必要再跑一次 netstat 全表扫描。
         // 实测那一步在负载机器上要 1~2s，且会闪一个控制台黑框。
+        // TD-06：清端口也按**解析值**，否则用户改端口后残留进程清不掉。
         if port_in_use() {
-            terminate_listener_on_port(HEALTH_PORT);
+            terminate_listener_on_port(health_port());
         }
     }
     #[cfg(not(windows))]
@@ -718,6 +825,16 @@ impl SidecarSupervisor {
         };
         cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
 
+        // TD-06：把**解析后的实际端口**显式注入宿主。
+        //
+        // 为什么必须注入而不是「让宿主自己再解析一遍」：宿主会再按
+        // `DEEPSEEK_STUDIO_PORT → config.json.port → 8760` 解析一次，两边读同一份输入
+        // 理论上同值，但首启时 `config.json` 还不存在（由宿主自己写出），
+        // 「Rust 在 config 缺失时解析 8760、宿主拿到了更新后的 config 里的 9000」
+        // 这类时序差会让「探活一个端口、监听另一个端口」。注入 env 之后，
+        // 宿主的第一优先级就是这条值 ⇒ 探活/清理/报错/监听四处必然是同一个端口。
+        cmd.env(HEALTH_PORT_ENV, health_port().to_string());
+
         // ① 运行时日志落盘（路线图 §12 第 7 项）：
         // 原来只有崩溃时写 crash.jsonl，运行时 stdout/stderr **全丢**——GUI 启动（不重定向）时
         // sidecar 一条日志都不剩，「出问题没法查」的根因之一。
@@ -926,11 +1043,11 @@ impl SidecarSupervisor {
                 // 上方 child 已被 take 并强杀，try_wait 恒为 Some（已退出），
                 // 加进程存活判定会让本分支永远不成立、丢掉「端口被无关进程占用」的识别。
                 // 该分支要判的正是「我们的宿主已杀，端口却仍有人应答」= 外部占用。
-                if self.restarts == 0 && probe_health() {
+                if self.restarts == 0 && probe_active_health() {
                     // 杀掉子进程后端口仍有人应答 → 端口被外部进程占用。
                     let reason = format!(
                         "port {} already in use by another process (local API failed to bind)",
-                        HEALTH_PORT
+                        health_port()
                     );
                     self.set_state(SidecarState::StartupFailed(reason.clone()));
                     self.write_crash_log(&reason);
@@ -981,7 +1098,7 @@ impl SidecarSupervisor {
                         if status.code() == Some(SIDECAR_EXIT_PORT_CONFLICT) {
                             let reason = format!(
                                 "local API port {} is already in use; close the process holding it, or change port in config.json",
-                                HEALTH_PORT
+                                health_port()
                             );
                             self.set_state(SidecarState::StartupFailed(reason.clone()));
                             self.write_crash_log(&reason);
@@ -1064,17 +1181,17 @@ impl SidecarSupervisor {
             // 强杀之后同样兜底：taskkill /T 覆盖不到 tsx fork 出的孙进程。
             // v0.32：端口已空闲就跳过这两步（单次 1~2s，是退出慢的主因）。
             if port_in_use() {
-                terminate_listener_on_port(HEALTH_PORT);
+                terminate_listener_on_port(health_port());
                 terminate_host_by_cmdline();
             }
         }
         self.child_pid.store(0, Ordering::SeqCst);
-        // 兜底：无论上面哪条路径，退出前确认 8760 真的没人听了。
+        // 兜底：无论上面哪条路径，退出前确认实际端口（TD-06 解析值）真的没人听了。
         // 否则下次启动的宿主会撞 EADDRINUSE → exit(2) → StartupFailed。
         // 端口兜底读不到 OwningProcess=0 的 socket，命令行兜底才是主路径。
         if port_in_use() {
             terminate_host_by_cmdline();
-            terminate_listener_on_port(HEALTH_PORT);
+            terminate_listener_on_port(health_port());
         }
         self.set_state(SidecarState::Stopped);
         eprintln!("[sidecar] stopped (graceful shutdown)");
@@ -1309,6 +1426,21 @@ mod td_tests {
     ///
     /// 为什么不是「检测到占用就 kill」：测试无权杀用户进程（杀是产品的行为，不是测试的）。
     fn assert_8760_free_or_die(stage: &str) {
+        // ── TD-06（2026-11-13，PM 批）：装置前置 —— 端口必须解析成默认 8760 ──
+        //
+        // 本组用例的语义是「**8760 被无关进程占着**」。端口可配置之后，
+        // 一旦环境里有 `DEEPSEEK_STUDIO_PORT`（或 config.json 改了 port），
+        // `health_port()` 就不再是 8760 ⇒ 假服务绑在 8760、探活却打别的端口，
+        // 失败表现会退化成「超时 / 连不上」，读的人要查很久才知道是环境变量。
+        //
+        // 所以在这里**前置 panic**（不 skip、不 `#[ignore]`）：前置不满足就一行说清怎么修。
+        assert_eq!(
+            health_port(),
+            DEFAULT_HEALTH_PORT,
+            "td05 装置绑定默认端口 8760：检测到 {} 被解析为 {}——请先 unset DEEPSEEK_STUDIO_PORT（或设成 8760）再跑本组用例",
+            HEALTH_PORT_ENV,
+            health_port()
+        );
         if port_8760_accepting() {
             let pid = port_8760_owner_pid()
                 .map(|p| p.to_string())
@@ -1625,5 +1757,114 @@ mod td_tests {
         // 空白 STUDIO_NODE 等同未设置
         let c2 = resolve_node(None, Some("   "), "node");
         assert_eq!(c2.label, "PATH node");
+    }
+
+    // ── TD-06：端口可配置（Rust 侧不再硬编码 8760）──────────────────────
+    //
+    // 判据（PM 卡）：① 与 TS `parsePort` 同序同校验；② 全链替换无残留硬编码；
+    // ③ 默认路径逐字节不变；④ td05 装置原样保留（本组用例**不碰 8760**）。
+
+    /// 死线：默认常量本身不许被这次改动挪走（默认路径的锚点）。
+    #[test]
+    fn td06_default_port_constant_stays_8760() {
+        assert_eq!(DEFAULT_HEALTH_PORT, 8760);
+        assert_eq!(HEALTH_PORT, DEFAULT_HEALTH_PORT);
+        assert_eq!(HEALTH_PORT_ENV, "DEEPSEEK_STUDIO_PORT");
+    }
+
+    /// 校验规则与 `src/api/config-loader.ts:parsePort` 逐条对齐。
+    #[test]
+    fn td06_parse_health_port_matches_ts_parse_port() {
+        // 合法：整数且在 1..=65535
+        assert_eq!(parse_health_port("8760"), Some(8760));
+        assert_eq!(parse_health_port(" 9000 "), Some(9000));
+        assert_eq!(parse_health_port("1"), Some(1));
+        assert_eq!(parse_health_port("65535"), Some(65535));
+        assert_eq!(parse_health_port("1e3"), Some(1000)); // TS Number('1e3') 合法
+        // 非法：空 / 非数 / 非整数 / 越界 → None（调用方回落默认，不 panic 不静默使用）
+        for bad in ["", "   ", "abc", "8760.5", "0", "-1", "65536", "NaN", "inf"] {
+            assert_eq!(parse_health_port(bad), None, "应按 TS 规则拒绝: {bad:?}");
+        }
+    }
+
+    /// 解析顺序：env → config.port → 默认。
+    #[test]
+    fn td06_resolve_order_env_then_config_then_default() {
+        assert_eq!(resolve_health_port_from(Some("9000"), Some("9100")), 9000);
+        assert_eq!(resolve_health_port_from(None, Some("9100")), 9100);
+        // 死线：默认路径（两边都没有）必须还是 8760
+        assert_eq!(resolve_health_port_from(None, None), DEFAULT_HEALTH_PORT);
+    }
+
+    /// **与 TS 同义的关键一格**：env 一旦存在（哪怕非法）就吃掉整条链。
+    /// 写成 `parse(env).or(parse(config))` 在这里会返回 9100 —— 那正是缺陷复发形态。
+    #[test]
+    fn td06_invalid_env_falls_back_to_default_not_config() {
+        assert_eq!(resolve_health_port_from(Some("abc"), Some("9100")), DEFAULT_HEALTH_PORT);
+        assert_eq!(resolve_health_port_from(Some("0"), Some("9100")), DEFAULT_HEALTH_PORT);
+    }
+
+    /// config.json 的 `port` 数字/字符串两种形态都要认（TS 两侧一视同仁）。
+    #[test]
+    fn td06_config_port_raw_accepts_number_and_string() {
+        assert_eq!(config_port_raw(r#"{"port":9000}"#).as_deref(), Some("9000"));
+        assert_eq!(config_port_raw(r#"{"port":"9000"}"#).as_deref(), Some("9000"));
+        // 其它类型 → None（TS Number(x) 结论等价的非法值）
+        assert_eq!(config_port_raw(r#"{"port":true}"#), None);
+        // 没有 port 字段 / 整份损坏 → None
+        assert_eq!(config_port_raw(r#"{"host":"127.0.0.1"}"#), None);
+        assert_eq!(config_port_raw("not-json"), None);
+    }
+
+    /// 全链替换锁：生产接线里不许再出现「拿常量当探活/清端口目标」的写法。
+    ///
+    /// needle 用运行时拼串，避免断言文字自己出现在被扫描的源码里造成自匹配。
+    #[test]
+    fn td06_no_hardcoded_port_in_wiring() {
+        let src = include_str!("sidecar.rs");
+        let leftover_terminate = format!("terminate_listener_on_port({})", "HEALTH_PORT");
+        assert!(src.contains("probe_health_on(health_port())"), "就绪探活必须走解析端口");
+        assert!(src.contains("port_in_use_on(health_port())"), "port_in_use 必须走解析端口");
+        assert!(src.contains("terminate_listener_on_port(health_port())"), "清端口必须走解析端口");
+        assert!(src.contains("env(HEALTH_PORT_ENV"), "spawn 必须把解析端口注入宿主");
+        // 残留检查：旧的「拿常量当清端口目标」写法不许再出现
+        assert!(!src.contains(&leftover_terminate), "仍有 terminate_listener_on_port(常量) 残留");
+    }
+
+    /// 自定义端口接线（真实 socket，不碰 8760）：监听中的端口判占用、关掉后判空闲。
+    #[test]
+    fn td06_port_in_use_on_checks_given_port() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral");
+        let port = listener.local_addr().unwrap().port();
+        assert!(port_in_use_on(port), "监听中的端口应判占用");
+        drop(listener);
+        let mut freed = false;
+        for _ in 0..40 {
+            if !port_in_use_on(port) {
+                freed = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(freed, "监听器关闭后端口应判空闲（不是恒真）");
+    }
+
+    /// 自定义端口探活（真实 socket + 200 应答，不碰 8760）。
+    #[test]
+    fn td06_probe_health_on_custom_port_sees_http_200() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral");
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 256];
+                let _ = std::io::Read::read(&mut stream, &mut buf);
+                let _ = std::io::Write::write_all(
+                    &mut stream,
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+                );
+            }
+        });
+        assert!(probe_health_on(port), "自定义端口上的 HTTP 200 应判健康");
+        let _ = server.join();
     }
 }

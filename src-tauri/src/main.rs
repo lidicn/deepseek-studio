@@ -454,6 +454,10 @@ struct StudioConfig {
     secret: String,
     #[serde(default)]
     chat_rooms: Vec<ChatRoomEntry>,
+    /// TD-06：**端口解析已收敛到 `sidecar::health_port()`**（env → config.json.port → 8760，
+    /// 与 TS `parsePort` 同序，且能接受字符串形态）。本字段保留只为固化配置形状/文档，
+    /// 不再有任何读取点 —— 两边各一套口径正是 TD-06 的缺陷本体，别把它读回来。
+    #[allow(dead_code)]
     #[serde(default)]
     port: Option<u16>,
     #[serde(default)]
@@ -507,7 +511,10 @@ fn load_studio_chat_config_script() -> String {
         return String::new();
     }
     let host = cfg.host.as_deref().unwrap_or("127.0.0.1");
-    let port = cfg.port.unwrap_or(8760);
+    // TD-06：端口真相收敛到 sidecar::health_port()（env → config.json.port → 8760）。
+    // 这里原来读 `cfg.port.unwrap_or(8760)`，于是「用户在 env 里改了端口」时
+    // 聊天室 wsUrl 仍指向 8760 —— 与宿主实际监听端口各说各话。
+    let port = crate::sidecar::health_port();
     let ws_url = format!("ws://{}:{}/agent-ws", host, port);
     let payload = serde_json::json!({
         "wsUrl": ws_url,
@@ -1131,19 +1138,20 @@ fn sanitize_window_label(raw: &str) -> String {
 ///
 /// 与 `mcp_settings_url()` 同源（都用 `studio_host_port()`）：两处各读一遍
 /// `config.json` 就会在「用户改了端口」时漂移，故收敛到同一个读取函数。
+///
+/// TD-06：**端口**不再在这里各解析一遍 —— 统一交给 `sidecar::health_port()`
+/// （env → config.json.port → 8760，与 TS `parsePort` 同序）。原来这里读
+/// `c.port.unwrap_or(8760)`，于是「用户在 env 里改了端口」时窗口 URL 仍指向 8760，
+/// 与宿主实际监听的端口各说各话。host 仍从同一份 config.json 读（缺省 127.0.0.1）。
 fn studio_host_port() -> (String, u16) {
     // (B) 路径同源：与 grant / 宿主读**同一个** config.json（装版 = <app_data_dir>/config）
-    std::fs::read_to_string(config_dir().join("config.json"))
+    let host = std::fs::read_to_string(config_dir().join("config.json"))
         .ok()
         .as_deref()
         .and_then(|s| serde_json::from_str::<StudioConfig>(s).ok())
-        .map(|c| {
-            (
-                c.host.unwrap_or_else(|| "127.0.0.1".to_string()),
-                c.port.unwrap_or(8760),
-            )
-        })
-        .unwrap_or_else(|| ("127.0.0.1".to_string(), 8760))
+        .and_then(|c| c.host)
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    (host, crate::sidecar::health_port())
 }
 
 fn workbench_url() -> String {
