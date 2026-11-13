@@ -1,4 +1,4 @@
-﻿/**
+/**
  * v0.6 工具调用事件桥集成测试
  *
  * 覆盖「模型发起 tool-call → 页端拦截投递 → 宿主真实执行 → 结果回注」闭环的关键环节：
@@ -254,5 +254,33 @@ describe('main-world interceptor reinjection', () => {
 
   it('returns prompt unchanged when no results', () => {
     expect(reinjectIntoPrompt('hi', [])).toBe('hi');
+  });
+
+  /** 续审第 4 轮同族卡：`<error>` 兜底必须自述工具名（可定位形状），不许 `unknown`/空标签。
+   *  三态＝空串／空白（图片段被宿主归一成空文本的形态）／正常非空文本（逐字节不动死线）。 */
+  it('失败且 error 为空串 ⇒ 兜底自述工具名，不出现 unknown／空标签（图片段/空白正文形态）', () => {
+    const out = reinjectIntoPrompt('hi', [{ invocationName: 'mcp.call', ok: false, error: '' }]);
+    expect(out).toContain('<error>mcp.call 失败：原因文本不可用');
+    expect(out).not.toContain('<error>unknown</error>');
+    expect(out).not.toMatch(/<error>\s*<\/error>/);
+  });
+
+  it('失败且 error 为 undefined ⇒ 同样走兜底（?? 只兜 undefined、兜不住空串的老洞）', () => {
+    const out = reinjectIntoPrompt('hi', [{ invocationName: 'shell_exec', ok: false }]);
+    expect(out).toContain('<error>shell_exec 失败：原因文本不可用');
+  });
+
+  it('失败且 error 为纯空白 ⇒ 兜底（trim 判空）', () => {
+    const out = reinjectIntoPrompt('hi', [{ invocationName: 'local_file_read', ok: false, error: '   ' }]);
+    expect(out).toContain('<error>local_file_read 失败：原因文本不可用');
+  });
+
+  it('死线：非空 error 逐字节原样、成功分支零改动', () => {
+    const out = reinjectIntoPrompt('hi', [
+      { invocationName: 'shell_exec', ok: false, error: 'boom' },
+      { invocationName: 'shell_exec', ok: true, result: { stdout: 'file.txt' } },
+    ]);
+    expect(out).toContain('[tool-result:shell_exec]\n<error>boom</error>');
+    expect(out).toContain('[tool-result:shell_exec]\nfile.txt');
   });
 });

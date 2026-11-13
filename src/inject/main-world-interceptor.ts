@@ -988,7 +988,17 @@ interface LoopState {
 function formatToolResultBlock(results: readonly PendingResult[]): string {
   const lines = results.map((p) => {
     const head = `[tool-result:${p.invocationName}]`;
-    if (!p.ok) return `${head}\n<error>${p.error ?? 'unknown'}</error>`;
+    if (!p.ok) {
+      // 续审第 4 轮同族卡（PM 派 UI）：旧式 `p.error ?? 'unknown'` 双失——`??` 只兜 undefined，
+      // 空串直接产出空标签 `<error></error>`；服务器把错误放进图片段/空白文本时（宿主 isError
+      // 分支兜底前形态），模型两种情况都拿不到任何定位信息。
+      // 兜底文本必须**自述工具名**（可定位形状），成功分支与非空错误文案**逐字节不变**（死线）：
+      // 只有 `p.error` 缺失/空串/纯空白时才落到兜底。
+      const errText = typeof p.error === 'string' && p.error.trim() !== ''
+        ? p.error
+        : `${p.invocationName} 失败：原因文本不可用（宿主未返回错误文本；错误可能落在图片段/空白正文里，见宿主侧审计日志）`;
+      return `${head}\n<error>${errText}</error>`;
+    }
 
     // shell.exec / 类似工具：result 是包含 stdout 的对象，直接输出 stdout 文本
     // 避免 JSON.stringify 把换行符转义成字面量 \r\n
