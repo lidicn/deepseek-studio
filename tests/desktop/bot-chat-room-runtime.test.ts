@@ -22,7 +22,7 @@ import { SqliteContextEngine, SnapshotStore } from '../../src/host/bot/context-e
 import { SqliteRoomSummaryService } from '../../src/host/bot/room-summary';
 import type { ToolExecutionResult } from '../../src/host/desktop-host';
 import type { EngineSendResult, ModelEngine } from '../../src/host/engine/model-engine';
-import type { Persona, PersonaRegistry, RoomConfig } from '../../src/host/bot/types';
+import type { ConversationRound, Persona, PersonaRegistry, RoomConfig } from '../../src/host/bot/types';
 import type { AuditDispatcher } from '../../src/host/bot/audit-meeting';
 import type { StrategyGenerator } from '../../src/host/bot/strategy-generator';
 import type { AgentLoop, AgentLoopEvent } from '../../src/host/agent-loop';
@@ -94,6 +94,8 @@ async function setup(
     strategyGenerator?: StrategyGenerator;
     /** N2-01 用：让审计 dispatch 可控地抛错。 */
     auditDispatcher?: AuditDispatcher;
+    /** N2-01 残余：注入一个会抛错的 onRoundComplete，验证异常隔离。 */
+    onRoundComplete?: (round: ConversationRound) => void;
   },
 ) {
   const script = makeScriptedEngines();
@@ -146,7 +148,9 @@ async function setup(
   const onBotReply = vi.fn();
   const onBotError = vi.fn();
   const onUnresolved = vi.fn();
-  const onRoundComplete = vi.fn();
+  // 注入的 onRoundComplete 用 vi.fn 包一层：既保留 .mock 记录（既有 N2-01 用例要用），
+  // 也让「回调自身抛错」能真实传播到 runtime 的 try/catch 里。
+  const onRoundComplete: ReturnType<typeof vi.fn> = opts?.onRoundComplete ? vi.fn(opts.onRoundComplete) : vi.fn();
 
   const runtime = createChatRoomRuntime({
     mentionParser, handoffParser, instructionBuilder,
@@ -513,8 +517,45 @@ describe('N2-01 轮次结束信号覆盖任何退出路径', () => {
  * N2-02：合成 round 带 `reason`，让下游能区分「命令回执」与「讨论完成」。
  * 缺省（真讨论轮）不带 reason —— 这是区分两者的唯一判据。
  */
-describe('N2-02 合成 round 的 reason 标记', () => {
-  it('会议命令回执 reason=command，真讨论轮无 reason', async () => {
+/**
+ * N2-01 残余（2026-11-13，PM 批）：`onRoundComplete` 回调自身抛错必须隔离。
+ *
+ * 为什么必须包：它在 `finally` / `catch` 里被调用 —— 那里抛错会**覆盖原始异常**，
+ * 用户看到的变成回调的错、真因被吃掉（诊断灾难）。但也不许静默吞：留一行 warn。
+ *
+ * 三条同时断言，缺一条都留口子：
+ *   ① 原始异常原样冒出（拿到的是 `room not found`，不是 `callback-boom`）；
+ *   ② 诊断 warn 恰一次，且文案指得出是谁抛的；
+ *   ③ 本轮 `round-complete` 只推一次（回调只被调用一次 ⇒ 没有因抛错而重推）。
+ *
+ * 判别力：把 `notifyRoundComplete` 里的 try/catch 拆掉 ⇒ ① 变成 `callback-boom`、② 变 0 次，红。
+ */
+describe('N2-01 残余：onRoundComplete 回调抛错必须隔离', () => {
+  it('原始异常原样冒出、warn 恰一次、round-complete 不重复推送', async () => {
+    const throwing = vi.fn((_round: ConversationRound) => {
+      throw new Error('callback-boom');
+    });
+    const ctx = await setup(ROOM, { onRoundComplete: throwing });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // ① 原错误必须原样冒出（不能被回调的错顶掉）
+      await expect(ctx.runtime.handleUserMessage('no-such-room', '随便聊聊')).rejects.toThrow(/room not found/);
+
+      // ② 诊断一次，且指向回调
+      // ⚠️ 断言必须留在 try 内：`warn.mockRestore()` 会连调用记录一起清掉，
+      //    放到 finally 之后再断言就永远读到 0 次（本用例第一版正是这么假红的）。
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain('onRoundComplete');
+
+      // ③ 只推一次
+      expect(throwing).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('N2-02 合成 round 的 reason 标记', () => {  it('会议命令回执 reason=command，真讨论轮无 reason', async () => {
     const ctx = await setup(ROOM);
 
     const ack = await ctx.runtime.handleUserMessage('r1', '/开会 组件状态管理');

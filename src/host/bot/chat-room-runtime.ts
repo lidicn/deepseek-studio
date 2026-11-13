@@ -377,8 +377,15 @@ export function createChatRoomRuntime(options: ChatRoomRuntimeOptions): ChatRoom
     let roundCompleteSent = false;
     const notifyRoundComplete = (r: ConversationRound): void => {
       if (roundCompleteSent) return;
+      // 置位**先于**回调：回调抛错不许导致下一次尝试再推一遍（零次/多次都不对，必须恰好一次）。
       roundCompleteSent = true;
-      onRoundComplete?.(r);
+      try {
+        onRoundComplete?.(r);
+      } catch (e) {
+        // finally / catch 里抛错会**覆盖原始异常**：用户看到的变成回调的错、真因被吃掉。
+        // 隔离掉，但绝不静默——留一行诊断，事后能查到"那轮到底是谁抛的"。
+        console.warn('[chat-room] onRoundComplete 回调抛错（已隔离，不影响本轮结论）', e);
+      }
     };
     // N2-02：合成 round 带 reason，让下游能区分「命令回执」与「讨论完成」。
     const emptyRound = (reason: 'command' | 'audit' | 'error'): ConversationRound => ({
