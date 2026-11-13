@@ -167,8 +167,20 @@ export function checkModelEngine(src: string): ContractViolation[] {
   }
 
   // ModelEngine 必须有 name / health / send（全文搜索，不依赖块提取）
-  if (!/\bsend\s*\(\s*text\s*:\s*string\s*\)\s*:\s*Promise/.test(src)) {
+  // 2026-11-13 N2-04：send 增加可选 signal（additive），规则同步；signal 必须可选。
+  if (!/\bsend\s*\(\s*text\s*:\s*string\s*(?:,\s*signal\s*\?\s*:\s*AbortSignal\s*)?\)\s*:\s*Promise/.test(src)) {
     v.push({ rule, message: 'ModelEngine 缺少 send(text: string) 方法' });
+  }
+  // signal 若存在必须可选（必填＝破坏 additive 契约；负例 6c 锁）
+  if (/\bsend\s*\(\s*text\s*:\s*string\s*,\s*signal\s*:\s*AbortSignal/.test(src)) {
+    v.push({ rule, message: 'ModelEngine.send 的 signal 参数被改成必填（破坏 additive 契约）' });
+  }
+  // waitForNextReply?（可选方法）：存在且 signal 必须可选（2026-11-13 N2-04 同步，防同坑再踩；负例 6d 锁）
+  if (!/\bwaitForNextReply\s*\?\s*\(\s*(?:signal\s*\?\s*:\s*AbortSignal\s*)?\)\s*:\s*Promise/.test(src)) {
+    v.push({ rule, message: 'ModelEngine 缺少 waitForNextReply?（可选方法、可选 signal）' });
+  }
+  if (/\bwaitForNextReply\s*\?\s*\(\s*signal\s*:\s*AbortSignal/.test(src)) {
+    v.push({ rule, message: 'ModelEngine.waitForNextReply 的 signal 参数被改成必填（破坏 additive 契约）' });
   }
   if (!/\bhealth\s*\(\s*\)\s*:\s*Promise/.test(src)) {
     v.push({ rule, message: 'ModelEngine 缺少 health() 方法' });

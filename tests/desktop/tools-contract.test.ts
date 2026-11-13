@@ -65,6 +65,33 @@ describe('契约守门 · ModelEngine 反例', () => {
     const violations = checkModelEngine(tampered);
     expect(violations.some((v) => v.message.includes('createApiEngineStub'))).toBe(true);
   });
+
+  it('6b. send 丢 text 首参（只剩 signal）→ 被抓出（「text 参数存在」约束）', () => {
+    const tampered = modelEngineSrc.replace(
+      /send\(text: string, signal\?: AbortSignal\)/,
+      'send(signal?: AbortSignal)',
+    );
+    const violations = checkModelEngine(tampered);
+    expect(violations.some((v) => v.message.includes('send(text: string)'))).toBe(true);
+  });
+
+  it('6c. send 的 signal 改必填（去掉 ?）→ 被抓出（「signal 可选」约束、additive）', () => {
+    const tampered = modelEngineSrc.replace(
+      /send\(text: string, signal\?: AbortSignal\)/,
+      'send(text: string, signal: AbortSignal)',
+    );
+    const violations = checkModelEngine(tampered);
+    expect(violations.some((v) => v.message.includes('必填'))).toBe(true);
+  });
+
+  it('6d. waitForNextReply 的 signal 改必填 → 被抓出（N2-04 同步、防同坑再踩）', () => {
+    const tampered = modelEngineSrc.replace(
+      /waitForNextReply\?\(signal\?: AbortSignal\)/,
+      'waitForNextReply?(signal: AbortSignal)',
+    );
+    const violations = checkModelEngine(tampered);
+    expect(violations.some((v) => v.message.includes('waitForNextReply'))).toBe(true);
+  });
 });
 
 describe('契约守门 · MessageHistory 反例', () => {
