@@ -113,13 +113,15 @@ summary: 基线 dc76959，工作区 11 个已修改文件 + 3 个未跟踪报告
 | 9 | `deepseek-studio-审计报告-TD-续审第3轮-20261112.md` | N3-01（**本轮撤回**）、N3-02 |
 | 10 | `deepseek-studio-审计报告-TD-续审第4轮-20261112.md`（本文） | N4-01；N3-01 标注撤回 |
 
-**当前活跃缺陷（未被后续轮次判为已修/撤回）**：N4-01（P2，CDP）、N3-02（P3，重试重复插入）、N2-02（P3，空成员集）、U1-01（P2，重连锁死，修复中）、U1-02（P2，重发不清气泡，修复中）、U1-03（P3）、R2-03（= N4-01 同源，以 N4-01 为准）、R2-07（P3，memory.save）、TD-14（P3，配对码）。其余历史条目均已在回归轮定为已修或已消解。
+**当前活跃缺陷（未被后续轮次判为已修/撤回）**：~~N4-01（P2，CDP）~~、~~N3-02（P3，重试重复插入）~~、~~N2-02（P3，空成员集）~~、~~U1-01（P2，重连锁死）~~、~~U1-02（P2，重发不清气泡）~~、~~U1-03（P3）~~、~~R2-03（= N4-01 同源）~~、~~R2-07（P3，memory.save）~~、~~TD-14（P3，配对码）~~ —— **本轮列出的 9 条已全部闭合**（删除线为已修，提交号见下方状态更新）。其余历史条目均已在回归轮定为已修或已消解。
 
 **2026-11-13 状态更新（PM 复核，逐条看码＋跑测，非转述）**：
 - **N2-01 已修复** —— `7bcb494` 用 `roundCompleteSent` 一次性守卫收口（`chat-room-runtime.ts:377-389`），四条退出路径（room 不存在 / 会议命令 / 审计命令 / 正常讨论）各推一次；`7e0bcacd` 再给 `onRoundComplete` 加异常隔离，避免 finally 里抛错覆盖原始异常。回归锁：`bot-chat-room-runtime.test.ts` 23 枚（含四种退出路径各一次＋回调抛错不重推）。
 - **N2-04 已修复** —— `2325a23` 每轮内部 AbortController 真取消在途请求，迟到 resolve/reject 过 `roundClosed || roundSignal.aborted || generation !== roundGeneration` 丢弃（不落 history、不触发 onDelta），留 `[task-loop] stale-*-dropped` 诊断；新增 `task-loop-round-timeout.test.ts` 7 枚。
 - **TD-06 已修复** —— `c050a72` Rust 侧按 `env → config.port → 8760` 单一真相解析（`parse_health_port`/`resolve_health_port_from`/`health_port()`），9 处硬编码全部替换，含 spawn 注入与工作台/聊天室/mcp-settings/consent 窗口 URL；新增 8 枚 `td06_*`，负控（`.or(config)`、残留常量、env 改端口）三条各自翻红。
-- 上述三枚修复后全量 gate 绿（16 步阻塞 + 6 步信息，`d3cadfc`），已推送 `origin/master`。
+- **N4-01 / U1-01 / U1-02 / U1-03 / N2-02 / R2-03 / N3-02 / R2-07 / TD-14 已修复** —— 提交号：`acc388e`（N4-01 CDP release 缺省关）、`7bcb494`（U1-01 重连对齐 idle／U1-02 `discardOpenAssistantBubble()`／U1-03 删 `props.html` 死分支／N2-01 守卫／N2-02 reason 三值）、`c80c315`（R2-07 memory.save 提为 mode 档、TD-14 `timingSafeEqual` 常数时间比较）、`327ce14`＋`cdece9d`（N3-02 send 只发一次／空框 `input-empty`）。
+- **独立复核**：`docs/验收/20261113-活跃缺陷复核.md`（Verify 席位，基线 `8c1716b`，只读＋窄面）逐条复核 N4-01／U1-01／U1-02／TD-14／N3-02，结论 **5 已修、0 未修、0 无法判定**，每条附实跑原文（`cargo test cdp` 3/0、`studio-chat-room-audit-ui` 7/7、`qd-r5-first-attempt-retry` 5/5、`agent-lan-access` 25/25、`chat-send-confirm` 5/5；四文件合跑 4 files / 42 passed）。
+- 上述修复后全量 gate 绿（阻塞 17 步 + 信息 6 步，`d62c059`），已推送 `origin/master`。
 - 本报告未覆盖的同类项（`host-tools-adapter.ts:21`、`task-loop.ts:189` 的空串失败文案）同批收口于 `d4807f3`；`src/shared/tool-loop.ts:39` 的 `[unknown error]` 是 `String(e)` 自身抛错的兜底，非同类，未动。
 
 ---
