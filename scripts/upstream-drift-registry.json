@@ -31,7 +31,7 @@
       "file": "src/shared/continuation-prompt.ts",
       "upstreamBlob16": "382339e6169dd46a",
       "localBlob16": "cbcb5631879ae4c7",
-      "verdictRef": "docs/dpp/上游漂移定性-20261114.md §2.5（缺上游修复，移植卡派 Core 在途）"
+      "verdictRef": "docs/dpp/上游漂移定性-20261114.md §2.5（两项可移植修复已落库 2779f5b＋e7bc5d0；P0-3 不盲搬见定性）"
     }
   ]
 }
