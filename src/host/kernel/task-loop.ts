@@ -126,6 +126,24 @@ export interface TaskLoopOptions {
   readonly store?: HistoryStore;
   /** S15：可选 delta 回调；每轮 send 完成后把 content 透传出去。 */
   readonly onDelta?: (chunk: string) => void;
+  /**
+   * N2-04：迟到结果的诊断回调（可选）。
+   *
+   * 为什么必须有：轮超时后引擎迟到的结果**必须被丢弃**，但「丢了」这件事不能是哑的——
+   * 没有诊断，事后看「这轮为什么没有任何输出」只能靠猜。上层可据此写 trace / 日志。
+   */
+  readonly onDiagnostic?: (event: TaskLoopDiagnostic) => void;
+}
+
+/**
+ * N2-04：内核诊断事件（目前只有「迟到的轮次结果被丢弃」）。
+ * `generation` 是迟到结果所属的轮次世代，`currentGeneration` 是丢弃时的世代。
+ */
+export interface TaskLoopDiagnostic {
+  readonly kind: 'stale-result-dropped' | 'stale-error-dropped';
+  readonly round: number;
+  readonly generation: number;
+  readonly currentGeneration: number;
 }
 
 /** S10：单轮超时标记错误。 */
@@ -260,6 +278,13 @@ export function createTaskLoop(opts: TaskLoopOptions): TaskLoop {
   const roundTimeoutMs = opts.roundTimeoutMs ?? 120000;
   // 续跑轮优先等待页端 auto-continue 推送，而不是重复 send 用户文本。
   const waitForNextReply = engine.waitForNextReply?.bind(engine);
+  /**
+   * N2-04：轮次世代号（单调递增，每轮 +1）。
+   *
+   * 迟到判定只认它：结果带着的世代 ≠ 当前世代 ⇒ 一定来自已收口的轮次（超时/abort）。
+   * 单计数器就够——下一轮（甚至下一次 `run`）必然递增，旧世代的迟到结果永远落后。
+   */
+  let roundGeneration = 0;
 
   async function run(userText: string): Promise<TaskLoopRoundResult> {
     // M8-E3：Plan 模式——只跑一轮，禁止工具调用
@@ -296,18 +321,75 @@ export function createTaskLoop(opts: TaskLoopOptions): TaskLoop {
       // v0.9：页端 POW auto-continue 是唯一续跑权威。工具轮之后宿主不再重复
       // send 用户文本（那会与页端续跑争抢同一会话），而是等待页端推送下一条回复。
       // 仅当引擎不支持 waitForNextReply 时才降级为 send(buildPrompt)。
+      //
+      // ── N2-04（2026-11-13）：轮超时不能只「放弃等待」────────────────────────
+      //
+      // 缺陷本体：`roundTimeoutMs` 到点只是让 `await` 抛 RoundTimeoutError，
+      // **在途的 `engine.send` 照样跑完**，它带着的迟到回复会污染下一轮/下一次 run。
+      // 「只加 Promise.race」正是缺陷本身，所以这里三件事一起做：
+      //   ① 每轮一个内部 AbortController，超时先 `abort()`，再让等待方 reject；
+      //      引擎接口若吃 signal 就透传（本次已给 `ModelEngine.send/waitForNextReply`
+      //      补可选 signal，web/api 引擎各自实现真取消）；
+      //   ② **轮次 generation token**：引擎不吃 signal 也能兜住——迟到的 resolve/reject
+      //      一律丢弃，绝不落 history、不触发 onDelta，并留一行诊断；
+      //   ③ 所有 settle 走我们自己挂的 handler（不是裸 race），迟到的 rejection 不会变成
+      //      未处理拒绝把宿主打挂。
       const useWait = round > 1 && previousToolCalls > 0 && typeof waitForNextReply === 'function';
-      const call: () => Promise<EngineSendResult> = useWait
-        ? () => (waitForNextReply as () => Promise<EngineSendResult>)()
-        : () => engine.send(buildPrompt(history, round));
+      roundGeneration += 1;
+      const generation = roundGeneration;
+      const roundController = new AbortController();
+      const roundSignal = roundController.signal;
+      // 本轮是否已被内核收口（超时 / 用户 abort / 正常拿到结果）。
+      // 之后的任何到达都算「迟到」，只许记诊断，不许落库。
+      let roundClosed = false;
+      const reportStale = (kind: 'stale-result-dropped' | 'stale-error-dropped'): void => {
+        // 一行诊断（stderr）：没有它，事后只能靠猜「这轮的结果去哪了」。
+        console.warn(
+          `[task-loop] ${kind} round=${round} generation=${generation} current=${roundGeneration}`,
+        );
+        opts.onDiagnostic?.({ kind, round, generation, currentGeneration: roundGeneration });
+      };
+      const roundOutcome = new Promise<EngineSendResult>((resolve, reject) => {
+        const call = useWait
+          ? () => (waitForNextReply as (s?: AbortSignal) => Promise<EngineSendResult>)(roundSignal)
+          : () => engine.send(buildPrompt(history, round), roundSignal);
+        let settled = false;
+        // 必须挂 rejection handler：否则引擎在 race 收口之后才失败时，
+        // 这个 Promise 没有人等 → Node 的 unhandledRejection（现代 Node 默认直接抛崩）。
+        void call().then(
+          (v) => {
+            if (settled) return;
+            if (roundClosed || roundSignal.aborted || generation !== roundGeneration) {
+              reportStale('stale-result-dropped');
+              return;
+            }
+            settled = true;
+            resolve(v);
+          },
+          (e) => {
+            if (settled) return;
+            if (roundClosed || roundSignal.aborted || generation !== roundGeneration) {
+              reportStale('stale-error-dropped');
+              return;
+            }
+            settled = true;
+            reject(e);
+          },
+        );
+      });
 
       let result;
       let roundTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         result = await Promise.race([
-          withAbort(call, signal),
+          withAbort(() => roundOutcome, signal),
           new Promise<never>((_, reject) => {
-            roundTimer = setTimeout(() => reject(new RoundTimeoutError()), roundTimeoutMs);
+            roundTimer = setTimeout(() => {
+              // 先收口 + 取消（支持的引擎会立刻返回），再让等待方 reject。
+              roundClosed = true;
+              roundController.abort();
+              reject(new RoundTimeoutError());
+            }, roundTimeoutMs);
           }),
         ]);
       } catch (cause) {
@@ -316,15 +398,28 @@ export function createTaskLoop(opts: TaskLoopOptions): TaskLoop {
           break;
         }
         if (signal?.aborted) {
+          // 用户 stop：同样作废本轮，别让在途结果继续跑（引擎若支持 signal 会就此收尾）。
+          roundClosed = true;
+          roundController.abort();
           last = { round, content: '', toolCalls: 0, stopReason: 'aborted' };
           break;
         }
+        roundClosed = true;
+        roundController.abort();
         const phase = useWait ? 'engine.waitForNextReply' : 'engine.send';
         throw new TaskLoopError(`${phase} failed at round ${round}`, round, cause);
       } finally {
         // 成功轮次也必须清掉超时器，否则 CLI / 宿主会因悬空 timer 多存活 120s。
         if (roundTimer !== undefined) clearTimeout(roundTimer);
       }
+
+      // ③ 极端时序兜底：结果与超时在同一 tick 赛跑，token 输了就不许落库。
+      if (roundClosed || roundSignal.aborted || generation !== roundGeneration) {
+        reportStale('stale-result-dropped');
+        last = { round, content: '', toolCalls: 0, stopReason: 'timeout' };
+        break;
+      }
+      roundClosed = true;
 
       // 4. 落 assistant + S15 透传 delta
       history.append({ role: 'assistant', content: result.content });

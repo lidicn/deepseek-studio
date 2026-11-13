@@ -74,10 +74,16 @@ export function createApiEngine(options: ApiEngineOptions): ModelEngine {
         return { ok: false, reason: String(e) };
       }
     },
-    async send(text: string): Promise<EngineSendResult> {
+    async send(text: string, signal?: AbortSignal): Promise<EngineSendResult> {
       try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), cfg.timeoutMs ?? 120_000);
+        // N2-04：把内核的轮信号接进本次 fetch —— abort 即真取消（不是只放弃等待）。
+        const onOuterAbort = () => controller.abort();
+        if (signal) {
+          if (signal.aborted) controller.abort();
+          else signal.addEventListener('abort', onOuterAbort, { once: true });
+        }
         const r = await doFetch(`${cfg.baseURL}/v1/chat/completions`, {
           method: 'POST',
           headers: {
@@ -91,6 +97,7 @@ export function createApiEngine(options: ApiEngineOptions): ModelEngine {
           signal: controller.signal,
         });
         clearTimeout(timer);
+        signal?.removeEventListener('abort', onOuterAbort);
         if (!r.ok) {
           return { content: '', toolCalls: 0, completion: 'disconnected' };
         }
@@ -105,6 +112,10 @@ export function createApiEngine(options: ApiEngineOptions): ModelEngine {
           completion: finishReasonToCompletion(choice?.finish_reason),
         };
       } catch (e) {
+        // N2-04：被内核/用户取消 ≠ 网络失败，别把「我自己掐的」报成 disconnected。
+        if (signal?.aborted) {
+          return { content: '', toolCalls: 0, completion: 'truncated', timedOut: true };
+        }
         return { content: '', toolCalls: 0, completion: 'disconnected', timedOut: true };
       }
     },

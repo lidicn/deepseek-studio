@@ -78,13 +78,22 @@ export interface ModelEngine {
   /**
    * 发送一条消息并等模型回复结束。
    * 实现负责：注入文本 → 触发发送 → 完成检测（稳定性启发式 + 看门狗）。
+   *
+   * N2-04（2026-11-13）：新增**可选** `signal` —— 宿主每轮给一个 `AbortSignal`，
+   * 轮超时/用户 stop 时 `abort()`。语义：
+   *   - **支持取消**的引擎应在 `abort` 后尽快返回（`completion: 'truncated'`），不再烧看门狗；
+   *   - 忽略 `signal` 的引擎照旧跑完 —— 内核另有**轮次 generation token** 兜底，
+   *     迟到的结果一律丢弃、绝不进下一轮。
+   * 参数可选，是为了不强迫既有实现（含测试 fake）改签名。
    */
-  send(text: string): Promise<EngineSendResult>;
+  send(text: string, signal?: AbortSignal): Promise<EngineSendResult>;
   /**
    * 不发消息，只轮询等待下一条回复（由页端 auto-continue 触发）。
    * v0.9：页端 POW auto-continue 是唯一续跑权威，宿主不再发 continueNudge。
+   *
+   * N2-04：同样接受可选 `signal`（语义同 `send`）。
    */
-  waitForNextReply?(): Promise<EngineSendResult>;
+  waitForNextReply?(signal?: AbortSignal): Promise<EngineSendResult>;
 }
 
 /** ApiEngine 占位（M3）：只提供明确的「未实现」语义，避免误用。 */

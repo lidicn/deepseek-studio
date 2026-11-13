@@ -448,7 +448,12 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
         if (timer) clearTimeout(timer);
       }
     },
-    async send(text: string): Promise<EngineSendResult> {
+    async send(text: string, signal?: AbortSignal): Promise<EngineSendResult> {
+      // N2-04：进函数即已被取消 → 对页面**零副作用**直接返回（不 insert、不 send）。
+      // 轮超时后内核会 abort 这个 signal；能在这里挡住就不必再等看门狗。
+      if (signal?.aborted) {
+        return { content: '', toolCalls: 0, completion: 'truncated' };
+      }
       // 工具调用计数从本轮起点清零
       const counterStart = options.toolCallCounter.current;
       // M2-2：每轮重置缓冲（onToolCall 存在时新建空数组）
@@ -521,6 +526,12 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
       for (;;) {
         if (options.isStopped?.()) { stopped = true; break; }
         if (Date.now() - startedAt > stepTimeoutMs) {
+          timedOut = true;
+          break;
+        }
+        // N2-04：宿主取消（内核轮超时 / 用户 stop）→ 立刻收尾。
+        // 语义与看门狗同：宿主侧掐断 ⇒ completion='truncated'，不是模型自己没答完。
+        if (signal?.aborted) {
           timedOut = true;
           break;
         }
@@ -653,7 +664,11 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
      * v0.9：优先读 getAutoReply（页端通过 WebSocket 推送的回复，不渲染到 DOM）；
      * 降级为 DOM 轮询（兼容 auto-continue 未推送的情况）。
      */
-    async waitForNextReply(): Promise<EngineSendResult> {
+    async waitForNextReply(signal?: AbortSignal): Promise<EngineSendResult> {
+      // N2-04：已被取消 → 不开始轮询（零副作用）。
+      if (signal?.aborted) {
+        return { content: '', toolCalls: 0, completion: 'truncated' };
+      }
       const counterStart = options.toolCallCounter.current;
       const startedAt = Date.now();
       currentRecords = options.onToolCall ? [] : null;
@@ -686,6 +701,11 @@ export function createWebEngine(options: WebEngineOptions): WebEngine {
       for (;;) {
         if (options.isStopped?.()) { stopped = true; break; }
         if (Date.now() - startedAt > stepTimeoutMs) {
+          timedOut = true;
+          break;
+        }
+        // N2-04：宿主取消（轮超时 / 用户 stop）→ 立刻收尾（语义同看门狗）。
+        if (signal?.aborted) {
           timedOut = true;
           break;
         }
