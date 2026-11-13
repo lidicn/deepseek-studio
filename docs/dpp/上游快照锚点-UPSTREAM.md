@@ -7,7 +7,7 @@
 
 | 项 | 值 |
 |----|----|
-| 上游路径 | `E:\NAS\deepseek-pp\src`（**git 根即 src 目录本身**） |
+| 上游路径 | `<upstream-repo>\src`（**git 根即 src 目录本身**）；真实路径单一真源＝`scripts/upstream-drift-registry.json` 的 `upstreamPath`（2026-11-14 起，哨兵定性登记表） |
 | 形态 | MV3 浏览器扩展，WXT + React + TS |
 | 快照锚点 commit | `187f6227e1fed07405c0802374b69c16e29eb6e2`（2026-10-08） |
 | 锚点时上游版本 | `package.json` → 1.16.0 |
@@ -25,7 +25,7 @@
 | 当前 HEAD（实测 2026-11-01 18:25） | `33c5738`；分支 `main`；工作树**干净**（`git status --porcelain` 0 项）；`main` = `origin/main` = `33c5738`（ahead/behind `0/0`，已 push） |
 | 当前 HEAD（实测 2026-11-14） | **`0b146cb`**；分支 `main`；`git merge-base --is-ancestor 2d54f06 0b146cb` EXIT=0（是冻结 tag 的后代） |
 | ⚠ 冻结失效注记（2026-11-14 补） | 「已冻结、不再前进」系 2026-11-01 的口径，**已失效**：`33c5738` 之后又走 2 笔功能性提交（`9bc9822` t3＝11-01 23:23、`0b146cb` t5＝11-02 00:07），合计锚后 421 提交。当初冻结的理由（dpp 收口基线 v1.16.0-frozen、产物封存）仍成立、原表述保留如上；但**逐字节比对上游文件必须用工作树现态（`0b146cb`）**，且**冻结产物 dist 不含 t3/t5**（产物构建于 11-01 17:35，早于这两笔）——上游自己的 dist 落后于其工作树。t3 碰过 studio 移植文件 `core/inline-agent/prompt.ts`（17 行），定性见 `docs/dpp/上游漂移定性-20261114.md` |
-| **产物树哈希** | `4bcd83003e507603765b11ef2715a1ea66db804c8829b9a0ed47e12d478b8a6c` —— = `E:\NAS\deepseek-pp\doc\交接班\20261101-dpp-产物SHA256SUMS.txt` **文件字节的 SHA256**（清单 100 行 = 100 个产物文件） |
+| **产物树哈希** | `4bcd83003e507603765b11ef2715a1ea66db804c8829b9a0ed47e12d478b8a6c` —— = `<upstream-repo>\doc\交接班\20261101-dpp-产物SHA256SUMS.txt` **文件字节的 SHA256**（清单 100 行 = 100 个产物文件） |
 | 产物版本 | `dist/chrome-mv3`，**100** 个文件；`build-stamp.txt` = `1793525684315-5jgij0`；扩展 id `jjjhcjjegfplcfncohmfhbdhcalmijnc`（详见上游封存单 §1） |
 | ⚠ 产物口径 | 树哈希对应 **10-31 11:40** 那版构建（`content.js` `737451ba…` / 890,986 B）；封存时 `dist` 是 **11-01 17:35:30** 重建（`content.js` `84105AF7…` / 891,120 B）。两者差 **2 个文件**（`build-stamp.txt`、`content-scripts/content.js`），其余 98 个逐字节一致。引用树哈希须写明「10-31 11:40 版」，引用真机读数须写明「17:35:30 版」——对账见上游封存单 §1.2 |
 | 版本号 | `package.json` → `1.16.0`（`deepseek-plus-plus`） |
@@ -46,10 +46,10 @@
 
 ### 1.3 相对上一版 `v1.14.0` 的变更面
 
-复跑命令（在 `E:\NAS\deepseek-pp\src` 下）：
+复跑命令（在 `<upstream-repo>\src` 下）：
 
 ```powershell
-git -C E:\NAS\deepseek-pp\src diff --name-only v1.14.0..v1.16.0-frozen
+git -C <upstream-repo>\src diff --name-only v1.14.0..v1.16.0-frozen
 ```
 
 - `v1.14.0` → commit `32d6f73`；`v1.16.0-frozen` → commit `2d54f06`
@@ -83,7 +83,7 @@ core/chat/context-budget.ts
 
 ## 2. 正确用法（替代原来的内嵌拷贝）
 
-1. **读上游直接读 `E:\NAS\deepseek-pp\src`**，它是 git 仓库，可以 `git log` / `git diff 187f6227..HEAD -- <path>` 精确定位变更；快照做不到这件事——这才是删掉它的核心收益。
+1. **读上游直接读 `<upstream-repo>\src`**，它是 git 仓库，可以 `git log` / `git diff 187f6227..HEAD -- <path>` 精确定位变更；快照做不到这件事——这才是删掉它的核心收益。
 2. **禁止把上游代码拷进本仓库**。需要复用就写适配层（`src/inject/`、`src/shared/`），并在文件头登记锚点：
 
 ```ts
@@ -112,7 +112,7 @@ core/chat/context-budget.ts
 原始 robocopy 命令（覆盖式；不建议，见 §2 第 1 条）：
 
 ```
-robocopy E:\NAS\deepseek-pp\src E:\NAS\deepseek-studio\deepseek-pp\src /E /XD node_modules dist .git videos .github .wxt
+robocopy <upstream-repo>\src <repo-root>\deepseek-pp\src /E /XD node_modules dist .git videos .github .wxt
 ```
 
 历史上曾排除：`node_modules/`(263MB) `dist/`(111MB) `.git/`(41MB) `videos/`(35MB) `.github/` `.wxt/`；拷贝规模 1133 文件 / 12.96MB。

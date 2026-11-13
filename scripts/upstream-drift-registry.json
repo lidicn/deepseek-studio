@@ -1,0 +1,37 @@
+{
+  "updatedAt": "2026-11-14",
+  "upstreamPath": "E:\\NAS\\deepseek-pp",
+  "note": "upstream-drift 哨兵定性登记表（单一真源）：脚本与本注释外的文档都引用本文件，不另存副本。blob16=sha256 前 16 位；local 侧按 utf8 文本读入后哈希、upstream 侧按原始字节哈希，与 scripts/check-upstream-drift.mjs 同口径。",
+  "entries": [
+    {
+      "file": "src/inject/markdown.ts",
+      "upstreamBlob16": "7fa754abff8df1d9",
+      "localBlob16": "c39237a7eaa4d75c",
+      "verdictRef": "docs/dpp/上游漂移定性-20261114.md §2.1（已自行改造、上游修法不适用）"
+    },
+    {
+      "file": "src/inject/render-code-runner.ts",
+      "upstreamBlob16": "ab0ded935a395dd4",
+      "localBlob16": "767edbb5c4b2271b",
+      "verdictRef": "docs/dpp/上游漂移定性-20261114.md §2.2（已自行改造、上游修法不适用）"
+    },
+    {
+      "file": "src/inject/step-control.ts",
+      "upstreamBlob16": "26d14bbf7d974cc9",
+      "localBlob16": "9d887e1e00a35163",
+      "verdictRef": "docs/dpp/上游漂移定性-20261114.md §2.3（已自行改造、上游修法不适用）"
+    },
+    {
+      "file": "src/inject/streaming-tool-parser.ts",
+      "upstreamBlob16": "dbd31938ada92496",
+      "localBlob16": "ea5e282887005052",
+      "verdictRef": "docs/dpp/上游漂移定性-20261114.md §2.4（已自行改造、上游修法不适用）"
+    },
+    {
+      "file": "src/shared/continuation-prompt.ts",
+      "upstreamBlob16": "382339e6169dd46a",
+      "localBlob16": "cbcb5631879ae4c7",
+      "verdictRef": "docs/dpp/上游漂移定性-20261114.md §2.5（缺上游修复，移植卡派 Core 在途）"
+    }
+  ]
+}
