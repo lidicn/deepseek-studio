@@ -1337,8 +1337,20 @@ export class McpController {
         isError?: boolean;
       };
       if (result.isError) {
-        const text = result.content?.find((c) => c.type === 'text')?.text ?? 'Unknown MCP tool error';
-        return { ok: false, error: text, isError: true };
+        // 2026-11-13（工具执行缺陷 A）：MCP 的 isError 结果**必须带可读文本**。
+        // 现场（`chat:ff7fc62f`）：`af_catalog {"area":"客厅"}` 失败只回 `{"isError":true}`，
+        // 模型不知道错在哪，只能重复同一调用或瞎猜。
+        // 根因是本分支只认 `content[].type === 'text'`，且用 `??` 兜底——**兜不住空串**：
+        // 服务器把错误放在 structuredContent／图片／空文本时 `text` 是 `''`，
+        // 于是 `error: ''` 一路被下游当成"有值"，模型侧拿到的就是一行空文本。
+        // 这里补两条：① 空白也算缺文本；② 缺文本时**必须自述工具名与服务器**（可定位）。
+        const rawText = result.content?.find((c) => c.type === 'text')?.text;
+        const text =
+          typeof rawText === 'string' && rawText.trim()
+            ? rawText
+            : `MCP 工具 ${toolName}（server=${serverId}）执行失败，服务器未返回错误文本`;
+        // 同时补 `content`：下游（UI 卡片 / 续跑 prompt）优先读 content，缺了就只剩 `[错误]`。
+        return { ok: false, error: text, isError: true, content: [{ type: 'text', text }] };
       }
 
       // 提取文本内容

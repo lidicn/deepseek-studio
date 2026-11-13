@@ -13,6 +13,8 @@
  * 历史 + 工具目录，让多步任务不丢上下文。
  */
 
+import { failureTextFor } from './tool-result-format';
+
 // ---------------------------------------------------------------- 类型
 
 /**
@@ -60,6 +62,18 @@ export const MAX_ERROR_RETRIES = 3;
 export const MAX_AUTO_CONTINUE = 3;
 /** 续跑 prompt 里带完整 detail/output 的最近结果条数；更早的压缩为 summary。 */
 export const FULL_TOOL_RESULT_WINDOW = 4;
+
+/**
+ * 单轮工具结果累计预算（字节，UTF-8）。
+ *
+ * 现场（`chat:ff7fc62f`）：一轮 11 次工具调用共 **307,682 字节**原始结果进上下文。
+ * 单次 16KB（`STUDIO_TOOL_PAYLOAD_LIMIT`）只封顶「一条」，封不住「一轮」——
+ * 25 步 × 每次 12KB 的画布就是 300KB，模型注意力被淹、成本也跟着涨。
+ *
+ * 与单次上限**解耦**：单次上限管「一条结果多大」，本预算管「一轮加起来多大」。
+ * 超出后按「**保新弃旧 + 边界截断 + 一句可读提示**」处理，绝不静默丢弃。
+ */
+export const TURN_TOOL_RESULT_BUDGET_BYTES = 64 * 1024;
 
 const ORIGINAL_TASK_MAX_CHARS = 8000;
 const NUDGE_DECISION_TAIL_MAX_CHARS = 600;
@@ -188,6 +202,11 @@ function hasPendingActionAtTail(text: string): boolean {
 /**
  * 把 studio 扁平 PendingResult 映射成 deepseek-pp 规范化的 NormalizedToolResult，
  * 供 <tool_results> JSON 序列化。detail = 完整可见文本，output = JSON.stringify(result)。
+ *
+ * 2026-11-13（工具执行缺陷 A）：失败结果**不许有空文案**。
+ * 原来 `p.error ?? 'execution failed'` 兜不住空串——宿主侧 `reason: ''`（MCP 服务器把
+ * 错误放在非 text 段时的真实形态）会让 summary/detail/error.message 三处全空，
+ * 模型只看得到 `ok:false`，不知道哪次调用、为什么失败。
  */
 function renderToolResult(p: PendingResult): NormalizedToolResult {
   const detail = clampText(resultToDetailText(p), DETAIL_MAX_CHARS);
@@ -202,9 +221,15 @@ function renderToolResult(p: PendingResult): NormalizedToolResult {
     detail,
     output,
     error: !p.ok
-      ? { code: undefined, message: p.error ?? 'unknown', retryable: false }
+      ? { code: undefined, message: failureMessage(p), retryable: false }
       : undefined,
   };
+}
+
+/** 失败文案：宿主给了非空文本就用它，否则用「工具名＋自述」兜底（绝不留空串）。 */
+function failureMessage(p: PendingResult): string {
+  const text = typeof p.error === 'string' ? p.error.trim() : '';
+  return text || failureTextFor(p.invocationName);
 }
 
 /** 压缩视图：只留 tool/ok/summary/error，无 detail/output，标 windowed。 */
@@ -214,7 +239,7 @@ function renderCompressedToolResult(p: PendingResult): NormalizedToolResult {
     ok: p.ok,
     summary: clampText(resultToSummary(p), SUMMARY_MAX_CHARS) ?? '',
     error: !p.ok
-      ? { code: undefined, message: p.error ?? 'unknown', retryable: false }
+      ? { code: undefined, message: failureMessage(p), retryable: false }
       : undefined,
     windowed: true,
   };
@@ -232,13 +257,99 @@ export function renderWindowedToolResults(executions: readonly PendingResult[]):
   return [...older.map(renderCompressedToolResult), ...recent.map(renderToolResult)];
 }
 
+// ---------------------------------------------------------------- 单轮累计预算
+
+/** 预算视图：预算内的结果 ＋ 超预算时的可读提示。 */
+export interface TurnToolResultsView {
+  /** 保留的结果（时间正序，最新在末尾）。 */
+  results: NormalizedToolResult[];
+  /** 超预算提示；未超预算时为 undefined（此时逐字节等于旧输出）。 */
+  notice?: string;
+  /** 被省略的早期结果条数（未超预算时为 0）。 */
+  omittedCount: number;
+}
+
+function utf8Bytes(text: string): number {
+  return new TextEncoder().encode(text).byteLength;
+}
+
+/**
+ * 一条结果在**真实输出形态**下的字节数。
+ *
+ * 必须按 `JSON.stringify(x, null, 2)` 量，不能按紧凑 JSON：prompt 里落的是 pretty-print，
+ * 缩进与换行本身就占不少字节。用紧凑形态记账会系统性低估，预算当场失效。
+ */
+function serializedBytes(results: readonly NormalizedToolResult[]): number {
+  return utf8Bytes(JSON.stringify(results, null, 2));
+}
+
+/** 逐级收缩一条结果：先丢 output / 缩短 detail，最后只留 summary 骨架。 */
+function shrinkAttempts(entry: NormalizedToolResult): NormalizedToolResult[] {
+  return [
+    { ...entry, output: undefined, detail: clampText(entry.detail, 800), truncated: true },
+    { ...entry, output: undefined, detail: undefined, truncated: true },
+    { tool: entry.tool, ok: entry.ok, summary: entry.summary.slice(0, 200), error: entry.error, truncated: true },
+    { tool: entry.tool, ok: entry.ok, summary: entry.summary.slice(0, 60), error: entry.error, truncated: true },
+    { tool: entry.tool, ok: entry.ok, summary: '(已省略)', truncated: true },
+  ];
+}
+
+/**
+ * 应用单轮累计预算：**保新弃旧**——从最新一条往回装，装不下的那条就地截断，
+ * 更早的一律省略，并给出一句可读提示（模型必须知道"上下文被压缩过"，否则会把
+ * "没看到"当成"没发生"，重复调用或错误推断）。
+ *
+ * 未超预算时逐字节等于 `renderWindowedToolResults` 的输出（无提示、无截断）。
+ * 记账口径 = 构建器真正写进 prompt 的那份 `JSON.stringify(results, null, 2)`。
+ */
+export function renderBudgetedToolResults(executions: readonly PendingResult[]): TurnToolResultsView {
+  const windowed = renderWindowedToolResults(executions);
+  if (serializedBytes(windowed) <= TURN_TOOL_RESULT_BUDGET_BYTES) {
+    return { results: windowed, omittedCount: 0 };
+  }
+
+  const keptNewestFirst: NormalizedToolResult[] = [];
+  let omittedCount = 0;
+  let truncatedOldest = false;
+
+  for (let i = windowed.length - 1; i >= 0; i -= 1) {
+    const entry = windowed[i];
+    // keptNewestFirst 是倒序装的，序列化前要还原成时间正序。
+    const withFull = [...keptNewestFirst, entry].reverse();
+    if (serializedBytes(withFull) <= TURN_TOOL_RESULT_BUDGET_BYTES) {
+      keptNewestFirst.push(entry);
+      continue;
+    }
+    // 整条装不下：试逐级收缩版，能塞进多少留多少（保留"边界这条"的位置信息）。
+    let keptShrunk = false;
+    for (const shrunk of shrinkAttempts(entry)) {
+      const trial = [...keptNewestFirst, shrunk].reverse();
+      if (serializedBytes(trial) <= TURN_TOOL_RESULT_BUDGET_BYTES) {
+        keptNewestFirst.push(shrunk);
+        truncatedOldest = true;
+        keptShrunk = true;
+        break;
+      }
+    }
+    omittedCount += keptShrunk ? i : i + 1; // 0..i-1 全被省略
+    break;
+  }
+
+  const results = [...keptNewestFirst].reverse();
+  const parts: string[] = [`本轮工具结果累计已超过 ${Math.round(TURN_TOOL_RESULT_BUDGET_BYTES / 1024)} KB 预算`];
+  if (omittedCount > 0) parts.push(`最早的 ${omittedCount} 条已省略`);
+  if (truncatedOldest) parts.push('边界那条已截断');
+  parts.push('需要全量内容时请用更精确的参数重新查询，不要把省略当成"没有发生"');
+  return { results, notice: `⚠️ ${parts.join('，')}。`, omittedCount };
+}
+
 /**
  * 从 PendingResult 提取给模型看的「概要」文本（summary 字段）。
  * 成功：stdout 首行 / result 字符串首行；失败：error 首段。
  */
 function resultToSummary(p: PendingResult): string {
   if (!p.ok) {
-    return (p.error ?? 'execution failed').slice(0, SUMMARY_MAX_CHARS);
+    return failureMessage(p).slice(0, SUMMARY_MAX_CHARS);
   }
   if (p.result && typeof p.result === 'object' && 'stdout' in p.result) {
     const r = p.result as Record<string, unknown>;
@@ -258,7 +369,7 @@ function resultToSummary(p: PendingResult): string {
  */
 function resultToDetailText(p: PendingResult): string {
   if (!p.ok) {
-    return p.error ?? 'execution failed';
+    return failureMessage(p);
   }
   if (p.result && typeof p.result === 'object' && 'stdout' in p.result) {
     const r = p.result as Record<string, unknown>;
@@ -300,7 +411,9 @@ export function buildContinuationPrompt(
   toolCatalog?: string,
 ): string {
   const hasFailures = executions.some((e) => !e.ok);
-  const results = renderWindowedToolResults(executions);
+  // 2026-11-13（B）：单轮累计预算在**渲染出口**统一生效——所有续跑 prompt 都走这里，
+  // 不存在"某条路径绕过预算"的旁路。
+  const view = renderBudgetedToolResults(executions);
 
   return [
     CONTINUATION_INTRO,
@@ -311,9 +424,10 @@ export function buildContinuationPrompt(
     clampText(originalTask, ORIGINAL_TASK_MAX_CHARS) ?? '',
     '</original_task>',
     ...(hasFailures ? ['', FAILURE_RECOVERY] : []),
+    ...(view.notice ? ['', view.notice] : []),
     '',
     '<tool_results>',
-    JSON.stringify(results, null, 2),
+    JSON.stringify(view.results, null, 2),
     '</tool_results>',
     ...(toolCatalog ? ['', '### Available Tools', toolCatalog] : []),
   ].join('\n');
@@ -327,7 +441,7 @@ export function buildProtocolRepairPrompt(
   executions: readonly PendingResult[],
   toolCatalog?: string,
 ): string {
-  const results = renderWindowedToolResults(executions);
+  const view = renderBudgetedToolResults(executions);
   return [
     '上一轮回答未完整遵循工具调用协议。请基于原始任务和工具结果继续，并且只使用 XML 工具标签调用工具。',
     '如果任务已经完成，输出 <task_complete>{"summary":"简要结论"}</task_complete>。',
@@ -337,9 +451,10 @@ export function buildProtocolRepairPrompt(
     '<original_task>',
     clampText(originalTask, ORIGINAL_TASK_MAX_CHARS) ?? '',
     '</original_task>',
+    ...(view.notice ? ['', view.notice] : []),
     '',
     '<tool_results>',
-    JSON.stringify(results, null, 2),
+    JSON.stringify(view.results, null, 2),
     '</tool_results>',
     ...(toolCatalog ? ['', '### Available Tools', toolCatalog] : []),
     '',

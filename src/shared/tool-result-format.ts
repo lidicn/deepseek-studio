@@ -60,6 +60,13 @@ export interface LegacyToolCardResult {
   ok: boolean;
   data?: unknown;
   error?: string;
+  /**
+   * 2026-11-13：宿主的 `ToolExecutionResult` 用 `reason` 表达失败原因
+   * （`desktop-host.routeExecution` 是 `reason: r.error`）。旧回退链只认 `error`，
+   * 于是「宿主侧的失败」在显示与模型侧都会变成空文本——这里补进契约，
+   * 与文件头「旧字段 ok / data / error / reason / snapshot 一律保留」一致。
+   */
+  reason?: string;
 }
 
 /** 工具卡片结果 = 旧格式 + 新格式字段。 */
@@ -161,12 +168,15 @@ function formatJson(obj: unknown): string {
 }
 
 /**
- * 旧格式回退逻辑（逐字节保留 tool-card-ui.ts 原行为）：
- *   error → data.stdout（含 CLIXML 清洗）→ data string → JSON.stringify
+ * 旧格式回退逻辑（逐字节保留 tool-card-ui.ts 原行为，仅补 `reason` 兜底）：
+ *   error → data.stdout（含 CLIXML 清洗）→ data string → JSON.stringify → reason
+ *
+ * `reason` 只放在**最后一格**：它不该压过任何既有分支的文案（旧行为逐字节不变），
+ * 但「宿主侧失败、只给了 reason」时必须有东西可显示，否则只剩裸 `[错误]`。
  */
 function legacyResultText(result: LegacyToolCardResult): string {
   if (result.error) return result.error;
-  if (result.data == null) return '';
+  if (result.data == null) return result.reason ?? '';
 
   if (typeof result.data === 'object' && result.data !== null && 'stdout' in result.data) {
     const d = result.data as Record<string, unknown>;
@@ -211,6 +221,39 @@ export function formatToolResultText(result: ToolCardResult): string {
 
   if (result.isError !== true) return base;
   return base ? `[错误] ${base}` : '[错误]';
+}
+
+// ---------------------------------------------------------------- 解释：失败文本兜底
+
+/**
+ * 一句可读的失败文本（含工具名）。
+ *
+ * 为什么必须带工具名：现场 `[10] ok=false {"isError":true}` 里**一个字节的工具名都没有**，
+ * 模型拿到后既不知道哪次调用失败、也不知道往哪修，只能把同一次调用再发一遍。
+ */
+export function failureTextFor(tool: string, reason?: string | null): string {
+  const detail = typeof reason === 'string' ? reason.trim() : '';
+  return detail
+    ? `工具 ${tool} 执行失败：${detail}`
+    : `工具 ${tool} 执行失败：宿主未返回具体错误文本（请勿重复相同调用，先换参数或换工具）`;
+}
+
+/**
+ * 失败结果必须有模型可见文本：`content` 里已有一段非空文本就原样返回，
+ * 否则用 `reason`＋工具名补一条。
+ *
+ * 只在**失败**（`ok === false` 或 `isError === true`）时动手；成功结果一字不改。
+ * 这是「`[错误]` 兜底保留、但不得成为唯一信息」的落点：上游补上文本之后，
+ * `formatToolResultText` 的裸 `[错误]` 分支就只在"连工具名都没有"的极端情况下才会出现。
+ */
+export function ensureToolFailureText<T extends ToolExecutionResult>(tool: string, result: T): T {
+  const failed = result.ok === false || result.isError === true;
+  if (!failed) return result;
+  const existing = joinContent(result.content as ToolResultContentPart[] | undefined);
+  if (existing !== null && existing.trim()) return result;
+  // `as T`：`content` 的具体联合类型各消费方略有差异（宿主那份 text 段必带 text），
+  // 这里只往数组里塞一个合法的 text 段，形状对两者都成立。
+  return { ...result, content: textContent(failureTextFor(tool, result.reason)) } as T;
 }
 
 // ---------------------------------------------------------------- 解释：续跑闸门

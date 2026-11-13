@@ -155,6 +155,8 @@ import {
 } from '../shared/studio-execution';
 // 2026-11-13：长期记忆写入硬闸（提示词可以被模型无视，写库这一步必须有宿主侧的闸）。
 import { evaluateMemorySaveGate, type MemorySaveGateOptions } from '../shared/memory-write-gate';
+// 2026-11-13（工具执行缺陷 A）：失败结果必须带可读文本（含工具名），否则模型只看到 `{"isError":true}`。
+import { ensureToolFailureText } from '../shared/tool-result-format';
 import { createUserTurnLedger } from './user-turn-ledger';
 
 export interface DesktopHostOptions {
@@ -2176,7 +2178,13 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       if (consentMeta?.outside) outsideApproved = true;
     }
     // 5) 路由：宿主侧能力在宿主进程内执行；页端能力走页 DOM；无页则回退 Node 能力。
-    const result = await routeExecution(def, name, params, outsideApproved, botId);
+    //
+    // 2026-11-13（工具执行缺陷 A）：所有失败出口统一补一条**模型可见**的错误文本。
+    // routeExecution 的失败体是 `{ ok:false, reason }`（`mcp.call` 还会带 isError），
+    // 下游 page-runtime 只把 `reason` 重命名为 `error` 往页端送；`reason` 若是空串
+    // （MCP 服务器把错误放在非 text 段时就是这个形态），模型侧只剩 `{"isError":true}`。
+    // 补在这里而不是各 handler 里：一条边界覆盖宿主工具、页端派发、Node 回退三条路。
+    const result = ensureToolFailureText(name, await routeExecution(def, name, params, outsideApproved, botId));
     const durationMs = Date.now() - startedAt;
     // C1-F3：`memory.select` 的耗时/轮次必须能从**落盘通道**取证
     // （原来只有内存审计环 + 页内钩子，重启即丢、验收不可复现）。
