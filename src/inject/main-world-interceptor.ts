@@ -12,6 +12,7 @@
  */
 
 import { StreamingToolCallParser, type ParsedToolCall } from './streaming-tool-parser';
+import { disguiseNative } from './native-disguise';
 import { SseTextStreamExtractor } from './sse-text-extractor';
 import { DeepSeekSseFrameDecoder, framesSignalStreamCompletion } from './deepseek-sse-frame-decoder';
 import { isSupportedUpstreamTool, MATCHABLE_INVOCATION_NAMES } from '../shared/tool-contract';
@@ -898,10 +899,38 @@ function isActiveStream(loopState: LoopState | undefined, streamId: number): boo
  * onStreamEnd 照常调度续跑 → 用户按下停止后仍发出新请求、模型继续输出并继续触发工具，
  * 这是用户控制面被绕过，不只是多发一次请求。
  *
- * 修复：包装 proto.abort 给该 xhr 打 __dsAborted，readyState===4 分类前先看它，
+ * 修复：包装 proto.abort 在 per-XHR 状态上打 aborted 标记，readyState===4 分类前先看它，
  * 命中则不分类、不重试、不续跑，清 pending/定时器并复位 UI。
+ *
+ * 2026-11-13 device_id 修复（零实例痕迹形态）：站点 SDK 对 XHR 实例做自有属性
+ * 「基线差分」——基线（早期参照实例）已含 open 层写入的 `__dsMethod/__dsUrl`，
+ * send 层再给实例加 `__dsIsChat`/`__dsScanned`/`__dsSse*` 等自有属性 ⇒ 被判定
+ * 「实例被篡改」并缓存拒发 device_id（真机二分定因）。故全部跨层状态移入
+ * 模块级 WeakMap：不可枚举、页端不可达、实例零自有属性；非 chat 分支直接透传，
+ * 连实例 handler 都不包。行为语义与旧 `__ds*` 自有属性逐条等价。
  */
-const DS_ABORTED_FLAG = '__dsAborted';
+interface XhrLayerState {
+  method: string;
+  url: string;
+  aborted: boolean;
+  isChat: boolean;
+  scanned: number;
+  sse?: SseTextStreamExtractor;
+  parser?: StreamingToolCallParser;
+  frameDec?: DeepSeekSseFrameDecoder;
+  delayedSend?: (body?: Document | XMLHttpRequestBodyInit | null) => void;
+  delayedSendSync?: () => void;
+}
+const xhrLayerState = new WeakMap<XMLHttpRequest, XhrLayerState>();
+/** 取（必要时建）某 xhr 的跨层状态。 */
+function xhrSt(xhr: XMLHttpRequest): XhrLayerState {
+  let st = xhrLayerState.get(xhr);
+  if (!st) {
+    st = { method: 'GET', url: '', aborted: false, isChat: false, scanned: 0 };
+    xhrLayerState.set(xhr, st);
+  }
+  return st;
+}
 
 /**
  * QD-R4-03：本轮流是否收到完成哨兵。
@@ -1823,6 +1852,7 @@ function installFetchHook(
       statusText: response.statusText,
     });
   };
+  disguiseNative(window.fetch, 'fetch');
   return () => {
     window.fetch = origFetch;
   };
@@ -1862,7 +1892,8 @@ function installXhrHooks(
   // QD-R4-04：包装 abort，让「用户主动停止」与「网络断开」在回调层可区分。
   const origAbort = proto.abort;
   proto.abort = function (this: XMLHttpRequest & Record<string, unknown>) {
-    (this as Record<string, unknown>)[DS_ABORTED_FLAG] = true;
+    const st = xhrSt(this);
+    st.aborted = true;
     if (loopState) {
       loopState.abortedByUser = true;
       loopState.protocolRepairUsed = false;
@@ -1873,43 +1904,44 @@ function installXhrHooks(
     // 保证 readyState=4 回调链正常触发，不留下悬挂 XHR。
     // 卡 B：延迟 send 现在分「正常（异步消费记忆后发）」与「abort（同步补发）」两条，
     // abort 路径必须同步完成「补发 origSend + origAbort」，所以用同步版本。
-    const delayedSend = (this as Record<string, unknown>).__dsDelayedSend as
-      | ((body?: Document | XMLHttpRequestBodyInit | null) => void)
-      | undefined;
-    const delayedSendSync = (this as Record<string, unknown>).__dsDelayedSendSync as
-      | (() => void)
-      | undefined;
+    const delayedSend = st.delayedSend;
+    const delayedSendSync = st.delayedSendSync;
     if (typeof delayedSendSync === 'function') {
-      (this as Record<string, unknown>).__dsDelayedSend = undefined;
-      (this as Record<string, unknown>).__dsDelayedSendSync = undefined;
+      st.delayedSend = undefined;
+      st.delayedSendSync = undefined;
       delayedSendSync();
       return undefined;
     }
     if (typeof delayedSend === 'function') {
-      (this as Record<string, unknown>).__dsDelayedSend = undefined;
+      st.delayedSend = undefined;
       delayedSend();
       return undefined;
     }
     return (origAbort as (...a: unknown[]) => unknown).apply(this, []);
   } as typeof proto.abort;
+  disguiseNative(proto.abort, 'abort');
 
   proto.setRequestHeader = function (this: XMLHttpRequest & Record<string, unknown>, name: string, value: string) {
-    const url = String(this.__dsUrl ?? '');
+    const url = xhrSt(this).url;
     if (url.includes('/api/v0/chat/') && capturedHeaders) {
       capturedHeaders[name] = value;
     }
     return (origSetRequestHeader as (...a: unknown[]) => unknown).apply(this, [name, value]);
   } as typeof proto.setRequestHeader;
+  disguiseNative(proto.setRequestHeader, 'setRequestHeader');
 
   proto.open = function (this: XMLHttpRequest & Record<string, unknown>, method: string, url: string | URL, ...rest: unknown[]) {
-    this.__dsMethod = method;
-    this.__dsUrl = String(url);
+    const st = xhrSt(this);
+    st.method = method;
+    st.url = String(url);
     return (origOpen as (...a: unknown[]) => unknown).apply(this, [method, url, ...rest]);
   } as typeof proto.open;
+  disguiseNative(proto.open, 'open');
 
   proto.send = function (this: XMLHttpRequest & Record<string, unknown>, body?: Document | XMLHttpRequestBodyInit | null) {
-    const url = String(this.__dsUrl ?? '');
-    const method = String(this.__dsMethod ?? 'GET');
+    const st = xhrSt(this);
+    const url = st.url;
+    const method = st.method;
     const isChat = isDeepSeekChatEndpoint(url, method);
     // QD-R7-01（F4）：本条 XHR 的流序号，在下面的 chat 分支里认领；
     // 回调闭包按它判断「这条流还是不是当前被认领的那条」。
@@ -1933,6 +1965,13 @@ function installXhrHooks(
     }
     const xhr = this;
     const sendNow = () => (origSend as (...a: unknown[]) => unknown).call(xhr, body);
+    // 零实例痕迹透传（2026-11-13 device_id 修复）：非 chat 请求（登录/埋点等）原样交给原生层，
+    // 不包实例 handler、不写任何自有属性——站点 SDK 对实例做自有属性基线差分，多出的属性
+    // 会被判「篡改」并拒发 device_id（真机二分定因：send 层实例痕迹是唯一致因）。
+    // 下方 installResponseHookAndSend 的全部逻辑本就 isChat-gated，非 chat 分支零功能损失。
+    if (!isChat) {
+      return sendNow();
+    }
     // P0：chat 请求准备抽成一个函数，延迟发送路径在真正 origSend 之前执行且只执行一次。
     // 这保证 prepareOutgoingBody 每条请求只调用一次 —— 否则延迟路径会二次注入能力提示。
     let prepared = false;
@@ -2026,14 +2065,14 @@ function installXhrHooks(
           console.error('[interceptor] delayed xhr origSend threw:', (e as Error)?.message ?? e);
           return;
         }
-        if (Boolean((this as Record<string, unknown>)[DS_ABORTED_FLAG])) {
+        if (st.aborted) {
           (origAbort as (...a: unknown[]) => unknown).call(this);
         }
       };
       const doDelayedSend = (): void => {
         if (settled) return;
         settled = true;
-        (this as Record<string, unknown>).__dsDelayedSend = undefined;
+        st.delayedSend = undefined;
         // 记忆消费由下面的 consumePromise 统一做（只做一次，结果共享给 abort 路径）。
         // 这里只负责构造请求体并发送。
         void consumePromise.then(doSendNow);
@@ -2046,7 +2085,7 @@ function installXhrHooks(
       const doDelayedSendSyncForAbort = (): void => {
         if (settled) return;
         settled = true;
-        (this as Record<string, unknown>).__dsDelayedSend = undefined;
+        st.delayedSend = undefined;
         // abort 路径不能 await（proto.abort 要求同步补发）。
         // pendingSel 若**已经 settle**，这里用同步取值拿到本轮记忆；否则放弃本轮记忆更新，沿用上一帧。
         const rows = takeSettledRows(pendingSel?.promise ?? null);
@@ -2057,10 +2096,10 @@ function installXhrHooks(
         doSendNow();
       };
       // 暴露给 proto.abort 包装：延迟期间用户 abort → 立即触发 send 再 abort。
-      (this as Record<string, unknown>).__dsDelayedSend = doDelayedSend;
+      st.delayedSend = doDelayedSend;
       // abort 专用的同步补发入口（卡 B）：必须同步完成「origSend + origAbort」，
       // 不能 await 记忆消费（否则 readyState=4 链会悬）。
-      (this as Record<string, unknown>).__dsDelayedSendSync = doDelayedSendSyncForAbort;
+      st.delayedSendSync = doDelayedSendSyncForAbort;
       // 技能刷新也要有界（≤150ms）；两者各自超时后即发。
       const skillsPromise = skillsWait
         ? raceBudget(skillsWait, SKILLS_WAIT_BUDGET_MS).then(() => undefined)
@@ -2071,7 +2110,7 @@ function installXhrHooks(
     }
     prepareChatSend();
     function installResponseHookAndSend() {
-      (xhr as Record<string, unknown>).__dsIsChat = isChat;
+      st.isChat = isChat;
       const prev = xhr.onreadystatechange;
       xhr.onreadystatechange = (...args: unknown[]) => {
       // QD-R6-01：断流结算只对对话端点成立。
@@ -2090,10 +2129,10 @@ function installXhrHooks(
       }
       if (xhr.readyState >= 3) {
         const text = xhr.responseText;
-        const scanned = (xhr.__dsScanned ?? 0) as number;
+        const scanned = st.scanned;
         const part = text.slice(scanned);
-        xhr.__dsScanned = text.length;
-        if (part && (xhr as Record<string, unknown>).__dsIsChat) {
+        st.scanned = text.length;
+        if (part && st.isChat) {
           diag(`xhr resp[${part.length}]: ${part.slice(0, 400).replace(/\s+/g, ' ')}`);
           // QD-R7-01（F2）：累计本条流的字节数，供三态判定用。
           if (loopState) loopState.streamBytes = (loopState.streamBytes ?? 0) + part.length;
@@ -2104,16 +2143,18 @@ function installXhrHooks(
         if (part) {
           // v0.7：每个 XHR 持有有状态 SSE 提取器，跨 readystatechange 保留不完整行，
           // 避免携带工具标签首字符 `<` 的 fragment APPEND 事件被字节边界切开后整段丢失。
-          let sse = xhr.__dsSse as SseTextStreamExtractor | undefined;
-          let parser = xhr.__dsParser as StreamingToolCallParser | undefined;
-          let frameDec = xhr.__dsFrameDec as DeepSeekSseFrameDecoder | undefined;
+          // 2026-11-13 device_id 修复：提取器存模块级 WeakMap（st.sse/parser/frameDec），
+          // 不再写实例自有属性（站点 SDK 实例属性基线差分 ⇒ 拒发 device_id）。
+          let sse = st.sse;
+          let parser = st.parser;
+          let frameDec = st.frameDec;
           if (!sse || !parser || !frameDec) {
             sse = new SseTextStreamExtractor();
             parser = new StreamingToolCallParser(MATCHABLE_INVOCATION_NAMES); // T-4：匹配面＝规范∪别名
             frameDec = new DeepSeekSseFrameDecoder();
-            xhr.__dsSse = sse;
-            xhr.__dsParser = parser;
-            xhr.__dsFrameDec = frameDec;
+            st.sse = sse;
+            st.parser = parser;
+            st.frameDec = frameDec;
           }
           // v1.5：用 frame decoder 从原始 SSE chunk 提取 data 文本（不经过显示用改写）
           const frames = frameDec.push(part);
@@ -2172,9 +2213,7 @@ function installXhrHooks(
         // 解码器只在空行上切 frame，而流尾那段（event: close / response/status=FINISHED）
         // 实测常常不带结尾空行 → finish() 之前它永远吐不出来 → 正常完成的流被判截断。
         // finish() 此前全项目零调用（XHR / fetch 两条路径都只 push 不 finish）。
-        const tailDecoder = (xhr as Record<string, unknown>).__dsFrameDec as
-          | DeepSeekSseFrameDecoder
-          | undefined;
+        const tailDecoder = st.frameDec;
         if (tailDecoder) {
           const tailFrames = tailDecoder.finish();
           if (isActiveStream(loopState, streamId) && framesSignalStreamCompletion(tailFrames)) {
@@ -2189,10 +2228,8 @@ function installXhrHooks(
         //
         // 必须放在 `if (part)` 之外：readyState=4 的那次回调通常没有新增字节
         // （part 为空、字节偏移已在上一次 3 时消费完），写在 part 分支里等于
-        // 永远不执行。parser 挂在 xhr 上，跨回调保留，这里直接取。
-        const tailParser = (xhr as Record<string, unknown>).__dsParser as
-          | { flush: () => { calls: unknown[]; clean: string; hasUnclosedToolTag: boolean } }
-          | undefined;
+        // 永远不执行。parser 存在 st（WeakMap）上，跨回调保留，这里直接取。
+        const tailParser = st.parser;
         if (tailParser && loopState) {
           const tailFlush = tailParser.flush();
           if (tailFlush.clean) {
@@ -2256,6 +2293,7 @@ function installXhrHooks(
     }
     return installResponseHookAndSend();
   } as typeof proto.send;
+  disguiseNative(proto.send, 'send');
 
   return () => {
     proto.open = origOpen;
