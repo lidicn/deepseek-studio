@@ -4,6 +4,7 @@
  * 纯函数测试，无 DOM / 运行时依赖。验证移植自 deepseek-pp prompt.ts 的核心逻辑。
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   buildContinuationPrompt,
   buildProtocolRepairPrompt,
@@ -218,5 +219,70 @@ describe('buildProtocolRepairPrompt', () => {
     expect(p).toContain('或“点击继续”之类要求用户操作的文本。');
     expect(p).not.toContain('或“继续操作”之类要求用户操作的文本。');
     expect(p).toContain('请现在继续操作。');
+  });
+});
+
+// ---------------------------------------------------------------- R4-N6 移植（2026-11-14）
+/**
+ * 上游 `core/inline-agent/prompt.ts` 两项移植，由 drift 定性卡判「缺上游修复」：
+ *   ① 围栏**奇偶**（上游 L149-153）：`includes('```')` 会把「写到一半被截断的未闭合
+ *      代码块」（``` 奇数次）也判成"有交付物 ⇒ 完成"，于是不 nudge、用户拿到半截代码；
+ *   ② 英文动词表补齐（上游 L6）：examine/explore/scan/find/grep/cat/diff/trace/dump/
+ *      print/view/see/display —— 本地一个都没有，这些动词的"承诺后未执行"抓不到。
+ *
+ * 判别力设计（重要，别改成"看起来更顺"的写法）：
+ *   - 围栏用例：偶数 → false，**奇数 → true**（旧实现一律 false ⇒ 奇数这条红）；
+ *   - 动词用例一律带**句末标点**（`'I will grep the logs.'`）：有动词命中 → pending 先命中 →
+ *     true；没有动词 → 落到句末标点 → false。**这才是能分辨"动词表补没补"的形态**；
+ *     写成不带标点的句子会走默认真值分支，前后都 true，等于假绿。
+ *   - 词边界用例：`indicate` 里含 `cat` 子串，裸写 `cat` 会误命中 ⇒ 必须 false。
+ */
+describe('R4-N6 围栏奇偶：未闭合代码块不许判完成', () => {
+  it('偶数围栏（已闭合交付物）→ 不续跑', () => {
+    expect(shouldNudge('结论如下：\n```ts\nconst a = 1;\n```')).toBe(false);
+    // 两段闭合 = 4 个围栏
+    expect(shouldNudge('先看第一段：\n```a```\n再看第二段：\n```b```')).toBe(false);
+  });
+
+  it('奇数围栏（写到一半被截断）→ 继续判定，最终续跑', () => {
+    expect(shouldNudge('我来写：\n```ts\nconst a = 1;')).toBe(true);
+  });
+
+  it('未闭合围栏 + 句末标点 → 仍判完成（与上游同构，不越界收紧）', () => {
+    // 上游同样只在"偶数"时 return false；奇数交给后面的 pending/完成判定。
+    expect(shouldNudge('```ts\n// 半截。')).toBe(false);
+  });
+
+  it('围栏落在决策窗口（尾 600 字符）之外 → 不参与判定', () => {
+    // 决策窗口只看 `getNudgeDecisionText` 的尾部 600 字符：把已闭合围栏推到窗口外，
+    // 它就不该再把整段判成"交付物完成"。这条锁的是"窗口边界"，不是"围栏位置好看"。
+    const text = '```ts\nconst a = 1;\n```\n' + '继续排查的细节说明'.repeat(120);
+    expect(text.slice(-600).includes('```')).toBe(false);
+    expect(shouldNudge(text)).toBe(true);
+  });
+});
+
+describe('R4-N6 英文动词表补齐（保持 \\b 词边界）', () => {
+  const verbs = ['examine', 'explore', 'scan', 'find', 'grep', 'cat', 'diff', 'trace', 'dump', 'print', 'view', 'see', 'display'];
+  for (const verb of verbs) {
+    it(`I will ${verb} … → 承诺后未执行 ⇒ 续跑`, () => {
+      // 带句末标点：只有"动词命中"才能把它从 false 拉回 true（见测试头注释的判别力设计）
+      expect(shouldNudge(`I will ${verb} the logs.`)).toBe(true);
+    });
+  }
+
+  it('词边界：`indicate` 里的 cat 子串不许误命中', () => {
+    expect(shouldNudge('I will indicate the reason.')).toBe(false);
+  });
+
+  it('源码锁：新动词必须带 \\b…\\b，不许裸写 cat/find', () => {
+    const src = readFileSync('src/shared/continuation-prompt.ts', 'utf8');
+    for (const verb of ['examine', 'explore', 'scan', 'find', 'grep', 'cat', 'diff', 'trace', 'dump', 'print', 'view', 'see', 'display']) {
+      // 末尾动词后面跟的是 `)` 而不是 `|`，所以只断言 \bverb\b 本身
+      expect(src).toContain(`\\b${verb}\\b`);
+    }
+    // 裸写形态（前后无 \b）不允许出现
+    expect(src).not.toContain('|cat|');
+    expect(src).not.toContain('|find|');
   });
 });
