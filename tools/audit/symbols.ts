@@ -4,7 +4,8 @@
  *
  * M3 删纠偏后，以下符号必须 0 命中（除白名单注释）：
  *   MAX_NUDGES / RAW_TOOL_TAG_RE / stripRawToolTags / MAX_LOOPS
- * shouldNudge 允许定义存在但调用必须 0。
+ * shouldNudge 允许定义存在但调用必须 0；白名单例外见 CALL_WHITELIST
+ * （2026-11-13 PM 批准选项 a：锚点块内放行、锚点块外照红）。
  * 残留性质：待办报警、非缺陷——老红常驻靠计数变化暴露新增，勿当缺陷去清。
  *
  * 用法：npx tsx tools/audit/symbols.ts
@@ -25,6 +26,72 @@ export interface SymbolViolation {
 /** 必须清零的符号（直接 grep 全文）。 */
 const MUST_BE_ZERO = ['MAX_NUDGES', 'RAW_TOOL_TAG_RE', 'stripRawToolTags', 'MAX_LOOPS'];
 
+/**
+ * shouldNudge 调用精确白名单（2026-11-13 PM 批准选项 a）：
+ * M3 规则原前提＝"shouldNudge 的调用方要删光"；但唯一存活调用方是 M3 之后加入的
+ * 协议修复轮（shouldAttemptProtocolRepair ← main-world-interceptor.ts:3141，设计内保留），
+ * eval golden case 跟着未删的函数合法存活——规则前提过期，非代码残留。
+ *
+ * 白名单**带锚点上下文**、不放行整个文件：条目＝文件＋锚点行＋取界方式；
+ * 锚点块内的调用放行，**锚点块外新增的调用点照样红**（负例见 tools-symbols.test.ts）。
+ */
+const CALL_WHITELIST: Array<{
+  file: string;
+  anchor: RegExp;
+  block: 'function-body' | 'case-block';
+}> = [
+  {
+    file: 'src/shared/continuation-prompt.ts',
+    anchor: /export\s+function\s+shouldAttemptProtocolRepair\s*\(/,
+    block: 'function-body',
+  },
+  {
+    file: 'tools/eval/run.ts',
+    anchor: /case\s+'continuation-prompt\/shouldNudge'/,
+    block: 'case-block',
+  },
+];
+
+/** 上限保护：锚点块扫描最多向下 200 行（函数体／case 块都远小于此）。 */
+const ANCHOR_SCAN_MAX_LINES = 200;
+
+/** 计算锚点块覆盖的行号区间（0 基、含端点）。 */
+function anchorAllowedRanges(
+  lines: string[],
+  anchor: RegExp,
+  block: 'function-body' | 'case-block',
+): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!anchor.test(lines[i])) continue;
+    if (block === 'function-body') {
+      // 花括号计数：从锚点行起、首个 { 之后归零即函数体结束
+      let depth = 0;
+      let seenOpen = false;
+      let end = i;
+      const stop = Math.min(lines.length - 1, i + ANCHOR_SCAN_MAX_LINES);
+      for (let j = i; j <= stop; j++) {
+        for (const ch of lines[j]) {
+          if (ch === '{') { depth++; seenOpen = true; }
+          else if (ch === '}') depth--;
+        }
+        if (seenOpen && depth <= 0) { end = j; break; }
+      }
+      ranges.push([i, end]);
+    } else {
+      // case-block：锚点行起、到下一个 case/default 行之前
+      let end = i;
+      const stop = Math.min(lines.length - 1, i + ANCHOR_SCAN_MAX_LINES);
+      for (let j = i + 1; j <= stop; j++) {
+        if (/^\s*(case\s+['"`]|default\s*:)/.test(lines[j])) break;
+        end = j;
+      }
+      ranges.push([i, end]);
+    }
+  }
+  return ranges;
+}
+
 /** 逐行扫描一个文件，返回违规。 */
 export function checkFile(filePath: string, content: string, root: string): SymbolViolation[] {
   const rel = relative(root, filePath).replace(/\\/g, '/');
@@ -44,13 +111,17 @@ export function checkFile(filePath: string, content: string, root: string): Symb
     }
   }
 
-  // shouldNudge：允许定义但不允许调用
+  // shouldNudge：允许定义但不允许调用；白名单锚点块内的调用放行（锚点块外照红）
+  const wl = CALL_WHITELIST.filter((w) => w.file === rel);
+  const allowedRanges = wl.flatMap((w) => anchorAllowedRanges(lines, w.anchor, w.block));
+  const isAllowed = (i: number): boolean => allowedRanges.some(([s, e]) => i >= s && i <= e);
   for (let i = 0; i < lines.length; i++) {
     const text = lines[i];
     const trimmed = text.trim();
     if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
     // 匹配 shouldNudge( 调用（不是函数定义 function shouldNudge）
     if (/shouldNudge\s*\(/.test(text) && !/function\s+shouldNudge|export\s+function\s+shouldNudge/.test(text)) {
+      if (isAllowed(i)) continue;
       violations.push({ symbol: 'shouldNudge(call)', file: rel, line: i + 1, text: trimmed });
     }
   }
@@ -65,8 +136,8 @@ function walkTsFiles(dir: string): string[] {
     const st = statSync(full);
     if (st.isDirectory() && entry !== 'node_modules' && entry !== '.git') {
       // DCD 裁定 §1.1：尺子自排除 tools/audit/ 自身（常量表+判红代码在自己头上扫到红）。
-      // 注意：tools/eval/ 不排除——run.ts:198 是 eval harness 在测 shouldNudge，
-      //       M3 删完 shouldNudge 后这个 case 要跟着删，保留报警。
+      // 注意：tools/eval/ 不排除——run.ts 的 golden case 由 CALL_WHITELIST 锚点放行
+      //       （eval harness 在测 shouldNudge，M3 删完 shouldNudge 后该白名单条目要跟着删）。
       if (entry === 'audit') continue;
       results.push(...walkTsFiles(full));
     } else if (entry.endsWith('.ts')) {

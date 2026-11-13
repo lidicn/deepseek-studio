@@ -46,4 +46,34 @@ describe('S7 符号清零审计', () => {
     const v = checkFile(f, 'for (let i = 0; i < MAX_LOOPS; i++) {}', root);
     expect(v.some((r) => r.symbol === 'MAX_LOOPS')).toBe(true);
   });
+
+  it('7. shouldNudge 调用在白名单锚点块内（shouldAttemptProtocolRepair 函数体）→ 放行', () => {
+    const f = join(root, 'src/shared/continuation-prompt.ts');
+    const content = [
+      'export function shouldAttemptProtocolRepair(',
+      '  visibleText: string,',
+      '): boolean {',
+      '  return shouldNudge(visibleText);',
+      '}',
+    ].join('\n');
+    const v = checkFile(f, content, root);
+    expect(v.filter((r) => r.symbol === 'shouldNudge(call)')).toHaveLength(0);
+  });
+
+  it('8. shouldNudge 调用落在同文件锚点块外（另一个函数）→ 照红', () => {
+    const f = join(root, 'src/shared/continuation-prompt.ts');
+    const content = [
+      'export function shouldAttemptProtocolRepair(',
+      '  visibleText: string,',
+      '): boolean {',
+      '  return true;',
+      '}',
+      '',
+      'function otherFn(visibleText: string): boolean {',
+      '  return shouldNudge(visibleText);',
+      '}',
+    ].join('\n');
+    const v = checkFile(f, content, root);
+    expect(v.some((r) => r.symbol === 'shouldNudge(call)' && r.line === 8)).toBe(true);
+  });
 });
