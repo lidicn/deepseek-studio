@@ -119,8 +119,12 @@ export interface PageRuntimeHubOptions {
   dispatchTimeoutMs?: number;
   consentTimeoutMs?: number;
   /**
-   * C1 墨鉴 R3-8：页端发来的 tool-call（宿主执行）的超时上限（默认 60s）。
-   * 原实现无超时 → 执行卡住时页端 pending 永久悬挂。
+   * C1 墨鉴 R3-8：页端发来的 tool-call（宿主执行）的超时上限。
+   *
+   * 2026-11-14（真机卡）：缺省值**不再是 60s 常量**，而是
+   * `max(60s, consentTimeoutMs + TOOL_CALL_TIMEOUT_MARGIN_MS)` —— 工具调用总超时必须
+   * **严格大于**审批等待预算，否则审批挂满时两者同时到点，`tool-call-timeout` 会抢走
+   * 真正的失败原因（`consent-denied`）。显式传入的值原样使用（测试可压到毫秒级）。
    */
   toolCallTimeoutMs?: number;
   onError?: (message: string, error?: unknown) => void;
@@ -220,12 +224,63 @@ export interface PageRuntimeHub {
 /** v0.24：缺省 botId（向后兼容：旧注入脚本 hello 不上报 botId → 归为 main）。 */
 const MAIN_BOT_ID = 'main';
 
+/**
+ * 工具调用总超时相对审批预算的**最小余量**（2026-11-14 真机卡）。
+ *
+ * 现场（pid 33892 系，基线 `227bdba`）：`python.exec` 审批挂满 60s，page-runtime 的
+ * tool-call 超时也是 60s ⇒ 两个计时器并列到点，`tool-call-timeout` 抢先回执。
+ * 宿主审计里记的是 `consent-denied`（真实原因），模型/用户拿到的却是「超时未返回」——
+ * 这句话暗示"重试可能有用"，而真相是「审批窗口没人点，重试还会再烧一次等待」。
+ * 所以：**总超时必须严格大于审批预算**，让审批超时先落地、真实 reason 先回执。
+ */
+export const TOOL_CALL_TIMEOUT_MARGIN_MS = 30_000;
+
+/**
+ * 工具失败的**模型可行动文案**（2026-11-14 卡，判据 2）。
+ *
+ * 只改写"审批类"和"总超时"这三种 reason，其余原样透传（不吞错误码）。
+ * 文案里保留 `（code）`，因为下游/日志仍要能 grep 到原始码，模型也仍能引用它。
+ *
+ * `consent-denied` 的措辞同时覆盖「用户点了拒绝」与「审批等待超时」：两者在宿主侧目前
+ * 收敛为同一个 reason（`consent-queue` 超时也判 deny），写成"用户拒绝或审批等待超时"
+ * 才不会在一半场景里说假话。要拆成 `consent-timeout` 得先改 `consent-timeout.test.ts`
+ * 的既有期望（改口径），已报 PM 等裁定。
+ */
+export function describeToolFailure(
+  reason: string | undefined,
+  tool: string,
+  toolTimeoutMs: number,
+): string | undefined {
+  switch (reason) {
+    case 'consent-denied':
+      return (
+        `工具 ${tool} 需要用户审批，但本次未获批准（用户拒绝或审批等待超时）（consent-denied）。`
+        + '请等待用户在审批窗口选择「允许」或「拒绝」；不要重复调用同一工具——重复调用只会再等一次审批。'
+      );
+    case 'consent-unavailable':
+      return (
+        `工具 ${tool} 需要用户审批，但当前没有可用的审批界面，已按 fail-closed 拒绝（consent-unavailable）。`
+        + '请提示用户先打开 Studio 窗口并让页面就绪，再重试本操作。'
+      );
+    case 'tool-call-timeout':
+      return (
+        `工具 ${tool} 执行超过 ${Math.max(1, Math.round(toolTimeoutMs / 1000))} 秒仍未返回，宿主已放弃本次调用`
+        + `（tool-call-timeout）。这不是审批问题：请先确认参数与目标可达，再决定是否重试。`
+      );
+    default:
+      return reason;
+  }
+}
+
 export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntimeHub {
   const path = options.path ?? '/studio';
   const dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
   const consentTimeoutMs = options.consentTimeoutMs ?? 60_000;
   // C1 墨鉴 R3-8：tool-call 执行超时上限。
-  const toolCallTimeoutMs = options.toolCallTimeoutMs ?? 60_000;
+  // 2026-11-14：缺省值改为"严格大于审批预算"，见 TOOL_CALL_TIMEOUT_MARGIN_MS 的现场说明。
+  // 显式传入的值原样使用（既有测试把超时压到毫秒级来测这条分支）。
+  const toolCallTimeoutMs =
+    options.toolCallTimeoutMs ?? Math.max(60_000, consentTimeoutMs + TOOL_CALL_TIMEOUT_MARGIN_MS);
   // 重要：不能用 { server, path } 让 ws 自己挂 upgrade 监听——同一 HTTP server 上的
   // 多个 WebSocketServer 会对「不匹配的路径」调用 abortHandshake(400) 毁掉别人的连接
   // （两个通道互踩：/studio 被 /agent-ws 的服务掐断，反之亦然）。
@@ -602,7 +657,13 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         const toolTimer = setTimeout(() => {
           if (!pendingToolCalls.delete(msg.callId)) return;
           options.onToolResult?.({ callId: msg.callId, tool: mapped.id, ok: false, error: 'tool-call-timeout', botId: callBotId });
-          safeSend(ws, { type: 'tool-call-result', callId: msg.callId, ok: false, error: 'tool-call-timeout' });
+          // 模型可见文本走 describeToolFailure（可行动 + 保留原始码）；onToolResult 留原始码给遥测/审计。
+          safeSend(ws, {
+            type: 'tool-call-result',
+            callId: msg.callId,
+            ok: false,
+            error: describeToolFailure('tool-call-timeout', mapped.id, toolCallTimeoutMs),
+          });
         }, toolCallTimeoutMs);
         pendingToolCalls.set(msg.callId, { ownerId: id, timer: toolTimer });
         const settleToolCall = (): boolean => {
@@ -621,7 +682,8 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
               callId: msg.callId,
               ok: r.ok,
               data: r.data,
-              error: r.reason,
+              // 模型可见文本：审批类/总超时给人话（保留原始码），其余原样透传。
+              error: describeToolFailure(r.reason, mapped.id, toolCallTimeoutMs),
               // v1.2：透传 Pi Agent 风格新格式字段
               ...(r.content !== undefined ? { content: r.content } : {}),
               ...(r.details !== undefined ? { details: r.details } : {}),
