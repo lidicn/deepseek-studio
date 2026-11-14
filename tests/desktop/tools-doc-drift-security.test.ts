@@ -376,3 +376,73 @@ describe('doc-drift 抽取层修补（20261115 ④①）', () => {
     );
   });
 });
+
+// ── 20261115 ④② 上游前缀锚强校验（PM 判据，阻塞级）──
+describe('doc-drift 上游前缀锚强校验（20261115 ④②）', () => {
+  /** 造一个假上游仓：src/core/real.ts（3 行）+ src/ 目录，测完即删。 */
+  function withFakeUpstream(fn: (up: string) => void): void {
+    const up = mkdtempSync(join(tmpdir(), 'upstream-'));
+    try {
+      mkdirSync(join(up, 'src', 'core'), { recursive: true });
+      writeFileSync(join(up, 'src', 'core', 'real.ts'), '// 1\n// 2\n// 3\n', 'utf8');
+      fn(up);
+    } finally {
+      rmSync(up, { recursive: true, force: true });
+    }
+  }
+
+  it('28. 上游文件型界内行号 → 绿（isFile 通过）', () => {
+    withFakeUpstream((up) => {
+      withTempDocs({ 'u1.md': '见 <upstream-repo>/src/core/real.ts:2\n' }, (dir) => {
+        const { issues } = checkDocDrift(root, [dir], ['docs/设计稿'], up);
+        expect(issues.filter((i) => i.severity === 'fail')).toHaveLength(0);
+      });
+    });
+  });
+
+  it('29. 上游文件型越界 → fail（多行号列表逐个判）', () => {
+    withFakeUpstream((up) => {
+      withTempDocs({ 'u2.md': '见 <upstream-repo>/src/core/real.ts:1/2/999\n' }, (dir) => {
+        const { issues } = checkDocDrift(root, [dir], ['docs/设计稿'], up);
+        expect(
+          issues.some((i) => i.severity === 'fail' && i.ref.includes('real.ts:1/2/999')),
+        ).toBe(true);
+      });
+    });
+  });
+
+  it('30. 负控：上游路径查无实存 → fail（必红）', () => {
+    withFakeUpstream((up) => {
+      withTempDocs({ 'u3.md': '见 <upstream-repo>/src/core/no-such-xyz.ts:12\n' }, (dir) => {
+        const { issues } = checkDocDrift(root, [dir], ['docs/设计稿'], up);
+        expect(
+          issues.some((i) => i.severity === 'fail' && i.ref.includes('no-such-xyz.ts')),
+        ).toBe(true);
+      });
+    });
+  });
+
+  it('31. 负控：目录型 cd <upstream-repo>/src → 绿（isDir 通过，必绿）', () => {
+    withFakeUpstream((up) => {
+      withTempDocs({ 'u4.md': 'cd <upstream-repo>/src 后跑构建\n' }, (dir) => {
+        const { issues } = checkDocDrift(root, [dir], ['docs/设计稿'], up);
+        expect(issues.filter((i) => i.severity === 'fail')).toHaveLength(0);
+      });
+    });
+  });
+
+  it('32. 上游仓不可达 → 显式 N/A＋零 fail（不伪装成零问题）', () => {
+    withFakeUpstream((up) => {
+      withTempDocs({ 'u5.md': '见 <upstream-repo>/src/core/real.ts:2\n' }, (dir) => {
+        const r = checkDocDrift(root, [dir], ['docs/设计稿'], join(up, 'no-such-root'));
+        expect(r.issues.filter((i) => i.severity === 'fail')).toHaveLength(0);
+        expect(r.upstreamNA).toBe(1);
+      });
+    });
+  });
+
+  it('33. 真实仓：上游校验上闸无新红（PM 05:44 前提：查无实存 0／越界 0）', () => {
+    const r = checkDocDrift(root);
+    expect(r.issues.filter((i) => i.severity === 'fail')).toHaveLength(0);
+  });
+});

@@ -113,11 +113,13 @@ interface Ref {
   path: string | null;
   /** 文件 basename（解析 key）。 */
   base: string;
-  /** 引用行号（区间两端都记）。 */
+  /** 引用行号（区间两端都记；上游引用为剥出的行号列表）。 */
   lines: number[];
   docFile: string;
   /** true = 阻塞级；false = 信息级（不带行号的规划路径）。 */
   blocking: boolean;
+  /** ④②：上游引用（`<upstream-repo>/` 前缀）——按上游仓根强校验，不走本仓解析。 */
+  upstream?: boolean;
 }
 
 // ---------------------------------------------------------------- 扫描工具
@@ -194,14 +196,20 @@ const RE_LINE_REF = new RegExp(
 const RE_ARTIFACT_PATH =
   /(?<![A-Za-z0-9_\-./])((?:src-tauri\/(?:host|inject|target)|logs)\/[A-Za-z0-9_\-./]+\.(?:tsx|ts|mjs|js))(?![A-Za-z0-9_.:])/g;
 
-/** 上游仓路径约定前缀（20261114 PM 裁定）：`<upstream-repo>/src/...` 指上游 deepseek-pp
- * 仓的文件（四枚占位符纪律，真实先例＝docs/验收/20261106-硬化卡 L192），不指本仓——
- * 解析器按本仓根解析必然失败，不学习此前缀会把上游引用误判成死锚。
- * 实测：RE_PREFIXED_LINE 无左锚定，`<upstream-repo>/src/...` 的内层 `src/...` 会被
- * 直接抠出判死锚（硬化卡 L192 即真实案例），故在抽取层按前缀精确跳过。
- * 跳过是精确的：同一路径**不带**该前缀仍照旧判死锚（契约测试锁双面）。
+/**
+ * 20261115 ④②（PM 判据）：`<upstream-repo>/` 引用不再跳过——**真判**。上游前缀锚强校验（阻塞级）：
+ * 全部 `<upstream-repo>/` 引用按上游仓根判存在（isFile 或 isDir 均算通过——目录型引用如
+ * `cd <upstream-repo>/src` 不能一上闸就红）；文件型再判行号在范围（多行号列表逐个判——④① 已落地）。
+ * **上游仓不可达时打显式 N/A ＋ exit 0，不伪装成"零问题"**（CI 机器上没有这枚仓，这条必须真跑到）。
+ * 抽取层用一枚专用正则先抓全形态并抹白，防内层 `src/...` 被本仓正则误抠（硬化卡 L192 教训的强化版）；
+ * 同一路径**不带**该前缀仍照旧判本仓死锚（契约测试锁双面，测试 13/14）。
+ * 留痕类（「原写/系误指」）不做措辞白名单——历史语义一律走历史快照标记（PM 20261115 裁定）。
  */
-const UPSTREAM_PREFIX = '<upstream-repo>/';
+export const UPSTREAM_ROOT = 'E:\\NAS\\deepseek-pp';
+
+/** 上游引用全形态抓取：`<upstream-repo>/` 后跟路径安全字符（含 `:` 供行号尾巴），事后剥行号。
+ *  裸提及（无 `/`）与 glob 形态（`/**`）不匹配——非具体路径，不入强校验。 */
+const RE_UPSTREAM_ANY = /<upstream-repo>\/([A-Za-z0-9_\-./:]+)/g;
 
 /**
  * 已知构建产物路径前缀（20261114 B 段，PM 裁定）：文档引用产物**带行号**＝一律 fail，
@@ -216,21 +224,30 @@ export function isArtifactPath(path: string): boolean {
   return ARTIFACT_PATH_PREFIXES.some((p) => path === p || path.startsWith(p));
 }
 
-function isUpstreamRef(text: string, offset: number): boolean {
-  return offset >= UPSTREAM_PREFIX.length && text.slice(offset - UPSTREAM_PREFIX.length, offset) === UPSTREAM_PREFIX;
+/** 解析上游引用捕获串：剥行号尾巴（路径本身不含 `:`）→ { rel, lines }。 */
+function parseUpstreamCap(cap: string): { rel: string; lines: number[] } {
+  const m = /^(.*?)(?::(\d+(?:-\d+)?(?:\/\d+(?:-\d+)?)*))?$/.exec(cap);
+  // 尾部多余英文标点（正文句点/冒号）不属于路径
+  const rel = (m?.[1] ?? cap).replace(/[.:]+$/, '');
+  return { rel, lines: m?.[2] ? parseLineList(m[2]) : [] };
 }
 
 function extractRefs(mdText: string, docRel: string): Ref[] {
   const refs: Ref[] = [];
   let t = stripFences(mdText);
 
-  t = t.replace(RE_PREFIXED_LINE, (m, p: string, list: string, offset: number) => {
-    if (isUpstreamRef(t, offset)) return ' '.repeat(m.length);
+  // ④② 上游引用先抓全形态并抹白（阻塞级强校验走 checkDocDrift 专用分支）——
+  // 内层 `src/...` 从此对本仓正则不可见（硬化卡 L192 教训的强化版）。
+  t = t.replace(RE_UPSTREAM_ANY, (m, cap: string) => {
+    const { rel, lines } = parseUpstreamCap(cap);
+    refs.push({ raw: m, path: rel, base: baseOf(rel), lines, docFile: docRel, blocking: true, upstream: true });
+    return ' '.repeat(m.length);
+  });
+  t = t.replace(RE_PREFIXED_LINE, (m, p: string, list: string) => {
     refs.push({ raw: m, path: p, base: baseOf(p), lines: parseLineList(list), docFile: docRel, blocking: true });
     return ' '.repeat(m.length);
   });
-  t = t.replace(RE_PREFIXED_PATH, (m, p: string, offset?: number) => {
-    if (offset !== undefined && isUpstreamRef(t, offset)) return ' '.repeat(m.length);
+  t = t.replace(RE_PREFIXED_PATH, (m, p: string) => {
     refs.push({ raw: m, path: p, base: baseOf(p), lines: [], docFile: docRel, blocking: false });
     return ' '.repeat(m.length);
   });
@@ -337,7 +354,8 @@ export function checkDocDrift(
   root: string,
   docDirs: readonly string[] = DOC_DIRS,
   designDirs: readonly string[] = DESIGN_DIRS,
-): { issues: DocDriftIssue[]; scanned: DocDriftScan[]; refCount: number; designPending: DocDriftIssue[]; historyAnchors: DocDriftIssue[] } {
+  upstreamRoot: string = UPSTREAM_ROOT,
+): { issues: DocDriftIssue[]; scanned: DocDriftScan[]; refCount: number; designPending: DocDriftIssue[]; historyAnchors: DocDriftIssue[]; upstreamNA: number; upstreamChecked: number } {
   const idx = buildBasenameIndex(root);
   const issues: DocDriftIssue[] = [];
   const designPending: DocDriftIssue[] = [];
@@ -346,6 +364,9 @@ export function checkDocDrift(
   const lineCountCache = new Map<string, number>();
   const artifactTrackedCache = new Map<string, boolean>();
   const markedCache = new Map<string, boolean>();
+  const upstreamLineCache = new Map<string, number>();
+  let upstreamNA = 0;
+  let upstreamChecked = 0;
   let refCount = 0;
 
   // 设计目录判定：目录级（整棵 设计稿/ 树都是设计时命名语义）。
@@ -444,12 +465,76 @@ export function checkDocDrift(
           continue;
         }
 
-        const cands = resolveCandidates(ref, root, idx);
         // 20261114 步骤 ③（PM 裁定）：历史快照显式标记——带标记文件的「解析不到／行号越界」
         // 两类**源码死锚**降为可见计数行（历史快照死锚 N 枚，0 也印）；无标记文件照旧 fail。
         // **硬例外：产物行号（B 段）在标记文件内也照样红**——产物行号随每次 build 漂移，
-        // 那不是"当时状态"、是坏锚；标记只豁免源码死锚两类。
+        // 那不是"当时状态"、是坏锚；标记只豁免源码死锚两类（④② 起含上游死锚——快照副本
+        // 的 B8 留痕语义＝"当时状态"，上游将来漂移不许打破 ③ 收口态）。
         const isHistoricalDoc = isHistoricalSnapshot(docRel, root, markedCache);
+
+        // 20261115 ④②（PM 判据，阻塞级）：上游前缀锚强校验——base＝上游仓根，isFile/isDir 均过；
+        // 文件型再判行号（多行号列表逐个判）。仓根不可达 → 显式 N/A 计数、不打 fail、不伪装零问题。
+        if (ref.upstream) {
+          if (!existsSync(upstreamRoot)) {
+            upstreamNA += 1;
+            continue;
+          }
+          upstreamChecked += 1;
+          const upAbs = join(upstreamRoot, ref.path ?? '');
+          let st: Stats | null = null;
+          try {
+            st = statSync(upAbs);
+          } catch {
+            st = null;
+          }
+          if (!st) {
+            const issue: DocDriftIssue = {
+              severity: 'fail',
+              ref: ref.raw,
+              docFile: docRel,
+              detail: '上游引用查无实存（<upstream-repo>/ 下文件与目录均不存在）',
+            };
+            if (isHistoricalDoc) {
+              historyAnchors.push({
+                ...issue,
+                severity: 'warn',
+                detail: '历史快照死锚：上游引用查无实存（文件头有历史快照标记，不作活锚）',
+              });
+            } else {
+              issues.push(issue);
+            }
+            continue;
+          }
+          if (st.isFile() && ref.lines.length > 0) {
+            let n = upstreamLineCache.get(upAbs);
+            if (n === undefined) {
+              n = readFileSync(upAbs, 'utf8').split('\n').length;
+              upstreamLineCache.set(upAbs, n);
+            }
+            for (const ln of ref.lines) {
+              if (ln > n) {
+                const issue: DocDriftIssue = {
+                  severity: 'fail',
+                  ref: ref.raw,
+                  docFile: docRel,
+                  detail: `上游引用第 ${ln} 行，但 ${ref.path} 最多只有 ${n} 行`,
+                };
+                if (isHistoricalDoc) {
+                  historyAnchors.push({
+                    ...issue,
+                    severity: 'warn',
+                    detail: '历史快照死锚：上游引用行号越界（文件头有历史快照标记，不作活锚）',
+                  });
+                } else {
+                  issues.push(issue);
+                }
+              }
+            }
+          }
+          continue;
+        }
+
+        const cands = resolveCandidates(ref, root, idx);
         if (cands.length === 0) {
           // 豁免判定（20261105 CI 对齐）：目标落在 gitignore 目录或未跟踪 → 不挡 CI
           if (isIgnoredOrUntracked(root, ref.path ?? ref.raw)) {
@@ -512,14 +597,14 @@ export function checkDocDrift(
       }
     }
   }
-  return { issues, scanned, refCount, designPending, historyAnchors };
+  return { issues, scanned, refCount, designPending, historyAnchors, upstreamNA, upstreamChecked };
 }
 
 // ---------------------------------------------------------------- 入口
 
 function main(): void {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-  const { issues, scanned, refCount, designPending, historyAnchors } = checkDocDrift(root);
+  const { issues, scanned, refCount, designPending, historyAnchors, upstreamNA, upstreamChecked } = checkDocDrift(root);
   const verbose = process.argv.includes('--verbose');
 
   const scanLine = scanned
@@ -540,6 +625,14 @@ function main(): void {
   console.log(`\n🗂 历史快照死锚（文件头有标记，不作活锚）: ${historyAnchors.length} 枚`);
   for (const h of historyAnchors.slice(0, verbose ? undefined : 15)) console.log(`  ${h.ref}  (${h.docFile})`);
   if (!verbose && historyAnchors.length > 15) console.log(`  …其余 ${historyAnchors.length - 15} 枚用 --verbose 全列`);
+
+  // 20261115 ④②：上游前缀锚强校验结果——可达则印校验数；不可达打显式 N/A＋跳过数，
+  // **不伪装成"零问题"**（CI 机器上没有 E:\NAS\deepseek-pp，这条必须真跑到，PM 判据）。
+  if (existsSync(UPSTREAM_ROOT)) {
+    console.log(`\n🔗 上游前缀锚强校验（${UPSTREAM_ROOT}）: 校验 ${upstreamChecked} 处`);
+  } else {
+    console.log(`\n🔗 上游前缀锚强校验: N/A——上游仓 ${UPSTREAM_ROOT} 不可达，跳过 ${upstreamNA} 处（显式 N/A，不伪装成零问题）`);
+  }
 
   // 20261114 A 段（修正版，PM 裁定）：分类问 git ls-files，不问路径形态——
   //   本机独有（gitignored/未跟踪产物）＝本机 N → 预期 CI warn 增量（干净树上走豁免分支）；
