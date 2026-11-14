@@ -224,7 +224,57 @@ describe('doc-drift gitignored 产物计数（20261114 A 段）', () => {
   });
 });
 
-// ── 20261114 B 段：文档不得引产物行号（阻塞级，与存在性无关）─────────────────────
+// ── 20261114 步骤 ③：逐文件历史快照显式标记（PM 裁定）─────────────────────────
+describe('doc-drift 历史快照标记法（20261114 步骤 ③）', () => {
+  const MARK = '<!-- 历史快照：内引路径/行号为当时状态，不作活锚 -->';
+  const HIST = '历史快照：内引路径/行号为当时状态，不作活锚';
+
+  it('20. 带标记文件：源码死锚（解析不到/行号越界）降计数 historyAnchors；产物行号仍 fail（硬例外）', () => {
+    const d = mkdtempSync(join(tmpdir(), 'm1-'));
+    try {
+      writeFileSync(join(d, 'h.md'), MARK + '\n\n见 src/no-such-file-hist.ts:12\n见 src-tauri/host/main.mjs:999\n', 'utf8');
+      const r = checkDocDrift(root, [d]);
+      const fails = r.issues.filter((i) => i.severity === 'fail');
+      expect(fails.map((i) => i.ref), '产物行号在标记文件内也照样红（硬例外）').toEqual(['src-tauri/host/main.mjs:999']);
+      expect(r.historyAnchors, '源码死锚降为计数').toHaveLength(1);
+      expect(r.historyAnchors[0]?.ref).toContain('no-such-file-hist.ts');
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it('21. 无标记文件同样引用 → 照旧 fail（新写文档默认无标记＝照旧严）', () => {
+    const d = mkdtempSync(join(tmpdir(), 'm2-'));
+    try {
+      writeFileSync(join(d, 'h.md'), '见 src/no-such-file-hist.ts:12\n', 'utf8');
+      const r = checkDocDrift(root, [d]);
+      expect(r.issues.filter((i) => i.severity === 'fail')).toHaveLength(1);
+      expect(r.historyAnchors).toHaveLength(0);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it('22. 标记在文件中部（第 11 行、超 5 行窗）→ 不豁免，照旧 fail（防中途插行绕过）', () => {
+    const d = mkdtempSync(join(tmpdir(), 'm3-'));
+    try {
+      const pad = Array(10).fill('占位行。').join('\n');
+      writeFileSync(join(d, 'h.md'), pad + '\n' + MARK + '\n见 src/no-such-file-hist.ts:12\n', 'utf8');
+      const r = checkDocDrift(root, [d]);
+      expect(r.issues.filter((i) => i.severity === 'fail')).toHaveLength(1);
+      expect(r.historyAnchors).toHaveLength(0);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it('23. 历史快照计数行 0 枚也印（main 形态）＋ 标记文件数可见', () => {
+    // 真实仓库现无标记文件 ⇒ historyAnchors=0 是合法稳态；锁「0 也印」由 main 形态保证（汇总行恒印）。
+    const r = checkDocDrift(root);
+    expect(r.historyAnchors).toHaveLength(0);
+    expect(HIST).toContain('历史快照');
+  });
+});
 describe('doc-drift 产物行号规约（2026114 B 段，阻塞级）', () => {
   it('18. 引用不存在产物路径＋行号 → 仍 fail（判据与存在性无关——CI 侧也咬，负控锁死）', () => {
     // src-tauri/host/** 在干净 checkout 天然不存在；「能否解析」式判据在 CI 永不咬。

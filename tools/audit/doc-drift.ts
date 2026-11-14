@@ -272,6 +272,32 @@ export interface DocDriftScan {
   files: number;
 }
 
+/**
+ * 历史快照显式标记（20261114 PM 裁定，步骤 ③）：历史快照类文档头部加此标记，
+ * 闸对**带标记文件**把「解析不到／行号越界」两类降为可见计数行（🗂 历史快照死锚 N 枚，0 也印）；
+ * **无标记文件照旧 fail**（新写文档默认无标记＝照旧严）。
+ * **硬例外：产物行号（B 段）在标记文件内也照样红**——产物行号随每次 build 漂移，
+ * 那不是"当时状态"，是坏锚；标记只豁免「解析不到／行号越界」两类源码死锚。
+ */
+export const HISTORICAL_SNAPSHOT_MARKER = '<!-- 历史快照：内引路径/行号为当时状态，不作活锚 -->';
+/** 标记必须落在文件前 N 行内（防中途插一行绕过）。 */
+export const HISTORICAL_MARKER_MAX_LINE = 5;
+
+function isHistoricalSnapshot(docRel: string, root: string, markedCache: Map<string, boolean>): boolean {
+  let marked = markedCache.get(docRel);
+  if (marked === undefined) {
+    marked = false;
+    try {
+      // docRel 可能是绝对路径（测试注入 root 外的 tmp 目录）——此时不与 root 拼接
+      const abs = isAbsolute(docRel) ? docRel : join(root, docRel);
+      const lines = readFileSync(abs, 'utf8').split('\n').slice(0, HISTORICAL_MARKER_MAX_LINE);
+      marked = lines.some((l) => l.includes('历史快照：内引路径/行号为当时状态，不作活锚'));
+    } catch { /* 读不到按未标记 */ }
+    markedCache.set(docRel, marked);
+  }
+  return marked;
+}
+
 /** 判定一条 issue 是否＝「引用 gitignored 产物」（20261114 A 段：两树 warn 数换算行）。 */
 export function isGitignoredArtifactWarn(i: DocDriftIssue): boolean {
   return i.severity === 'warn' && i.detail.startsWith('本机独有产物引用');
@@ -286,13 +312,15 @@ export function checkDocDrift(
   root: string,
   docDirs: readonly string[] = DOC_DIRS,
   designDirs: readonly string[] = DESIGN_DIRS,
-): { issues: DocDriftIssue[]; scanned: DocDriftScan[]; refCount: number; designPending: DocDriftIssue[] } {
+): { issues: DocDriftIssue[]; scanned: DocDriftScan[]; refCount: number; designPending: DocDriftIssue[]; historyAnchors: DocDriftIssue[] } {
   const idx = buildBasenameIndex(root);
   const issues: DocDriftIssue[] = [];
   const designPending: DocDriftIssue[] = [];
+  const historyAnchors: DocDriftIssue[] = [];
   const scanned: DocDriftScan[] = [];
   const lineCountCache = new Map<string, number>();
   const artifactTrackedCache = new Map<string, boolean>();
+  const markedCache = new Map<string, boolean>();
   let refCount = 0;
 
   // 设计目录判定：目录级（整棵 设计稿/ 树都是设计时命名语义）。
@@ -378,6 +406,8 @@ export function checkDocDrift(
 
         // 20261114 B 段（PM 裁定，阻塞级）：引用路径落在已知产物集合且带行号 ⇒ 一律 fail，
         // **与存在性无关**（存在性判据在 CI 上永不咬——产物不存在走豁免，本机绿 CI 红的反向变体）。
+        // **历史快照标记不豁免本类**（PM 20261114 判据）：产物行号随每次 build 漂移，那不是
+        // "当时状态"、是坏锚——历史快照标记只豁免「解析不到／行号越界」两类源码死锚。
         // 产物行号随每次构建漂移；文档引产物必须去行号＋描述性引用（存量已清，见硬化卡/UI-R4 两注记）。
         if (ref.path !== null && ref.lines.length > 0 && isArtifactPath(ref.path)) {
           issues.push({
@@ -390,6 +420,11 @@ export function checkDocDrift(
         }
 
         const cands = resolveCandidates(ref, root, idx);
+        // 20261114 步骤 ③（PM 裁定）：历史快照显式标记——带标记文件的「解析不到／行号越界」
+        // 两类**源码死锚**降为可见计数行（历史快照死锚 N 枚，0 也印）；无标记文件照旧 fail。
+        // **硬例外：产物行号（B 段）在标记文件内也照样红**——产物行号随每次 build 漂移，
+        // 那不是"当时状态"、是坏锚；标记只豁免源码死锚两类。
+        const isHistoricalDoc = isHistoricalSnapshot(docRel, root, markedCache);
         if (cands.length === 0) {
           // 豁免判定（20261105 CI 对齐）：目标落在 gitignore 目录或未跟踪 → 不挡 CI
           if (isIgnoredOrUntracked(root, ref.path ?? ref.raw)) {
@@ -398,6 +433,15 @@ export function checkDocDrift(
               ref: ref.raw,
               docFile: docRel,
               detail: '指向 gitignore 目录或未跟踪文件（本机取证产物），CI 环境没有——豁免可解析性检查',
+            });
+            continue;
+          }
+          if (isHistoricalDoc) {
+            historyAnchors.push({
+              severity: 'warn',
+              ref: ref.raw,
+              docFile: docRel,
+              detail: '历史快照死锚：解析不到（文件头有历史快照标记，不作活锚）',
             });
             continue;
           }
@@ -410,7 +454,7 @@ export function checkDocDrift(
           continue;
         }
 
-        // 行号越界校验：撞名多候选时"任一候选满足即可"
+        // 行号越界校验：撞名多候选时"任一候选满足即可"；历史快照标记文件降为可见计数（产物行号除外——B 段已先行拦截）。
         let maxLines = 0;
         for (const cand of cands) {
           const full = join(root, cand);
@@ -423,25 +467,35 @@ export function checkDocDrift(
         }
         for (const ln of ref.lines) {
           if (ln > maxLines) {
-            issues.push({
+            const issue: DocDriftIssue = {
               severity: 'fail',
               ref: ref.raw,
               docFile: docRel,
               detail: `引用第 ${ln} 行，但候选 [${cands.join(', ')}] 最多只有 ${maxLines} 行（代码已改动、文档未跟）`,
-            });
+            };
+            if (isHistoricalDoc) {
+              historyAnchors.push({
+                ...issue,
+                severity: 'warn',
+                detail: '历史快照死锚：行号越界（文件头有历史快照标记，不作活锚）',
+              });
+            } else {
+              issues.push(issue);
+            }
           }
         }
       }
     }
   }
-  return { issues, scanned, refCount, designPending };
+  return { issues, scanned, refCount, designPending, historyAnchors };
 }
 
 // ---------------------------------------------------------------- 入口
 
 function main(): void {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-  const { issues, scanned, refCount, designPending } = checkDocDrift(root);
+  const { issues, scanned, refCount, designPending, historyAnchors } = checkDocDrift(root);
+  const verbose = process.argv.includes('--verbose');
 
   const scanLine = scanned
     .map((s) => `${s.dir}(${s.exists ? `${s.files} md` : '不存在，跳过'})`)
@@ -456,12 +510,17 @@ function main(): void {
   console.log(`\n📋 设计稿待落点（豁免漂移计数，可见）: ${designPending.length} 处`);
   for (const p of designPending) console.log(`  ${p.ref}  (${p.docFile})`);
 
+  // 20261114 步骤 ③：历史快照显式标记——带标记文件的「解析不到／行号越界」降为可见计数（0 也印）；
+  // **产物行号（B 段）在标记文件内也照样红**（产物行号随每次 build 漂移，不是"当时状态"、是坏锚）。
+  console.log(`\n🗂 历史快照死锚（文件头有标记，不作活锚）: ${historyAnchors.length} 枚`);
+  for (const h of historyAnchors.slice(0, verbose ? undefined : 15)) console.log(`  ${h.ref}  (${h.docFile})`);
+  if (!verbose && historyAnchors.length > 15) console.log(`  …其余 ${historyAnchors.length - 15} 枚用 --verbose 全列`);
+
   // 20261114 A 段（修正版，PM 裁定）：分类问 git ls-files，不问路径形态——
   //   本机独有（gitignored/未跟踪产物）＝本机 N → 预期 CI warn 增量（干净树上走豁免分支）；
   //   入库构建产物引用（git 跟踪，如 src-tauri/inject/entry.js）＝两树都可见、不是两树差，行号照旧禁（B 段判据）。
   // 判据谓词见 isGitignoredArtifactWarn / isTrackedArtifactWarn；清单默认上限 15 行＋--verbose 全列
   // （可见性靠计数行，逐条清单是排查工具——同 designPending 逻辑，20261114 PM 裁定）。
-  const verbose = process.argv.includes('--verbose');
   const localOnly = issues.filter(isGitignoredArtifactWarn);
   const trackedArtifact = issues.filter(isTrackedArtifactWarn);
   console.log(`\n📎 本机独有（干净树不可见）: ${localOnly.length} 枚＝本机 N → 预期 CI warn 增量`);
