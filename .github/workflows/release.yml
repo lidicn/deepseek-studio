@@ -342,6 +342,16 @@ jobs:
       # 第 112 件 fail-fast：草稿建完立刻断言 tag_name == vX.Y.Z（拦在 PATCH／Preflight／Publish 前）。
       # step15 传了 tag_name，但 GitHub 对 draft 可能返回合成名 untagged-…（机制未证、v0.14.18 重演）。
       # action 的 create＋upload 同步一步、无法插中间——此步在资产上传之后、PATCH 之前。
+      # 20261114 Gate 现读（v0.14.21 run 43590582513 job 注解原文）：draft 期 **tag_name=v0.14.21（真值）
+      #   与 html_url=…/tag/untagged-…（合成名）同框出现**——html_url 合成≠未绑定，是 draft 对象的
+      #   已观测形态。发布期「合成 tag」三态（无一是自动 flip）：**0.18＝发布后闸自愈**（`b3c058c`
+      #   fix(release): 发布后闸改自愈——release 被 GitHub 绑成合成 tag 时重绑 tag_name 而非撤稿，
+      #   即 release-published.yml:135-146 那条双字段判→PATCH→回读链）；**0.19＝人工经典令牌 PATCH**
+      #   （路线图 §20 L988，release id 441857420）；**0.21＝Publish 之前补绑**（私聊PM 口径）。
+      #   ⚠ 自愈发生在 **Publish 之后** ⇒ 公开窗口（latest／资产 URL 指向合成 tag）先于自愈存在——
+      #   **本 warning 的真实用途＝提醒在 Publish 前补绑，不是把发布后兜底当免检**。
+      #   故 html_url 在此只 ::warning:: 不 throw——加严＝草稿期恒假红；真绑定判定＋自修（PATCH 回绑
+      #   ＋删 stray＋回读）在发布后闸 release-published.yml（双字段判据，L135/L163）。
       - name: Assert draft bound to tag (fail-fast)
         shell: pwsh
         env:
@@ -362,6 +372,12 @@ jobs:
           if ($rel.tag_name -ne $env:TAG_NAME) {
             Write-Host "::error::[assert-bind] draft not bound to git tag: expected=$env:TAG_NAME actual_tag_name=$($rel.tag_name) id=$($rel.id) html_url=$($rel.html_url) — fail-closed before PATCH/Preflight/Publish"
             throw "draft tag_name '$($rel.tag_name)' != expected '$env:TAG_NAME' — release not bound to git tag, must delete and investigate"
+          }
+          # html_url 对 draft 天然合成（20261114 现读：tag_name 真值与合成 html_url 同框＝合法态，不 throw；
+          # 真绑定＋自修在发布后闸 release-published.yml）。若观测到 draft 期 html_url 为真 tag 形态，
+          # 说明 GitHub 语义已变，届时再评估加严。
+          if ($rel.html_url -notlike "*/releases/tag/$env:TAG_NAME") {
+            Write-Host "::warning::[assert-bind] draft html_url is synthetic (expected for drafts, not a bind failure): id=$($rel.id) html_url=$($rel.html_url) tag_name=$($rel.tag_name) — the post-publish gate DOES self-heal, but only AFTER the synthetic name is already public (latest/asset URLs exposed first); therefore bind before Publish — do not treat the fallback as a free pass"
           }
           Write-Host "draft bound to tag $env:TAG_NAME (id=$($rel.id))"
 
