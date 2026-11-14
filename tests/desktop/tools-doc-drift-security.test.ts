@@ -475,4 +475,23 @@ describe('doc-drift 上游前缀锚强校验（20261115 ④②）', () => {
       });
     });
   });
+
+  it('36. 行尾悬空 <upstream-repo>/（后接中文句号/换行）→ fail 显形；glob 与裸提及不误伤', () => {
+    withFakeUpstream((up) => {
+      withTempDocs(
+        {
+          'u7.md':
+            '见 <upstream-repo>/。仓根\n另见 <upstream-repo>/\n排除面 <upstream-repo>/** 与裸提及 <upstream-repo> 仓\n',
+        },
+        (dir) => {
+          const { issues } = checkDocDrift(root, [dir], ['docs/设计稿'], up);
+          // 两枚悬空形态（中文句号尾 + 行尾换行）都必须显形为"形态不完整"
+          const mal = issues.filter((i) => i.severity === 'fail' && i.detail.includes('形态不完整'));
+          expect(mal).toHaveLength(2);
+          // glob（/**）与裸提及不得误伤：除此之外零 fail
+          expect(issues.filter((i) => i.severity === 'fail')).toHaveLength(2);
+        },
+      );
+    });
+  });
 });

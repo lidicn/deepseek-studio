@@ -208,8 +208,12 @@ const RE_ARTIFACT_PATH =
 export const UPSTREAM_ROOT = 'E:\\NAS\\deepseek-pp';
 
 /** 上游引用全形态抓取：`<upstream-repo>/` 后跟路径安全字符（含 `:` 供行号尾巴），事后剥行号。
- *  裸提及（无 `/`）与 glob 形态（`/**`）不匹配——非具体路径，不入强校验。 */
-const RE_UPSTREAM_ANY = /<upstream-repo>\/([A-Za-z0-9_\-./:]+)/g;
+ *  ④③（PM 判据）：`*` 量化——前缀后**零字符**（行尾悬空，如「`<upstream-repo>/`。」或
+ *  行尾换行）也抓，交给主循环残缺守卫判 fail——**"隐身"（抽取正则不匹配、fails=0 checked=0）
+ *  与"误判通过"（落到仓根被 isDir 放行）是两类缺陷**，悬空形属前者，显形后统一走残缺守卫。
+ *  负向前瞻 `(?!\*)` 排除 glob 形态（`<upstream-repo>/**`，全域现存 3 处合法排除）；
+ *  裸提及（无 `/`）不匹配——两者都不入强校验。 */
+const RE_UPSTREAM_ANY = /<upstream-repo>\/(?!\*)([A-Za-z0-9_\-./:]*)/g;
 
 /**
  * 已知构建产物路径前缀（20261114 B 段，PM 裁定）：文档引用产物**带行号**＝一律 fail，
