@@ -8,7 +8,7 @@ import { execSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkFile, scanDocsForNewLeaks, FORBIDDEN_PATTERNS, RE_HARDCODED_PROJECT_ENTRY } from '../../tools/audit/ui-display-truth';
+import { checkFile, scanDocsForNewLeaks, scanDocContent, FORBIDDEN_PATTERNS, RE_HARDCODED_PROJECT_ENTRY } from '../../tools/audit/ui-display-truth';
 
 const ROOT = '/fake/repo';
 
@@ -176,5 +176,57 @@ describe('docs 负控固化（中文路径 + -z 编码回归）', () => {
     // ④ 清理：reset（撤 index 里的 intent-to-add 条目，用具体文件路径避免目录折叠）+ 删文件
     execSync('git reset -- "docs/验收/编码回归-中文.md"', { cwd: tmpRepo });
     rmSync(join(tmpRepo, 'docs', '验收', '编码回归-中文.md'), { force: true });
+  });
+});
+
+// ── ④③ docs 结构豁免（PM 20261115 判据）：取证原文类句子不提示占位化 ──────────────────
+// 结构判据（不做语义猜测）：围栏内 / 表格行 / 行内反引号内不提示；正文裸写照旧提示。
+describe('docs 结构豁免（20261115 ④③）', () => {
+  it('⑥ 围栏内不提示、表格行不提示、行内反引号内不提示；正文裸写仍提示（同文件三形态对照）', () => {
+    const content = [
+      '正文裸写 E:\\NAS\\deepseek-studio\\src\\app.ts 应提示。',
+      '',
+      '```',
+      'cd E:\\NAS\\deepseek-studio && npm run gate',
+      '```',
+      '',
+      '~~~',
+      '取证命令 dir E:\\NAS\\deepseek-pp\\src',
+      '~~~',
+      '',
+      '| 列 | 命令原文 |',
+      '| --- | --- |',
+      '| 取证 | dir E:\\NAS\\deepseek-pp\\src |',
+      '',
+      '行内反引号 `E:\\NAS\\deepseek-studio\\logs\\x.log` 不提示。',
+    ].join('\n');
+    const hits = scanDocContent('docs/负控/结构豁免-夹具.md', content);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.line).toBe(1);
+    expect(hits[0]?.suggestion).toBe('<repo-root>');
+  });
+
+  it('⑦ 真活引用不放行：围栏外裸写两个仓根各命中一条（<repo-root>/<upstream-repo> 各归其位）', () => {
+    const content = [
+      '本仓根 E:\\NAS\\deepseek-studio 的闸入口在 tools/gate。',
+      '上游仓根 E:/NAS/deepseek-pp 的 git 根是 src。',
+    ].join('\n');
+    const hits = scanDocContent('docs/负控/真活引用.md', content);
+    expect(hits).toHaveLength(2);
+    expect(hits.map((h) => h.suggestion)).toEqual(['<repo-root>', '<upstream-repo>']);
+  });
+
+  it('⑧ 围栏状态机：``` 开 ~~~ 闭不视为闭合（异标记围栏内仍豁免，防串块）', () => {
+    const content = [
+      '```',
+      'E:\\NAS\\deepseek-studio 在代码围栏内',
+      '~~~',
+      'E:\\NAS\\deepseek-studio 仍在同一围栏内（异标记不闭合）',
+      '```',
+      'E:\\NAS\\deepseek-studio 围栏外裸写 → 提示',
+    ].join('\n');
+    const hits = scanDocContent('docs/负控/围栏状态机.md', content);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.line).toBe(6);
   });
 });

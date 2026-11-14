@@ -61,6 +61,77 @@ const SCAN_ROOTS = ['src/ui', 'src/inject'];
 
 // ---------------------------------------------------------------- docs 信息级（不进 gate blocking）
 
+/** docs 侧替换口径（原 scanDocsForNewLeaks 内联 RULES，④③ 提到模块级供 scanDocContent 复用）。 */
+const RULES: { re: RegExp; suggestion: string }[] = [
+  { re: /E:[\\/]NAS[\\/]deepseek-studio/g, suggestion: '<repo-root>' },
+  { re: /E:[\\/]NAS[\\/]deepseek-pp/g, suggestion: '<upstream-repo>' },
+  { re: /E:[\\/]NAS[\\/]_probe_\w+/g, suggestion: '<install-dir>' },
+  { re: /E:[\\/]NAS[\\/]_install_\w+/g, suggestion: '<install-dir>' },
+  { re: /E:[\\/]NAS[\\/]_td04_\w+/g, suggestion: '<install-dir>' },
+  { re: /C:[\\/]Users[\\/]lidicn/g, suggestion: '<user-profile>' },
+];
+
+/**
+ * ④③（PM 20261115 判据）结构豁免：**取证原文类**句子不提示占位化——那是证据文本不是活引用。
+ * 判据用**结构**不做语义猜测，三类：
+ *   ① 代码围栏（``` / ~~~）内整块不提示（围栏行本身也不参与）；
+ *   ② markdown 表格行（`|` 起头）整行不提示——单元格内的命令/路径原文；
+ *   ③ 行内反引号包裹的片段不提示（`` `...` `` 抹成空白后行内剩余部分照旧扫）。
+ * 正文裸写的路径（三形态之外）照旧提示——真活引用不放行。
+ * 行号对齐：豁免行替换为空串而非删除，issues 的 line 字段不错位。
+ */
+export function stripQuotedEvidence(content: string): string[] {
+  const lines = content.split('\n');
+  const out: string[] = [];
+  let inFence = false;
+  let fenceMark = '';
+  for (const line of lines) {
+    const fence = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      if (!inFence) {
+        inFence = true;
+        fenceMark = fence[1][0];
+      } else if (fence[1][0] === fenceMark) {
+        inFence = false;
+        fenceMark = '';
+      }
+      out.push('');
+      continue;
+    }
+    if (inFence) {
+      out.push('');
+      continue;
+    }
+    if (/^\s*\|/.test(line)) {
+      out.push('');
+      continue;
+    }
+    out.push(line.replace(/`[^`]*`/g, ' '));
+  }
+  return out;
+}
+
+/** 对单份文档内容做行级扫描（watermark/git 圈定之外的可测纯函数）。 */
+export function scanDocContent(
+  rel: string,
+  content: string,
+): { file: string; line: number; matched: string; suggestion: string }[] {
+  const hits: { file: string; line: number; matched: string; suggestion: string }[] = [];
+  const lines = stripQuotedEvidence(content);
+  for (let i = 0; i < lines.length; i++) {
+    // 豁免：github.com/lidicn/... 仓库地址（§19.7 保留项）
+    const line = lines[i].replace(/github\.com\/lidicn\/[^\s）)]*/g, '');
+    for (const rule of RULES) {
+      rule.re.lastIndex = 0;
+      const m = rule.re.exec(line);
+      if (m) {
+        hits.push({ file: rel, line: i + 1, matched: m[0], suggestion: rule.suggestion });
+      }
+    }
+  }
+  return hits;
+}
+
 /**
  * docs 信息级闸（M3-1 附属，20261105 PM 口径）：
  *   - **信息级**（不进 blocking），挂在 run.ts infoSteps；
@@ -105,15 +176,7 @@ export function scanDocsForNewLeaks(root: string): { file: string; line: number;
 
   if (changedFiles.size === 0) return [];
 
-  // 3) 逐文件扫描
-  const RULES: { re: RegExp; suggestion: string }[] = [
-    { re: /E:[\\/]NAS[\\/]deepseek-studio/g, suggestion: '<repo-root>' },
-    { re: /E:[\\/]NAS[\\/]deepseek-pp/g, suggestion: '<upstream-repo>' },
-    { re: /E:[\\/]NAS[\\/]_probe_\w+/g, suggestion: '<install-dir>' },
-    { re: /E:[\\/]NAS[\\/]_install_\w+/g, suggestion: '<install-dir>' },
-    { re: /E:[\\/]NAS[\\/]_td04_\w+/g, suggestion: '<install-dir>' },
-    { re: /C:[\\/]Users[\\/]lidicn/g, suggestion: '<user-profile>' },
-  ];
+  // 3) 逐文件扫描（行级判据走 scanDocContent——④③ 结构豁免在 stripQuotedEvidence 内统一施）
   const out: { file: string; line: number; matched: string; suggestion: string }[] = [];
   for (const rel of [...changedFiles].sort()) {
     if (!DOCS_SCAN_EXT.test(rel)) continue;
@@ -122,18 +185,7 @@ export function scanDocsForNewLeaks(root: string): { file: string; line: number;
     try {
       content = readFileSync(abs, 'utf8');
     } catch { continue; }
-    const lines = content.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      // 豁免：github.com/lidicn/... 仓库地址（§19.7 保留项）
-      const line = lines[i].replace(/github\.com\/lidicn\/[^\s）)]*/g, '');
-      for (const rule of RULES) {
-        rule.re.lastIndex = 0;
-        const m = rule.re.exec(line);
-        if (m) {
-          out.push({ file: rel, line: i + 1, matched: m[0], suggestion: rule.suggestion });
-        }
-      }
-    }
+    out.push(...scanDocContent(rel, content));
   }
 
   // 4) 更新 watermark
