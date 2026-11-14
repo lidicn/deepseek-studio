@@ -85,6 +85,16 @@ export interface DocDriftIssue {
 /** 扫描的文档目录（仓库相对路径；目录不存在则跳过并注明）。 */
 export const DOC_DIRS = ['docs/设计稿', 'docs/验收报告', 'docs/harness'];
 
+/**
+ * 设计稿目录（20261114 目录语义分流，PM 派卡）：设计稿是**设计时命名**——
+ * 先起的名、实现换了落点（如 `src/host/reply-source/*.ts`、`src/host/memory/*.ts`）。
+ * 其「引用不存在路径」不混进漂移数，单列「设计稿待落点」计数（可见、不静默）；
+ * `docs/验收报告/**`、`docs/harness/**` 是实证文本，同类引用照旧报真漂移。
+ * 豁免只覆盖「路径不存在」类；行号越界（文件在、行不对＝代码已改动文档未跟）
+ * 与阻塞级判定在任何目录都不放松。
+ */
+export const DESIGN_DIRS = ['docs/设计稿'];
+
 /** basename 解析索引覆盖的代码根（仓库相对路径）。 */
 export const INDEX_ROOTS = ['src', 'tools', 'src-tauri', 'scripts', 'tests'];
 
@@ -228,15 +238,21 @@ export interface DocDriftScan {
 export function checkDocDrift(
   root: string,
   docDirs: readonly string[] = DOC_DIRS,
-): { issues: DocDriftIssue[]; scanned: DocDriftScan[]; refCount: number } {
+  designDirs: readonly string[] = DESIGN_DIRS,
+): { issues: DocDriftIssue[]; scanned: DocDriftScan[]; refCount: number; designPending: DocDriftIssue[] } {
   const idx = buildBasenameIndex(root);
   const issues: DocDriftIssue[] = [];
+  const designPending: DocDriftIssue[] = [];
   const scanned: DocDriftScan[] = [];
   const lineCountCache = new Map<string, number>();
   let refCount = 0;
 
+  // 设计目录判定：目录级（整棵 设计稿/ 树都是设计时命名语义）。
+  const designAbs = new Set(designDirs.map((d) => resolve(isAbsolute(d) ? d : join(root, d))));
+
   for (const dir of docDirs) {
     const abs = isAbsolute(dir) ? dir : join(root, dir);
+    const isDesignDir = designAbs.has(resolve(abs));
     const exists = existsSync(abs);
     const mds = exists ? walkFiles(abs, (n) => n.endsWith('.md')) : [];
     scanned.push({ dir, exists, files: mds.length });
@@ -250,12 +266,22 @@ export function checkDocDrift(
         if (!ref.blocking) {
           // 信息级：仅限带 src/、tools/ 前缀的路径引用，按字面路径判断存在性。
           if (ref.path !== null && !existsSync(join(root, ref.path))) {
-            issues.push({
+            const issue: DocDriftIssue = {
               severity: 'warn',
               ref: ref.raw,
               docFile: docRel,
               detail: '路径不存在——设计稿引用规划中/已裁撤模块，文档侧待办（不阻塞）',
-            });
+            };
+            if (isDesignDir) {
+              // 20261114 目录语义分流：设计稿的「路径不存在」单列待落点计数（可见不静默），
+              // 不混进漂移数；实证目录（验收报告/harness）照旧进 issues。
+              designPending.push({
+                ...issue,
+                detail: '设计稿待落点：路径不存在（设计稿先起名、实现换了落点；豁免漂移计数，不静默）',
+              });
+            } else {
+              issues.push(issue);
+            }
           }
           continue;
         }
@@ -305,14 +331,14 @@ export function checkDocDrift(
       }
     }
   }
-  return { issues, scanned, refCount };
+  return { issues, scanned, refCount, designPending };
 }
 
 // ---------------------------------------------------------------- 入口
 
 function main(): void {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-  const { issues, scanned, refCount } = checkDocDrift(root);
+  const { issues, scanned, refCount, designPending } = checkDocDrift(root);
 
   const scanLine = scanned
     .map((s) => `${s.dir}(${s.exists ? `${s.files} md` : '不存在，跳过'})`)
@@ -322,6 +348,10 @@ function main(): void {
 
   console.log('=== 文档↔代码漂移审计（20261031 重写版）===');
   console.log(`扫描: ${scanLine} | 引用共 ${refCount} 处`);
+
+  // 20261114 目录语义分流：设计稿「路径不存在」豁免漂移计数，但必须可见（不许静默 0）。
+  console.log(`\n📋 设计稿待落点（豁免漂移计数，可见）: ${designPending.length} 处`);
+  for (const p of designPending) console.log(`  ${p.ref}  (${p.docFile})`);
 
   if (warns.length > 0) {
     console.log(`\n⚠️ 信息级（不阻塞）${warns.length} 处：`);
