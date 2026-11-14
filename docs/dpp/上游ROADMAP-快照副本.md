@@ -66,7 +66,7 @@
 | B5 | stream-metrics setInterval 无 finally 覆盖 | <upstream-repo>/src/core/deepseek/stream-metrics.ts:102 | 包 try-finally |
 | B6 | isExpectedCancellation 覆盖真实错误 | <upstream-repo>/src/entrypoints/background/chat-runtime-service.ts:445, L192-194 | ambiguous 抛错单独 emit，不走 cancellation 分支 |
 | B7 | result-governance 小 limit 截断后拼 marker 超限 | result-governance.ts | 边界 |
-| B8 | sandboxOffscreenCreation SW 重启后 hasDocument() 可能失效 | <upstream-repo>/src/entrypoints/background.ts（**20261115 订正**：原写 core/i18n/background.ts:1306-1316 系误指——core/i18n/background.ts 仅 138 行；sandboxOffscreenCreation 声明在该文件 347 行、hasDocument 判定与 recreate 在 1753-1765。快照当时（2026-09-30）的上游行号 1306-1316 留痕于此，不作活锚） | 失效时 recreate offscreen document |
+| B8 | sandboxOffscreenCreation SW 重启后 hasDocument() 可能失效 | <upstream-repo>/src/entrypoints/background.ts（**20261115 订正**：原写 <upstream-repo>/src/core/i18n/background.ts:1306-1316 系误指——core/i18n/background.ts 仅 138 行；sandboxOffscreenCreation 声明在该文件 347 行、hasDocument 判定与 recreate 在 1753-1765。快照当时（2026-09-30）的上游行号 1306-1316 留痕于此，不作活锚） | 失效时 recreate offscreen document |
 
 > B1（侧面板永久挂起）已纳入 P0-6，B3/B4 已在 v1.17+hotfix 修复。
 

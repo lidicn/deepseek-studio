@@ -114,7 +114,7 @@
 
 ### A1【medium·真缺陷】oauth-client.ts 4 处 fetch 无 timeout
 
-- **位置**：`deepseek-pp/src/core/sync/oauth-client.ts:133,180,187,204`
+- **位置**：`<upstream-repo>/src/core/sync/oauth-client.ts:133,180,187,204`
 - **核验**：`grep 'fetch\|AbortSignal\|timeout'` 确认 4 处 fetch 全无 `signal`/`AbortSignal`/`timeout`。
 - **line 133 上下文**：令牌刷新 `fetch(refreshUrl, {method:'POST', headers, body})`——OAuth 服务器响应慢或网络挂起时，`await fetch` 永久阻塞，令牌刷新链路卡死。line 139 的 `await res.text().catch(() => '')` 也无 timeout。
 - **后果**：OAuth 令牌刷新是同步链路关键路径，无 timeout 会导致整个同步功能挂死（刷新永远 pending → 后续请求永远用过期 token → 永远 401）。
@@ -122,14 +122,14 @@
 
 ### A2【medium·真缺陷】webdav-client.ts 4 处 fetch 无 timeout
 
-- **位置**：`deepseek-pp/src/core/sync/webdav-client.ts:30,42,53,64`
+- **位置**：`<upstream-repo>/src/core/sync/webdav-client.ts:30,42,53,64`
 - **核验**：4 处 fetch 全无 timeout。
 - **后果**：WebDAV 文件操作无 timeout，服务器挂起时同步操作永久阻塞。
 - **修复**：加 `AbortSignal.timeout(30000)`。
 
 ### A3【medium·真缺陷】bundled-assets.ts 裸 fetch 无 timeout
 
-- **位置**：`deepseek-pp/src/core/skill/bundled-assets.ts:145`
+- **位置**：`<upstream-repo>/src/core/skill/bundled-assets.ts:145`
 - **核验**：`fetch: (input) => fetch(input)`——依赖注入的 fetch 包装器，裸调 `fetch(input)` 无任何 timeout 配置。
 - **后果**：资产下载无 timeout，挂起时阻塞。
 - **修复**：加 timeout 或要求调用方传 AbortSignal。
