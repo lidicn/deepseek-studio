@@ -110,6 +110,20 @@ describe("renderStudioTraceReport", () => {
     expect(lines[0]).toContain("\u251c\u2500");
   });
 
+  it("continuation.decision prints merged count only when present", () => {
+    // 2026-11-14：注入层把同签名的连续 continuation.decision 合并成少量几枚，
+    // `count` 必须进**渲染面**（不能只活在 JSONL 里），否则走文本报告取证看不见合并。
+    const events: StudioTraceEvent[] = [
+      { turnId: "t1", timestamp: 1000, t: "turn.start" },
+      { turnId: "t1", timestamp: 1500, t: "continuation.decision", reason: "duplicate-tool-signature", triggered: false, count: 4 },
+      { turnId: "t1", timestamp: 9000, t: "turn.end", finished: true, stopReason: "completed" },
+    ];
+    const out = renderStudioTraceReport(events);
+    expect(out).toContain("continuation.decision: duplicate-tool-signature -> triggered=false count=4");
+    // 未合并的事件不带此字段 ⇒ 行内不出现 count=（旧报告输出逐字节不变）。
+    expect(renderStudioTraceReport(sampleEvents())).not.toContain("count=");
+  });
+
   it("does not mutate input", () => {
     const events = sampleEvents();
     const before = JSON.stringify(events);

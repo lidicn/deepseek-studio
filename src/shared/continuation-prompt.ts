@@ -111,6 +111,170 @@ const CONTINUATION_NO_PSEUDO =
 const FAILURE_RECOVERY =
   '至少一个工具执行失败。不要因为可恢复错误就停止；先阅读 summary/detail/error，并修正参数或改用合适的下一步继续完成任务。';
 
+// ---------------------------------------------------------------- 失败分性（2026-11-14）
+//
+// 真机（出资人截图）：记忆硬闸拦住了写入，但 `FAILURE_RECOVERY` 对一个**策略性拒绝**说
+// 「修正参数或改用合适的下一步继续」，于是模型在同一轮里把 `memory_save` 原样重发 6 次
+// （3–37ms 全 ok=false），一个字节都没落库 —— 用户看到的就是刷屏红字＋空转。
+// 同一份 prompt 的结构化字段还写着 `retryable: false`：**字段说不可重试、散文说继续重试**，
+// 模型执行散文。这个模块从此按「失败性质」分流，两条必须同向。
+
+/**
+ * 终局／策略性拒绝码：**同一调用重复多少次都不会改变结果**。
+ *
+ * 判据里点名的最小集合：`memory-save-needs-explicit-instruction`、`consent-denied`、
+ * `consent-unavailable`、`workspace-unconfigured`、`page-not-ready`；
+ * 另收同族（同样是"参数再试也不会变"的策略/装配态），避免下次换个码又漏。
+ */
+export const TERMINAL_FAILURE_CODES: readonly string[] = [
+  'memory-save-needs-explicit-instruction',
+  'memory-save-no-user-turn',
+  'memory-save-task-snapshot',
+  'consent-denied',
+  'consent-unavailable',
+  'workspace-unconfigured',
+  'page-not-ready',
+  'unknown-tool',
+  'unknown-capability',
+  'tool-not-allowed-by-persona',
+  'outside-workspace',
+  'origin-denied',
+  'hard-deny',
+  /**
+   * 注入层的**折叠回执**（UI 卡 `MAX_SIG_REDELIVERIES=3`）：同流同签名第 2–4 枚不再执行，
+   * 直接回 `ok:false` + `duplicate-tool-signature: …`。它同样是"再试也不会变"，
+   * 必须走终局文案——否则这边会劝模型"修正参数继续"，把被折叠的重复调用再推一遍。
+   * ⚠️ 但它**不计入** `buildRepeatDenialNotice` 的 N（见那里），避免与 UI 的封顶重复计数。
+   */
+  'duplicate-tool-signature',
+];
+
+/** 真可重试的失败特征（网络 / 5xx / 限流 / 断流 / 超时）。命中即"改参数再试有意义"。 */
+const RETRYABLE_FAILURE_RE =
+  /(timeout|timed out|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|rate.?limit|429|50[0-9]|health-timeout|read-no-data|page-timeout|stream|SSE|disconnected)/i;
+
+/** 失败性质：终局（策略拒绝，重试无意义）／可重试（改参数或等待后有意义）。 */
+export type ToolFailureKind = 'terminal' | 'retryable';
+
+/**
+ * 从失败文本里抽出**规范失败码**（穷举 `TERMINAL_FAILURE_CODES`，取出现位置最靠前的那个）。
+ *
+ * 为什么必须抽码（2026-11-14 PM 复核指出的真缺陷）：原来把整条 `e.error` 当"码"用，
+ * 于是同一签名只要文案里带了不同参数回显或不同耗时 ⇒ **分桶键不相等 ⇒ 凑不出 2**
+ * ⇒ 计数提示永远不出，现场那种"同一调用被拒 6 次"就永远拿不到提示。
+ *
+ * 认三种形态，都靠 `indexOf` 命中，取最靠前＝最像"主码"的那个：
+ *   ① 裸码：`memory-save-needs-explicit-instruction`
+ *   ② 括号形态：宿主 `page-runtime.describeToolFailure` 写的「…（consent-denied）」
+ *   ③ 前缀形态：`duplicate-tool-signature: 同一轮…`（注入层折叠回执，靠这个接头）
+ *
+ * ⚠️ 注入层写折叠回执时 `duplicate-tool-signature:` 必须留在**开头**（已请 PM 转 UI）：
+ * 改措辞顺序等于把封顶机制与计数机制的接头拆掉。
+ */
+export function extractFailureCode(text: string | undefined): string | undefined {
+  if (typeof text !== 'string' || text.length === 0) return undefined;
+  let best: { code: string; index: number } | undefined;
+  for (const code of TERMINAL_FAILURE_CODES) {
+    const index = text.indexOf(code);
+    if (index === -1) continue;
+    if (best === undefined || index < best.index || (index === best.index && code.length > best.code.length)) {
+      best = { code, index };
+    }
+  }
+  return best?.code;
+}
+
+/**
+ * 判定一条失败的性质。
+ *
+ * 顺序：**终局优先**——宿主侧的可读文案会把码写在括号里
+ * （如「…（consent-denied）」，见 `page-runtime.describeToolFailure`），
+ * 文案里可能同时出现 `timeout` 一类词；只要抽出终局码就按终局处理，避免判定翻转。
+ * 默认按可重试处理（保持旧行为：未知码仍给续跑机会），终局集合是显式豁免。
+ *
+ * 分类与分桶**同出一个源**（都走 `extractFailureCode`）：同向不等于同源，同源才不会再分叉。
+ */
+export function classifyToolFailure(p: { ok: boolean; error?: string }): ToolFailureKind | undefined {
+  if (p.ok) return undefined;
+  const text = typeof p.error === 'string' ? p.error : '';
+  if (extractFailureCode(text) !== undefined) return 'terminal';
+  if (RETRYABLE_FAILURE_RE.test(text)) return 'retryable';
+  return 'retryable';
+}
+
+/**
+ * 终局失败的模型侧文案：**不含**「修正参数」「继续重试」这类句子。
+ *
+ * 为什么必须去掉：那不是措辞问题，是**行为指令**。真机里模型就是照着
+ * 「修正参数或改用合适的下一步继续」把同一调用重发 6 次。
+ */
+export function buildTerminalFailureNotice(codes: readonly string[]): string {
+  const uniq = [...new Set(codes.filter((c) => c.length > 0))];
+  const list = uniq.length > 0 ? `（${uniq.join('、')}）` : '';
+  return (
+    `以下失败属于策略性拒绝${list}：这类失败重复同一调用不会改变结果。`
+    + '请改用其他步骤，或直接向用户说明原因并结束本轮；不要原样重试同一调用。'
+  );
+}
+
+/**
+ * 注入层折叠回执的错误码前缀（与 UI 卡同一字符串，改动必须两边同步）。
+ * 只用于"不计入重复计数"的排除，不参与文案拼接。
+ */
+const DUPLICATE_SIGNATURE_CODE = 'duplicate-tool-signature';
+
+/**
+ * 同一签名被终局拒绝 ≥ 阈值时，给模型的显式计数提示。
+ *
+ * ⚠️ **签名口径**：`PendingResult` 里**没有 params**（注入层只有
+ * invocationName/ok/result/error/sessionId），所以这里用
+ * `(invocationName, 规范失败码)` 近似"同一调用"。规范码由 `extractFailureCode` 抽出，
+ * **不是整条错误文本**——同一调用的文案会带不同参数回显或不同耗时，按全文分桶
+ * 会永远凑不出 2（这正是 2026-11-14 PM 复核抓到的缺陷）。
+ * 真要按 (tool, params) 精确计数，需要注入层在 PendingResult 上补 params 摘要（属 UI 域，已报 PM 转）。
+ */
+export const REPEAT_DENIAL_ALERT_THRESHOLD = 2;
+
+export function buildRepeatDenialNotice(executions: readonly PendingResult[]): string | undefined {
+  const buckets = new Map<string, { tool: string; code: string; count: number }>();
+  for (const e of executions) {
+    if (classifyToolFailure({ ok: e.ok, ...(e.error !== undefined ? { error: e.error } : {}) }) !== 'terminal') {
+      continue;
+    }
+    // 分桶键用**抽出来的规范码**（终局判定成立 ⇒ 码必然抽得出来；兜底留空串保证不抛）。
+    const code = extractFailureCode(e.error) ?? '';
+    // 折叠回执**不计入本计数**（与 UI 卡 `MAX_SIG_REDELIVERIES=3` 正交）：
+    // 那种回执对应的工具**根本没再执行**，N 的语义是"真的执行过、并被策略拒绝了几次"；
+    // 重复投递本身已由注入层的封顶 + 折叠回执负责，两边都数会让模型看到两个不同的 N。
+    if (code === DUPLICATE_SIGNATURE_CODE) continue;
+    const key = `${e.invocationName}\u0000${code}`;
+    const hit = buckets.get(key);
+    if (hit) hit.count += 1;
+    else buckets.set(key, { tool: e.invocationName, code, count: 1 });
+  }
+  const repeated = [...buckets.values()].filter((b) => b.count >= REPEAT_DENIAL_ALERT_THRESHOLD);
+  if (repeated.length === 0) return undefined;
+  const parts = repeated.map((b) => {
+    const reason = b.code.length > 0 ? b.code : '策略性拒绝';
+    // 打印**码**而不是 120 字句子：模型要的是"哪一类拒绝"，长句只会淹掉"停止重试"这句指令。
+    return `${b.tool} ×${b.count}（原因：${reason}）`;
+  });
+  return (
+    `⚠️ 本轮同一调用已被终局拒绝 ${repeated.map((b) => b.count).join('/')} 次：${parts.join('；')}。`
+    + '继续重复完全不会改变结果——请停止重试，改用其他步骤或直接向用户说明。'
+  );
+}
+
+/** 把一批终局失败折算成提示里要印的码（去重、保序、丢掉抽不出码的）。 */
+function terminalCodesOf(failures: readonly PendingResult[]): string[] {
+  const codes: string[] = [];
+  for (const e of failures) {
+    const code = extractFailureCode(typeof e.error === 'string' ? e.error : undefined);
+    if (code !== undefined) codes.push(code);
+  }
+  return codes;
+}
+
 // ---------------------------------------------------------------- task_complete
 
 /**
@@ -206,6 +370,23 @@ function hasPendingActionAtTail(text: string): boolean {
 // ---------------------------------------------------------------- 渲染工具结果
 
 /**
+ * 失败结果的结构化 `error` 槽。
+ *
+ * `code` 必须填 `extractFailureCode` 抽出的**规范码**（2026-11-14 PM 复核）：
+ * 这个槽契约本来就有 `code`，之前两处都填 `undefined`，等于把码只留在散文里。
+ * 现在散文、分类、分桶、结构化字段**同出一个源**，不会再各自分叉。
+ */
+function toolResultError(p: PendingResult): NormalizedToolResult['error'] {
+  if (p.ok) return undefined;
+  const code = extractFailureCode(p.error);
+  return {
+    ...(code !== undefined ? { code } : {}),
+    message: failureMessage(p),
+    retryable: classifyToolFailure({ ok: p.ok, error: p.error }) === 'retryable',
+  };
+}
+
+/**
  * 把 studio 扁平 PendingResult 映射成 deepseek-pp 规范化的 NormalizedToolResult，
  * 供 <tool_results> JSON 序列化。detail = 完整可见文本，output = JSON.stringify(result)。
  *
@@ -226,9 +407,7 @@ function renderToolResult(p: PendingResult): NormalizedToolResult {
     summary: clampText(resultToSummary(p), SUMMARY_MAX_CHARS) ?? '',
     detail,
     output,
-    error: !p.ok
-      ? { code: undefined, message: failureMessage(p), retryable: false }
-      : undefined,
+    error: toolResultError(p),
   };
 }
 
@@ -244,9 +423,7 @@ function renderCompressedToolResult(p: PendingResult): NormalizedToolResult {
     tool: p.invocationName,
     ok: p.ok,
     summary: clampText(resultToSummary(p), SUMMARY_MAX_CHARS) ?? '',
-    error: !p.ok
-      ? { code: undefined, message: failureMessage(p), retryable: false }
-      : undefined,
+    error: toolResultError(p),
     windowed: true,
   };
 }
@@ -416,7 +593,11 @@ export function buildContinuationPrompt(
   executions: readonly PendingResult[],
   toolCatalog?: string,
 ): string {
-  const hasFailures = executions.some((e) => !e.ok);
+  // 2026-11-14：失败**分性**，不再 `some(!ok)` 一视同仁（真机：策略拒绝被"修正参数继续"推回 6 次）。
+  const failures = executions.filter((e) => !e.ok);
+  const terminal = failures.filter((e) => classifyToolFailure(e) === 'terminal');
+  const retryable = failures.filter((e) => classifyToolFailure(e) === 'retryable');
+  const repeatNotice = buildRepeatDenialNotice(executions);
   // 2026-11-13（B）：单轮累计预算在**渲染出口**统一生效——所有续跑 prompt 都走这里，
   // 不存在"某条路径绕过预算"的旁路。
   const view = renderBudgetedToolResults(executions);
@@ -429,7 +610,14 @@ export function buildContinuationPrompt(
     '<original_task>',
     clampText(originalTask, ORIGINAL_TASK_MAX_CHARS) ?? '',
     '</original_task>',
-    ...(hasFailures ? ['', FAILURE_RECOVERY] : []),
+    // 终局提示必须在续跑提示**之前**：后者说"修正参数继续"，先读到的结论定调。
+    // 提示里印的是**规范码**（不是整条错误文本）：长句会淹掉"不要原样重试"这句指令，
+    // 而且同一码的不同参数回显会让提示每次长得不一样。
+    ...(terminal.length > 0
+      ? ['', buildTerminalFailureNotice(terminalCodesOf(terminal))]
+      : []),
+    ...(retryable.length > 0 ? ['', FAILURE_RECOVERY] : []),
+    ...(repeatNotice ? ['', repeatNotice] : []),
     ...(view.notice ? ['', view.notice] : []),
     '',
     '<tool_results>',
@@ -448,6 +636,10 @@ export function buildProtocolRepairPrompt(
   toolCatalog?: string,
 ): string {
   const view = renderBudgetedToolResults(executions);
+  // 2026-11-14：协议修复轮同样按性质分流——修复轮里模型最容易"换个写法再试同一个被拒调用"，
+  // 终局提示与重复计数在这一轮尤其要说。可重试的续跑句保持原样（不新增、不改字）。
+  const terminal = executions.filter((e) => classifyToolFailure(e) === 'terminal');
+  const repeatNotice = buildRepeatDenialNotice(executions);
   return [
     '上一轮回答未完整遵循工具调用协议。请基于原始任务和工具结果继续，并且只使用 XML 工具标签调用工具。',
     '如果任务已经完成，输出 <task_complete>{"summary":"简要结论"}</task_complete>。',
@@ -457,6 +649,10 @@ export function buildProtocolRepairPrompt(
     '<original_task>',
     clampText(originalTask, ORIGINAL_TASK_MAX_CHARS) ?? '',
     '</original_task>',
+    ...(terminal.length > 0
+      ? ['', buildTerminalFailureNotice(terminalCodesOf(terminal))]
+      : []),
+    ...(repeatNotice ? ['', repeatNotice] : []),
     ...(view.notice ? ['', view.notice] : []),
     '',
     '<tool_results>',

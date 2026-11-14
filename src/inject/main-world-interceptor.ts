@@ -892,6 +892,54 @@ function isActiveStream(loopState: LoopState | undefined, streamId: number): boo
 }
 
 /**
+ * 2026-11-14 登录卡死修复：同一条流内、同一工具签名被重复投递的**封顶值**。
+ * 超过此值的重复投递停止结算（静默丢弃），trace 也只记首枚＋封顶穿越两枚（合并计数）。
+ * 取 3：给模型 3 次「这是重复、结果见前」的可行动回执机会，再多即是刷屏而非信息。
+ *
+ * 阈值对齐（2026-11-14 与 Core 对齐、PM 裁「成立」）：本侧 MAX_SIG_REDELIVERIES=3 数的是
+ * 「重复投递」（注入层折叠，工具并未再执行）；对侧 src/shared/continuation-prompt.ts 的
+ * REPEAT_DENIAL_ALERT_THRESHOLD=2 数的是「模型真实执行且终局被拒」（模型侧计数提示）。
+ * 两轴对象不同、互不吞：折叠回执（duplicate-tool-signature）被 Core 收进终局集但
+ * **显式不计入其 N**（否则模型会看到两个不同的 N 不知信哪个）。改任一侧数值时，
+ * 两侧常量注释必须同步点名对方。
+ */
+const MAX_SIG_REDELIVERIES = 3;
+
+/** 稳定的 (name, params) 键：与 shared 去重签名同口径（键排序 + 递归），自包含不依赖 Core 的私有实现。 */
+function dupSignatureKey(invocationName: string, params: Record<string, unknown>): string {
+  return `${invocationName}:${stableDupStringify(params)}`;
+}
+function stableDupStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? String(value);
+  if (Array.isArray(value)) return `[${value.map(stableDupStringify).join(',')}]`;
+  const obj = value as Record<string, unknown>;
+  return `{${Object.keys(obj)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${stableDupStringify(obj[k])}`)
+    .join(',')}}`;
+}
+
+/**
+ * ③ 根因取证 trace（2026-11-14 PM 卡③）：pending 段闭合判定每流 flush 记一枚
+ * `continuation.decision`，reason 携带 闭合/未闭合 ＋ 围栏计数（奇偶，与 shared shouldNudge
+ * 的围栏奇偶判据同族，`2779f5b` 移植的那条）。fences＝本流 flush 时 pending 段（tail）里的
+ * ``` 枚数。
+ *
+ * 复验读数口径（PM）：若重复投递 ≤3（封顶在起作用）但本 trace 报 `unclosed`（围栏奇数），
+ * 说明根因在闭合判定（pending 段挂在未闭合围栏里、每 chunk 重解析同一 pending），不在封顶
+ * ——届时另开第二张卡修闭合判定。若报 `closed`，封顶之外的重复源另有其因。
+ * 记在 continuation.decision 上（而非新事件类型）：落盘白名单已放行该类型、渲染面可见，
+ * 零 shared 改动。
+ */
+function recordPendingClosure(fin: { clean: string; hasUnclosedToolTag: boolean }): void {
+  const fences = fin.clean.split('```').length - 1;
+  const reason = fin.hasUnclosedToolTag
+    ? `pending-closure:unclosed(fences=${fences})`
+    : `pending-closure:closed(fences=${fences})`;
+  interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason, triggered: false });
+}
+
+/**
  * QD-R4-04：用户主动 abort 的标记。
  *
  * `xhr.abort()` 与「网络断开」在回调层完全同构（readyState=4, status=0），
@@ -1809,6 +1857,8 @@ function installFetchHook(
           if (fin.hasUnclosedToolTag && loopState && isActiveStream(loopState, streamId)) {
             loopState.streamTruncatedTag = true;
           }
+          // ③ 根因取证：pending 段闭合判定 trace（closed/unclosed＋围栏计数），只记当前被认领的流。
+          if (loopState && isActiveStream(loopState, streamId)) recordPendingClosure(fin);
         } catch (err) {
           // QD-R4-06：此前 catch 里直接 return，streamActive 永远停在 true，
           // onStreamEnd 不执行 → forward 的 .then 里 scheduleAutoContinue 的
@@ -2239,6 +2289,8 @@ function installXhrHooks(
             // 只把已知工具名或其前缀判为未闭合，避免比较符与未知标签误报截断。
             loopState.streamTruncatedTag = true;
           }
+          // ③ 根因取证：pending 段闭合判定 trace（closed/unclosed＋围栏计数），只记当前被认领的流。
+          if (isActiveStream(loopState, streamId)) recordPendingClosure(tailFlush);
         }
         // QD-R4-02/03/04：统一结算判定（与 fetch 路径共用同一函数）。
         // 必须在分类之前：abort 与断网同为 readyState=4/status=0，
@@ -2335,7 +2387,25 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   const collectedExecutions: PendingResult[] = [];
   // QD-R8：同一条流可能被重复消费；相同 callId 只允许投递一次。
   const toolCallDedupe = createToolCallDedupe();
-  loopState.onStreamBegin = () => toolCallDedupe.resetSignatures();
+  // ── 2026-11-14 登录卡死修复：同签名重复投递的「按流封顶 + 可行动回执 + trace 合并计数」 ──
+  // 11-14 出资人现场（trace-2026-11-14.jsonl turnId tmwfslyyg）：一条流内同一工具标记被反复
+  // 重解析，~714 枚 continuation.decision(duplicate-tool-signature) 刷屏、页面「卡住不动」。
+  // 对策（判据 1/2/3，全在注入层落地，不碰 shared 去重）：
+  //   ① 被去重吞掉的调用必须结算：每枚重复投递（封顶内）回填一枚 ok=false 的
+  //      duplicate-tool-signature 回执，让模型/协议层知道这次调用被折叠、结果见前；
+  //   ② 同一条流内同一签名重复投递超过 MAX_SIG_REDELIVERIES 后，停止对该标记的
+  //      结算与解析反应（静默丢弃），不再允许 714 次；
+  //   ③ 同 turn 同 reason 的 continuation.decision 合并计数：首枚带 count，封顶穿越
+  //      时补记一枚，中间不刷屏。
+  // 状态按流重置（onStreamBegin）：N2-03 跨流重跑合法，封顶与去重签名一样「按流清空、
+  // 不跨流共享」——反向锁 tests/desktop/duplicate-tool-signature.test.ts 守着这条。
+  const sigRedeliveries = new Map<string, number>();
+  const cappedSigs = new Set<string>();
+  loopState.onStreamBegin = () => {
+    toolCallDedupe.resetSignatures();
+    sigRedeliveries.clear();
+    cappedSigs.clear();
+  };
   // R0-R2：独立错误重试计数（429/网络错误/5xx/200 错误体），
   // 封顶 MAX_ERROR_RETRIES，防止服务器错误消耗整轮续跑预算。
   let errorRetryCount = 0;
@@ -2478,13 +2548,69 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       return;
     }
     if (!toolCallDedupe.claimSignature(call.invocationName, call.params)) {
-      d(`forward: duplicate signature name=${call.invocationName}, skip (same stream)`);
-      interceptorTrace.record({
-        t: 'continuation.decision',
-        turnId: traceTurnId,
-        reason: 'duplicate-tool-signature',
-        triggered: false,
-      });
+      // 2026-11-14 登录卡死修复：被签名去重吞掉的调用**必须结算**，不能像旧版那样
+      // 直接 return 把 callId 悬空（模型/协议层永远等不到这次调用的结果）。
+      const key = dupSignatureKey(call.invocationName, call.params);
+      const n = (sigRedeliveries.get(key) ?? 0) + 1;
+      sigRedeliveries.set(key, n);
+      if (n <= MAX_SIG_REDELIVERIES) {
+        // 判据 1：封顶内的每枚重复投递都回填一枚可行动回执（ok=false＋原因＋说明），
+        // 让模型知道「这一枚被折叠、结果见前」，而不是干等一个不来的结果。
+        // PM 裁（2026-11-14）：n=1,2 保持「见前一次」；n=MAX（封顶前最后一枚）终局语义——
+        // 现场 6 连 memory_save 重发的形状正是「每见一个 ok:false 就再发一次」，
+        // 最后一枚必须说「停」，与 Core 的终局文案（重复同一调用不会改变结果）同向。
+        // 跨席耦合（Core 抽码卡）：`duplicate-tool-signature:` 前缀是 Core extractFailureCode
+        // 的锚点（命中即入终局集、不计其 N），措辞顺序不许改——改了等于拆掉封顶与计数两个机制的接头。
+        d(`forward: duplicate signature name=${call.invocationName} #${n}, settling receipt (same stream)`);
+        const receipt: PendingResult = {
+          invocationName: call.invocationName,
+          ok: false,
+          error: n === MAX_SIG_REDELIVERIES
+            ? `duplicate-tool-signature: 同一轮内该签名已重复投递 ${MAX_SIG_REDELIVERIES} 次、全部被折叠；停止重发本调用，首次执行结果见上。`
+            : `duplicate-tool-signature: 同一轮（同流）内已执行过同名同参的 ${call.invocationName}，本枚投递被折叠，结果见前一次。`,
+          sessionId: loopState.newChatSessionId,
+        };
+        pending.push(receipt);
+        collectedExecutions.push(receipt);
+        interceptorTrace.record({
+          t: 'tool.exec',
+          turnId: traceTurnId,
+          name: call.invocationName,
+          ok: false,
+        });
+        // 判据 3：trace 合并计数——首枚（n=1）记 continuation.decision 并带 count，
+        // 封顶穿越那枚（n=MAX+1，见下）补记；中间的重投递不再逐枚刷屏。
+        if (n === 1) {
+          interceptorTrace.record({
+            t: 'continuation.decision',
+            turnId: traceTurnId,
+            reason: 'duplicate-tool-signature',
+            triggered: false,
+            count: n,
+          });
+        }
+        // 回执是可行动结果 → 交回自动续跑把它送回模型（与 invalid-json 支同口径）。
+        if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
+          scheduleAutoContinue();
+        }
+        return;
+      }
+      // 判据 2：重复投递超过封顶 → 停止对该标记的结算与解析反应。
+      // 越界首枚（n === MAX+1 且尚未封顶）记一枚「封顶穿越」的合并 trace（带 count）；
+      // 此后（n > MAX+1，cappedSigs 命中）全部静默丢弃：不再结算、不再 trace、不再 re-parse，
+      // 杜绝 2 分钟 714 枚的刷屏。
+      if (n === MAX_SIG_REDELIVERIES + 1 && !cappedSigs.has(key)) {
+        cappedSigs.add(key);
+        d(`forward: duplicate signature name=${call.invocationName} exceeded cap (${MAX_SIG_REDELIVERIES}), capping marker`);
+        interceptorTrace.record({
+          t: 'continuation.decision',
+          turnId: traceTurnId,
+          reason: 'duplicate-tool-signature',
+          triggered: false,
+          count: n,
+        });
+      }
+      // n > MAX+1：已封顶（cappedSigs 命中）→ 静默忽略。
       return;
     }
     const startedAt = Date.now();

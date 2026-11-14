@@ -93,6 +93,12 @@ export interface StudioContinuationDecisionEvent extends BaseTraceEvent {
    */
   readonly reason: string;
   readonly triggered: boolean;
+  /**
+   * 同一 reason 的**合并计数**（2026-11-14）。注入层折叠回执会把同签名的连续
+   * `continuation.decision` 合并成少量几枚，这里带上是第几次，渲染面与 JSONL 都能取证。
+   * 缺省表示"未合并"（普通单发事件不带此字段，输出逐字节不变）。
+   */
+  readonly count?: number;
 }
 
 export interface StudioTurnEndEvent extends BaseTraceEvent {
@@ -324,7 +330,11 @@ function renderDetailLines(group: TurnGroup): string[] {
         break;
       }
       case 'continuation.decision':
-        lines.push(`continuation.decision: ${event.reason} -> triggered=${String(event.triggered)}`);
+        // count 缺省时不打印，未合并的事件输出逐字节不变（旧报告不受影响）。
+        lines.push(
+          `continuation.decision: ${event.reason} -> triggered=${String(event.triggered)}`
+          + (event.count !== undefined ? ` count=${event.count}` : ''),
+        );
         break;
       case 'turn.end':
         lines.push(`turn.end stopReason=${event.stopReason} finished=${String(event.finished)}${event.undelivered !== undefined ? ` undelivered=${event.undelivered}` : ''}`);
