@@ -86,7 +86,7 @@ summary: 基线 dc76959，工作区 11 个已修改文件 + 3 个未跟踪报告
 
 ## 七、覆盖与未覆盖
 
-**本轮读完**（TS 约 350 行、Rust 约 300 行，共约 **650 行**）：`agent-channel.ts:96-252`（origin 白名单 + connection 鉴权链）、`desktop-host.ts:2612-2678`（grantVerifier 接线）、`host-token.ts:365-400`（BootstrapGrant 验签全函数）、`api/main.ts:25-92`（孤儿防护全函数）、`sidecar.rs:76-138`、`:856-1055`（do_spawn / do_monitor / do_crash / do_restart_cooldown / do_shutdown 前半）、`main.rs:1728-1772`（CDP 块 + 命令注册）、`storage.ts:556-563`（syncFtsStrict）、`core.ts:130-144` 符号、`main-world-interceptor.ts:1430-1492`（prepareOutgoingBody）。
+**本轮读完**（TS 约 350 行、Rust 约 300 行，共约 **650 行**）：`agent-channel.ts:96-252`（origin 白名单 + connection 鉴权链）、`desktop-host.ts:2612-2678`（grantVerifier 接线）、`host-token.ts:365-397`（BootstrapGrant 验签全函数）、`api/main.ts:25-92`（孤儿防护全函数）、`sidecar.rs:76-138`、`:856-1055`（do_spawn / do_monitor / do_crash / do_restart_cooldown / do_shutdown 前半）、`main.rs:1728-1772`（CDP 块 + 命令注册）、`storage.ts:556-563`（syncFtsStrict）、`core.ts:130-144` 符号、`main-world-interceptor.ts:1430-1492`（prepareOutgoingBody）。
 
 **仍剩（具体到范围）**：
 

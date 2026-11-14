@@ -1,6 +1,6 @@
 ---
 title: Studio-UI 总体设计 v1 评审报告
-summary: 对 E:\NAS\deepseek-studio\docs\前端开发计划\Studio-UI-总体设计-v1.md 的只读评审，基线为当前工作树（HEAD 4afea0f、150 提交、3 条脏改动）。设计稿的现状诊断（手写 DOM、全局 style、无 Shadow DOM、白底 overlay、几何测量、Markdown 无 sanitizer、紫色 Bot 标识）与代码一致，方向可采；但技术栈与单文件 IIFE 注入链路不匹配、权限词表存在三套且 UIState 类型装不下「仅工作区」档、对 consent/白名单/grant/门禁完全沉默、Plan-Act 与逐块 diff 验收缺后端支撑。结论：方向可采，不能直接开工，列出 6 项阻断。
+summary: 对 <repo-root>/docs/前端开发计划/Studio-UI-总体设计-v1.md 的只读评审，基线为当前工作树（HEAD 4afea0f、150 提交、3 条脏改动）。设计稿的现状诊断（手写 DOM、全局 style、无 Shadow DOM、白底 overlay、几何测量、Markdown 无 sanitizer、紫色 Bot 标识）与代码一致，方向可采；但技术栈与单文件 IIFE 注入链路不匹配、权限词表存在三套且 UIState 类型装不下「仅工作区」档、对 consent/白名单/grant/门禁完全沉默、Plan-Act 与逐块 diff 验收缺后端支撑。结论：方向可采，不能直接开工，列出 6 项阻断。
 ---
 <!-- 历史快照：内引路径/行号为当时状态，不作活锚 -->
 
@@ -8,7 +8,7 @@ summary: 对 E:\NAS\deepseek-studio\docs\前端开发计划\Studio-UI-总体设�
 
 ## 1. 评审对象、基线与方法
 
-评审对象：`E:\NAS\deepseek-studio\docs\前端开发计划\Studio-UI-总体设计-v1.md`（653 行 / 20,817 字节）。该文件在 git 中属未跟踪状态（见下方 status 第 2 条），即设计稿尚未入库。
+评审对象：`<repo-root>/docs/前端开发计划/Studio-UI-总体设计-v1.md`（653 行 / 20,817 字节）。该文件在 git 中属未跟踪状态（见下方 status 第 2 条），即设计稿尚未入库。
 
 基线读数（本轮现读，2026-10-19）：
 
