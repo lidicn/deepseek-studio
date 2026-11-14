@@ -445,4 +445,34 @@ describe('doc-drift 上游前缀锚强校验（20261115 ④②）', () => {
     const r = checkDocDrift(root);
     expect(r.issues.filter((i) => i.severity === 'fail')).toHaveLength(0);
   });
+
+  it('34. 带标记文件内的上游死锚 → 走 🗂 豁免闸绿；同锚无标记 → 必红（豁免分支契约锁）', () => {
+    const MARK = '<!-- 历史快照：内引路径/行号为当时状态，不作活锚 -->';
+    withFakeUpstream((up) => {
+      const ref1 = '<upstream-repo>/src/core/no-such-up.ts:12';
+      withTempDocs({ 'm1.md': MARK + '\n\n见 ' + ref1 + '\n' }, (dir) => {
+        const r = checkDocDrift(root, [dir], ['docs/设计稿'], up);
+        expect(r.issues.filter((i) => i.severity === 'fail')).toHaveLength(0);
+        expect(r.historyAnchors).toHaveLength(1);
+        expect(r.historyAnchors[0]?.ref).toContain('no-such-up.ts');
+      });
+      withTempDocs({ 'm2.md': '见 ' + ref1 + '\n' }, (dir) => {
+        const r = checkDocDrift(root, [dir], ['docs/设计稿'], up);
+        expect(
+          r.issues.some((i) => i.severity === 'fail' && i.ref.includes('no-such-up.ts')),
+        ).toBe(true);
+        expect(r.historyAnchors).toHaveLength(0);
+      });
+    });
+  });
+
+  it('35. 退化形态（<upstream-repo>/ 后空或只剩斜杠/点）→ fail，不许落到仓根算通过', () => {
+    withFakeUpstream((up) => {
+      withTempDocs({ 'u6.md': '见 <upstream-repo>// 与 <upstream-repo>/./ 两处\n' }, (dir) => {
+        const { issues } = checkDocDrift(root, [dir], ['docs/设计稿'], up);
+        expect(issues.filter((i) => i.severity === 'fail')).toHaveLength(2);
+        expect(issues.every((i) => i.detail.includes('形态不完整'))).toBe(true);
+      });
+    });
+  });
 });

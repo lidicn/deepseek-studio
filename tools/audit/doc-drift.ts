@@ -475,6 +475,18 @@ export function checkDocDrift(
         // 20261115 ④②（PM 判据，阻塞级）：上游前缀锚强校验——base＝上游仓根，isFile/isDir 均过；
         // 文件型再判行号（多行号列表逐个判）。仓根不可达 → 显式 N/A 计数、不打 fail、不伪装零问题。
         if (ref.upstream) {
+          // ④②b（PM 补件判据）：退化形态（`<upstream-repo>/` 后为空或只剩斜杠/点）——path 去尾
+          // 斜杠与点后为空 ⇒ 直接 fail，**不许落到仓根本身被 statSync 判成目录算通过**（空校验漏洞）。
+          // 形态不完整是本仓文档自身的残缺引用：与上游仓可达性无关、不吃 N/A、不吃历史豁免。
+          if ((ref.path ?? '').replace(/[./]+$/, '') === '') {
+            issues.push({
+              severity: 'fail',
+              ref: ref.raw,
+              docFile: docRel,
+              detail: '上游引用形态不完整（<upstream-repo>/ 后无具体路径，不许落到仓根算通过）',
+            });
+            continue;
+          }
           if (!existsSync(upstreamRoot)) {
             upstreamNA += 1;
             continue;
