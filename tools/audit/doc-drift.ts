@@ -164,9 +164,12 @@ const RE_PREFIXED_PATH =
 // 带行号：裸 basename 或相对路径（阻塞级；允许 .test.ts 这类多点 basename）
 const RE_LINE_REF =
   /(?<![A-Za-z0-9_\-./])((?:[A-Za-z0-9_\-]+\/)*[A-Za-z0-9_\-.]+\.(?:tsx|ts|mjs|js)):(\d+)(?:-(\d+))?/g;
+// 不带行号：已知产物路径（20261114 A 段：gitignored 产物计数面——logs/、src-tauri/{host,inject}/ 等
+// 不以 src|tools 起头、RE_PREFIXED_PATH 不认；无行号 ⇒ 不进 B 段 fail 面，只计数可见）
+const RE_ARTIFACT_PATH =
+  /(?<![A-Za-z0-9_\-./])((?:src-tauri\/(?:host|inject|target)|logs)\/[A-Za-z0-9_\-./]+\.(?:tsx|ts|mjs|js))(?![A-Za-z0-9_.:])/g;
 
-/**
- * 上游仓路径约定前缀（20261114 PM 裁定）：`<upstream-repo>/src/...` 指上游 deepseek-pp
+/** 上游仓路径约定前缀（20261114 PM 裁定）：`<upstream-repo>/src/...` 指上游 deepseek-pp
  * 仓的文件（四枚占位符纪律，真实先例＝docs/验收/20261106-硬化卡 L192），不指本仓——
  * 解析器按本仓根解析必然失败，不学习此前缀会把上游引用误判成死锚。
  * 实测：RE_PREFIXED_LINE 无左锚定，`<upstream-repo>/src/...` 的内层 `src/...` 会被
@@ -174,6 +177,19 @@ const RE_LINE_REF =
  * 跳过是精确的：同一路径**不带**该前缀仍照旧判死锚（契约测试锁双面）。
  */
 const UPSTREAM_PREFIX = '<upstream-repo>/';
+
+/**
+ * 已知构建产物路径前缀（20261114 B 段，PM 裁定）：文档引用产物**带行号**＝一律 fail，
+ * **与存在性无关**——产物行号随每次构建漂移，且本机/CI 存在性差异会让「能否解析」式判据
+ * 只在一侧咬（本机绿 CI 红的反向变体：CI 上产物不存在→走豁免→永不红）。
+ * 目前仓库的产物落点：宿主 bundle、注入 bundle、取证目录。
+ */
+const ARTIFACT_PATH_PREFIXES = ['src-tauri/host/', 'src-tauri/inject/', 'src-tauri/target/', 'logs/'];
+
+/** 引用路径是否落在已知产物集合内（裸 basename 由解析候选判定，见 checkDocDrift 主循环）。 */
+export function isArtifactPath(path: string): boolean {
+  return ARTIFACT_PATH_PREFIXES.some((p) => path === p || path.startsWith(p));
+}
 
 function isUpstreamRef(text: string, offset: number): boolean {
   return offset >= UPSTREAM_PREFIX.length && text.slice(offset - UPSTREAM_PREFIX.length, offset) === UPSTREAM_PREFIX;
@@ -199,6 +215,9 @@ function extractRefs(mdText: string, docRel: string): Ref[] {
     // 相对路径引用（如 `gate/run.ts:89`）保留完整 path，供路径后缀解析；
     // 只丢给 basename 会撞名（20261031 实测 gate/run.ts 被错解析成 tools/bench/run.ts）。
     refs.push({ raw: m[0], path: m[1], base, lines: lineList(m[2], m[3]), docFile: docRel, blocking: true });
+  }
+  for (const m of t.matchAll(RE_ARTIFACT_PATH)) {
+    refs.push({ raw: m[0], path: m[1], base: baseOf(m[1]), lines: [], docFile: docRel, blocking: false });
   }
   return refs;
 }
@@ -253,6 +272,16 @@ export interface DocDriftScan {
   files: number;
 }
 
+/** 判定一条 issue 是否＝「引用 gitignored 产物」（20261114 A 段：两树 warn 数换算行）。 */
+export function isGitignoredArtifactWarn(i: DocDriftIssue): boolean {
+  return i.severity === 'warn' && i.detail.startsWith('本机独有产物引用');
+}
+
+/** 判定一条 issue 是否＝「入库构建产物引用」（git 跟踪产物，两树都可见——不是两树差）。 */
+export function isTrackedArtifactWarn(i: DocDriftIssue): boolean {
+  return i.severity === 'warn' && i.detail.startsWith('入库构建产物引用');
+}
+
 export function checkDocDrift(
   root: string,
   docDirs: readonly string[] = DOC_DIRS,
@@ -263,6 +292,7 @@ export function checkDocDrift(
   const designPending: DocDriftIssue[] = [];
   const scanned: DocDriftScan[] = [];
   const lineCountCache = new Map<string, number>();
+  const artifactTrackedCache = new Map<string, boolean>();
   let refCount = 0;
 
   // 设计目录判定：目录级（整棵 设计稿/ 树都是设计时命名语义）。
@@ -282,7 +312,49 @@ export function checkDocDrift(
 
       for (const ref of refs) {
         if (!ref.blocking) {
-          // 信息级：仅限带 src/、tools/ 前缀的路径引用，按字面路径判断存在性。
+          // 信息级：src/、tools/ 前缀路径按字面路径判断存在性；产物路径（logs/、src-tauri/{host,inject}/）
+          // 走 20261114 A 段计数面（见下）。
+          if (ref.path !== null && isArtifactPath(ref.path)) {
+            // A 段计数：产物路径引用（无行号——带 :N 的在 blocking 面被 B 段 fail）。
+            // **分类问 git ls-files（PM 20261114 定，修正版）**：路径形态不等于两树差——
+            // `src-tauri/inject/entry.js` 是**跟踪文件**（干净 checkout 天然存在，两树都可见），
+            // 只有 **未跟踪/gitignored 的产物**（host bundle、target/debug、logs/）才是「本机独有」。
+            //   本机独有（干净树不可见）＝本机 N → 预期 CI warn 增量；入库产物引用＝两树都可见、行号照旧禁。
+            //   判据＝`git ls-files --error-unmatch`（tracked ⇒ 非本机独有）；0 枚也印行。
+            let tracked = artifactTrackedCache.get(ref.path);
+            if (tracked === undefined) {
+              try {
+                execSync(`git ls-files --error-unmatch -- "${ref.path}"`, { cwd: root, stdio: 'ignore' });
+                tracked = true;
+              } catch {
+                tracked = false;
+              }
+              artifactTrackedCache.set(ref.path, tracked);
+            }
+            if (tracked) {
+              issues.push({
+                severity: 'warn',
+                ref: ref.raw,
+                docFile: docRel,
+                detail: '入库构建产物引用（git 跟踪、两树都可见；行号照旧禁——见 B 段判据）',
+              });
+            } else if (existsSync(join(root, ref.path))) {
+              issues.push({
+                severity: 'warn',
+                ref: ref.raw,
+                docFile: docRel,
+                detail: '本机独有产物引用（gitignored/未跟踪、干净树不可见）——干净树上此引用走豁免分支，两树 warn 数按此换算',
+              });
+            } else {
+              issues.push({
+                severity: 'warn',
+                ref: ref.raw,
+                docFile: docRel,
+                detail: '指向 gitignore 目录或未跟踪文件（本机取证产物），CI 环境没有——豁免可解析性检查',
+              });
+            }
+            continue;
+          }
           if (ref.path !== null && !existsSync(join(root, ref.path))) {
             const issue: DocDriftIssue = {
               severity: 'warn',
@@ -301,6 +373,19 @@ export function checkDocDrift(
               issues.push(issue);
             }
           }
+          continue;
+        }
+
+        // 20261114 B 段（PM 裁定，阻塞级）：引用路径落在已知产物集合且带行号 ⇒ 一律 fail，
+        // **与存在性无关**（存在性判据在 CI 上永不咬——产物不存在走豁免，本机绿 CI 红的反向变体）。
+        // 产物行号随每次构建漂移；文档引产物必须去行号＋描述性引用（存量已清，见硬化卡/UI-R4 两注记）。
+        if (ref.path !== null && ref.lines.length > 0 && isArtifactPath(ref.path)) {
+          issues.push({
+            severity: 'fail',
+            ref: ref.raw,
+            docFile: docRel,
+            detail: '文档引用构建产物行号（产物随每次构建漂移，行号不作定位锚）——去行号改描述性引用，原行号留痕注记',
+          });
           continue;
         }
 
@@ -371,9 +456,23 @@ function main(): void {
   console.log(`\n📋 设计稿待落点（豁免漂移计数，可见）: ${designPending.length} 处`);
   for (const p of designPending) console.log(`  ${p.ref}  (${p.docFile})`);
 
+  // 20261114 A 段（修正版，PM 裁定）：分类问 git ls-files，不问路径形态——
+  //   本机独有（gitignored/未跟踪产物）＝本机 N → 预期 CI warn 增量（干净树上走豁免分支）；
+  //   入库构建产物引用（git 跟踪，如 src-tauri/inject/entry.js）＝两树都可见、不是两树差，行号照旧禁（B 段判据）。
+  // 判据谓词见 isGitignoredArtifactWarn / isTrackedArtifactWarn；清单默认上限 15 行＋--verbose 全列
+  // （可见性靠计数行，逐条清单是排查工具——同 designPending 逻辑，20261114 PM 裁定）。
+  const verbose = process.argv.includes('--verbose');
+  const localOnly = issues.filter(isGitignoredArtifactWarn);
+  const trackedArtifact = issues.filter(isTrackedArtifactWarn);
+  console.log(`\n📎 本机独有（干净树不可见）: ${localOnly.length} 枚＝本机 N → 预期 CI warn 增量`);
+  for (const g of localOnly.slice(0, verbose ? undefined : 15)) console.log(`  ${g.ref}  (${g.docFile})`);
+  if (!verbose && localOnly.length > 15) console.log(`  …其余 ${localOnly.length - 15} 枚用 --verbose 全列`);
+  console.log(`🗄 入库构建产物引用（两树都可见，行号照旧禁）: ${trackedArtifact.length} 枚`);
+
   if (warns.length > 0) {
     console.log(`\n⚠️ 信息级（不阻塞）${warns.length} 处：`);
-    for (const w of warns) console.log(`  ${w.ref}  (${w.docFile})`);
+    for (const w of warns.slice(0, verbose ? undefined : 15)) console.log(`  ${w.ref}  (${w.docFile})`);
+    if (!verbose && warns.length > 15) console.log(`  …其余 ${warns.length - 15} 枚用 --verbose 全列`);
   }
   if (fails.length > 0) {
     console.error(`\n❌ 阻塞级漂移 ${fails.length} 处：`);
