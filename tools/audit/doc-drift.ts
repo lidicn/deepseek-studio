@@ -30,6 +30,10 @@
  *     `Measure-Object -Line` 多计空行——20261031 实测 policy.ts 300 vs 271，
  *     用后者会把合法引用误判成漂移）。
  *   - 代码围栏（``` / ~~~）内不算引用；`file.ts:N` 的 N-M 区间两端都校验。
+ *   - 20261115 ④①（PM 派卡）：行号支持 `/` 分隔列表（`:12/78/106-122`，逐号判定）；
+ *     路径与行号间的 markdown 装饰（`**`、全角/半角闭括号等）不再截断引用——
+ *     `**file.ts**:12`、`（file.ts）:12` 与 `file.ts:12` 同权。留痕类（「原写/系误指」）
+ *     不做措辞白名单，一律走历史快照标记（PM 20261115 裁定）。
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -149,21 +153,42 @@ function baseOf(p: string): string {
   return seg;
 }
 
-function lineList(a: string, b?: string): number[] {
-  return b ? [Number(a), Number(b)] : [Number(a)];
+/** 行号列表解析：`12`／`12-34`／`12/78/106-122`——`/` 分隔的每段（区间两端都算）逐个入列，
+ *  校验按「任一越界即 fail」逐号判定（20261115 ④①，PM 派卡）。 */
+function parseLineList(s: string): number[] {
+  const out: number[] = [];
+  for (const seg of s.split('/')) {
+    const m = /^(\d+)(?:-(\d+))?$/.exec(seg);
+    if (!m) continue;
+    out.push(Number(m[1]));
+    if (m[2] !== undefined) out.push(Number(m[2]));
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- 引用抽取
 
+/** markdown 装饰（粗体/斜体/删除线/全半角括号/引号），允许出现在路径与行号列表之间——
+ *  20261115 ④①（PM 派卡）：`**src/foo.ts**:12`、`（src/foo.ts）:12` 此前被截断成
+ *  无行号引用（行号校验被静默绕过）。装饰只收"闭合侧"紧邻符号，不吞正文。 */
+const DECOR_BETWEEN = "[*_~)\\]\\uFF09\\u3011\\u300D\\u300B]*";
+
+/** 行号列表尾巴：`:12`／`:12-34`／`:12/78/106-122`——每段号码（区间两端都算）逐个入列。 */
+const RE_LINE_TAIL = /:(\d+(?:-\d+)?(?:\/\d+(?:-\d+)?)*)/;
+
 // 带行号：src/tools 前缀路径（阻塞级）
-const RE_PREFIXED_LINE =
-  /((?:src|tools)\/[A-Za-z0-9_\-./]+\.(?:tsx|ts|mjs|js)):(\d+)(?:-(\d+))?/g;
+const RE_PREFIXED_LINE = new RegExp(
+  `((?:src|tools)\\/[A-Za-z0-9_\\-./]+\\.(?:tsx|ts|mjs|js))(?:${DECOR_BETWEEN})${RE_LINE_TAIL.source}`,
+  'g',
+);
 // 不带行号：src/tools 前缀路径（信息级）
 const RE_PREFIXED_PATH =
   /((?:src|tools)\/[A-Za-z0-9_\-./]+\.(?:tsx|ts|mjs|js))(?![A-Za-z0-9_.:])/g;
 // 带行号：裸 basename 或相对路径（阻塞级；允许 .test.ts 这类多点 basename）
-const RE_LINE_REF =
-  /(?<![A-Za-z0-9_\-./])((?:[A-Za-z0-9_\-]+\/)*[A-Za-z0-9_\-.]+\.(?:tsx|ts|mjs|js)):(\d+)(?:-(\d+))?/g;
+const RE_LINE_REF = new RegExp(
+  `(?<![A-Za-z0-9_\\-./])((?:[A-Za-z0-9_\\-]+\\/)*[A-Za-z0-9_\\-.]+\\.(?:tsx|ts|mjs|js))(?:${DECOR_BETWEEN})${RE_LINE_TAIL.source}`,
+  'g',
+);
 // 不带行号：已知产物路径（20261114 A 段：gitignored 产物计数面——logs/、src-tauri/{host,inject}/ 等
 // 不以 src|tools 起头、RE_PREFIXED_PATH 不认；无行号 ⇒ 不进 B 段 fail 面，只计数可见）
 const RE_ARTIFACT_PATH =
@@ -199,9 +224,9 @@ function extractRefs(mdText: string, docRel: string): Ref[] {
   const refs: Ref[] = [];
   let t = stripFences(mdText);
 
-  t = t.replace(RE_PREFIXED_LINE, (m, p: string, a: string, b?: string, offset?: number) => {
-    if (offset !== undefined && isUpstreamRef(t, offset)) return ' '.repeat(m.length);
-    refs.push({ raw: m, path: p, base: baseOf(p), lines: lineList(a, b), docFile: docRel, blocking: true });
+  t = t.replace(RE_PREFIXED_LINE, (m, p: string, list: string, offset: number) => {
+    if (isUpstreamRef(t, offset)) return ' '.repeat(m.length);
+    refs.push({ raw: m, path: p, base: baseOf(p), lines: parseLineList(list), docFile: docRel, blocking: true });
     return ' '.repeat(m.length);
   });
   t = t.replace(RE_PREFIXED_PATH, (m, p: string, offset?: number) => {
@@ -214,7 +239,7 @@ function extractRefs(mdText: string, docRel: string): Ref[] {
     if (!CODE_EXT.test(base)) continue; // 排除 .json 等被 `.js` 前缀误捕的尾巴
     // 相对路径引用（如 `gate/run.ts:89`）保留完整 path，供路径后缀解析；
     // 只丢给 basename 会撞名（20261031 实测 gate/run.ts 被错解析成 tools/bench/run.ts）。
-    refs.push({ raw: m[0], path: m[1], base, lines: lineList(m[2], m[3]), docFile: docRel, blocking: true });
+    refs.push({ raw: m[0], path: m[1], base, lines: parseLineList(m[2]), docFile: docRel, blocking: true });
   }
   for (const m of t.matchAll(RE_ARTIFACT_PATH)) {
     refs.push({ raw: m[0], path: m[1], base: baseOf(m[1]), lines: [], docFile: docRel, blocking: false });

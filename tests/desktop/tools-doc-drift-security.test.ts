@@ -330,3 +330,49 @@ describe('S21 security', () => {
     expect(v[0]?.severity).toBe('warn');
   });
 });
+
+// ── 20261115 ④① 抽取层修补：多行号列表逐号判定 ＋ markdown 装饰截断（PM 派卡）──
+describe('doc-drift 抽取层修补（20261115 ④①）', () => {
+  it('24. 多行号列表逐号判定：列表内任一号越界即 fail，全在界内不误报', () => {
+    withTempDocs({ 'l1.md': '见 tools/audit/doc-drift.ts:1/2/99999\n' }, (dir) => {
+      const { issues } = checkDocDrift(root, [dir]);
+      expect(
+        issues.some((i) => i.severity === 'fail' && i.ref.includes('doc-drift.ts:1/2/99999')),
+      ).toBe(true);
+    });
+    withTempDocs({ 'l2.md': '见 tools/audit/doc-drift.ts:1/2/3\n' }, (dir) => {
+      const { issues } = checkDocDrift(root, [dir]);
+      expect(
+        issues.some((i) => i.severity === 'fail' && i.ref.includes('doc-drift.ts:1/2/3')),
+      ).toBe(false);
+    });
+  });
+
+  it('25. 粗体截断修补：路径与行号之间的 ** 不再丢行号（照常进阻塞校验）', () => {
+    withTempDocs({ 'b1.md': '见 **tools/audit/doc-drift.ts**:99999\n' }, (dir) => {
+      const { issues } = checkDocDrift(root, [dir]);
+      expect(
+        issues.some((i) => i.severity === 'fail' && i.ref.includes('doc-drift.ts**:99999')),
+      ).toBe(true);
+    });
+  });
+
+  it('26. 全角括号截断修补：路径与行号之间的全角括号不再丢行号', () => {
+    withTempDocs({ 'b2.md': '见（tools/audit/doc-drift.ts）:99999\n' }, (dir) => {
+      const { issues } = checkDocDrift(root, [dir]);
+      expect(
+        issues.some((i) => i.severity === 'fail' && i.ref.includes('doc-drift.ts）:99999')),
+      ).toBe(true);
+    });
+  });
+
+  it('27. 装饰不误伤合法引用：带 **/全角括号的合法行号零 fail（负控）', () => {
+    withTempDocs(
+      { 'b3.md': '见 **tools/audit/doc-drift.ts**:3\n见（tools/audit/doc-drift.ts）:3\n' },
+      (dir) => {
+        const { issues } = checkDocDrift(root, [dir]);
+        expect(issues.filter((i) => i.severity === 'fail')).toHaveLength(0);
+      },
+    );
+  });
+});
