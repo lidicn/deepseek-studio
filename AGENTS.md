@@ -1,10 +1,10 @@
 # 项目协作规则
 
 - 沟通：存在两个 Studio-PM 实例——**私聊 PM**（与用户直连，管 git 写操作/发版编排/用户拍板转达）和**群 PM**（群聊中席位 @ 的那个，管日常派卡/交卷/域内裁决）。席位一律 @ 群 PM 回报，不 @ 私聊 PM（群里 @ 不到私聊 PM）。需用户拍板的事项由私聊 PM 转达，席位不直接找用户。所有 bot 之间沟通在群聊中进行，禁止 bot 私聊用户或私聊 PM。
-- 派单：只用 DS Bot 在群聊中 @ 对应 bot 派单，不得使用 `message_bot` 或 agent-teams/agentteam；同一张卡只派一次，一轮尽量只派一个席位，一张卡写全后续步骤，减少 bot 互呼次数。
+- 派单：只用 DS Bot 在群聊中 @ 对应 bot 派单，不得使用 `message_bot` 或 agent-teams/agentteam；同一张卡只派一次，一轮尽量只派一个席位，一张卡写全后续步骤，减少 bot 互呼次数。**「交给另一位 PM 去派」的交接帖不构成派卡**——不带 @ 的帖子不唤醒任何实例（2026-11-14 因此静默停摆 30 分钟）；交接方须在 5 分钟内核实群里有无 @ 席位，没有就自己 @ 席位补派，不得拿「等对方醒」停线。
 - 派卡前验依赖：想「等 A 做完再做 B」时，必须先确认 A 和 B 之间有真依赖；没验就不许拿「在等」当不开卡的挡箭牌。用户拍板 ≠ 技术阻塞——用户没回的那件事如果跟要写的代码零依赖，就照常开卡。
 - 回报：每张派单卡带 `report_back`；席位做完必须在群聊里 `@Studio-PM` 开头交一行摘要+路径，没做完不许静默结束，交接必须 @ 下一个席位。群里非 @ 发言不会唤醒任何人——漏 @ 就会让链条卡死。
-- 提交：提交前必须跑全量 gate（`npm run gate`），但全量 gate 由私聊 PM 统一执行；其他 bot 在等待期间不要并行跑全量 gate / `npm test`，避免 OOM。两 PM 防撞车通过 `PM-LOG.md`（已 gitignore）协调：派卡前先查日志 + `git status`（同一写域不重复派）；日志有 RUNNING 无收口行时另一方不开跑 gate；commit/push/tag 由私聊 PM 统一执行。中间态允许红，但每次改完需自行跑 `npx tsc --noEmit` 确认无红色。
+- 提交：提交前必须跑全量 gate（`npm run gate`），但全量 gate 由私聊 PM 统一执行；其他 bot 在等待期间不要并行跑全量 gate / `npm test`，避免 OOM。两 PM 防撞车通过 `PM-LOG.md`（已 gitignore）协调：派卡前先查日志 + `git status`（同一写域不重复派）；日志有 RUNNING 无收口行时另一方不开跑 gate；commit/push/tag 由私聊 PM 统一执行。中间态允许红，但每次改完需自行跑 `npx tsc --noEmit` 确认无红色。**起全量闸必须在 PM-LOG 落一行 RUNNING（号段＋起跑时刻＋日志名），收口再补一行**——`logs/gate-progress.log` 的 START 行不能替代它，另一方只扫 PM-LOG（2026-11-14 07:14 那发就是靠 node 进程表反查出来的，否则两道闸会抢 node 并互相污染 tmp）。**追加 PM-LOG 正文禁用 PowerShell 双引号字符串**：反引号是 PS 转义符，写「`npm run build:host`」会落盘成 *换行＋pm run build:host*、写「`tests/…`」会落盘成 *TAB＋ests/…*（本仓 PM-LOG 曾因此损伤 22 处）；一律用单引号 here-string `@'…'@` ＋ `[IO.File]::AppendAllText`，或 write/edit 工具。
 - 发版：**Publish 允许由项目负责人（Bot）在出资人授权下用经典 `repo` 令牌经 API 完成**（2026-11-11 出资人拍板，「必须用户网页点击」的旧口径作废）；**未获授权时仍由用户操作，Bot 不得自行发布**。硬判据三条，缺一即视为失败并撤回草稿：① `release.tag_name` 等于 `vX.Y.Z` 且 `html_url` 形如 `/releases/tag/vX.Y.Z`（`untagged-…` 一律失败态）；② 发布时显式 `make_latest: true`，否则 `releases/latest` 指针不推进（已两次踩坑）；③ tag = package.json = tauri.conf.json 三向版本一致。发布前须等 CI 全绿、资产齐全；必须用 PowerShell 官方解析器逐段校验 release workflow 中的脚本，不能只做文本扫描或依赖现有 gate。
 - 开发规范：遵循 `E:\NAS\开发规范.md` 及 `docs/` 下文档。
 - 工具页面：Studio 仅在 DeepSeek 聊天页启用工具桥，不以豆包等其他聊天站作为支持页面；排查日志时须区分 DeepSeek 页面自身的后台流量与实际聊天域名。
