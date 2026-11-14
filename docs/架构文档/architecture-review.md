@@ -60,7 +60,7 @@ AGENTS.md：*Every production tool execution must pass through the runtime autho
 
 ### 2.1 `A3`（PoW WASM 页面域可直跑）**不成立**
 
-`entrypoints/content.ts:4901`：`powWasmUrl: chrome.runtime.getURL(DEEPSEEK_POW_WASM_PATH)`。WASM 在 `public/deepseek/sha3_wasm_bg.wasm`，靠 manifest `web_accessible_resources`（限定 `*://chat.deepseek.com/*`）分发。桌面没有 `chrome-extension://` URL，也没有 WAR 授权机制。
+`<upstream-repo>/entrypoints/content.ts:4901`：`powWasmUrl: chrome.runtime.getURL(DEEPSEEK_POW_WASM_PATH)`。WASM 在 `public/deepseek/sha3_wasm_bg.wasm`，靠 manifest `web_accessible_resources`（限定 `*://chat.deepseek.com/*`）分发。桌面没有 `chrome-extension://` URL，也没有 WAR 授权机制。
 
 **需设计**：改本地文件 / Tauri asset protocol / Rust 侧求解三选一；`chrome.runtime.getURL` 的返回值语义也要重新定义（见 §2.5）。
 
@@ -70,9 +70,9 @@ AGENTS.md：*Every production tool execution must pass through the runtime autho
 
 | 缺失 API | 使用点 | 影响 |
 |----------|--------|------|
-| `chrome.storage.session.get/set` | `core/tool/authorization-types.ts:260,269` | 工具授权态；不是 local，桥要单独一轨 |
-| `chrome.runtime.connectNative` + `Port` | `core/mcp/transports/native.ts:52,58` | MCP native 宿主；长连接 Port，不是普通 IPC |
-| `chrome.permissions.contains/request` | `core/mcp/transports/transport-endpoint.ts:27,35` | MCP 连接前的 host 权限判定 |
+| `chrome.storage.session.get/set` | `<upstream-repo>/core/tool/authorization-types.ts:260,269` | 工具授权态；不是 local，桥要单独一轨 |
+| `chrome.runtime.connectNative` + `Port` | `<upstream-repo>/core/mcp/transports/native.ts:52,58` | MCP native 宿主；长连接 Port，不是普通 IPC |
+| `chrome.permissions.contains/request` | `<upstream-repo>/core/mcp/transports/transport-endpoint.ts:27,35` | MCP 连接前的 host 权限判定 |
 | `chrome.identity.launchWebAuthFlow` | `core/sync/**`（GDrive/OneDrive OAuth） | 云同步，文档未提 |
 | `chrome.sidePanel.open` | sidepanel 入口 | 桌面改为独立窗口，语义要重定义 |
 | `chrome.debugger` | `core/browser-control/cdp.ts`（模块 1,914 行） | 文档标「不做」，但它是真实功能；桌面 WebView **无法 attach 用户 Chrome** → browser-control 需显式降级决策 |
@@ -87,13 +87,13 @@ AGENTS.md：*Every production tool execution must pass through the runtime autho
 
 ### 2.4 sandbox / pyodide 的 CSP 风险未列（新增风险 R11）
 
-`sandbox-runner.html` 依赖 MV3 manifest 的 `sandbox` CSP：`script-src 'unsafe-eval' 'wasm-unsafe-eval'`、`worker-src blob:`（见 `wxt.config.ts:24-41`），pyodide 资产由 `wxt.config.ts` 的 `copyPyodideAssets` 注入。桌面把这些注入到 **chat.deepseek.com 自己的页面域**，页面 CSP 可能禁 `eval`/`wasm-unsafe-eval`/`worker-src blob:` → pyodide 与 sandbox 直接起不来。
+`sandbox-runner.html` 依赖 MV3 manifest 的 `sandbox` CSP：`script-src 'unsafe-eval' 'wasm-unsafe-eval'`、`worker-src blob:`（见 `<upstream-repo>/wxt.config.ts:24-41`），pyodide 资产由 `wxt.config.ts` 的 `copyPyodideAssets` 注入。桌面把这些注入到 **chat.deepseek.com 自己的页面域**，页面 CSP 可能禁 `eval`/`wasm-unsafe-eval`/`worker-src blob:` → pyodide 与 sandbox 直接起不来。
 
 **建议**：sandbox 承载到**独立 WebView 窗口**（自有 CSP），而不是注入页面域。这条会影响 D8 排期。
 
 ### 2.5 `chrome.runtime.getURL` 返回值语义需重定义
 
-`content.ts` 用它取 3 类资源：PoW WASM、pet sprite（`PET_SPRITE_PATH`）、sidepanel.html（`chat-launcher.ts:52`，floating-chat 要 iframe 它）。桌面没有扩展包，返回值必须改成可加载的 URL（本地 HTTP / asset protocol / 独立窗口）。清单里标了 ✅，但**语义变了**，属「适配」而非「已实现」。
+`content.ts` 用它取 3 类资源：PoW WASM、pet sprite（`PET_SPRITE_PATH`）、sidepanel.html（`<upstream-repo>/entrypoints/content/adapters/chat-launcher.ts:52`，floating-chat 要 iframe 它）。桌面没有扩展包，返回值必须改成可加载的 URL（本地 HTTP / asset protocol / 独立窗口）。清单里标了 ✅，但**语义变了**，属「适配」而非「已实现」。
 
 ---
 

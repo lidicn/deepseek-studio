@@ -63,10 +63,10 @@
 | # | Bug | 文件 | 改动 |
 |---|-----|------|------|
 | B2 | clearToolCallHistory barrier 后在途 mutate 批次可能写回复活 | tool/history.ts:34-56 | barrier 加"最后清空时间戳"，在途批次提交前比对 |
-| B5 | stream-metrics setInterval 无 finally 覆盖 | stream-metrics.ts:102 | 包 try-finally |
-| B6 | isExpectedCancellation 覆盖真实错误 | chat-runtime-service.ts:445, L192-194 | ambiguous 抛错单独 emit，不走 cancellation 分支 |
+| B5 | stream-metrics setInterval 无 finally 覆盖 | <upstream-repo>/core/deepseek/stream-metrics.ts:102 | 包 try-finally |
+| B6 | isExpectedCancellation 覆盖真实错误 | <upstream-repo>/entrypoints/background/chat-runtime-service.ts:445, L192-194 | ambiguous 抛错单独 emit，不走 cancellation 分支 |
 | B7 | result-governance 小 limit 截断后拼 marker 超限 | result-governance.ts | 边界 |
-| B8 | sandboxOffscreenCreation SW 重启后 hasDocument() 可能失效 | background.ts:1306-1316 | 失效时 recreate offscreen document |
+| B8 | sandboxOffscreenCreation SW 重启后 hasDocument() 可能失效 | <upstream-repo>/entrypoints/background.ts（**20261115 订正**：原写 core/i18n/background.ts:1306-1316 系误指——core/i18n/background.ts 仅 138 行；sandboxOffscreenCreation 声明在该文件 347 行、hasDocument 判定与 recreate 在 1753-1765。快照当时（2026-09-30）的上游行号 1306-1316 留痕于此，不作活锚） | 失效时 recreate offscreen document |
 
 > B1（侧面板永久挂起）已纳入 P0-6，B3/B4 已在 v1.17+hotfix 修复。
 
@@ -77,7 +77,7 @@
 | # | 项 | 文件 | 收益 |
 |---|-----|------|------|
 | A1 | background.ts composition root 下沉 validateLocalSkillDirectory 到 core | background.ts | composition root 减重 |
-| A2 | response-patch.ts 去掉 4 处 JSON.parse(JSON.stringify()) 深拷贝 | response-patch.ts:188,234,316,347 | 流式路径热点优化 |
+| A2 | response-patch.ts 去掉 4 处 JSON.parse(JSON.stringify()) 深拷贝 | <upstream-repo>/core/interceptor/response-patch.ts:188,234,316,347 | 流式路径热点优化 |
 | A3 | content 工具类 DOM 选择器加抽象层/降级 | restored-message-targets.ts / project-sidebar-organizer.ts | 上游改版韧性 |
 | A4 | 后续再评估：执行分级路由 | — | P0 后再说 |
 

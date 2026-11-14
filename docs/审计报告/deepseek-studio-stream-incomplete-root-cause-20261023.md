@@ -5,7 +5,7 @@ summary: 本轮用 storage.json 的事件时间戳把故障钉死在毫秒级：
 
 # deepseek-studio「执行未完成」根因定案
 
-> 评审对象：`E:\NAS\deepseek-studio`
+> 评审对象：`<repo-root>`
 > 评审方式：只读。未启动 GUI、未登录、未向 chat.deepseek.com 发任何请求、未装依赖、未跑 build/typecheck/vitest、未做 git 写操作。
 > 所有行号为本轮 16:21–16:45 读取时的工作区快照。`src/inject/main-world-interceptor.ts` 在评审期间被改动过（mtime 2026-10-23 16:40:06，比 16:21 首读时整体下移约 8 行），引用以锚点文本为准。
 
@@ -66,7 +66,7 @@ summary: 本轮用 storage.json 的事件时间戳把故障钉死在毫秒级：
 - 采集器 `interceptorTrace` 是**内存环形缓冲**（`createStudioTraceCollector()` 在 `main-world-interceptor.ts:141` 构造），只在页面内存里活着，暴露为 `globalThis.__studioTraceReport`。
 - `trace-store.ts` 里那个 `localStorage['ds-studio-traces']`（`trace-store.ts:43`）**在运行时根本不会被写**：`getAllTraces/saveTrace/createTrace` 三个函数全项目零调用（全仓 grep 只有定义处命中）。上一轮若按「读 `ds-studio-traces`」去找现场，必然什么都读不到——这不是没发生，是没落盘。
 - 注入层的 `diag` 最终只走到 `console.log`（`src/host/page-runtime.ts:313`）。桌面快捷方式启动时 stdout 没有接收端，`logs/runtime-20261021/*.stdout.log` 那批能看到 `[interceptor] xhr resp[...]` 是因为当时用重定向跑过开发态。
-- 我在 `E:\NAS\deepseek-studio\logs`（含 chrome-profile / edge-profile）、`%APPDATA%\deepseek-studio\profiles\*`、`%LOCALAPPDATA%` 下全量 `findstr` 过 `stream-incomplete` 与 `no completion sentinel`，**命中 0 次**。
+- 我在 `<repo-root>\logs`（含 chrome-profile / edge-profile）、`%APPDATA%\deepseek-studio\profiles\*`、`%LOCALAPPDATA%` 下全量 `findstr` 过 `stream-incomplete` 与 `no completion sentinel`，**命中 0 次**。
 
 所以本轮能定案，靠的是 `storage.json` 里被 UI 顺手记下来的 `system-error` 事件时间戳——它不是为诊断设计的，但它有毫秒。反过来说：**第 7 节的第 4 层（可观测性）不是锦上添花，是这个故障能不能被修好的前提**。
 
@@ -367,7 +367,7 @@ data: {"p":"response/status","o":"SET","v":"FINISHED"}\n\nevent: update_session\
 
 - `interceptorTrace` 是内存环（`:141` 区域构造），只在页面里；`trace-store.ts:43` 的 `ds-studio-traces` 是**死键**（三个函数零调用）。
 - 注入层 `diag` 只到 `console.log`（`src/host/page-runtime.ts:313`），桌面启动时 stdout 无人接收。
-- 全盘 grep `stream-incomplete` / `no completion sentinel`：在 `E:\NAS\deepseek-studio\logs`、`%APPDATA%\deepseek-studio\profiles\*`、chrome/edge profile 下命中 **0** 次。
+- 全盘 grep `stream-incomplete` / `no completion sentinel`：在 `<repo-root>\logs`、`%APPDATA%\deepseek-studio\profiles\*`、chrome/edge profile 下命中 **0** 次。
 - 后果：任何一次「连败」都无法事后复盘，只能靠 `storage.json` 里 UI 顺手记下的时间戳倒推——本轮就是靠它定案的。**这是修复这件事的最大工程障碍，不是网络问题。**
 
 ---
