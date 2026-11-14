@@ -82,8 +82,10 @@ export interface DocDriftIssue {
   detail: string;
 }
 
-/** 扫描的文档目录（仓库相对路径；目录不存在则跳过并注明）。 */
-export const DOC_DIRS = ['docs/设计稿', 'docs/验收报告', 'docs/harness'];
+/** 扫描的文档目录（仓库相对路径；目录不存在则跳过并注明）。
+ *  20261114 补缺口（PM 派卡）：`docs/验收/` 是实证文本目录（Verify 取证报告落点），
+ *  此前不在覆盖集 → 其 `path:line` 引用从无人校验。加入后语义与其他实证目录一致。 */
+export const DOC_DIRS = ['docs/设计稿', 'docs/验收', 'docs/验收报告', 'docs/harness'];
 
 /**
  * 设计稿目录（20261114 目录语义分流，PM 派卡）：设计稿是**设计时命名**——
@@ -163,15 +165,31 @@ const RE_PREFIXED_PATH =
 const RE_LINE_REF =
   /(?<![A-Za-z0-9_\-./])((?:[A-Za-z0-9_\-]+\/)*[A-Za-z0-9_\-.]+\.(?:tsx|ts|mjs|js)):(\d+)(?:-(\d+))?/g;
 
+/**
+ * 上游仓路径约定前缀（20261114 PM 裁定）：`<upstream-repo>/src/...` 指上游 deepseek-pp
+ * 仓的文件（四枚占位符纪律，真实先例＝docs/验收/20261106-硬化卡 L192），不指本仓——
+ * 解析器按本仓根解析必然失败，不学习此前缀会把上游引用误判成死锚。
+ * 实测：RE_PREFIXED_LINE 无左锚定，`<upstream-repo>/src/...` 的内层 `src/...` 会被
+ * 直接抠出判死锚（硬化卡 L192 即真实案例），故在抽取层按前缀精确跳过。
+ * 跳过是精确的：同一路径**不带**该前缀仍照旧判死锚（契约测试锁双面）。
+ */
+const UPSTREAM_PREFIX = '<upstream-repo>/';
+
+function isUpstreamRef(text: string, offset: number): boolean {
+  return offset >= UPSTREAM_PREFIX.length && text.slice(offset - UPSTREAM_PREFIX.length, offset) === UPSTREAM_PREFIX;
+}
+
 function extractRefs(mdText: string, docRel: string): Ref[] {
   const refs: Ref[] = [];
   let t = stripFences(mdText);
 
-  t = t.replace(RE_PREFIXED_LINE, (m, p: string, a: string, b?: string) => {
+  t = t.replace(RE_PREFIXED_LINE, (m, p: string, a: string, b?: string, offset?: number) => {
+    if (offset !== undefined && isUpstreamRef(t, offset)) return ' '.repeat(m.length);
     refs.push({ raw: m, path: p, base: baseOf(p), lines: lineList(a, b), docFile: docRel, blocking: true });
     return ' '.repeat(m.length);
   });
-  t = t.replace(RE_PREFIXED_PATH, (m, p: string) => {
+  t = t.replace(RE_PREFIXED_PATH, (m, p: string, offset?: number) => {
+    if (offset !== undefined && isUpstreamRef(t, offset)) return ' '.repeat(m.length);
     refs.push({ raw: m, path: p, base: baseOf(p), lines: [], docFile: docRel, blocking: false });
     return ' '.repeat(m.length);
   });

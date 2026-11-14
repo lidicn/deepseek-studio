@@ -1,6 +1,6 @@
 /** S20/S21 审计测试。doc-drift 部分随 20261031 重写同步改版（PM 授权的 tests/desktop 例外）。 */
 import { describe, it, expect } from 'vitest';
-import { checkDocDrift } from '../../tools/audit/doc-drift';
+import { checkDocDrift, DOC_DIRS } from '../../tools/audit/doc-drift';
 import { checkFile } from '../../tools/audit/security';
 import { join, dirname } from 'node:path';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
@@ -136,6 +136,30 @@ describe('doc-drift 设计稿待落点分流（20261114）', () => {
       const { issues, designPending } = checkDocDrift(root, [dir], [dir]);
       expect(issues.some((i) => i.severity === 'fail' && i.ref.includes('vitest.config.ts:99999'))).toBe(true);
       expect(designPending).toHaveLength(0);
+    });
+  });
+});
+
+// ── 20261114 覆盖集补缺口（docs/验收）＋上游仓前缀约定（PM 裁定）─────────────────
+describe('doc-drift 覆盖集与上游前缀（20261114）', () => {
+  it('12. 覆盖集契约：默认 DOC_DIRS 含 docs/验收（实证目录，此前 33 枚 md 在射程外）', () => {
+    expect(DOC_DIRS).toContain('docs/验收');
+    expect(DOC_DIRS).toContain('docs/验收报告');
+    expect(DOC_DIRS).toContain('docs/harness');
+    expect(DOC_DIRS).toContain('docs/设计稿');
+  });
+
+  it('13. `<upstream-repo>/src/...:N` 上游引用不入本仓射程（不产生 fail）', () => {
+    withTempDocs({ 'u.md': '见 <upstream-repo>/src/core/usage/stats.ts:140\n' }, (dir) => {
+      const { issues } = checkDocDrift(root, [dir]);
+      expect(issues.filter((i) => i.severity === 'fail')).toHaveLength(0);
+    });
+  });
+
+  it('14. 同路径去掉上游前缀 → 照旧 fail（前缀豁免是精确的，不是路径白名单）', () => {
+    withTempDocs({ 'u2.md': '见 src/core/usage/stats.ts:140\n' }, (dir) => {
+      const { issues } = checkDocDrift(root, [dir]);
+      expect(issues.some((i) => i.severity === 'fail' && i.ref.includes('src/core/usage/stats.ts'))).toBe(true);
     });
   });
 });
