@@ -31,7 +31,18 @@ function sha16(file) {
   const argv = process.argv.slice(2);
   const ti = argv.indexOf('--tracked');
   const tracked = (ti !== -1 && argv[ti + 1]) ? path.resolve(argv[ti + 1]) : trackedDefault;
-  if (!fs.existsSync(tracked)) { console.error('[host-freshness] FAIL: 跟踪文件缺失 ' + tracked); process.exit(1); }
+  if (!fs.existsSync(tracked)) {
+    // 2026-11-14 判据修订（CI 连续 18 发红根因）：跟踪产物是 gitignored 构建产物，
+    // 干净 checkout（CI）天然没有——这不是「陈旧」，是「本步不适用」。分两种结论：
+    //   存在但不一致 → 照旧 FAIL（本地语义不变）；
+    //   不存在 → exit 0 ＋ 显式 N/A 读数（不许静默通过、不许打得像通过实盘）。
+    console.log('[host-freshness] N/A：跟踪产物不存在 ' + tracked);
+    console.log('[host-freshness] N/A 原因：该文件 gitignored、不入库，由 npm run build:host（本地）/');
+    console.log('[host-freshness]   tauri beforeBuildCommand（装版）现场生成；CI 环境无此产物属预期。');
+    console.log('[host-freshness] N/A 语义：本步本轮未核新鲜度（没有可比对象），不代表宿主 bundle 新鲜。');
+    console.log('[host-freshness] 本机核新鲜度：先 npm run build:host 再重跑本步。');
+    process.exit(0);
+  }
 
   // 单一真源重建：选项与 esbuild.host.mjs 同源（tools/host-build-options.mjs），outfile 落临时目录。
   const { hostBuildOptions, HOST_ENTRY } = await import(pathToFileURL(path.join(root, 'tools', 'host-build-options.mjs')).href);

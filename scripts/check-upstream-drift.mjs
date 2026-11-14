@@ -179,9 +179,12 @@ function main() {
   })();
 
   if (!existsSync(upstreamDir)) {
-    console.error('❌ 上游仓库不存在: ' + upstreamDir);
-    console.error('   真源：scripts/upstream-drift-registry.json 的 upstreamPath（可用 --upstream / UPSTREAM_DIR 覆盖）。');
-    process.exit(1);
+    // 2026-11-14 判据修订（CI 连续 18 发红同批问题）：上游仓是本机资源，CI 干净环境
+    // 天然没有——这不是「锚点异常」，是「本步不适用」。三态判定本身不动。
+    console.log('⏭️ 上游漂移检测 N/A：上游仓不可达（' + upstreamDir + ' 不存在）。');
+    console.log('   本步本轮不参与判定（CI/无上游环境预期行为，漂移未核）。');
+    console.log('   本机核漂移：确认 scripts/upstream-drift-registry.json 的 upstreamPath 可达后重跑。');
+    process.exit(0);
   }
 
   const scanRoots = ['src/inject', 'src/shared', 'src/host', 'src/capabilities', 'src/desktop', 'src/ui']

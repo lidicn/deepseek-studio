@@ -3,8 +3,11 @@ on: [push, pull_request]
 
 # 门禁接线（20261031）：CI 与本地 gate 合一——只跑 npm run gate，不再维护平行步骤清单，
 # 步骤差异 = 0 由构造保证（清单唯一真相在 tools/gate/run.ts）。
-# 注：GitHub runner 上 `upstream-drift`（信息级）会因读不到 E:\NAS\deepseek-pp 记 FAIL，
-# 但信息级不阻塞，gate 仍 exit 0。
+# 注（20261114 修订）：GitHub runner 上 `upstream-drift`（信息级）读不到上游仓 → 显式 N/A
+# 读数（本步不参与判定、exit 0），不再刷「锚点异常」；`host-freshness` 阻塞级闸在 gate 前
+# 先跑 `npm run build:host` 现场产出跟踪产物——CI 从此真验「宿主 bundle 能否从源码产出」，
+# 同时挡住装版时 beforeBuildCommand 现场构建炸掉那一类（d62c059 起连续 18 发 CI 红的根因：
+# 判据把「产物不存在」当「陈旧」，本机永远有产物所以一直绿）。
 #
 # 20261105 CI 环境对齐：runner 从 ubuntu-latest 改 windows-latest——本仓测试本就是
 # Windows 导向（E:/NAS 路径断言、Windows 进程行为、注册表/HKCU 交互）；
@@ -20,6 +23,9 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: npm ci
+      # 20261114：host-freshness（阻塞级）需要跟踪产物可比对；先按单一真源
+      # （tools/host-build-options.mjs，与本地 npm run build:host 同源）现场产出宿主 bundle。
+      - run: npm run build:host
       - run: npm run gate
 
   # ── Rust 编译闸（20261109 卡 #49）：CI 只证"Rust 代码在 @stable 上能编译"，不证"与本机
