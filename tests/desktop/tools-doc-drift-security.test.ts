@@ -268,10 +268,14 @@ describe('doc-drift 历史快照标记法（20261114 步骤 ③）', () => {
     }
   });
 
-  it('23. 历史快照计数行 0 枚也印（main 形态）＋ 标记文件数可见', () => {
-    // 真实仓库现无标记文件 ⇒ historyAnchors=0 是合法稳态；锁「0 也印」由 main 形态保证（汇总行恒印）。
+  it('23. 历史快照计数与 issues 分流：warn 全量入 historyAnchors、不混进 issues（④b 扩集后 73 枚＝标记生效的预期新人口）', () => {
+    // ③ 收口时真实仓标记对闸零效力（DOC_DIRS 未覆盖）⇒ 旧断言锁「0 枚合法稳态」；
+    // ④b 扩集后 23 枚标记即刻生效（🗂=73：架构文档20+审计报告23+dpp16+调研报告6+PM归档3+交接班2+前端/Audit/DEV各1）
+    // ——旧数字断言属「新人口」非回归（PM ④b 卡面第 3 条）。分流语义由 20/21/22 锁，此处锁「warn 不混进 issues」。
     const r = checkDocDrift(root);
-    expect(r.historyAnchors).toHaveLength(0);
+    expect(r.historyAnchors.length).toBeGreaterThanOrEqual(1);
+    expect(r.historyAnchors.every((h) => h.severity === 'warn')).toBe(true);
+    expect(r.issues.some((i) => i.severity === 'fail' && i.detail.startsWith('历史快照死锚'))).toBe(false);
     expect(HIST).toContain('历史快照');
   });
 });
@@ -444,6 +448,17 @@ describe('doc-drift 上游前缀锚强校验（20261115 ④②）', () => {
   it('33. 真实仓：上游校验上闸无新红（PM 05:44 前提：查无实存 0／越界 0）', () => {
     const r = checkDocDrift(root);
     expect(r.issues.filter((i) => i.severity === 'fail')).toHaveLength(0);
+  });
+
+  it('33b. 真实仓 15 目录稳态：扩集后全并 fail=0（④b 新基线，DOC_DIRS 缩回会被拦）', () => {
+    // ④b（PM 20261115 裁定）：15 目录全并的稳态契约锁——11 枚产物行号已全部
+    // "留路径去 path:N 冒号形态"处置，扩集后任何新红＝回归；此锁同时防止
+    // DOC_DIRS 被悄悄缩回 4 目录（判据变更悄悄回滚）。
+    expect(DOC_DIRS.length).toBe(15);
+    const r = checkDocDrift(root);
+    expect(r.issues.filter((i) => i.severity === 'fail')).toHaveLength(0);
+    // 标记效力：扩集后历史快照计数必须 ≥1（否则 23 枚标记仍是死代码）
+    expect(r.historyAnchors.length).toBeGreaterThanOrEqual(1);
   });
 
   it('34. 带标记文件内的上游死锚 → 走 🗂 豁免闸绿；同锚无标记 → 必红（豁免分支契约锁）', () => {

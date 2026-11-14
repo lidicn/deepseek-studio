@@ -88,8 +88,16 @@ export interface DocDriftIssue {
 
 /** 扫描的文档目录（仓库相对路径；目录不存在则跳过并注明）。
  *  20261114 补缺口（PM 派卡）：`docs/验收/` 是实证文本目录（Verify 取证报告落点），
- *  此前不在覆盖集 → 其 `path:line` 引用从无人校验。加入后语义与其他实证目录一致。 */
-export const DOC_DIRS = ['docs/设计稿', 'docs/验收', 'docs/验收报告', 'docs/harness'];
+ *  此前不在覆盖集 → 其 `path:line` 引用从无人校验。加入后语义与其他实证目录一致。
+ *  20261115 ④b（PM 裁定，一次全扩 15 目录）：补齐 ③ 打标覆盖的全部 11 目录——
+ *  扩集唯一红面是 11 枚产物行号（已全部"留路径去冒号形态"处置），历史快照标记
+ *  随扩集生效（🗂 全并 73 枚）。扩集属阻塞级判据变更，权威证明＝当发 CI。 */
+export const DOC_DIRS = [
+  'docs/设计稿', 'docs/验收', 'docs/验收报告', 'docs/harness',
+  'docs/调研报告', 'docs/架构文档', 'docs/交接班', 'docs/前端开发计划',
+  'docs/审计报告', 'docs/元宝', 'docs/Audit', 'docs/DEV', 'docs/dpp',
+  'docs/PM【归档】', 'docs/QD',
+];
 
 /**
  * 设计稿目录（20261114 目录语义分流，PM 派卡）：设计稿是**设计时命名**——
