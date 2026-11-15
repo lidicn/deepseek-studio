@@ -45,13 +45,16 @@ export function collectChangedFiles(root: string, base?: string): string[] {
     .filter(Boolean);
 }
 
-/** 任意 ref 的文件头 3 字节；ref 无此文件 ⇒ null。 */
+/** 任意 ref 的文件头 3 字节；ref 无此文件 ⇒ null。
+ *  ⑥-补3：stdio 数组形态——stdout 保留（blob 内容）、stderr 显式忽略（基线里不存在的
+ *  文件＝**合理排除，不是失败**；git 的 fatal 不许喷进闸日志，CI 43669111491 两行实证）。 */
 function refHeadBytes(root: string, ref: string, rel: string): Buffer | null {
   try {
     const buf = execSync(`git -c core.quotepath=false cat-file blob "${ref}:${rel.split('\\').join('/')}"`, {
       cwd: root,
       encoding: 'buffer',
       maxBuffer: 16 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
     });
     return buf.subarray(0, 3);
   } catch {
@@ -149,9 +152,13 @@ export function scanBomDrift(root: string, opts?: { base?: string }): { issues: 
 }
 
 function main(): void {
-  const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-  // ⑥-补：判据面由 decideBomFace 决策（可注入纯函数），main 只调它。
   const argv = process.argv.slice(2);
+  // ⑥-补3：root 可指（默认主仓）——tmp 仓集成/契约需要把判据面对准别的仓。
+  const rootIdx = argv.indexOf('--root');
+  const root = rootIdx >= 0
+    ? resolve(argv[rootIdx + 1])
+    : resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  // ⑥-补：判据面由 decideBomFace 决策（可注入纯函数），main 只调它。
   const face = decideBomFace(process.env, argv);
   let base: string | undefined;
   if (face.mode === 'na') {

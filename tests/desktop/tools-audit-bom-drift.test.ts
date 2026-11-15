@@ -7,8 +7,12 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { detectBomDrift, scanBomDrift, resolveBase, decideBomFace } from '../../tools/audit/bom-drift';
+import { spawnSync } from 'node:child_process';
+
+const REAL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 describe('bom-drift · 纯判据四态（⑥）', () => {
   it('1. 加 BOM（HEAD 无→工作区有）→ 红（added）', () => {
@@ -133,6 +137,26 @@ describe('bom-drift · 推送基线模式（⑥ 甲案）', () => {
     const v = scanBomDrift(repo, { base: beforeSha });
     expect(v.issues).toHaveLength(0);
     expect(v.scanned).toBe(1);
+  });
+
+  it('9b. ⑥-补3：base 面含基线外文件（HEAD 新增）⇒ 排除、stderr 零输出（排除≠失败）', () => {
+    execSync(`git reset -q --hard ${beforeSha}`, { cwd: repo });
+    writeFileSync(join(repo, 'a.ts'), '// base\n', 'utf8');
+    writeFileSync(join(repo, 'brand-new.ts'), '\uFEFF// HEAD 新增、带 BOM\n', 'utf8');
+    execSync('git add -A', { cwd: repo });
+    execSync('git commit -q -m "add new file with bom"', { cwd: repo });
+    const r = spawnSync(
+      process.execPath,
+      ['--import', 'tsx', join(REAL_ROOT, 'tools', 'audit', 'bom-drift.ts'), '--root', repo, '--base', beforeSha],
+      // cwd 必须在主仓：`--import tsx` 从 cwd 解析包，tmp 仓（TEMP 下）没有 node_modules
+      { cwd: REAL_ROOT, encoding: 'utf8' },
+    );
+    expect(r.status).toBe(0);
+    // ⑥-补3 的语义：基线外文件的 git fatal 不许喷进闸日志（stdio 拦截）——
+    // 断 stderr 不含 fatal（npx/node 链自身可能留空行杂音，零字节断言过脆）。
+    expect(r.stderr ?? '').not.toContain('fatal:');
+    expect(r.stdout ?? '').toContain('通过');
+    expect(r.stdout ?? '').not.toContain('brand-new.ts'); // HEAD 新增文件被排除、不被判
   });
 
   it('10. 回落链：BOM_BASE 全零 → HEAD~1（仍能判）', () => {
