@@ -56,10 +56,16 @@ jobs:
           $hit = Select-String -Path "$env:RUNNER_TEMP\dd-out.txt" -Pattern '上游引用第\s+\d+\s+行，但\s+\S+\s+最多只有'
           $hit | ForEach-Object { $_.Line }
           $checked = Select-String -Path "$env:RUNNER_TEMP\dd-out.txt" -Pattern '校验 (\d+) 处' | ForEach-Object { [int]$_.Matches[0].Groups[1].Value } | Select-Object -First 1
+          # ⑤-0（20261115 PM 复核钉死）：真凶是 **Actions 为 pwsh 步骤自动生成的包装尾行**
+          # `if ((Test-Path variable:/LASTEXITCODE)) { exit $LASTEXITCODE }`——pwsh -File 本身
+          # 无显式 exit 时进程码是 0（PM 三探针实证），是尾行把故意失败的 doc-drift 的
+          # $LASTEXITCODE=1 顶成了步骤红。三条断言逐条显式 exit 1，全过必须显式 exit 0
+          # （显式 exit 使包装尾行不生效——修法不变，机制描述以探针为准）。
           if ($code -ne 1) { Write-Error "doc-drift 应红（exit 1）判坏夹具，实际 exit=$code"; exit 1 }
           if (-not $hit -or $hit.Count -lt 1) { Write-Error "红输出未命中越界文案——红必须红在『上游引用行号越界』这件事上，任何无关阻塞红不得顶替"; exit 1 }
           if (-not $checked -or $checked -le 0) { Write-Error "『校验 N 处』缺失或 N=0——红必须来自真判据分支，不是 checked=0 的空转"; exit 1 }
           Write-Host "✅ 负控成立：判据红（exit 1）＋越界文案命中 $($hit.Count) 处＋校验 N=$checked>0——红输出已留档本 job 日志"
+          exit 0
 
   # ── Rust 编译闸（20261109 卡 #49）：CI 只证"Rust 代码在 @stable 上能编译"，不证"与本机
   #    rustc 1.99.1 同工具链"——台账与 job 名都带这句射程，别把 CI 绿读成"同工具链绿"。
