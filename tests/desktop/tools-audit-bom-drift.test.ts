@@ -256,6 +256,33 @@ describe('bom-drift · 推送基线模式（⑥ 甲案）', () => {
     }
   });
 
+  it('23. ⑦-补4：--root 指 bare 仓 ⇒ exit 2 一行「不在 git 工作树内」，根因不得退化成「没有 HEAD」（变异 N 的锁）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bomdrift-bare-'));
+    const bare = join(dir, 'bare.git');
+    try {
+      execSync(`git init --bare "${bare}"`, { encoding: 'utf8' });
+      // 夹具自证（PM 实测坐实的那格语义）：bare 仓 rev-parse --is-inside-work-tree
+      // RC=0 但 stdout='false'——只看 RC 的旧语义会放行 bare，读值判才真拒
+      const inside = spawnSync('git', ['-C', bare, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' });
+      expect(inside.status, `夹具：bare 仓 rev-parse 应 RC=0，实测 ${inside.status}`).toBe(0);
+      expect((inside.stdout ?? '').trim(), '夹具：bare 仓 stdout 应为 false').toBe('false');
+      const r = spawnSync(
+        process.execPath,
+        ['--import', 'tsx', join(REAL_ROOT, 'tools', 'audit', 'bom-drift.ts'), '--root', bare],
+        { cwd: REAL_ROOT, encoding: 'utf8' },
+      );
+      const diag = `status=${r.status} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}`;
+      expect(r.status, `bare 仓应 exit 2: ${diag}`).toBe(2);
+      const errLines = (r.stderr ?? '').split('\n').filter((l) => l.trim().length > 0);
+      expect(errLines.length, `stderr 应恰 1 行: ${diag}`).toBe(1);
+      expect(r.stderr ?? '', `文案应指「不在 git 工作树内」: ${diag}`).toContain('不在 git 工作树内');
+      expect(r.stderr ?? '', `根因不得退化成「没有 HEAD」（变异 N 的锁）: ${diag}`).not.toContain('没有 HEAD');
+      expect(r.stderr ?? '', diag).not.toContain('node:internal');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('10. 回落链：BOM_BASE 全零 → HEAD~1（仍能判）', () => {
     execSync(`git reset -q --hard ${beforeSha}`, { cwd: repo });
     writeFileSync(join(repo, 'a.ts'), '\uFEFF// base\n', 'utf8');
