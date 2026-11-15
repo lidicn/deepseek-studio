@@ -77,19 +77,27 @@ export function resolveBase(root: string, raw?: string): string | undefined {
  * 「哪个面」，**可达性**（GHOST：浅检出下基线对象不存在）由调用方在 resolveBase 后判。
  *   - CI（process.env.CI 真）＋ BOM_BASE 有值 ⇒ 'base'（复判面；对象不可达时调用方打 N/A）；
  *   - CI ＋ BOM_BASE 未设/全零 ⇒ 'na'（**缺失≠干净**——host-freshness 同族，不许打「通过」）；
- *   - 非 CI ⇒ 'work'（本机预检面：工作树 vs HEAD——回落链不许吃掉本机射程）。
+ *   - 非 CI ＋ argv 给了 `--base` ⇒ 'base'（⑥-补2：显式开关不许被静默吞——本机也能点名复判面）；
+ *   - 非 CI 无参 ⇒ 'work'（本机预检面：工作树 vs HEAD——回落链不许吃掉本机射程）。
+ * base 模式带出 baseRaw（argv 优先于 env），调用方拿它走 resolveBase。
  */
-export function decideBomFace(env?: { CI?: string; BOM_BASE?: string }): {
-  mode: 'work' | 'base' | 'na';
-  reason: string;
-} {
+export function decideBomFace(
+  env?: { CI?: string; BOM_BASE?: string },
+  argv?: string[],
+): { mode: 'work' | 'base' | 'na'; reason: string; baseRaw?: string } {
   const isCI = env?.CI === 'true' || env?.CI === '1';
   const raw = env?.BOM_BASE;
   if (isCI) {
     if (!raw || /^0{40}$/.test(raw)) {
       return { mode: 'na', reason: 'CI 上无推送基线可比对（BOM_BASE 未设或全零）——本步未判，缺失≠干净' };
     }
-    return { mode: 'base', reason: `CI 推送基线复判面：${raw} vs HEAD` };
+    return { mode: 'base', reason: `CI 推送基线复判面：${raw} vs HEAD`, baseRaw: raw };
+  }
+  if (argv && argv.includes('--base')) {
+    const baseRaw = argv[argv.indexOf('--base') + 1];
+    if (baseRaw) {
+      return { mode: 'base', reason: `本机显式基线复判面：${baseRaw} vs HEAD`, baseRaw };
+    }
   }
   return { mode: 'work', reason: '本机预检面：工作树 vs HEAD（提交前拦截）' };
 }
@@ -143,20 +151,18 @@ export function scanBomDrift(root: string, opts?: { base?: string }): { issues: 
 function main(): void {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
   // ⑥-补：判据面由 decideBomFace 决策（可注入纯函数），main 只调它。
-  const face = decideBomFace(process.env);
+  const argv = process.argv.slice(2);
+  const face = decideBomFace(process.env, argv);
   let base: string | undefined;
   if (face.mode === 'na') {
     console.log(`[bom-drift] N/A——${face.reason}（本步未判）`);
     process.exit(0);
   }
-  if (face.mode === 'base') {
-    const baseRaw = process.argv.includes('--base')
-      ? process.argv[process.argv.indexOf('--base') + 1]
-      : process.env.BOM_BASE;
-    base = resolveBase(root, baseRaw);
+  if (face.mode === 'base' && face.baseRaw) {
+    base = resolveBase(root, face.baseRaw);
     if (!base) {
-      // GHOST：浅检出下基线对象不可达——显式 N/A，绝不演成「判过了、很干净」
-      console.log('[bom-drift] N/A——CI 上推送基线对象不可达（fetch-depth 浅检出未取到 before），本步未判');
+      // GHOST：基线对象不可达——显式 N/A，绝不演成「判过了、很干净」
+      console.log('[bom-drift] N/A——基线对象不可达（取不到指定基线／浅检出未取到 before），本步未判');
       process.exit(0);
     }
   }

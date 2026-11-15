@@ -182,4 +182,15 @@ describe('bom-drift · decideBomFace（⑥-补，CI 必跑）', () => {
     expect(decideBomFace(undefined).mode).toBe('work');
     expect(decideBomFace({ CI: undefined, BOM_BASE: undefined }).mode).toBe('work');
   });
+
+  it('15. ⑥-补2：非 CI ＋ argv --base ⇒ mode=base（显式开关不许被静默吞）', () => {
+    const v = decideBomFace({}, ['--base', 'HEAD~1']);
+    expect(v.mode).toBe('base');
+    expect(v.baseRaw).toBe('HEAD~1');
+  });
+
+  it('16. ⑥-补2：非 CI 无参数 ⇒ work 面（对照）', () => {
+    expect(decideBomFace({}, []).mode).toBe('work');
+    expect(decideBomFace({}, []).baseRaw).toBeUndefined();
+  });
 });

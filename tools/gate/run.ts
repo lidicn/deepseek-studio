@@ -59,10 +59,11 @@ const blockingSteps: Step[] = [
   // 行尾断言（20261106 第三件）：index 侧 i/crlf|i/mixed 判红（读 .gitattributes 豁免 eol=crlf/binary，
   // 不硬编码扩展名）。终结「PowerShell 写文件默认 CRLF → 内容没变却显示 M」的行尾伪影。
   { name: 'lineend-guard', cmd: 'npx tsx tools/audit/lineend-guard.ts' },
-  // ⑥ BOM 漂移检测（20261115 PM 派卡）：同批（工作树 vs HEAD）内同一文件 BOM 有↔无翻转
-  // ⇒ 阻塞。不设「禁止 BOM」——HEAD 自带 BOM 的历史件（31 枚）是存量不是缺陷。
-  // 新增阻塞级步骤，第一次必须在干净 checkout 真跑到（交卷附 archive 树实跑；
-  // CI 语义：push 后 diff HEAD 为空 ⇒ scanned=0 ⇒ 绿为常态，判据效力面＝本机提交前闸）。
+  // ⑥ BOM 漂移检测（20261115 PM 派卡）：同批内同一文件 BOM 有↔无翻转 ⇒ 阻塞。
+  // 不设「禁止 BOM」——HEAD 自带 BOM 的历史件（31 枚）是存量不是缺陷。
+  // 新增阻塞级步骤，第一次必须在干净 checkout 真跑到（交卷附 archive 树实跑）。
+  // ⑥-补2 注释口径：CI 侧走 base 复判面（fetch-depth: 0 保基线对象可达，基线不可达时
+  // bom-drift 打显式 N/A——缺失≠干净），本机侧走工作树 vs HEAD 提交前拦截；两侧判据同构。
   { name: 'bom-drift', cmd: 'npx tsx tools/audit/bom-drift.ts' },
   // Rust 侧配置路径硬编码断言（P0 卡 (B) 判据，20261106）：src-tauri/src 里 .join(".config")
   // 只许出现在 resolve_config_dir 函数体（唯一入口）/ 注释 / 单测断言——P1 路径漂移（grant 脚本

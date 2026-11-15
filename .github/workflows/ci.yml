@@ -19,10 +19,9 @@ jobs:
     runs-on: windows-latest
     env:
       # ⑥ 甲案（20261115 PM 裁定）：bom-drift 的 CI 侧复判基线——推送前 sha；
-      # 全零（新分支首推）由脚本回落 HEAD~1，无父提交时 scanned=0 步骤绿（语义内空）。
-      # ⑥-补（群PM 判据）：基线对象必须真取到 ⇒ **fetch-depth: 0**（默认浅检出取不到
-      # before 对象，GHOST 态会静默退回本机面＝恒 scanned=0 的伪绿）。射程：仅本 job——
-      # cargo-check 与负控 job 不需要历史，维持浅检出。
+      # 全零（新分支首推）由脚本回落 HEAD~1，无父提交时打显式 N/A（缺失≠干净，
+      # 不是"判过的绿"）。⑥-补：fetch-depth: 0 保基线对象真可达（GHOST 态＝静默
+      # 退本机面的伪绿已封）。射程：仅本 job——cargo-check 与负控 job 不需要历史。
       BOM_BASE: ${{ github.event.before }}
     steps:
       - uses: actions/checkout@v7
