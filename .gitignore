@@ -67,6 +67,11 @@ _memdb-audit.cjs
 
 # 双 PM 实例协调日志（本机磁盘，不入公开仓）
 PM-LOG.md
+# 防野生副本进仓（2026-11-15 私聊PM 把 pmsafe 的文件参数打成 PM-LOG，入口照写并在仓根建出 139 B 野件；
+# git check-ignore 当时对它返回"不被忽略"，下一次 git add . 就会把第二套账卷进来）
+/PM-LOG
+/PM-LOG.*
+/pm-log*
 
 # 20261105：代码库取证工具（forensic deep-dive）的产物——工具生成、含本机路径痕迹、
 # 带 ~38MB 本地缓存，属工具工作区不入代码仓（要留档就单独归档，不进 git）。
