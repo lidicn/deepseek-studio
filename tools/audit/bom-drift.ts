@@ -172,6 +172,43 @@ function main(): void {
   const root = rootIdx >= 0
     ? resolve(argv[rootIdx + 1])
     : resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  // ⑦-补3（群PM 判据，CI run 43678777228/43679288904 两发连红的收口）：**排序是故意的**——
+  // root 合法性预检在判据面决策**之前**：--root 配错时任何模式（na／base／work）都先 exit 2
+  // ＋一行拒绝，不许被「N/A——基线对象不可达（浅检出未取到 before）」这种指错根因的文案洗掉
+  //（真因是 root 非 git 树，读者却会被带去查 fetch-depth）。face 的 na 早退又在 base 可达性
+  //（resolveBase 的 GHOST）之前：基线缺失≠root 配错，两级各有文案。
+  // 预检法取代事后文本匹配（⑦-补 定论留痕）：事后匹配三坑——execSync 的 Error.message 是
+  // 命令串非 stderr／git 报错大小写形态不一（「Not a git repository」大写 N、无 fatal:）／
+  // stdio 拦截后 err.stderr=null——且非 git 目录走 --no-index 分支会喷 7.7 KB usage，
+  // 预检把噪音挡在闸日志外。
+  // 预检两问（之 5＝空仓格，CI 场景实测裸抛喷栈 EXIT=1 后补）：
+  //   ① `rev-parse --is-inside-work-tree`：非 git 目录 RC≠0；**bare 仓 RC=0 但 stdout='false'**
+  //     ——⑦-补2 那句「bare 同被拒」在旧实现（只看退出码）下并不成立，必须读值才算真拒。
+  //   ② `rev-parse --verify --quiet HEAD`：树内但无提交（空仓）⇒ RC≠0 ⇒ exit 2——否则
+  //     collectChangedFiles 的 `git diff HEAD` 裸抛喷栈（stderr 已被 stdio 拦，只剩 node 栈）。
+  //   环境事实（run 43678777228 枚 20 CI 红根因）：GitHub Windows runner 的 tmp 可能落进
+  //   祖先含 .git 的树内——本闸靠读值判 root 真值，夹具侧用 GIT_CEILING_DIRECTORIES 圈死，
+  //   不依赖「tmp 恰好在树外」的环境巧合。
+  let insideWorkTree = '';
+  try {
+    insideWorkTree = execSync('git rev-parse --is-inside-work-tree', {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    insideWorkTree = '';
+  }
+  if (insideWorkTree !== 'true') {
+    console.error(`[bom-drift] 拒绝：--root 不在 git 工作树内（非 git 目录／bare 仓；BOM 漂移判据依赖 git diff）：${root}`);
+    process.exit(2);
+  }
+  try {
+    execSync('git rev-parse --verify --quiet HEAD', { cwd: root, stdio: 'ignore' });
+  } catch {
+    console.error(`[bom-drift] 拒绝：--root 指向的 git 仓没有 HEAD（空仓未提交，diff 判据面无基准）：${root}`);
+    process.exit(2);
+  }
   // ⑥-补：判据面由 decideBomFace 决策（可注入纯函数），main 只调它。
   const face = decideBomFace(process.env, argv);
   let base: string | undefined;
@@ -186,18 +223,6 @@ function main(): void {
       console.log('[bom-drift] N/A——基线对象不可达（取不到指定基线／浅检出未取到 before），本步未判');
       process.exit(0);
     }
-  }
-  // ⑦／⑦-补（PM 派卡＋群PM 实弹）：--root 指向非 git 目录时，git 走 --no-index 分支、
-  // stderr 喷 7.7 KB usage（大写 N、无 fatal:）。**预检法**：先显式问 git，非 git ⇒
-  // exit 2＋一行拒绝文案——事后文本匹配有三坑（Error.message 是命令串／大小写／
-  // stdio 拦截后 stderr=null），已废弃。
-  // 语义边界（⑦-补2）：`rev-parse --is-inside-work-tree` 对 **bare 仓返回 false**，
-  // 故 --root 指 bare 仓同样被拒——CI 的 checkout 不是 bare，不影响射程，但这是设计而非漏洞。
-  try {
-    execSync('git rev-parse --is-inside-work-tree', { cwd: root, stdio: 'ignore' });
-  } catch {
-    console.error(`[bom-drift] 拒绝：--root 指向非 git 目录（BOM 漂移判据依赖 git diff，无法对非 git 树执行）：${root}`);
-    process.exit(2);
   }
   const { issues, scanned } = scanBomDrift(root, { base });
   console.log(`[bom-drift] 本批（${base ? `基线 ${base.slice(0, 12)} vs HEAD` : '工作树 vs HEAD'}）改动文本文件 ${scanned} 枚`);

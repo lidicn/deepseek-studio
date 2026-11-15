@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -181,37 +181,78 @@ describe('bom-drift · 推送基线模式（⑥ 甲案）', () => {
     expect(r.stderr ?? '').toContain('--base');
   });
 
-  it('20. ⑦：--root 指非 git 目录 ⇒ 非CI 拦（exit 2）；CI 格 N/A 不崩（base 面在非 git root 必不可达）——两格都不喷栈', () => {
-    const nonGit = mkdtempSync(join(tmpdir(), 'nongit-'));
+  it('20. ⑦-补3：--root 指非 git 目录 ⇒ 任何模式（work／CI na／CI base／--base／--dry-run）都 exit 2——root 合法性先于基线可达性，拒绝文案一行不喷栈', () => {
+    // ⑦-补3（CI run 43678777228/43679288904 连红收口）：夹具前提不许依赖 tmpdir 的位置运气
+    //——runner 上 tmp 的祖先可能含 .git ⇒ 预检通过 ⇒ 走 work 面 ⇒ 假绿 exit 0。
+    // 用 GIT_CEILING_DIRECTORIES 把 ceiling 圈死在 nonGit 的父目录，两环境确定成立。
+    const parent = mkdtempSync(join(tmpdir(), 'nongit-parent-'));
+    const nonGit = join(parent, 'nongit-x');
+    mkdirSync(nonGit);
     try {
-      for (const withCI of [undefined, 'true']) {
-        const envPack: Record<string, string | undefined> = { ...process.env };
-        if (withCI === undefined) delete envPack.CI;
-        else {
-          envPack.CI = withCI;
-          // CI 格给可达基线意图（BOM_BASE=HEAD）——但非 git root 下任何 ref 都不可达，
-          // 真实行为＝显式 N/A（缺失≠干净），不是崩栈
-          envPack.BOM_BASE = 'HEAD';
-        }
+      // 夹具自证：带 ceiling 时该目录必须真的不在工作树内；不成立判红并写明，禁止 skip
+      const probe = spawnSync('git', ['-C', nonGit, 'rev-parse', '--is-inside-work-tree'], {
+        cwd: REAL_ROOT,
+        encoding: 'utf8',
+        env: { ...process.env, GIT_CEILING_DIRECTORIES: parent },
+      });
+      const fixtureOk = probe.status !== 0;
+      expect(
+        fixtureOk,
+        `夹具环境不成立：GIT_CEILING_DIRECTORIES=${parent} 下 rev-parse RC=${probe.status}、stdout=${JSON.stringify(probe.stdout)}——nonGit 落进了 git 树内，测试前提被破坏（不 skip、判红）`,
+      ).toBe(true);
+      // 六格全跑：work／CI na（无基线）／CI base（env 有值）／CI base（argv --base）／
+      // 非 CI base（argv）／--dry-run 组合——「任何模式都先 exit 2」是排序语义的锁
+      const cases: { label: string; args: string[]; env: Record<string, string | undefined> }[] = [
+        { label: 'work', args: [], env: { ...process.env, GIT_CEILING_DIRECTORIES: parent } },
+        { label: 'CI na', args: [], env: { ...process.env, CI: 'true', GIT_CEILING_DIRECTORIES: parent } },
+        { label: 'CI base(env)', args: [], env: { ...process.env, CI: 'true', BOM_BASE: 'HEAD', GIT_CEILING_DIRECTORIES: parent } },
+        { label: 'CI base(argv)', args: ['--base', 'HEAD~1'], env: { ...process.env, CI: 'true', GIT_CEILING_DIRECTORIES: parent } },
+        { label: 'work base(argv)', args: ['--base', 'HEAD~1'], env: { ...process.env, GIT_CEILING_DIRECTORIES: parent } },
+        { label: 'dry-run', args: ['--dry-run'], env: { ...process.env, GIT_CEILING_DIRECTORIES: parent } },
+      ];
+      for (const c of cases) {
         const r = spawnSync(
           process.execPath,
-          ['--import', 'tsx', join(REAL_ROOT, 'tools', 'audit', 'bom-drift.ts'), '--root', nonGit],
-          { cwd: REAL_ROOT, encoding: 'utf8', env: envPack as NodeJS.ProcessEnv },
+          ['--import', 'tsx', join(REAL_ROOT, 'tools', 'audit', 'bom-drift.ts'), '--root', nonGit, ...c.args],
+          { cwd: REAL_ROOT, encoding: 'utf8', env: c.env as NodeJS.ProcessEnv },
         );
-        if (withCI === undefined) {
-          expect(r.status, '非 CI 应 exit 2 拦截').toBe(2);
-          expect(r.stderr ?? '').toContain('非 git 目录');
-          // ⑦-补 A 格：拒绝文案必须可见——stderr ≤2 行（git usage 整坨不许喷）
-          const errLines = (r.stderr ?? '').split('\n').filter((l) => l.trim().length > 0);
-          expect(errLines.length, `stderr 应 ≤2 行，实 ${errLines.length} 行`).toBeLessThanOrEqual(2);
-        } else {
-          expect(r.status, 'CI 格应显式 N/A 而非崩栈').toBe(0);
-          expect(r.stdout ?? '').toContain('N/A');
-        }
-        expect(r.stderr ?? '').not.toContain('node:internal'); // 两格都不喷栈
+        // 失败即自证：status／stdout／stderr 全文＋两枚 git 真值探针的 rc，红时日志直接给出根因
+        const topoRc = spawnSync('git', ['-C', nonGit, 'rev-parse', '--show-toplevel'], {
+          cwd: REAL_ROOT, encoding: 'utf8', env: c.env as NodeJS.ProcessEnv,
+        }).status;
+        const insideRc = spawnSync('git', ['-C', nonGit, 'rev-parse', '--is-inside-work-tree'], {
+          cwd: REAL_ROOT, encoding: 'utf8', env: c.env as NodeJS.ProcessEnv,
+        }).status;
+        const diag = `[${c.label}] status=${r.status} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)} show-toplevel RC=${topoRc} is-inside RC=${insideRc} ceiling=${parent}`;
+        expect(r.status, `非 git root 应任何模式都 exit 2 拦截: ${diag}`).toBe(2);
+        const errLines = (r.stderr ?? '').split('\n').filter((l) => l.trim().length > 0);
+        expect(errLines.length, `stderr 应恰 1 行拒绝文案: ${diag}`).toBe(1);
+        expect(r.stderr ?? '', `应含拒绝文案且不喷栈: ${diag}`).toContain('不在 git 工作树内');
+        expect(r.stderr ?? '', `不许喷 node 栈: ${diag}`).not.toContain('node:internal');
       }
     } finally {
-      rmSync(nonGit, { recursive: true, force: true });
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('22. ⑦-补3 之 5：--root 指 git 树内但无 HEAD 的空仓 ⇒ exit 2＋一行文案，不裸抛喷栈', () => {
+    const solo = mkdtempSync(join(tmpdir(), 'bomdrift-emptyrepo-'));
+    const opts = { cwd: solo, encoding: 'utf8' } as const;
+    execSync('git init', opts); // 空仓：树内（is-inside=true）但无 HEAD
+    try {
+      const r = spawnSync(
+        process.execPath,
+        ['--import', 'tsx', join(REAL_ROOT, 'tools', 'audit', 'bom-drift.ts'), '--root', solo],
+        { cwd: REAL_ROOT, encoding: 'utf8' },
+      );
+      const diag = `status=${r.status} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}`;
+      expect(r.status, `空仓应 exit 2 而非裸抛喷栈: ${diag}`).toBe(2);
+      const errLines = (r.stderr ?? '').split('\n').filter((l) => l.trim().length > 0);
+      expect(errLines.length, `stderr 应恰 1 行: ${diag}`).toBe(1);
+      expect(r.stderr ?? '').toContain('没有 HEAD');
+      expect(r.stderr ?? '').not.toContain('node:internal');
+    } finally {
+      rmSync(solo, { recursive: true, force: true });
     }
   });
 
