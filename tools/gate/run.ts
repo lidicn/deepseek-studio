@@ -21,7 +21,7 @@
 
 import { execSync } from 'node:child_process';
 import { resolve, dirname, join } from 'node:path';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { stepLine } from './step-line';
 import { writeGateEnd, writeGateRunning } from './pmsafe';
@@ -114,9 +114,30 @@ function main(): void {
   // 05:51 那发栽在脏树＋无人登记：RUNNING 行从此必带 dirty=N，两 PM 只扫 PM-LOG 即可互斥。
   const pmLog = join(root, 'PM-LOG.md');
   const actor = process.env.GATE_ACTOR ?? 'unclaimed';
-  const head = execSync('git rev-parse --short HEAD', { cwd: root, encoding: 'utf8' }).trim();
-  const dirty = execSync('git -c core.quotepath=false status --porcelain', { cwd: root, encoding: 'utf8' })
-    .split('\n').filter((l) => l.trim().length > 0).length;
+  // ⑤-补5：非 git 树（git archive 解出的干净 checkout）容错——HEAD/dirty 取不到时
+  // 用缺省值登记，不在起跑段崩（dry-run 口子正是为这类树准备的）。
+  let head = 'unknown';
+  let dirty = 0;
+  try {
+    head = execSync('git rev-parse --short HEAD', { cwd: root, encoding: 'utf8' }).trim();
+    dirty = execSync('git -c core.quotepath=false status --porcelain', { cwd: root, encoding: 'utf8' })
+      .split('\n').filter((l) => l.trim().length > 0).length;
+  } catch {
+    /* 非 git 树：head=unknown、dirty=0 */
+  }
+  // ⑤-补5 空树登记链自检口子：只在无 PM-LOG.md 的树（CI／干净 checkout）有意义。
+  // D1（群PM 09:46 实弹钉死）：**拒绝判定必须前置于任何写入**——有台账的树跑 dry-run
+  // 若先 writeGateRunning 再拒绝，等于宣称防伪发的同时自己把伪发写进控制面（09:46 GATE#58）。
+  if (process.argv.includes('--dry-run')) {
+    if (existsSync(pmLog)) {
+      console.error('[dry-run] 拒绝：本树存在 PM-LOG.md——dry-run 只用于空树（CI／干净 checkout），防伪发登记');
+      process.exit(2);
+    }
+    const dryNo = writeGateRunning(pmLog, { actor, pid: process.pid, head, dirty });
+    writeGateEnd(pmLog, dryNo, 0, '0.0');
+    console.log(`[dry-run] gateNo=${dryNo}（N/A 路径已走完；PM-LOG.md 仍未被创建：${existsSync(pmLog)}）`);
+    process.exit(0);
+  }
   const gateNo = writeGateRunning(pmLog, { actor, pid: process.pid, head, dirty });
 
   const stepElapsed = (t0: number) => ((Date.now() - t0) / 1000).toFixed(1);

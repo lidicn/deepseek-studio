@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -261,6 +261,87 @@ describe('pre-commit 真实人口形态锁（静态夹具，CI 必跑）', () =>
     const r = tryCommitS(undefined);
     expect(r.code).not.toBe(0);
   });
+
+  it('⑤-补5 号段锁：新格式 RUNNING 未收口＝真未收口（nextGateRunNo 数到它）', () => {
+    // 行首机器锚形态（safeAppendLog 写出的）：[YYYY-MM-DD HH:mm:ss] RUNNING GATE#N
+    const f = makeBigLog(`pmsafe-gate-noend-${Date.now()}.log`);
+    writeFileSync(
+      f,
+      'x'.repeat(MIN_BYTES) + '\n[2026-11-15 08:00:00] RUNNING GATE#57 by 私聊PM pid=1 HEAD=c0ffee1 dirty=0\n',
+      'utf8',
+    );
+    expect(nextGateRunNo(f)).toBe(58);
+    rmSync(f, { force: true });
+  });
+
+  it('⑤-补5 号段锁：旧格式与叙述行不得计入在跑（防粗扫描误冻整条线）', () => {
+    // 旧格式（行首 09:58 **RUNNING…）与叙述行（**私聊PM｜看门狗：GATE#94 在跑）都不是
+    // 行首机器锚——粗扫描会数出 26 个"未收口"误冻全仓；nextGateRunNo 只认新格式。
+    const f = makeBigLog(`pmsafe-gate-old-${Date.now()}.log`);
+    writeFileSync(
+      f,
+      [
+        'x'.repeat(MIN_BYTES),
+        '09:58 **RUNNING GATE#69 by 私聊PM｜锁表：M5 记忆注入……（旧格式登记）',
+        '**私聊PM｜看门狗：GATE#94 在跑……（叙述行）',
+        '[2026-11-15 09:59:00] RUNNING GATE#5 by 群PM pid=1 HEAD=abc1234 dirty=0',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    expect(nextGateRunNo(f)).toBe(6);
+    rmSync(f, { force: true });
+  });
+
+  it('⑤-补4：CLAIM ＋ 叙述行裸 RELEASE（无 hex）→ 放行（叙述行不许误还锁——杀变异 A）', () => {
+    // 变异 A（删 hex 锚子句）下：叙述行命中 RELEASE token ⇒ 锁被误还 ⇒ 本枚红。
+    // 现行钩下：叙述行无 hex ⇒ 锁未还 ⇒ 放行。
+    writeFileSync(
+      join(repoS, 'PM-LOG.md'),
+      STATIC_CLAIM_PMSAFE + '\n- 回顾时提到 RELEASE 这个词，但没有凭证编号与 run id（纯叙述）。\n',
+      'utf8',
+    );
+    const r = tryCommitS('群PM');
+    expect(r.code, `叙述行误还锁＝hex 锚失效：${r.out}`).toBe(0);
+  });
+
+  it('⑤-补4 对照：同夹具追加真 RELEASE（带 hex）→ 拦（两枚之差正是 hex 锚）', () => {
+    writeFileSync(
+      join(repoS, 'PM-LOG.md'),
+      STATIC_CLAIM_PMSAFE + '\n- 回顾时提到 RELEASE 这个词，但没有凭证编号与 run id（纯叙述）。\n' + STATIC_RELEASE + '\n',
+      'utf8',
+    );
+    const r = tryCommitS('群PM');
+    expect(r.code).not.toBe(0);
+  });
+});
+
+// ── ⑤-补5（PM 判据）：闸自写 RUNNING/END 在无台账树上显式 N/A，不抛、不造野件 ──────
+describe('pmsafe · 闸自写 N/A 语义（⑤-补5，CI 必跑）', () => {
+  it('空树（无 PM-LOG）writeGateRunning 不抛＋返回 0＋不创建文件（防借 N/A 之名造野件）', () => {
+    const pm = join(tmpdir(), `nolog-${Date.now()}.md`);
+    expect(existsSync(pm)).toBe(false);
+    const no = writeGateRunning(pm, { actor: 'gate-test', pid: 1, head: 'abc1234', dirty: 0 });
+    expect(no).toBe(0);
+    expect(existsSync(pm)).toBe(false);
+  });
+
+  it('writeGateEnd(0) 不写不抛（RUNNING 未登记时 END 静默）', () => {
+    const pm = join(tmpdir(), `nolog2-${Date.now()}.md`);
+    expect(() => writeGateEnd(pm, 0, 0, '0.0')).not.toThrow();
+    expect(existsSync(pm)).toBe(false);
+  });
+
+  it('有台账时号段自增行为不变（对照，守卫语义不合并）', () => {
+    const f = makeBigLog(`pmsafe-gate-${Date.now()}.log`);
+    const no1 = writeGateRunning(f, { actor: 'gate-test', pid: 1, head: 'abc1234', dirty: 0 });
+    expect(no1).toBe(1);
+    const no2 = writeGateRunning(f, { actor: 'gate-test', pid: 2, head: 'abc1234', dirty: 0 });
+    expect(no2).toBe(2);
+    writeGateEnd(f, no1, 0, '1.0');
+    expect(readFileSync(f, 'utf8')).toMatch(/END GATE#1 exit=0 total=1\.0s/);
+    rmSync(f, { force: true });
+  });
 });
 
 describe('pre-commit 真实人口负控（活锁——仅本机跑）', () => {
@@ -360,6 +441,23 @@ describe('pre-commit 真实人口负控（活锁——仅本机跑）', () => {
     expect(claimLine).toMatch(/CLAIM\s+commit/);
     expect(/(^|[^A-Za-z0-9])RELEASE([^A-Za-z0-9]|$)/.test(releaseLine)).toBe(true);
     expect(/[0-9a-f]{7,}/.test(releaseLine)).toBe(true);
+  });
+
+  itLive('⑤-补5/D1：有台账树跑 --dry-run ⇒ 非零退出且台账字节与行数逐字节不变（断字节锁）', () => {
+    // D1（群PM 09:46 实弹）：拒绝判定若后置于 writeGateRunning，会一边宣称防伪发一边写真伪发。
+    // 本枚对真台账断字节——拒绝必须发生在任何写入之前。
+    const ledger = join(REAL_ROOT, 'PM-LOG.md');
+    const beforeBytes = statSync(ledger).size;
+    const beforeLines = readFileSync(ledger, 'utf8').split('\n').length;
+    let code = 0;
+    try {
+      execSync('npx tsx tools/gate/run.ts --dry-run', { cwd: REAL_ROOT, encoding: 'utf8', stdio: 'pipe' });
+    } catch (e) {
+      code = (e as { status?: number }).status ?? 1;
+    }
+    expect(code, '有台账树 dry-run 应拒绝（非零退出）').not.toBe(0);
+    expect(statSync(ledger).size).toBe(beforeBytes);
+    expect(readFileSync(ledger, 'utf8').split('\n').length).toBe(beforeLines);
   });
 });
 

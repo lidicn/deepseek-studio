@@ -115,15 +115,31 @@ export interface GateRunInfo {
   dirty: number;
 }
 
-/** 闸起跑写 RUNNING 行（AGENTS：起全量闸必须落 RUNNING——⑤ 起由闸自写，不靠人记）。 */
+/** 闸起跑写 RUNNING 行（AGENTS：起全量闸必须落 RUNNING——⑤ 起由闸自写，不靠人记）。
+ *  ⑤-补5（PM 判据，与 host-freshness「缺失≠陈旧，显式 N/A」同族）：**闸侧**在 PM-LOG.md
+ *  不存在时**不抛**——打印 N/A 到 stdout 并返回 0（未登记）；CI 干净树天生没有 gitignored
+ *  台账，这里抛会崩 gate 步骤（43660126937 那发）。人／席位显式写台账走 safeAppendLog／
+ *  safeAppendBlock，**保持「不存在即抛」**——两条守卫语义不同，不许合并。 */
 export function writeGateRunning(pmLog: string, info: Omit<GateRunInfo, 'gateNo'>): number {
+  if (!existsSync(pmLog)) {
+    console.log('[⑤ 闸自写] N/A：本树无 PM-LOG.md（干净 checkout／CI）——跳过 RUNNING 登记');
+    return 0;
+  }
   const gateNo = nextGateRunNo(pmLog);
   safeAppendLog(pmLog, `RUNNING GATE#${gateNo} by ${info.actor} pid=${info.pid} HEAD=${info.head} dirty=${info.dirty}`);
   return gateNo;
 }
 
-/** 闸收口写 END 行（exit 码与总时长取真实值，不许字面量——0.14.11 卡 B 同款口径）。 */
+/** 闸收口写 END 行（exit 码与总时长取真实值，不许字面量——0.14.11 卡 B 同款口径）。
+ *  ⑤-补5：gateNo=0（RUNNING 未登记）⇒ 静默跳过——不写不抛，不造伪发。 */
 export function writeGateEnd(pmLog: string, gateNo: number, exitCode: number, totalSecs: string): void {
+  if (gateNo === 0) {
+    return;
+  }
+  if (!existsSync(pmLog)) {
+    console.log('[⑤ 闸自写] N/A：本树无 PM-LOG.md（干净 checkout／CI）——跳过 END 登记');
+    return;
+  }
   safeAppendLog(pmLog, `END GATE#${gateNo} exit=${exitCode} total=${totalSecs}s`);
 }
 
