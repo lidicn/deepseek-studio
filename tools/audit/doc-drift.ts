@@ -213,7 +213,17 @@ const RE_ARTIFACT_PATH =
  * 同一路径**不带**该前缀仍照旧判本仓死锚（契约测试锁双面，测试 13/14）。
  * 留痕类（「原写/系误指」）不做措辞白名单——历史语义一律走历史快照标记（PM 20261115 裁定）。
  */
+/** 上游仓根缺省值（本机开发约定）。④②c（PM 派卡）：实际判据入参改读
+ *  `process.env.STUDIO_UPSTREAM_ROOT`，缺省回落此值——CI（ubuntu）没有 `E:\NAS\deepseek-pp`，
+ *  workflow 造夹具上游仓并以 env 指入，正判据分支（isFile/isDir＋行号）才能在干净
+ *  checkout 真跑到（此前 CI 只跑过 N/A 那半条链）。 */
 export const UPSTREAM_ROOT = 'E:\\NAS\\deepseek-pp';
+
+/** 实际生效的上游仓根：env 覆盖，缺省回落 UPSTREAM_ROOT。每次调用现读——
+ *  模块加载期快照会让契约测试的 env 注入失效。 */
+export function upstreamRootOf(): string {
+  return process.env.STUDIO_UPSTREAM_ROOT ?? UPSTREAM_ROOT;
+}
 
 /** 上游引用全形态抓取：`<upstream-repo>/` 后跟路径安全字符（含 `:` 供行号尾巴），事后剥行号。
  *  ④③（PM 判据）：`*` 量化——前缀后**零字符**（行尾悬空，如「`<upstream-repo>/`。」或
@@ -366,7 +376,7 @@ export function checkDocDrift(
   root: string,
   docDirs: readonly string[] = DOC_DIRS,
   designDirs: readonly string[] = DESIGN_DIRS,
-  upstreamRoot: string = UPSTREAM_ROOT,
+  upstreamRoot: string = upstreamRootOf(),
 ): { issues: DocDriftIssue[]; scanned: DocDriftScan[]; refCount: number; designPending: DocDriftIssue[]; historyAnchors: DocDriftIssue[]; upstreamNA: number; upstreamChecked: number } {
   const idx = buildBasenameIndex(root);
   const issues: DocDriftIssue[] = [];
@@ -651,11 +661,13 @@ function main(): void {
   if (!verbose && historyAnchors.length > 15) console.log(`  …其余 ${historyAnchors.length - 15} 枚用 --verbose 全列`);
 
   // 20261115 ④②：上游前缀锚强校验结果——可达则印校验数；不可达打显式 N/A＋跳过数，
-  // **不伪装成"零问题"**（CI 机器上没有 E:\NAS\deepseek-pp，这条必须真跑到，PM 判据）。
-  if (existsSync(UPSTREAM_ROOT)) {
-    console.log(`\n🔗 上游前缀锚强校验（${UPSTREAM_ROOT}）: 校验 ${upstreamChecked} 处`);
+  // **不伪装成"零问题"**（这条必须真跑到，PM 判据）。④②c：打印用实际入参 root
+  // （env 覆盖后的值），与判据入参同源——不再引用缺省常量硬编码。
+  const effRoot = upstreamRootOf();
+  if (existsSync(effRoot)) {
+    console.log(`\n🔗 上游前缀锚强校验（${effRoot}）: 校验 ${upstreamChecked} 处`);
   } else {
-    console.log(`\n🔗 上游前缀锚强校验: N/A——上游仓 ${UPSTREAM_ROOT} 不可达，跳过 ${upstreamNA} 处（显式 N/A，不伪装成零问题）`);
+    console.log(`\n🔗 上游前缀锚强校验: N/A——上游仓 ${effRoot} 不可达，跳过 ${upstreamNA} 处（显式 N/A，不伪装成零问题）`);
   }
 
   // 20261114 A 段（修正版，PM 裁定）：分类问 git ls-files，不问路径形态——

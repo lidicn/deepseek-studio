@@ -461,6 +461,25 @@ describe('doc-drift 上游前缀锚强校验（20261115 ④②）', () => {
     expect(r.historyAnchors.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('33c. STUDIO_UPSTREAM_ROOT env 覆盖生效：指向夹具时 upstreamChecked>0 且 upstreamNA=0（④②c，防"env 读了但没用上"）', () => {
+    withFakeUpstream((up) => {
+      const prev = process.env.STUDIO_UPSTREAM_ROOT;
+      process.env.STUDIO_UPSTREAM_ROOT = up;
+      try {
+        // 不传第 4 参——默认参数 upstreamRootOf() 现读 env，注入必须生效
+        withTempDocs({ 'env.md': '见 <upstream-repo>/src/core/real.ts:2\n' }, (dir) => {
+          const r = checkDocDrift(root, [dir], ['docs/设计稿']);
+          expect(r.upstreamChecked).toBeGreaterThan(0);
+          expect(r.upstreamNA).toBe(0);
+          expect(r.issues.filter((i) => i.severity === 'fail')).toHaveLength(0);
+        });
+      } finally {
+        if (prev === undefined) delete process.env.STUDIO_UPSTREAM_ROOT;
+        else process.env.STUDIO_UPSTREAM_ROOT = prev;
+      }
+    });
+  });
+
   it('34. 带标记文件内的上游死锚 → 走 🗂 豁免闸绿；同锚无标记 → 必红（豁免分支契约锁）', () => {
     const MARK = '<!-- 历史快照：内引路径/行号为当时状态，不作活锚 -->';
     withFakeUpstream((up) => {
