@@ -457,6 +457,71 @@ function terminalCodesOf(failures: readonly PendingResult[]): string[] {
   return codes;
 }
 
+/**
+ * **「自愈码」名单**（2026-11-15 卡⑨-c）：与环境状态有关、等环境就绪后重试**才**可能成功的失败。
+ *
+ * 与 ⑨-补2 的排除注释块**是同一份名单的两面**：
+ *   - 那一面说"它们**不进**终局族"（判终局会让整批 terminate ⇒ 零可见交代）；
+ *   - 这一面说"它们也**不吃** `FAILURE_RECOVERY`"（那句说"修正参数或改用合适的下一步"，
+ *     而参数怎么改都不会让页面变就绪——这正是 135 连拒的镜像病灶：字段说等环境、散文说改参数）。
+ *
+ * ⚠️ 维护口径同 ⑨-补2：两处若分裂，先回表＋补行为锁，再谈归属。
+ * 反证锁：`tests/desktop/failure-classification.test.ts` 断言本表与终局码表**零交集**。
+ */
+export const SELF_HEALING_FAILURE_CODES: readonly string[] = [
+  'page-not-ready',
+  'no-page-for-dom-capability',
+  'no-page-runtime',
+];
+
+/**
+ * 从失败文本里抽出**自愈码**（与 `extractFailureCode` 同构：`indexOf` 命中、取最靠前者）。
+ * 无命中 ⇒ undefined（该失败按可重试处理）。
+ */
+export function extractSelfHealingCode(text: string | undefined): string | undefined {
+  if (typeof text !== 'string' || text.length === 0) return undefined;
+  let best: { code: string; index: number } | undefined;
+  for (const code of SELF_HEALING_FAILURE_CODES) {
+    const index = text.indexOf(code);
+    if (index === -1) continue;
+    if (best === undefined || index < best.index || (index === best.index && code.length > best.code.length)) {
+      best = { code, index };
+    }
+  }
+  return best?.code;
+}
+
+/** 该失败是否命中自愈码（用于把它从 `retryable` 桶里摘出来）。 */
+function isSelfHealingFailure(e: PendingResult): boolean {
+  return extractSelfHealingCode(typeof e.error === 'string' ? e.error : undefined) !== undefined;
+}
+
+/**
+ * 自愈类失败的模型侧文案（语义面 2026-11-15 PM 定字，措辞可润色、语义不许动）。
+ *
+ * 为什么必须与 `FAILURE_RECOVERY` 分开：那句是**行为指令**（"修正参数或改用合适的下一步继续"），
+ * 而这类失败的参数改了也没用——不变的是环境。真机 135 连拒就是照那句重发的。
+ */
+export function buildSelfHealingNotice(codes: readonly string[]): string {
+  const uniq = [...new Set(codes.filter((c) => c.length > 0))];
+  const list = uniq.length > 0 ? `（${uniq.join('、')}）` : '';
+  return (
+    `以下失败与环境状态有关（页面未就绪／能力未注册）${list}：修正参数不会改变结果，`
+    + '等环境就绪后重试才可能成功。请先做不依赖它的其他步骤，或直接向用户说明页面/服务未就绪；'
+    + '不要原样重试同一调用。'
+  );
+}
+
+/** 把一批自愈失败折算成提示里要印的码（去重、保序）。 */
+function selfHealingCodesOf(failures: readonly PendingResult[]): string[] {
+  const codes: string[] = [];
+  for (const e of failures) {
+    const code = extractSelfHealingCode(typeof e.error === 'string' ? e.error : undefined);
+    if (code !== undefined) codes.push(code);
+  }
+  return codes;
+}
+
 // ---------------------------------------------------------------- task_complete
 
 /**
@@ -778,7 +843,9 @@ export function buildContinuationPrompt(
   // 2026-11-14：失败**分性**，不再 `some(!ok)` 一视同仁（真机：策略拒绝被"修正参数继续"推回 6 次）。
   const failures = executions.filter((e) => !e.ok);
   const terminal = failures.filter((e) => classifyToolFailure(e) === 'terminal');
-  const retryable = failures.filter((e) => classifyToolFailure(e) === 'retryable');
+  // 2026-11-15 卡⑨-c：自愈码**从 retryable 桶里摘出**——参数改了也没用，不变的是环境。
+  const selfHealing = failures.filter((e) => isSelfHealingFailure(e));
+  const retryable = failures.filter((e) => classifyToolFailure(e) === 'retryable' && !isSelfHealingFailure(e));
   const repeatNotice = buildRepeatDenialNotice(executions);
   // 2026-11-13（B）：单轮累计预算在**渲染出口**统一生效——所有续跑 prompt 都走这里，
   // 不存在"某条路径绕过预算"的旁路。
@@ -797,6 +864,10 @@ export function buildContinuationPrompt(
     // 而且同一码的不同参数回显会让提示每次长得不一样。
     ...(terminal.length > 0
       ? ['', buildTerminalFailureNotice(terminalCodesOf(terminal))]
+      : []),
+    // 判定顺序 终局 > 自愈 > 可重试：三者各自只描述自己那一类，同批并存时按此顺序读。
+    ...(selfHealing.length > 0
+      ? ['', buildSelfHealingNotice(selfHealingCodesOf(selfHealing))]
       : []),
     ...(retryable.length > 0 ? ['', FAILURE_RECOVERY] : []),
     ...(repeatNotice ? ['', repeatNotice] : []),
@@ -821,6 +892,8 @@ export function buildProtocolRepairPrompt(
   // 2026-11-14：协议修复轮同样按性质分流——修复轮里模型最容易"换个写法再试同一个被拒调用"，
   // 终局提示与重复计数在这一轮尤其要说。可重试的续跑句保持原样（不新增、不改字）。
   const terminal = executions.filter((e) => classifyToolFailure(e) === 'terminal');
+  // 2026-11-15 卡⑨-c：自愈码在修复轮同样不能只说"换个写法再试"——不变的是环境。
+  const selfHealing = executions.filter((e) => isSelfHealingFailure(e));
   const repeatNotice = buildRepeatDenialNotice(executions);
   return [
     '上一轮回答未完整遵循工具调用协议。请基于原始任务和工具结果继续，并且只使用 XML 工具标签调用工具。',
@@ -833,6 +906,9 @@ export function buildProtocolRepairPrompt(
     '</original_task>',
     ...(terminal.length > 0
       ? ['', buildTerminalFailureNotice(terminalCodesOf(terminal))]
+      : []),
+    ...(selfHealing.length > 0
+      ? ['', buildSelfHealingNotice(selfHealingCodesOf(selfHealing))]
       : []),
     ...(repeatNotice ? ['', repeatNotice] : []),
     ...(view.notice ? ['', view.notice] : []),

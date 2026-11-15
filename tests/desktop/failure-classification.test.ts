@@ -23,6 +23,7 @@ import { describe, expect, it } from 'vitest';
 import {
   NON_TERMINAL_FUSE_THRESHOLD,
   REPEAT_DENIAL_ALERT_THRESHOLD,
+  SELF_HEALING_FAILURE_CODES,
   TERMINAL_FAILURE_CODES,
   TERMINAL_FUSE_THRESHOLD,
   buildContinuationPrompt,
@@ -30,6 +31,7 @@ import {
   classifyToolFailure,
   evaluateTerminalFuse,
   extractFailureCode,
+  extractSelfHealingCode,
   type PendingResult,
 } from '../../src/shared/continuation-prompt';
 import { shouldSkipAutoContinue } from '../../src/shared/tool-result-format';
@@ -360,6 +362,68 @@ describe('⑩ 结构化 error.code 与散文同源（两个视图都填）', () 
 // 2026-11-15 卡⑨：真机一个 turn 内 `memory_save` 被拒 **135 次**、AutoForge 一次没被调用。
 // 135 枚里有 **129 种不同 params** ⇒ 按 (name, params) 全等的折叠被换 payload 直接绕开，
 // 唯一模型改不动的键是**失败码**。熔断按 (tool, 规范失败码) 计数，阈值 3。
+// 2026-11-15 卡⑨-c：自愈码（环境状态相关）既不能进终局族（⑨-补2），也不能吃
+// FAILURE_RECOVERY 那句"修正参数或改用合适的下一步"——参数改了没用，不变的是环境。
+// 这是 135 连拒的镜像病灶：字段说"等环境就绪"、散文说"改参数"，模型执行散文。
+describe('⑬ 自愈码：不吃「修正参数」句，改挂自愈文案', () => {
+  /** FAILURE_RECOVERY 的行为指令原文（锁它的整句，不锁两个字——自愈文案里也有"修正参数不会改变结果"）。 */
+  const RECOVERY_CMD = '修正参数或改用合适的下一步继续完成任务';
+  const SELF_HEALING_PHRASE = '与环境状态有关';
+
+  it('no-page-for-dom-capability ⇒ 自愈文案 ＋ 无续跑指令句', () => {
+    const prompt = buildContinuationPrompt('查设备', [fail('chat-read', 'no-page-for-dom-capability')]);
+    expect(prompt).toContain(SELF_HEALING_PHRASE);
+    expect(prompt).toContain('等环境就绪后重试才可能成功');
+    expect(prompt).toContain('不要原样重试同一调用');
+    expect(prompt).not.toContain(RECOVERY_CMD);
+    // 也不许被终局文案吃掉（它不是策略拒绝）
+    expect(prompt).not.toContain('策略性拒绝');
+  });
+
+  it('三枚自愈码逐个都认（含从未进过码表的 no-page-runtime）', () => {
+    for (const code of SELF_HEALING_FAILURE_CODES) {
+      expect(extractSelfHealingCode(code), code).toBe(code);
+      const prompt = buildContinuationPrompt('查设备', [fail('chat-read', code)]);
+      expect(prompt, code).toContain(SELF_HEALING_PHRASE);
+      expect(prompt, code).not.toContain(RECOVERY_CMD);
+    }
+    expect(SELF_HEALING_FAILURE_CODES).toContain('no-page-runtime');
+  });
+
+  it('反证：真可重试失败仍走 FAILURE_RECOVERY，自愈文案不吞它', () => {
+    const prompt = buildContinuationPrompt('拉接口', [fail('shell.exec', 'ETIMEDOUT')]);
+    expect(prompt).toContain(RECOVERY_CMD);
+    expect(prompt).not.toContain(SELF_HEALING_PHRASE);
+  });
+
+  it('零交集锁：自愈名单与终局码表不许有共同成员（两表分裂即红）', () => {
+    const overlap = SELF_HEALING_FAILURE_CODES.filter((c) => TERMINAL_FAILURE_CODES.includes(c));
+    expect(overlap).toEqual([]);
+  });
+
+  it('混合批次：终局 > 自愈 > 可重试 三段各自出现且按此顺序', () => {
+    const prompt = buildContinuationPrompt('混合任务', [
+      fail('memory.save', 'memory-save-needs-explicit-instruction'),
+      fail('chat-read', 'page-not-ready'),
+      fail('shell.exec', 'ETIMEDOUT'),
+    ]);
+    expect(prompt).toContain('策略性拒绝');
+    expect(prompt).toContain(SELF_HEALING_PHRASE);
+    expect(prompt).toContain(RECOVERY_CMD);
+    const iTerminal = prompt.indexOf('策略性拒绝');
+    const iSelf = prompt.indexOf(SELF_HEALING_PHRASE);
+    const iRetry = prompt.indexOf(RECOVERY_CMD);
+    expect(iTerminal).toBeLessThan(iSelf);
+    expect(iSelf).toBeLessThan(iRetry);
+  });
+
+  it('协议修复轮同样挂自愈文案（修复轮最容易"换个写法再试"）', () => {
+    const prompt = buildProtocolRepairPrompt('修协议', [fail('chat-read', 'no-page-runtime')]);
+    expect(prompt).toContain(SELF_HEALING_PHRASE);
+    expect(prompt).not.toContain(RECOVERY_CMD);
+  });
+});
+
 describe('⑫ 终局熔断（阈值 3，按 (tool, 失败码) 而非 (tool, params)）', () => {
   it('阈值常量锁定为 3，且与另两个阈值不在同一根轴（注释里互相点名）', () => {
     expect(TERMINAL_FUSE_THRESHOLD).toBe(3);
