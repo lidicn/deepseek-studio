@@ -10,7 +10,13 @@
 const WebSocket = require("ws");
 
 const WS_URL = "ws://127.0.0.1:8760/studio";
-const TEST_DIR = "E:/NAS/deepseek-studio/scripts";
+// ⑦（20261115 PM 派卡）：路径可覆盖——**CLI 第 1 参数 ＞ env E2E_TEST_DIR ＞ 默认**
+// （⑦-补 统一口径：argv > env，与本仓 bom-drift 的 ⑥-补5 定论一致）。
+// 默认射程与历史逐字不变（改默认＝改用法，不算修）。
+const TEST_DIR =
+  process.argv[2] ||
+  process.env.E2E_TEST_DIR ||
+  "E:/NAS/deepseek-studio/scripts";
 const TEST_FILE = TEST_DIR + "/e2e-test-output.txt";
 
 let callId = 0;

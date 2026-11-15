@@ -86,3 +86,4 @@ PM-LOG.md
 
 # TD-04(a)：内置 node.exe（由 src-tauri/fetch-node.mjs 拉取，不入库）
 src-tauri/node/
+__pycache__/

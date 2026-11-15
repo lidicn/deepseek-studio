@@ -1,6 +1,7 @@
 {
   "updatedAt": "2026-11-14",
   "upstreamPath": "E:\\NAS\\deepseek-pp",
+  "upstreamPathNote": "⑦（20261115）：数据真源登记——本字段被 scripts/check-upstream-drift.mjs 读取；该脚本已有覆盖链「--upstream > UPSTREAM_DIR > 本字段」，故本枚登记路径＝缺省值（非硬编码运行时依赖）。",
   "note": "upstream-drift 哨兵定性登记表（单一真源）：脚本与本注释外的文档都引用本文件，不另存副本。blob16=sha256 前 16 位；local 侧按 utf8 文本读入后哈希、upstream 侧按原始字节哈希，与 scripts/check-upstream-drift.mjs 同口径。",
   "entries": [
     {

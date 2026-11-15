@@ -31,13 +31,16 @@ function hasBom(head: Buffer): boolean {
 }
 
 /** 本批改动文件清单：默认＝工作树 vs HEAD（本机提交前闸）；给 base（CI 推送基线）＝
- *  `base HEAD` 两 ref diff（CI 侧复判面——⑤-补2 同款「干净 checkout 真跑到」纪律的 ⑥ 版）。 */
+ *  `base HEAD` 两 ref diff（CI 侧复判面——⑤-补2 同款「干净 checkout 真跑到」纪律的 ⑥ 版）。
+ *  ⑦-补（群PM 实弹）：非 git 目录时 git 走 --no-index 分支、stderr 喷 7.7 KB usage——
+ *  stdio 数组形态拦下（stdout 保留、stderr 忽略），异常在 main 统一转译成 exit 2。 */
 export function collectChangedFiles(root: string, base?: string): string[] {
   const range = base ? `${base} HEAD` : 'HEAD';
   const out = execSync(`git -c core.quotepath=false diff --name-only -z ${range}`, {
     cwd: root,
     encoding: 'buffer',
     maxBuffer: 16 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'ignore'],
   });
   return out
     .toString('utf8')
@@ -184,7 +187,23 @@ function main(): void {
       process.exit(0);
     }
   }
-  const { issues, scanned } = scanBomDrift(root, { base });
+  // ⑦（PM 派卡）：--root 指向非 git 目录时 collectChangedFiles 裸抛——与 argv 缺值同族，
+  // 显式文案＋exit 2，不许喷栈（stderr 里 git 的 fatal 由 stdio 拦截后在此转译）。
+  // ⑦-补（群PM 实弹）：--root 指向非 git 目录时 git 走 --no-index 分支、喷 7.7 KB usage——
+  // collectChangedFiles 的 stdio 已拦 stderr，故预检改显式问 git：非 git ⇒ exit 2，不许喷栈。
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { cwd: root, stdio: 'ignore' });
+  } catch {
+    console.error(`[bom-drift] 拒绝：--root 指向非 git 目录（BOM 漂移判据依赖 git diff，无法对非 git 树执行）：${root}`);
+    process.exit(2);
+  }
+  let issues: BomDriftIssue[];
+  let scanned: number;
+  try {
+    ({ issues, scanned } = scanBomDrift(root, { base }));
+  } catch (e) {
+    throw e;
+  }
   console.log(`[bom-drift] 本批（${base ? `基线 ${base.slice(0, 12)} vs HEAD` : '工作树 vs HEAD'}）改动文本文件 ${scanned} 枚`);
   if (issues.length > 0) {
     console.error('=== BOM 漂移（同批内同一文件 BOM 有↔无翻转）===');

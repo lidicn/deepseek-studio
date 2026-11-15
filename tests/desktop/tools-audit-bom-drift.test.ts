@@ -181,6 +181,40 @@ describe('bom-drift · 推送基线模式（⑥ 甲案）', () => {
     expect(r.stderr ?? '').toContain('--base');
   });
 
+  it('20. ⑦：--root 指非 git 目录 ⇒ 非CI 拦（exit 2）；CI 格 N/A 不崩（base 面在非 git root 必不可达）——两格都不喷栈', () => {
+    const nonGit = mkdtempSync(join(tmpdir(), 'nongit-'));
+    try {
+      for (const withCI of [undefined, 'true']) {
+        const envPack: Record<string, string | undefined> = { ...process.env };
+        if (withCI === undefined) delete envPack.CI;
+        else {
+          envPack.CI = withCI;
+          // CI 格给可达基线意图（BOM_BASE=HEAD）——但非 git root 下任何 ref 都不可达，
+          // 真实行为＝显式 N/A（缺失≠干净），不是崩栈
+          envPack.BOM_BASE = 'HEAD';
+        }
+        const r = spawnSync(
+          process.execPath,
+          ['--import', 'tsx', join(REAL_ROOT, 'tools', 'audit', 'bom-drift.ts'), '--root', nonGit],
+          { cwd: REAL_ROOT, encoding: 'utf8', env: envPack as NodeJS.ProcessEnv },
+        );
+        if (withCI === undefined) {
+          expect(r.status, '非 CI 应 exit 2 拦截').toBe(2);
+          expect(r.stderr ?? '').toContain('非 git 目录');
+          // ⑦-补 A 格：拒绝文案必须可见——stderr ≤2 行（git usage 整坨不许喷）
+          const errLines = (r.stderr ?? '').split('\n').filter((l) => l.trim().length > 0);
+          expect(errLines.length, `stderr 应 ≤2 行，实 ${errLines.length} 行`).toBeLessThanOrEqual(2);
+        } else {
+          expect(r.status, 'CI 格应显式 N/A 而非崩栈').toBe(0);
+          expect(r.stdout ?? '').toContain('N/A');
+        }
+        expect(r.stderr ?? '').not.toContain('node:internal'); // 两格都不喷栈
+      }
+    } finally {
+      rmSync(nonGit, { recursive: true, force: true });
+    }
+  });
+
   it('10. 回落链：BOM_BASE 全零 → HEAD~1（仍能判）', () => {
     execSync(`git reset -q --hard ${beforeSha}`, { cwd: repo });
     writeFileSync(join(repo, 'a.ts'), '\uFEFF// base\n', 'utf8');
