@@ -24,6 +24,7 @@ import { resolve, dirname, join } from 'node:path';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { stepLine } from './step-line';
+import { writeGateEnd, writeGateRunning } from './pmsafe';
 
 interface Step {
   name: string;
@@ -108,6 +109,16 @@ function main(): void {
   const progress = (line: string) => appendFileSync(progressFile, line + '\n', 'utf8');
   progress(`=== gate START @ ${new Date().toISOString()} pid=${process.pid} ===`);
 
+  // ⑤（20261115 PM 派卡）：闸自写 RUNNING/END 进 PM-LOG（仓根唯一协调日志）——
+  // 起跑登记号段/实例/pid/HEAD/脏树行数，收口补 END（exit 码与总时长取真实值）。
+  // 05:51 那发栽在脏树＋无人登记：RUNNING 行从此必带 dirty=N，两 PM 只扫 PM-LOG 即可互斥。
+  const pmLog = join(root, 'PM-LOG.md');
+  const actor = process.env.GATE_ACTOR ?? 'unclaimed';
+  const head = execSync('git rev-parse --short HEAD', { cwd: root, encoding: 'utf8' }).trim();
+  const dirty = execSync('git -c core.quotepath=false status --porcelain', { cwd: root, encoding: 'utf8' })
+    .split('\n').filter((l) => l.trim().length > 0).length;
+  const gateNo = writeGateRunning(pmLog, { actor, pid: process.pid, head, dirty });
+
   const stepElapsed = (t0: number) => ((Date.now() - t0) / 1000).toFixed(1);
 
   // 阻塞级（0.14.11 卡 A：首红不再立即 process.exit——记下失败步、break 停后续阻塞步，
@@ -172,6 +183,7 @@ function main(): void {
   console.log(`📊 ${infoSummary}`);
   const endTail = blockingRed ? `阻塞级红：${blockingRed.name}；${infoSummary}` : infoSummary;
   progress(`=== gate END @ ${new Date().toISOString()} exit=${exitCode} total=${elapsed}s ===  ${endTail}`);
+  writeGateEnd(pmLog, gateNo, exitCode, elapsed);
   process.exit(exitCode);
 }
 
