@@ -26,7 +26,40 @@ jobs:
       # 20261114：host-freshness（阻塞级）需要跟踪产物可比对；先按单一真源
       # （tools/host-build-options.mjs，与本地 npm run build:host 同源）现场产出宿主 bundle。
       - run: npm run build:host
+      # ④②c（20261115 PM 派卡）：夹具上游仓——上游强校验的「正判据分支」（isFile/isDir＋
+      # 行号界内）此前在 CI 上一次都没判过（无 E:\NAS\deepseek-pp，绿的只是 N/A 那半）。
+      # 生成脚本从 docs 现算引用集（自维护：docs 新增引用夹具自动跟上），env 指入后
+      # doc-drift 的 58 处上游引用全部真判。红半由下方 doc-drift-upstream-negative job 持续自证。
+      - name: make upstream fixture (④②c)
+        run: npx tsx scripts/make-upstream-fixture.mts "$env:RUNNER_TEMP\fake-upstream"
+      - name: point STUDIO_UPSTREAM_ROOT at fixture
+        run: Add-Content $env:GITHUB_ENV "STUDIO_UPSTREAM_ROOT=$env:RUNNER_TEMP\fake-upstream"
       - run: npm run gate
+
+  # ── ④②c 上游强校验负控（20261115）：坏夹具上判据必须红（exit 1）——红输出永久留档
+  #    本 job 日志，红绿两半每发 push 都在 CI 历史里自证。job 断言成立才绿：job 红＝判据失效。
+  doc-drift-upstream-negative:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci
+      - name: make broken upstream fixture
+        run: npx tsx scripts/make-upstream-fixture.mts "$env:RUNNER_TEMP\broken-upstream" --broken
+      - name: doc-drift must FAIL on broken fixture (红判据留档)
+        run: |
+          $env:STUDIO_UPSTREAM_ROOT = "$env:RUNNER_TEMP\broken-upstream"
+          npx tsx tools/audit/doc-drift.ts *> "$env:RUNNER_TEMP\dd-out.txt"
+          $code = $LASTEXITCODE
+          $hit = Select-String -Path "$env:RUNNER_TEMP\dd-out.txt" -Pattern '上游引用第\s+\d+\s+行，但\s+\S+\s+最多只有'
+          $hit | ForEach-Object { $_.Line }
+          $checked = Select-String -Path "$env:RUNNER_TEMP\dd-out.txt" -Pattern '校验 (\d+) 处' | ForEach-Object { [int]$_.Matches[0].Groups[1].Value } | Select-Object -First 1
+          if ($code -ne 1) { Write-Error "doc-drift 应红（exit 1）判坏夹具，实际 exit=$code"; exit 1 }
+          if (-not $hit -or $hit.Count -lt 1) { Write-Error "红输出未命中越界文案——红必须红在『上游引用行号越界』这件事上，任何无关阻塞红不得顶替"; exit 1 }
+          if (-not $checked -or $checked -le 0) { Write-Error "『校验 N 处』缺失或 N=0——红必须来自真判据分支，不是 checked=0 的空转"; exit 1 }
+          Write-Host "✅ 负控成立：判据红（exit 1）＋越界文案命中 $($hit.Count) 处＋校验 N=$checked>0——红输出已留档本 job 日志"
 
   # ── Rust 编译闸（20261109 卡 #49）：CI 只证"Rust 代码在 @stable 上能编译"，不证"与本机
   #    rustc 1.99.1 同工具链"——台账与 job 名都带这句射程，别把 CI 绿读成"同工具链绿"。
