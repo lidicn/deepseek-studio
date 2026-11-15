@@ -5,11 +5,11 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, copyFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { safeAppendLog, safeAppendBlock, nextGateRunNo, writeGateRunning, writeGateEnd } from '../../tools/gate/pmsafe';
+import { safeAppendLog, safeAppendBlock, nextGateRunNo, writeGateRunning, writeGateEnd, decideDryRun } from '../../tools/gate/pmsafe';
 
 /** ⑤-补2（PM 判据）：根路径相对定位——CI checkout 在 D:\a\<repo>\<repo>，任何盘符字面量
  *  都会让套件在干净树上炸（43660126937 前一发 CI 红的根因）。 */
@@ -293,6 +293,35 @@ describe('pre-commit 真实人口形态锁（静态夹具，CI 必跑）', () =>
     rmSync(f, { force: true });
   });
 
+  it('⑤-补6 静态锁①：decideDryRun 在「台账存在」夹具上返回 reject=true', () => {
+    const f = makeBigLog(`pmsafe-dd-yes-${Date.now()}.log`);
+    const v = decideDryRun(f);
+    expect(v.reject).toBe(true);
+    expect(v.reason).toContain('PM-LOG.md');
+    rmSync(f, { force: true });
+  });
+
+  it('⑤-补6 静态锁②：decideDryRun 空树返回 reject=false（N/A 登记链可走）', () => {
+    const ghost = join(tmpdir(), `pmsafe-dd-no-${Date.now()}.md`);
+    const v = decideDryRun(ghost);
+    expect(v.reject).toBe(false);
+    expect(existsSync(ghost)).toBe(false);
+  });
+
+  it('⑤-补6 静态锁③：拒绝路径下 writeGateRunning 从未被调用（tmp 台账字节不变，模拟 run.ts 现行调用序）', () => {
+    // run.ts 现行序：decideDryRun → reject ⇒ 直接 exit，writeGateRunning 不触。
+    // 本枚模拟该序并对 tmp 台账断字节——顺序回归（拒绝后置）会在此现形。
+    const f = makeBigLog(`pmsafe-dd-nocall-${Date.now()}.log`);
+    const beforeBytes = statSync(f).size;
+    const before = readFileSync(f, 'utf8');
+    const v = decideDryRun(f);
+    expect(v.reject).toBe(true);
+    // 按现行 run.ts 调用序：reject ⇒ 不调 writeGateRunning（无任何追加动作）
+    expect(statSync(f).size).toBe(beforeBytes);
+    expect(readFileSync(f, 'utf8')).toBe(before);
+    rmSync(f, { force: true });
+  });
+
   it('⑤-补4：CLAIM ＋ 叙述行裸 RELEASE（无 hex）→ 放行（叙述行不许误还锁——杀变异 A）', () => {
     // 变异 A（删 hex 锚子句）下：叙述行命中 RELEASE token ⇒ 锁被误还 ⇒ 本枚红。
     // 现行钩下：叙述行无 hex ⇒ 锁未还 ⇒ 放行。
@@ -443,21 +472,32 @@ describe('pre-commit 真实人口负控（活锁——仅本机跑）', () => {
     expect(/[0-9a-f]{7,}/.test(releaseLine)).toBe(true);
   });
 
-  itLive('⑤-补5/D1：有台账树跑 --dry-run ⇒ 非零退出且台账字节与行数逐字节不变（断字节锁）', () => {
+  it('⑤-补6/D1（tmp 化，CI 必跑）：有台账树跑 --dry-run ⇒ 非零退出且台账字节与行数逐字节不变', () => {
     // D1（群PM 09:46 实弹）：拒绝判定若后置于 writeGateRunning，会一边宣称防伪发一边写真伪发。
-    // 本枚对真台账断字节——拒绝必须发生在任何写入之前。
-    const ledger = join(REAL_ROOT, 'PM-LOG.md');
-    const beforeBytes = statSync(ledger).size;
-    const beforeLines = readFileSync(ledger, 'utf8').split('\n').length;
-    let code = 0;
+    // ⑤-补6：spawn 改在 tmp 树（≥100KB 假台账）里跑——回归时污染的是 tmp，不是控制面。
+    const tree = mkdtempSync(join(tmpdir(), `dryrun-tree-${Date.now()}-`));
     try {
-      execSync('npx tsx tools/gate/run.ts --dry-run', { cwd: REAL_ROOT, encoding: 'utf8', stdio: 'pipe' });
-    } catch (e) {
-      code = (e as { status?: number }).status ?? 1;
+      mkdirSync(join(tree, 'tools', 'gate'), { recursive: true });
+      for (const f of ['run.ts', 'pmsafe.ts', 'step-line.ts']) {
+        copyFileSync(join(REAL_ROOT, 'tools', 'gate', f), join(tree, 'tools', 'gate', f));
+      }
+      writeFileSync(join(tree, 'package.json'), '{"type":"module"}\n', 'utf8');
+      const ledger = join(tree, 'PM-LOG.md');
+      writeFileSync(ledger, 'x'.repeat(MIN_BYTES) + '\n', 'utf8');
+      const beforeBytes = statSync(ledger).size;
+      const beforeLines = readFileSync(ledger, 'utf8').split('\n').length;
+      let code = 0;
+      try {
+        execSync('npx tsx tools/gate/run.ts --dry-run', { cwd: tree, encoding: 'utf8', stdio: 'pipe' });
+      } catch (e) {
+        code = (e as { status?: number }).status ?? 1;
+      }
+      expect(code, '有台账树 dry-run 应拒绝（非零退出）').not.toBe(0);
+      expect(statSync(ledger).size, '台账字节数被改＝拒绝后置（D1 回归）').toBe(beforeBytes);
+      expect(readFileSync(ledger, 'utf8').split('\n').length).toBe(beforeLines);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
     }
-    expect(code, '有台账树 dry-run 应拒绝（非零退出）').not.toBe(0);
-    expect(statSync(ledger).size).toBe(beforeBytes);
-    expect(readFileSync(ledger, 'utf8').split('\n').length).toBe(beforeLines);
   });
 });
 

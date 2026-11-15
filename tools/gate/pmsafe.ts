@@ -143,6 +143,21 @@ export function writeGateEnd(pmLog: string, gateNo: number, exitCode: number, to
   safeAppendLog(pmLog, `END GATE#${gateNo} exit=${exitCode} total=${totalSecs}s`);
 }
 
+/**
+ * ⑤-补6（PM 判据）：dry-run 的**顺序判据**抽成可注入纯函数——run.ts 只调它，
+ * 判据与 spawn 解耦（DS 同款口径：要生效证据一律用导出纯函数断言）。
+ * 返回 reject=true 时调用方**必须在任何写入之前**退出（D1：拒绝后置＝自己写伪发）。
+ */
+export function decideDryRun(pmLogPath: string): { reject: boolean; reason: string } {
+  if (existsSync(pmLogPath)) {
+    return {
+      reject: true,
+      reason: '本树存在 PM-LOG.md——dry-run 只用于空树（CI／干净 checkout），防伪发登记',
+    };
+  }
+  return { reject: false, reason: '空树：N/A 登记链可走（无台账 ⇒ writeGateRunning 打 N/A 返回 0）' };
+}
+
 /** PowerShell 侧调用入口：
  *  单行：npx tsx tools/gate/pmsafe.ts <file> <line>
  *  块级（⑤-b）：npx tsx tools/gate/pmsafe.ts --file <blockFile> ——正文从文件读，

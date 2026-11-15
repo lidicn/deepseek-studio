@@ -24,7 +24,7 @@ import { resolve, dirname, join } from 'node:path';
 import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { stepLine } from './step-line';
-import { writeGateEnd, writeGateRunning } from './pmsafe';
+import { writeGateEnd, writeGateRunning, decideDryRun } from './pmsafe';
 
 interface Step {
   name: string;
@@ -126,11 +126,13 @@ function main(): void {
     /* 非 git 树：head=unknown、dirty=0 */
   }
   // ⑤-补5 空树登记链自检口子：只在无 PM-LOG.md 的树（CI／干净 checkout）有意义。
+  // ⑤-补6（群PM 判据）：顺序判据抽成 decideDryRun 纯函数（判据与 spawn 解耦）——
   // D1（群PM 09:46 实弹钉死）：**拒绝判定必须前置于任何写入**——有台账的树跑 dry-run
   // 若先 writeGateRunning 再拒绝，等于宣称防伪发的同时自己把伪发写进控制面（09:46 GATE#58）。
   if (process.argv.includes('--dry-run')) {
-    if (existsSync(pmLog)) {
-      console.error('[dry-run] 拒绝：本树存在 PM-LOG.md——dry-run 只用于空树（CI／干净 checkout），防伪发登记');
+    const verdict = decideDryRun(pmLog);
+    if (verdict.reject) {
+      console.error(`[dry-run] 拒绝：${verdict.reason}`);
       process.exit(2);
     }
     const dryNo = writeGateRunning(pmLog, { actor, pid: process.pid, head, dirty });
