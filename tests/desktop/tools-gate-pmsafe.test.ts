@@ -1,29 +1,41 @@
 /**
- * ⑤ 机械闸契约（20261115 PM 派卡）：SafeAppend 自检 + pre-commit CLAIM 校验。
- * 三个判据形态当场抓今晚三次损伤：06:35 粘行（缺尾换行）、08:02 AGEN08:02（短 token
- * 被占位符替换连坐）、07:58 假"已修"（判据与模式不一致）。
+ * ⑤ 机械闸契约（20261115 PM 派卡）＋ ⑤-b 写前判定（PM 09:00 实弹）：
+ * SafeAppend 自检（粘行/短 token/规模下限/不存在拒写）＋ pre-commit CLAIM 校验
+ * （合成四态＋真实人口负控＋pmsafe 通道实弹＋未设 actor 任一在册执行方）。
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { safeAppendLog, safeAppendBlock, nextGateRunNo, writeGateRunning, writeGateEnd } from '../../tools/gate/pmsafe';
+
+/** ⑤-补2（PM 判据）：根路径相对定位——CI checkout 在 D:\a\<repo>\<repo>，任何盘符字面量
+ *  都会让套件在干净树上炸（43660126937 前一发 CI 红的根因）。 */
+const REAL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const INSTALLER = join(REAL_ROOT, 'scripts', 'install-pre-commit-hook.mjs');
+const MIN_BYTES = 100 * 1024;
+
+/** 控制面台账同构夹具：≥100KB（safeAppendBlock 写前判定的规模下限）。 */
+function makeBigLog(name: string, opts?: { trailingNewline?: boolean }): string {
+  const f = join(tmpdir(), name);
+  writeFileSync(f, 'x'.repeat(MIN_BYTES) + (opts?.trailingNewline === false ? '' : '\n'), 'utf8');
+  return f;
+}
 
 describe('pmsafe · SafeAppend 自检（⑤）', () => {
   it('不粘连：前文件缺尾换行 ⇒ 新记录独立成行且行首是时刻锚', () => {
-    const f = join(tmpdir(), `pmsafe-${Date.now()}.log`);
-    writeFileSync(f, '上一条没有尾换行', 'utf8'); // 故意制造 06:35 粘行隐患
+    const f = makeBigLog(`pmsafe-${Date.now()}.log`, { trailingNewline: false });
     safeAppendLog(f, 'CLAIM commit gate-test 08:15 测试');
     const lines = readFileSync(f, 'utf8').split('\n').filter((l) => l.length > 0);
-    expect(lines).toHaveLength(2);
-    expect(lines[0]).toBe('上一条没有尾换行');
+    expect(lines[0].length).toBe(MIN_BYTES);
     expect(lines[1]).toMatch(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] CLAIM commit gate-test/);
     rmSync(f, { force: true });
   });
 
   it('幂等：第二次追加不改第一次的字节（追加语义，前缀逐字节不变）', () => {
-    const f = join(tmpdir(), `pmsafe-${Date.now()}.log`);
+    const f = makeBigLog(`pmsafe-${Date.now()}.log`);
     safeAppendLog(f, '第一条');
     const before = readFileSync(f, 'utf8');
     safeAppendLog(f, '第二条');
@@ -34,7 +46,7 @@ describe('pmsafe · SafeAppend 自检（⑤）', () => {
   });
 
   it('短 token 不误伤：正文含 AGENTS/TS 逐字回读相等（08:02 AGEN08:02 形态当场抓）', () => {
-    const f = join(tmpdir(), `pmsafe-${Date.now()}.log`);
+    const f = makeBigLog(`pmsafe-${Date.now()}.log`);
     const line = 'RELEASE bf0c94b — AGENTS 口径五条落稿，TS 侧无改动';
     safeAppendLog(f, line);
     const lines = readFileSync(f, 'utf8').split('\n').filter((l) => l.length > 0);
@@ -44,17 +56,38 @@ describe('pmsafe · SafeAppend 自检（⑤）', () => {
     rmSync(f, { force: true });
   });
 
-  it('多行写入拒绝（行级自检前提）＋ 时刻锚正则断言', () => {
+  it('多行写入拒绝（参数校验先于目标判定，不创建任何文件）', () => {
     const f = join(tmpdir(), `pmsafe-${Date.now()}.log`);
     expect(() => safeAppendLog(f, '两行\n写入')).toThrow(/拒绝多行/);
-    expect(existsSync(f)).toBe(false); // 抛错前未写任何字节
+    expect(existsSync(f)).toBe(false);
+  });
+
+  it('⑤-b 红半：目标不存在 ⇒ 抛错（文案带路径）且事后不新建', () => {
+    const ghost = join(tmpdir(), `ghost-PM-LOG-${Date.now()}`);
+    expect(() => safeAppendBlock(ghost, 'x')).toThrow(/不存在的文件/);
+    expect(() => safeAppendBlock(ghost, 'x')).toThrow(/ghost-PM-LOG/);
+    expect(existsSync(ghost)).toBe(false);
+  });
+
+  it('⑤-b 红半：目标小于 100KB ⇒ 抛错（疑似误指目标）', () => {
+    const small = join(tmpdir(), `small-PM-LOG-${Date.now()}.md`);
+    writeFileSync(small, '小文件\n', 'utf8');
+    expect(() => safeAppendBlock(small, 'x')).toThrow(/小于 102400 B/);
+    rmSync(small, { force: true });
+  });
+
+  it('⑤-b 绿半（真实人口同构）：≥100KB 台账正常写，回读逐字相等', () => {
+    const f = makeBigLog(`pmsafe-ok-${Date.now()}.log`);
+    safeAppendBlock(f, '⑤-b 契约绿半：块级写入验证（本块即写入证据）\n第二行保持原样。');
+    const after = readFileSync(f, 'utf8');
+    expect(after.endsWith('⑤-b 契约绿半：块级写入验证（本块即写入证据）\n第二行保持原样。\n')).toBe(true);
     rmSync(f, { force: true });
   });
 });
 
 describe('pmsafe · 闸自写 RUNNING/END（⑤）', () => {
   it('号段自增：无文件从 1 起，既有 RUNNING 取 max+1；END 行带真实 exit/total', () => {
-    const f = join(tmpdir(), `pmsafe-run-${Date.now()}.log`);
+    const f = makeBigLog(`pmsafe-run-${Date.now()}.log`);
     expect(nextGateRunNo(f)).toBe(1);
     const no1 = writeGateRunning(f, { actor: 'gate-test', pid: 4242, head: 'abc1234', dirty: 0 });
     expect(no1).toBe(1);
@@ -69,7 +102,7 @@ describe('pmsafe · 闸自写 RUNNING/END（⑤）', () => {
   });
 });
 
-// ── pre-commit CLAIM 校验（⑤）：真实临时 git 仓装钩跑 commit 三态 ──────────────────
+// ── pre-commit CLAIM 校验（⑤）：真实临时 git 仓装钩跑 commit 四态（合成人口）──────
 describe('pre-commit CLAIM 校验（⑤）', () => {
   let repo: string;
   const env = { GATE_ACTOR: 'gate-test' } as Record<string, string>;
@@ -82,7 +115,7 @@ describe('pre-commit CLAIM 校验（⑤）', () => {
     execSync('git config user.name t', opts);
     writeFileSync(join(repo, 'a.txt'), 'x\n', 'utf8');
     execSync('git add a.txt', opts);
-    execSync('node E:/NAS/deepseek-studio/scripts/install-pre-commit-hook.mjs', opts);
+    execSync(`node "${INSTALLER}"`, opts);
   });
 
   afterAll(() => {
@@ -90,7 +123,6 @@ describe('pre-commit CLAIM 校验（⑤）', () => {
   });
 
   const tryCommit = (): { code: number; out: string } => {
-    // 每次都重新 stage 一枚文件——暂存区非空是 hook 的前置条件（空则短路放行）
     writeFileSync(join(repo, 'a.txt'), `x-${Math.random()}\n`, 'utf8');
     execSync('git add a.txt', { cwd: repo });
     try {
@@ -102,7 +134,7 @@ describe('pre-commit CLAIM 校验（⑤）', () => {
     }
   };
 
-  it('无 CLAIM → 拦（exit 1，提示缺什么）', () => {
+  it('无 CLAIM（无 PM-LOG）→ 拦，提示带执行方名', () => {
     const r = tryCommit();
     expect(r.code).not.toBe(0);
     expect(r.out).toContain('CLAIM commit gate-test');
@@ -129,61 +161,49 @@ describe('pre-commit CLAIM 校验（⑤）', () => {
   });
 });
 
-// ── ⑤ 回炉（群PM 实弹裁定）：钩解析与真实人口同构＋块级写入 ──────────────────────────
-// 真实人口形态（现取自真仓 PM-LOG.md，形态漂移 ⇒ 本组测试红、提示钩解析要跟）：
-//   CLAIM  「## @HH:mm CLAIM commit+push 群PM｜…」（合成对照「CLAIM commit <actor> …」）
-//   RELEASE「HH:mm:ss **群PM（…）｜RELEASE <sha> CI run <id> …**」
-const REAL_ROOT = 'E:\\NAS\\deepseek-studio';
-describe('pre-commit 真实人口负控（⑤ 回炉）', () => {
-  let repo2: string;
-  let claimLine: string;
-  let releaseLine: string;
+// ── ⑤ 回炉（群PM 实弹裁定）：钩解析与真实人口同构＋⑤-补 未设 actor ─────────────────
+// 真实人口形态（运行时现取自真仓 PM-LOG.md，形态漂移 ⇒ 本组测试红、提示钩解析要跟）：
+//   CLAIM  「## @HH:mm CLAIM commit+push 群PM｜…」／pmsafe「[时刻] CLAIM commit 群PM …」
+//   RELEASE「HH:mm:ss **群PM（…）｜RELEASE <sha> CI run <id> …**」等行级两条件形态
+const isRealClaimLine = (l: string, actor: string): boolean => {
+  const tokens = l.split(/\s+/);
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i] === 'CLAIM') {
+      const act = tokens[i + 1] ?? '';
+      const who = tokens[i + 2] ?? '';
+      if (act.startsWith('commit') && who.startsWith(actor)) return true;
+    }
+  }
+  return false;
+};
 
-  beforeAll(() => {
-    // 运行时现取真行——不钉死字面量，PM-LOG 形态再演进测试也跟得住。
-    // 取样判据与钩 awk 同构（字段扫描：独立 CLAIM token＋动作词 commit*＋执行方前缀），
-    // 但独立实现——两实现对同一行不一致即测试红（负控有效性的自证）。
-    const pmLog = readFileSync(join(REAL_ROOT, 'PM-LOG.md'), 'utf8');
-    const isClaimLine = (l: string): boolean => {
-      const tokens = l.split(/\s+/);
-      for (let i = 0; i < tokens.length; i++) {
-        if (tokens[i] === 'CLAIM') {
-          const act = tokens[i + 1] ?? '';
-          const who = tokens[i + 2] ?? '';
-          if (act.startsWith('commit') && who.startsWith('群PM')) return true;
-        }
-      }
-      return false;
-    };
-    const claimLines = pmLog.split('\n').filter(isClaimLine);
-    const releaseLines = pmLog.split('\n').filter((l) => /(^|[^A-Za-z0-9])RELEASE([^A-Za-z0-9]|$)/.test(l) && /[0-9a-f]{7,}/.test(l));
-    expect(claimLines.length, 'PM-LOG 必须能取到真实 CLAIM 行（取不到＝形态漂移，钩解析要跟）').toBeGreaterThan(0);
-    expect(releaseLines.length, 'PM-LOG 必须能取到真实 RELEASE 行').toBeGreaterThan(0);
-    claimLine = claimLines[claimLines.length - 1];
-    releaseLine = releaseLines[releaseLines.length - 1];
-    repo2 = mkdtempSync(join(tmpdir(), 'precommit-real-'));
-    const opts = { cwd: repo2, encoding: 'utf8' } as const;
-    execSync('git init', opts);
-    execSync('git config user.email t@t', opts);
-    execSync('git config user.name t', opts);
-    writeFileSync(join(repo2, 'a.txt'), 'x\n', 'utf8');
-    execSync('git add a.txt', opts);
-    execSync('node E:/NAS/deepseek-studio/scripts/install-pre-commit-hook.mjs', opts);
-  });
+// ── ⑤ 回炉（群PM 实弹裁定）＋ ⑤-补2：真实人口分两面 ────────────────────────────────
+// ① 静态形态锁：今晚真发生过的 CLAIM/RELEASE 行**逐字钉进测试文件**（CI 必跑必判——
+//    合成夹具造不出这个洞，见 43660126937 前一发 CI 教训）。
+// ② 活锁：运行时现取真行——**仅在本机有 PM-LOG.md 时跑**；干净树显式 skip＋打印 N/A，
+//    不得硬失败（真实人口活锁在 CI 上永不可能成立）。
+const REAL_PM_LOG = join(REAL_ROOT, 'PM-LOG.md');
+const hasRealLog = existsSync(REAL_PM_LOG);
+if (!hasRealLog) {
+  console.warn('[⑤ 活锁] N/A：本树无 PM-LOG.md（干净 checkout）——运行时真行活锁 skip，静态形态锁已覆盖 CI 侧');
+}
+const itLive = hasRealLog ? it : it.skip;
 
-  afterAll(() => {
-    if (repo2) rmSync(repo2, { recursive: true, force: true });
-  });
+describe('pre-commit 真实人口形态锁（静态夹具，CI 必跑）', () => {
+  const STATIC_CLAIM_TITLE = '## @08:17 CLAIM commit+push 群PM｜④②c 入库分两笔：第 1 笔 tools/tests 域 2 枚；第 2 笔 scripts/ci.yml';
+  const STATIC_CLAIM_HEADING = '### [08:39] CLAIM commit+push 群PM（⑤ 回炉三件落地：钩三形态同构／safeAppendBlock／真实人口负控）';
+  const STATIC_CLAIM_PMSAFE = '[2026-11-15 09:02:12] CLAIM commit+push 群PM ⑤-b 契约绿半（块级写入对真台账验证通过）';
+  const STATIC_RELEASE = '09:02:12 **群PM（轮询器自动收口）｜RELEASE 43660126937 CI run 43660126937 completed / success（jobs: gate=success / cargo-check=success / doc-drift-upstream-negative=success）**';
 
-  const tryCommitReal = (): { code: number; out: string } => {
-    writeFileSync(join(repo2, 'a.txt'), `x-${Math.random()}\n`, 'utf8');
-    execSync('git add a.txt', { cwd: repo2 });
+  let repoS: string;
+  const tryCommitS = (actor?: string): { code: number; out: string } => {
+    writeFileSync(join(repoS, 'a.txt'), `x-${Math.random()}\n`, 'utf8');
+    execSync('git add a.txt', { cwd: repoS });
+    const envPack: Record<string, string | undefined> = { ...process.env };
+    if (actor === undefined) delete envPack.GATE_ACTOR;
+    else envPack.GATE_ACTOR = actor;
     try {
-      execSync('git commit -m t', {
-        cwd: repo2,
-        encoding: 'utf8',
-        env: { ...process.env, GATE_ACTOR: '群PM' },
-      });
+      execSync('git commit -m t', { cwd: repoS, encoding: 'utf8', env: envPack as NodeJS.ProcessEnv });
       return { code: 0, out: '' };
     } catch (e) {
       const err = e as { status?: number; stderr?: string; stdout?: string };
@@ -191,48 +211,177 @@ describe('pre-commit 真实人口负控（⑤ 回炉）', () => {
     }
   };
 
-  it('真实 CLAIM 行（## @HH:mm CLAIM commit+push 群PM｜…）→ 放行（回炉主洞）', () => {
-    writeFileSync(join(repo2, 'PM-LOG.md'), claimLine + '\n', 'utf8');
-    const r = tryCommitReal();
-    expect(r.code, `真实 CLAIM 被拦＝钩仍与人口不同构：${r.out}`).toBe(0);
+  beforeAll(() => {
+    repoS = mkdtempSync(join(tmpdir(), 'precommit-static-'));
+    const opts = { cwd: repoS, encoding: 'utf8' } as const;
+    execSync('git init', opts);
+    execSync('git config user.email t@t', opts);
+    execSync('git config user.name t', opts);
+    writeFileSync(join(repoS, 'a.txt'), 'x\n', 'utf8');
+    execSync('git add a.txt', opts);
+    execSync(`node "${INSTALLER}"`, opts);
   });
 
-  it('pmsafe 通道落的 CLAIM 行（[时刻] 前缀）→ 放行（PM 08:38 实弹形态：awk 按空格切 $1=[2026-11-15）', () => {
-    // 走真实 pmsafe 单行通道写 CLAIM——钩必须认带 [时刻] 前缀的形态
-    safeAppendLog(join(repo2, 'PM-LOG.md'), 'CLAIM commit 群PM 08:38 ④②c 入库（pmsafe 通道实弹）');
-    const r = tryCommitReal();
-    expect(r.code, `pmsafe 通道 CLAIM 被拦＝钩不认 [时刻] 前缀形态：${r.out}`).toBe(0);
+  afterAll(() => {
+    if (repoS) rmSync(repoS, { recursive: true, force: true });
   });
 
-  it('真实 CLAIM + 真实 RELEASE → 拦（锁已还——危险侧，实弹曾未覆盖）', () => {
-    writeFileSync(join(repo2, 'PM-LOG.md'), claimLine + '\n' + releaseLine + '\n', 'utf8');
-    const r = tryCommitReal();
+  it('标题式 CLAIM（## @HH:mm 前缀）→ 放行', () => {
+    writeFileSync(join(repoS, 'PM-LOG.md'), STATIC_CLAIM_TITLE + '\n', 'utf8');
+    const r = tryCommitS('群PM');
+    expect(r.code, `拦截原文：${r.out}`).toBe(0);
+  });
+
+  it('### [HH:mm] 前缀 CLAIM → 放行', () => {
+    writeFileSync(join(repoS, 'PM-LOG.md'), STATIC_CLAIM_HEADING + '\n', 'utf8');
+    const r = tryCommitS('群PM');
+    expect(r.code, `拦截原文：${r.out}`).toBe(0);
+  });
+
+  it('pmsafe [时刻] 前缀 CLAIM → 放行', () => {
+    writeFileSync(join(repoS, 'PM-LOG.md'), STATIC_CLAIM_PMSAFE + '\n', 'utf8');
+    const r = tryCommitS('群PM');
+    expect(r.code, `拦截原文：${r.out}`).toBe(0);
+  });
+
+  it('RELEASE 真行（hex 锚）把锁还上 → 再提交拦', () => {
+    writeFileSync(join(repoS, 'PM-LOG.md'), STATIC_CLAIM_PMSAFE + '\n' + STATIC_RELEASE + '\n', 'utf8');
+    const r = tryCommitS('群PM');
     expect(r.code).not.toBe(0);
   });
 
-  it('真实人口冒烟：取样行确为 commit+push/commit 形态（防取到叙述行）', () => {
+  it('未设 GATE_ACTOR ＋ pmsafe 形态 CLAIM → 放行（任一在册执行方）', () => {
+    writeFileSync(join(repoS, 'PM-LOG.md'), STATIC_CLAIM_PMSAFE + '\n', 'utf8');
+    const r = tryCommitS(undefined);
+    expect(r.code, `拦截原文：${r.out}`).toBe(0);
+  });
+
+  it('未设 GATE_ACTOR ＋ 无 CLAIM 只有叙述 → 拦', () => {
+    writeFileSync(join(repoS, 'PM-LOG.md'), '- 纯叙述一行，没有 CLAIM 记录\n', 'utf8');
+    const r = tryCommitS(undefined);
+    expect(r.code).not.toBe(0);
+  });
+});
+
+describe('pre-commit 真实人口负控（活锁——仅本机跑）', () => {
+  let repo2: string;
+  let claimLine: string;
+  let releaseLine: string;
+
+  if (hasRealLog) {
+    beforeAll(() => {
+      // 运行时现取真行——取样判据与钩 awk 同构（独立 JS 实现），两实现对拍不一致即测试红
+      const pmLog = readFileSync(REAL_PM_LOG, 'utf8');
+      const claimLines = pmLog.split('\n').filter((l) => isRealClaimLine(l, '群PM'));
+      const releaseLines = pmLog
+        .split('\n')
+        .filter((l) => /(^|[^A-Za-z0-9])RELEASE([^A-Za-z0-9]|$)/.test(l) && /[0-9a-f]{7,}/.test(l));
+      expect(claimLines.length, 'PM-LOG 必须能取到真实 CLAIM 行（取不到＝形态漂移，钩解析要跟）').toBeGreaterThan(0);
+      expect(releaseLines.length, 'PM-LOG 必须能取到真实 RELEASE 行').toBeGreaterThan(0);
+      claimLine = claimLines[claimLines.length - 1];
+      releaseLine = releaseLines[releaseLines.length - 1];
+      repo2 = mkdtempSync(join(tmpdir(), 'precommit-real-'));
+      const opts = { cwd: repo2, encoding: 'utf8' } as const;
+      execSync('git init', opts);
+      execSync('git config user.email t@t', opts);
+      execSync('git config user.name t', opts);
+      writeFileSync(join(repo2, 'a.txt'), 'x\n', 'utf8');
+      execSync('git add a.txt', opts);
+      execSync(`node "${INSTALLER}"`, opts);
+    });
+
+    afterAll(() => {
+      if (repo2) rmSync(repo2, { recursive: true, force: true });
+    });
+  }
+
+  const tryCommitReal = (actor?: string): { code: number; out: string } => {
+    writeFileSync(join(repo2, 'a.txt'), `x-${Math.random()}\n`, 'utf8');
+    execSync('git add a.txt', { cwd: repo2 });
+    const envPack: Record<string, string | undefined> = { ...process.env };
+    if (actor === undefined) delete envPack.GATE_ACTOR;
+    else envPack.GATE_ACTOR = actor;
+    try {
+      execSync('git commit -m t', { cwd: repo2, encoding: 'utf8', env: envPack as NodeJS.ProcessEnv });
+      return { code: 0, out: '' };
+    } catch (e) {
+      const err = e as { status?: number; stderr?: string; stdout?: string };
+      return { code: err.status ?? 1, out: (err.stderr || '') + (err.stdout || '') };
+    }
+  };
+
+  itLive('真实 CLAIM 行（## @HH:mm CLAIM commit+push 群PM｜…）→ 放行（回炉主洞）', () => {
+    writeFileSync(join(repo2, 'PM-LOG.md'), claimLine + '\n', 'utf8');
+    const r = tryCommitReal('群PM');
+    expect(r.code, `真实 CLAIM 被拦＝钩仍与人口不同构：${r.out}`).toBe(0);
+  });
+
+  itLive('pmsafe 通道落的 CLAIM 行（[时刻] 前缀）→ 放行（PM 08:38 实弹形态）', () => {
+    const pm = makeBigLog(`precommit-real-pm-${Date.now()}.log`);
+    safeAppendLog(pm, 'CLAIM commit 群PM 08:38 ④②c 入库（pmsafe 通道实弹）');
+    // 通道写出的整本日志（100KB 夹具＋CLAIM 行）替换临时仓 PM-LOG——钩读的是同一人口
+    writeFileSync(join(repo2, 'PM-LOG.md'), readFileSync(pm, 'utf8'), 'utf8');
+    const r = tryCommitReal('群PM');
+    expect(r.code, `pmsafe 通道 CLAIM 被拦＝钩不认 [时刻] 前缀形态：${r.out}`).toBe(0);
+    rmSync(pm, { force: true });
+  });
+
+  itLive('⑤-补：未设 GATE_ACTOR ＋ pmsafe 通道真 CLAIM 行 → 放行（缺省按任一在册执行方判，不拦死）', () => {
+    const pm = makeBigLog(`precommit-noactor-${Date.now()}.log`);
+    safeAppendLog(pm, 'CLAIM commit 群PM 09:00 ⑤-补 实弹（未设 actor 也须放行）');
+    writeFileSync(join(repo2, 'PM-LOG.md'), readFileSync(pm, 'utf8'), 'utf8');
+    const r = tryCommitReal(undefined);
+    expect(r.code, `未设 actor 被拦＝机制仍绑在"记得设环境变量"上：${r.out}`).toBe(0);
+    rmSync(pm, { force: true });
+  });
+
+  itLive('⑤-补：未设 GATE_ACTOR ＋ 已 RELEASE 的 CLAIM → 仍拦（任一模式也认锁状态）', () => {
+    const pm = makeBigLog(`precommit-rel-${Date.now()}.log`);
+    safeAppendLog(pm, 'CLAIM commit 群PM 09:01 ⑤-补 已收口案例');
+    safeAppendLog(pm, 'RELEASE abc1234 43657387584');
+    writeFileSync(join(repo2, 'PM-LOG.md'), readFileSync(pm, 'utf8'), 'utf8');
+    const r = tryCommitReal(undefined);
+    expect(r.code).not.toBe(0);
+    expect(r.out).toContain('任一在册执行方');
+    rmSync(pm, { force: true });
+  });
+
+  itLive('⑤-补：未设 GATE_ACTOR ＋ 无 CLAIM 只有叙述（含 RELEASE＋hex）→ 拦', () => {
+    writeFileSync(
+      join(repo2, 'PM-LOG.md'),
+      '叙述行：RELEASE 0059677 CI run 43657387584 的账已由轮询器自写（本行不是 CLAIM）。\n',
+      'utf8',
+    );
+    const r = tryCommitReal(undefined);
+    expect(r.code).not.toBe(0);
+  });
+
+  itLive('真实人口冒烟：取样行与钩判据同构（CLAIM token＋动作词；RELEASE＋hex 行级两条件）', () => {
     expect(claimLine).toMatch(/CLAIM\s+commit/);
-    expect(releaseLine).toMatch(/RELEASE\s+[0-9a-f]{7,}/);
+    expect(/(^|[^A-Za-z0-9])RELEASE([^A-Za-z0-9]|$)/.test(releaseLine)).toBe(true);
+    expect(/[0-9a-f]{7,}/.test(releaseLine)).toBe(true);
   });
 });
 
 describe('pmsafe · safeAppendBlock（⑤ 回炉：块级写入，命根自检保留）', () => {
   it('整块多行写入：块首行时刻锚、块内换行保留、缺尾换行前文件不粘连', () => {
-    const f = join(tmpdir(), `pmsafe-blk-${Date.now()}.log`);
-    writeFileSync(f, '上一条没有尾换行', 'utf8');
-    const block = ['## @08:38 CLAIM commit+push 群PM｜④②c 入库分两笔', '第 1 笔 tools/tests 域 2 枚；第 2 笔 scripts/ci.yml。', '范围仅此 4 枚，docs 零触碰。'].join('\n');
+    const f = makeBigLog(`pmsafe-blk-${Date.now()}.log`, { trailingNewline: false });
+    const block = [
+      '## @08:38 CLAIM commit+push 群PM｜④②c 入库分两笔',
+      '第 1 笔 tools/tests 域 2 枚；第 2 笔 scripts/ci.yml。',
+      '范围仅此 4 枚，docs 零触碰。',
+    ].join('\n');
     safeAppendBlock(f, block);
-    const text = readFileSync(f, 'utf8');
-    const lines = text.split('\n').filter((l) => l.length > 0);
+    const lines = readFileSync(f, 'utf8').split('\n').filter((l) => l.length > 0);
     expect(lines).toHaveLength(4);
-    expect(lines[0]).toBe('上一条没有尾换行');
+    expect(lines[0].length).toBe(MIN_BYTES);
     expect(lines[1]).toMatch(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] ## @08:38 CLAIM commit\+push 群PM｜④②c 入库分两笔$/);
     expect(lines[3]).toBe('范围仅此 4 枚，docs 零触碰。');
     rmSync(f, { force: true });
   });
 
   it('块幂等＋短 token 不误伤：正文含 AGENTS/TS 逐字回读', () => {
-    const f = join(tmpdir(), `pmsafe-blk2-${Date.now()}.log`);
+    const f = makeBigLog(`pmsafe-blk2-${Date.now()}.log`);
     const block = 'RELEASE bf0c94b\nAGENTS 口径五条落稿，TS 侧无改动';
     safeAppendBlock(f, block);
     const before = readFileSync(f, 'utf8');
@@ -247,6 +396,5 @@ describe('pmsafe · safeAppendBlock（⑤ 回炉：块级写入，命根自检�
     const f = join(tmpdir(), `pmsafe-log-${Date.now()}.log`);
     expect(() => safeAppendLog(f, '两行\n写入')).toThrow(/拒绝多行/);
     expect(existsSync(f)).toBe(false);
-    rmSync(f, { force: true });
   });
 });

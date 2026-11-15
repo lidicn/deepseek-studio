@@ -26,31 +26,43 @@ function timestamp(): string {
   return `[${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}]`;
 }
 
+/** 控制面台账规模下限（⑤-b，PM 09:00 实弹：pmsafe 新建出 139 B 野件 `PM-LOG`）。
+ *  真台账现 1.45 MB；小于此值的既存文件＝疑似误指目标，拒绝写入。 */
+const MIN_LOG_BYTES = 100 * 1024;
+
 /**
  * 向日志文件追加**一块**记录（一条 CLAIM/裁定常 5–10 行，块级是常态——AGENTS「控制面写入」条），
- * 自检四道：
- *   1) 末字节非 0x0A ⇒ 先补前导换行（防粘行）；
- *   2) 块首行加时刻锚前缀、块尾必带换行（块内换行原样保留）；
- *   3) 回读**追加区逐字等于预期**——不等即抛（短 token 被占位符替换/粘连/截断当场抓）；
- *   4) 回读块首行行首匹配时刻锚。
+ * 自检六道：
+ *   1) 目标文件必须**已存在**——不存在即抛（文案带路径；防打错文件名新建野件，⑤-b PM 实弹）；
+ *   2) 目标文件小于 100 KB 即抛（同上，防把小文件当台账）；
+ *   3) 末字节非 0x0A ⇒ 先补前导换行（防粘行）；
+ *   4) 块首行加时刻锚前缀、块尾必带换行（块内换行原样保留）；
+ *   5) 回读**追加区逐字等于预期**——不等即抛（短 token 被占位符替换/粘连/截断当场抓）；
+ *   6) 回读块首行行首匹配时刻锚。
  * 幂等语义：只追加、不改既有字节——第二次写不动第一次。
  * 占位符纪律（AGENTS）：如需模板替换，占位符必须用正文中不可能自然出现的串
  * （`{{TS}}`／`@@NOW@@`），禁止拿两三个字母的短 token 做全文 Replace。
+ * **注意**：本入口是控制面（PM-LOG 真台账）专用——写探针输出等普通文件请用裸 write，
+ * 不要让测试/脚本借道本入口写小文件。
  */
 export function safeAppendBlock(file: string, block: string): void {
   if (!block.trim()) {
     throw new Error('SafeAppend 拒绝空块');
   }
-  const normalized = block.replace(/\r\n/g, '\n').replace(/\n+$/, '');
-  if (existsSync(file) && statSync(file).size > 0) {
-    const buf = readFileSync(file);
-    if (buf[buf.length - 1] !== 0x0a) {
-      appendFileSync(file, '\n');
-    }
+  if (!existsSync(file)) {
+    throw new Error(`SafeAppend 拒绝写入不存在的文件（防打错文件名新建野件——⑤-b PM 09:00 实弹）：${file}`);
+  }
+  const size = statSync(file).size;
+  if (size < MIN_LOG_BYTES) {
+    throw new Error(`SafeAppend 拒绝写入小于 ${MIN_LOG_BYTES} B 的文件（疑似误指目标，非控制面台账）：${file}（${size} B）`);
+  }
+  const buf = readFileSync(file);
+  if (buf[buf.length - 1] !== 0x0a) {
+    appendFileSync(file, '\n');
   }
   const ts = timestamp();
-  const record = `${ts} ${normalized}\n`;
-  const before = existsSync(file) ? readFileSync(file, 'utf8') : '';
+  const record = `${ts} ${normalized(block)}\n`;
+  const before = readFileSync(file, 'utf8');
   appendFileSync(file, record);
   // 回读自检：追加区（按字符切，不用字节——UTF-8 多字节会错位）逐字等于预期
   const after = readFileSync(file, 'utf8');
@@ -62,6 +74,10 @@ export function safeAppendBlock(file: string, block: string): void {
   if (!TS_ANCHOR.test(firstLine)) {
     throw new Error('SafeAppend 自检失败：新记录首行缺时刻锚');
   }
+}
+
+function normalized(block: string): string {
+  return block.replace(/\r\n/g, '\n').replace(/\n+$/, '');
 }
 
 /**
@@ -111,16 +127,32 @@ export function writeGateEnd(pmLog: string, gateNo: number, exitCode: number, to
   safeAppendLog(pmLog, `END GATE#${gateNo} exit=${exitCode} total=${totalSecs}s`);
 }
 
-/** PowerShell 侧调用入口：npx tsx tools/gate/pmsafe.ts <file> <line> */
+/** PowerShell 侧调用入口：
+ *  单行：npx tsx tools/gate/pmsafe.ts <file> <line>
+ *  块级（⑤-b）：npx tsx tools/gate/pmsafe.ts --file <blockFile> ——正文从文件读，
+ *  不经 argv 传长正文（PM 09:00 实弹：内嵌双引号被 cmd /c 吃掉、正文截断到 139 B，
+ *  逐字回读防的是进程内串，防不了参数在到达进程之前被截断）。 */
 if (typeof process.argv[1] === 'string' && process.argv[1].endsWith('pmsafe.ts')) {
-  const [, , file, line] = process.argv;
-  if (!file || line === undefined) {
-    console.error('用法: npx tsx tools/gate/pmsafe.ts <file> <line>');
-    process.exit(2);
-  }
+  const argv = process.argv.slice(2);
   try {
-    safeAppendLog(file, line);
-    console.log('SafeAppend OK');
+    if (argv[0] === '--file') {
+      const blockFile = argv[1];
+      const target = argv[2];
+      if (!blockFile || !target) {
+        console.error('用法: npx tsx tools/gate/pmsafe.ts --file <blockFile> <target>');
+        process.exit(2);
+      }
+      safeAppendBlock(target, readFileSync(blockFile, 'utf8'));
+      console.log('SafeAppend OK (block via --file)');
+    } else {
+      const [file, line] = argv;
+      if (!file || line === undefined) {
+        console.error('用法: npx tsx tools/gate/pmsafe.ts <file> <line> 或 --file <blockFile> <target>');
+        process.exit(2);
+      }
+      safeAppendBlock(file, line);
+      console.log('SafeAppend OK');
+    }
   } catch (e) {
     console.error((e as Error).message);
     process.exit(1);
