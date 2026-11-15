@@ -308,7 +308,7 @@ describe('pre-commit 真实人口形态锁（静态夹具，CI 必跑）', () =>
     expect(existsSync(ghost)).toBe(false);
   });
 
-  it('⑤-补6 静态锁③：拒绝路径下 writeGateRunning 从未被调用（tmp 台账字节不变，模拟 run.ts 现行调用序）', () => {
+  it('⑤-补6 静态锁③（锁调用惯例——真调用点由 tmp spawn 枚守）：拒绝路径下 writeGateRunning 从未被调用（tmp 台账字节不变，模拟 run.ts 现行调用序）', () => {
     // run.ts 现行序：decideDryRun → reject ⇒ 直接 exit，writeGateRunning 不触。
     // 本枚模拟该序并对 tmp 台账断字节——顺序回归（拒绝后置）会在此现形。
     const f = makeBigLog(`pmsafe-dd-nocall-${Date.now()}.log`);
@@ -373,7 +373,7 @@ describe('pmsafe · 闸自写 N/A 语义（⑤-补5，CI 必跑）', () => {
   });
 });
 
-describe('pre-commit 真实人口负控（活锁——仅本机跑）', () => {
+describe('pre-commit 真实人口负控（混合组：itLive＝仅本机活锁，其余 it＝CI 必跑——看各枚前缀）', () => {
   let repo2: string;
   let claimLine: string;
   let releaseLine: string;
