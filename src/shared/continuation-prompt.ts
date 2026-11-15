@@ -29,6 +29,18 @@ export interface PendingResult {
   result?: unknown;
   /** 失败时的错误文案。 */
   error?: string;
+  /**
+   * 宿主出口给出的**机器可读停止信号**（2026-11-15 卡⑨）。
+   *
+   * 语义：这是**终局拒绝**（参数再试也不会变），本轮不要继续续跑。
+   * 真机依据：一个 turn 内 `memory_save` 被拒 135 次、AutoForge 一次没被调用——
+   * 闸拦住了，但链路没有"收"，模型一直在重试。
+   *
+   * ⚠️ 该字段是**同级**字段，不在 `result` 里（`result` 是宿主原始 payload，
+   * 如 `{content:[…], isError:true}`）。协议侧真相源：`src/host/protocol.ts` 的
+   * `tool-result` 消息、`src/host/desktop-host.ts` 的 `ToolExecutionResult`。
+   */
+  terminate?: boolean;
   /** W2：该结果产生时归属的 chat_session_id（captureChatRequest 捕获）。 */
   sessionId?: string;
 }
@@ -133,7 +145,6 @@ export const TERMINAL_FAILURE_CODES: readonly string[] = [
   'consent-denied',
   'consent-unavailable',
   'workspace-unconfigured',
-  'page-not-ready',
   'unknown-tool',
   'unknown-capability',
   'tool-not-allowed-by-persona',
@@ -148,6 +159,33 @@ export const TERMINAL_FAILURE_CODES: readonly string[] = [
    */
   'duplicate-tool-signature',
 ];
+
+/**
+ * **明确排除在终局族之外的「可能自愈」码**（2026-11-15 PM 裁定，三码对齐）。
+ *
+ * 判据是**"重试必然同果"**，不是"听起来像错误"：
+ *
+ * | 码 | 产出点 | 为什么是"可能自愈" |
+ * |---|---|---|
+ * | `page-not-ready` | `src/host/page-runtime.ts`（无可信页时所有宿主调用统一回它） | 页端连上／刷新／导航后即可用 |
+ * | `no-page-for-dom-capability` | `src/host/desktop-host.ts`（DOM 能力回退） | 同上 |
+ * | `no-page-runtime` | `src/host/page-runtime.ts`（无页运行时） | 同上（**本码从未进过码表**） |
+ *
+ * 为什么**必须**留在非终局：`shouldSkipAutoContinue`（`src/shared/tool-result-format.ts`）是
+ * **`every`** 语义——整批全带 `terminate` 才跳过续跑，而跳过的后果是**那一轮没有任何模型文本
+ * 交代**。连接级无页时一整批宿主调用都回这几个码 ⇒ 必然整批 terminate ⇒ 用户看到"回合凭空结束"。
+ * 这撞上出资人 2026-11-11 已拍的判据：**耗尽重试预算必须给用户可见提示，不许静默丢整轮**。
+ *
+ * 它们的刷屏风险由**通用熔断轴**兜（`NON_TERMINAL_FUSE_THRESHOLD = 5`，语义是"刷屏止损"），
+ * 不需要、也不许把它们塞回终局族。
+ *
+ * ⚠️ 两条维护判据：
+ *   1. 反证锁在 `tests/desktop/failure-classification.test.ts`——三码任一被加回终局族即红；
+ *   2. `no-capability` 已**从本表摘出但出口保留**：宿主 `desktop-host.ts` 的能力表尾出口是
+ *      **防御性 fail-closed**（注册表与能力表若分裂，它是唯一不落空的路径）。
+ *      **当前不可达**（三道 `unknown-capability` 闸在它之前），所以它的接线**没有行为锁**；
+ *      若哪天两表真分裂、这枚开始可达，**先回表＋补行为锁**，再谈它是否该判终局。
+ */
 
 /** 真可重试的失败特征（网络 / 5xx / 限流 / 断流 / 超时）。命中即"改参数再试有意义"。 */
 const RETRYABLE_FAILURE_RE =
@@ -235,7 +273,21 @@ const DUPLICATE_SIGNATURE_CODE = 'duplicate-tool-signature';
  */
 export const REPEAT_DENIAL_ALERT_THRESHOLD = 2;
 
-export function buildRepeatDenialNotice(executions: readonly PendingResult[]): string | undefined {
+interface TerminalDenialBucket {
+  readonly tool: string;
+  readonly code: string;
+  readonly count: number;
+}
+
+/**
+ * 按 `(invocationName, 规范失败码)` 归并**终局拒绝**，供两个消费者共用：
+ *   - `buildRepeatDenialNotice`（阈值 2，模型侧**提示**"别再重试"）
+ *   - `evaluateTerminalFuse`（阈值 3，注入层**熔断**"必须停"）
+ *
+ * 只算「真的执行过、并被策略拒绝」的：注入层的折叠回执（`duplicate-tool-signature`）
+ * 对应工具**根本没再执行**，不计入（与阈值 2 那侧同一口径，两个 N 不能各数一套）。
+ */
+function bucketTerminalDenials(executions: readonly PendingResult[]): TerminalDenialBucket[] {
   const buckets = new Map<string, { tool: string; code: string; count: number }>();
   for (const e of executions) {
     if (classifyToolFailure({ ok: e.ok, ...(e.error !== undefined ? { error: e.error } : {}) }) !== 'terminal') {
@@ -243,16 +295,17 @@ export function buildRepeatDenialNotice(executions: readonly PendingResult[]): s
     }
     // 分桶键用**抽出来的规范码**（终局判定成立 ⇒ 码必然抽得出来；兜底留空串保证不抛）。
     const code = extractFailureCode(e.error) ?? '';
-    // 折叠回执**不计入本计数**（与 UI 卡 `MAX_SIG_REDELIVERIES=3` 正交）：
-    // 那种回执对应的工具**根本没再执行**，N 的语义是"真的执行过、并被策略拒绝了几次"；
-    // 重复投递本身已由注入层的封顶 + 折叠回执负责，两边都数会让模型看到两个不同的 N。
     if (code === DUPLICATE_SIGNATURE_CODE) continue;
     const key = `${e.invocationName}\u0000${code}`;
     const hit = buckets.get(key);
     if (hit) hit.count += 1;
     else buckets.set(key, { tool: e.invocationName, code, count: 1 });
   }
-  const repeated = [...buckets.values()].filter((b) => b.count >= REPEAT_DENIAL_ALERT_THRESHOLD);
+  return [...buckets.values()];
+}
+
+export function buildRepeatDenialNotice(executions: readonly PendingResult[]): string | undefined {
+  const repeated = bucketTerminalDenials(executions).filter((b) => b.count >= REPEAT_DENIAL_ALERT_THRESHOLD);
   if (repeated.length === 0) return undefined;
   const parts = repeated.map((b) => {
     const reason = b.code.length > 0 ? b.code : '策略性拒绝';
@@ -263,6 +316,135 @@ export function buildRepeatDenialNotice(executions: readonly PendingResult[]): s
     `⚠️ 本轮同一调用已被终局拒绝 ${repeated.map((b) => b.count).join('/')} 次：${parts.join('；')}。`
     + '继续重复完全不会改变结果——请停止重试，改用其他步骤或直接向用户说明。'
   );
+}
+
+// ---------------------------------------------------------------- 终局熔断（2026-11-15 卡⑨）
+
+/**
+ * 终局熔断阈值：**同一 user turn 内**，同一 `(tool, 规范失败码)` 的终局拒**达到 3 枚**
+ * ⇒ 判定"必须停止续跑"，由注入层收掉本轮（不再自动续跑）。
+ *
+ * 真机依据（2026-11-15，装版根 storage，一个 turn `482859b4`）：模型连发 `memory_save`
+ * **135 枚全失败**（`memory-save-needs-explicit-instruction` 131 ＋ `memory-save-task-snapshot` 4），
+ * 3 分钟内 1.3 秒一枚，AutoForge 一次没被调用——直到撞 `MAX_LOOP=25` 才停。
+ *
+ * 为什么判据**不是** `(name, params)` 全等：那 135 枚里有 **129 种不同 params**
+ * （尾部退化成 `{"name":"用户","content":"用户","tags":["u"]}` 这种单字），
+ * 换 payload 就能绕开"同签名折叠"；只有**失败码**是模型改不动的。
+ *
+ * 与另外两个阈值的关系（三根轴，时间尺度不同、互不替换）：
+ *   - 注入层 `MAX_SIG_REDELIVERIES = 3`（`src/inject/main-world-interceptor.ts`）：数**同签名重复投递**，
+ *     寿命＝**一条回复流**；它按 (tool, params) 全等折叠，**被换 payload 绕过**是本卡现场的直接原因。
+ *   - `REPEAT_DENIAL_ALERT_THRESHOLD = 2`（本文件）：数同一 `(tool, 码)` 的终局拒绝，寿命＝**一个 user turn**，
+ *     产出的是**提示**（劝模型别重试），不强制停止。
+ *   - `TERMINAL_FUSE_THRESHOLD = 3`（本文件）：同样按 `(tool, 码)`、同样寿命＝一个 user turn，但产出的是
+ *     **熔断**（必须停）；比提示多留一次余量，避免"提示后模型正好改好参数"被误杀。
+ *   - `NON_TERMINAL_FUSE_THRESHOLD = 5`（本文件，2026-11-15 复议新增）：通用熔断轴，
+ *     数的是**非终局**失败（可能自愈、但会刷屏，如 `no-page-for-dom-capability`）；
+ *     语义是"刷屏止损"而非"重试无意义"，所以**阈值不同、不许与终局轴合并成一个 N**。
+ *
+ * 未做：跨 user turn／跨实例那根轴（见 `docs/设计稿/20261114-重复拒绝去重-跨轮与跨实例-v1.md`，
+ * 结论是"先取证、暂不实现"）。
+ */
+export const TERMINAL_FUSE_THRESHOLD = 3;
+
+/** 熔断判定结果。`fuse:false` 时其余字段缺省。 */
+export interface TerminalFuseVerdict {
+  readonly fuse: boolean;
+  /** 触发熔断的工具名。 */
+  readonly tool?: string;
+  /** 触发的规范失败码（终局轴）或归一化失败键（通用轴）。 */
+  readonly code?: string;
+  /** 该 `(tool, code)` 在本轮被拒绝的次数。 */
+  readonly count?: number;
+  /**
+   * 走的是哪根轴：`terminal` = 重试无意义（阈值 3）；`non-terminal` = 刷屏止损（阈值 5）。
+   * 两根轴语义与阈值都不同，**不许合并成一个 N**（UI 文案据此区分措辞）。
+   */
+  readonly axis?: 'terminal' | 'non-terminal';
+}
+
+/**
+ * **通用熔断阈值**（2026-11-15 PM 裁定新增的第三根轴）：同一 user turn 内，
+ * 同一 `(tool, 归一化失败键)` 的**非终局**失败达到 **5 枚** ⇒ 同样熔断、本轮停止续跑。
+ *
+ * 为什么需要它：终局轴（阈值 3）数的是"重试无意义"；但**可能自愈**的码
+ * （如 `no-page-for-dom-capability`：页端刷新/导航后能力就会回来）不该被判终局——
+ * 判了就会让宿主直接 `terminate`、整批跳过续跑，模型连一句"请打开页面"都说不出。
+ * 可它照样能刷屏（现场 135 枚就是这个形状）。所以**换个语义**兜：通用轴数的是"刷屏止损"。
+ *
+ * ⚠️ 阈值不同、语义不同、**不许合并成一个 N**：把两根轴并成一个计数，
+ * 等于让"可能自愈"的失败吃"必然同果"的处置。
+ */
+export const NON_TERMINAL_FUSE_THRESHOLD = 5;
+
+/**
+ * 非终局失败的归一键：可重试族**没有码表**（网络/5xx/超时都是自由文本），
+ * 所以按「首行 ＋ 折叠空白 ＋ 截断」归一——同一次失败重复出现时文案逐字相同，
+ * 这个键足以把它们落进同一个桶；参数回显差异出现在后续行，不进键。
+ */
+function genericFailureKey(text: string | undefined): string {
+  const raw = typeof text === 'string' ? text : '';
+  const firstLine = raw.split('\n', 1)[0] ?? '';
+  return firstLine.replace(/\s+/g, ' ').trim().slice(0, 120).toLowerCase();
+}
+
+interface NonTerminalDenialBucket {
+  readonly tool: string;
+  readonly key: string;
+  readonly count: number;
+}
+
+/** 非终局失败按 `(tool, 归一化键)` 归并（与终局分桶对称，但键来源不同）。 */
+function bucketNonTerminalFailures(executions: readonly PendingResult[]): NonTerminalDenialBucket[] {
+  const buckets = new Map<string, { tool: string; key: string; count: number }>();
+  for (const e of executions) {
+    if (classifyToolFailure({ ok: e.ok, ...(e.error !== undefined ? { error: e.error } : {}) }) !== 'retryable') {
+      continue;
+    }
+    const key = genericFailureKey(e.error) || 'unknown-failure';
+    const id = `${e.invocationName}\u0000${key}`;
+    const hit = buckets.get(id);
+    if (hit) hit.count += 1;
+    else buckets.set(id, { tool: e.invocationName, key, count: 1 });
+  }
+  return [...buckets.values()];
+}
+
+/**
+ * 纯函数：给注入层判断"本轮必须停止续跑"。
+ *
+ * **两根轴**，各自独立取最坏的那个桶：
+ *   - 终局轴：同一 `(tool, 规范失败码)` 达 `TERMINAL_FUSE_THRESHOLD`（3）⇒ `axis:'terminal'`；
+ *   - 通用轴：同一 `(tool, 归一化失败键)` 达 `NON_TERMINAL_FUSE_THRESHOLD`（5）⇒ `axis:'non-terminal'`。
+ * 终局轴优先返回（同输入同输出）。`duplicate-tool-signature` 折叠回执不计入终局桶
+ * （同 `bucketTerminalDenials` 口径）。
+ *
+ * **用户可见文案归 UI 域**（另一张卡）：本函数只出结构化判定，不拼人话。
+ */
+export function evaluateTerminalFuse(executions: readonly PendingResult[]): TerminalFuseVerdict {
+  let worst: TerminalDenialBucket | undefined;
+  for (const b of bucketTerminalDenials(executions)) {
+    if (b.count < TERMINAL_FUSE_THRESHOLD) continue;
+    if (worst === undefined || b.count > worst.count) worst = b;
+  }
+  if (worst !== undefined) {
+    return { fuse: true, axis: 'terminal', tool: worst.tool, code: worst.code, count: worst.count };
+  }
+  let worstGeneric: NonTerminalDenialBucket | undefined;
+  for (const b of bucketNonTerminalFailures(executions)) {
+    if (b.count < NON_TERMINAL_FUSE_THRESHOLD) continue;
+    if (worstGeneric === undefined || b.count > worstGeneric.count) worstGeneric = b;
+  }
+  return worstGeneric === undefined
+    ? { fuse: false }
+    : {
+      fuse: true,
+      axis: 'non-terminal',
+      tool: worstGeneric.tool,
+      code: worstGeneric.key,
+      count: worstGeneric.count,
+    };
 }
 
 /** 把一批终局失败折算成提示里要印的码（去重、保序、丢掉抽不出码的）。 */

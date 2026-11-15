@@ -21,14 +21,18 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  NON_TERMINAL_FUSE_THRESHOLD,
   REPEAT_DENIAL_ALERT_THRESHOLD,
   TERMINAL_FAILURE_CODES,
+  TERMINAL_FUSE_THRESHOLD,
   buildContinuationPrompt,
   buildProtocolRepairPrompt,
   classifyToolFailure,
+  evaluateTerminalFuse,
   extractFailureCode,
   type PendingResult,
 } from '../../src/shared/continuation-prompt';
+import { shouldSkipAutoContinue } from '../../src/shared/tool-result-format';
 
 const RETRY_PHRASE = '修正参数';
 const TERMINAL_PHRASE = '策略性拒绝';
@@ -66,12 +70,13 @@ describe('① 终局拒绝：不许出现「修正参数继续」', () => {
     expect(prompt).not.toContain(RETRY_PHRASE);
   });
 
-  it('consent-denied / consent-unavailable / workspace-unconfigured / page-not-ready 全部按终局处理', () => {
+  it('consent-denied / consent-unavailable / workspace-unconfigured 全部按终局处理', () => {
+    // 2026-11-15 对齐：`page-not-ready` 已按 PM 裁定移出终局族（连接级无页会自愈，
+    // 判终局会让整批 terminate ⇒ 那一轮零可见交代），对应的反证锁在 ⑫。
     for (const code of [
       'consent-denied',
       'consent-unavailable',
       'workspace-unconfigured',
-      'page-not-ready',
     ]) {
       const prompt = buildContinuationPrompt('跑一下', [fail('shell.exec', code)]);
       expect(prompt, `${code} 应判终局`).toContain(TERMINAL_PHRASE);
@@ -307,14 +312,15 @@ describe('⑨ 规范码抽取（同一签名、不同全文也要落同一个桶
     expect(extractFailureCode(cited)).toBe('hard-deny');
     expect(classifyToolFailure({ ok: false, error: cited })).toBe('terminal');
 
-    // ② 最靠前命中优先：正文先引用 `page-not-ready`，真正的码在后面的括号里 ⇒ 抽到的是前者
-    const masked = 'page-not-ready 只是正文引用；真正原因是（consent-denied）';
-    expect(extractFailureCode(masked)).toBe('page-not-ready');
+    // ② 最靠前命中优先：正文先引用 `unknown-tool`，真正的码在后面的括号里 ⇒ 抽到的是前者
+    //    （2026-11-15：原用例用 `page-not-ready` 作"正文引用"，它被移出终局族后不再可抽，改用仍在表内的码）
+    const masked = 'unknown-tool 只是正文引用；真正原因是（consent-denied）';
+    expect(extractFailureCode(masked)).toBe('unknown-tool');
     const prompt = buildContinuationPrompt('查设备', [
       fail('browser.exec', masked),
       fail('browser.exec', masked),
     ]);
-    expect(prompt).toContain('browser.exec ×2（原因：page-not-ready）');
+    expect(prompt).toContain('browser.exec ×2（原因：unknown-tool）');
   });
 });
 
@@ -351,9 +357,206 @@ describe('⑩ 结构化 error.code 与散文同源（两个视图都填）', () 
 
 // 64KB 单轮预算 + 4000 字 detail 截断是**唯一会吞掉失败文案的路径**（PM 复核点名）。
 // 判定与分桶都走原始 `PendingResult.error`，不读渲染后的文本——下面把这一点锁死。
+// 2026-11-15 卡⑨：真机一个 turn 内 `memory_save` 被拒 **135 次**、AutoForge 一次没被调用。
+// 135 枚里有 **129 种不同 params** ⇒ 按 (name, params) 全等的折叠被换 payload 直接绕开，
+// 唯一模型改不动的键是**失败码**。熔断按 (tool, 规范失败码) 计数，阈值 3。
+describe('⑫ 终局熔断（阈值 3，按 (tool, 失败码) 而非 (tool, params)）', () => {
+  it('阈值常量锁定为 3，且与另两个阈值不在同一根轴（注释里互相点名）', () => {
+    expect(TERMINAL_FUSE_THRESHOLD).toBe(3);
+    // 三根轴：注入层同签名封顶 3（一条流）／提示阈值 2（一个 turn）／熔断阈值 3（一个 turn，强制停）
+    expect(TERMINAL_FUSE_THRESHOLD).toBeGreaterThan(REPEAT_DENIAL_ALERT_THRESHOLD);
+  });
+
+  it('同一 (tool, 码) 拒 3 次 ⇒ fuse:true 且点名 tool/code/count', () => {
+    const verdict = evaluateTerminalFuse([
+      fail('memory.save', 'memory-save-needs-explicit-instruction'),
+      fail('memory.save', 'memory-save-needs-explicit-instruction'),
+      fail('memory.save', 'memory-save-needs-explicit-instruction'),
+    ]);
+    expect(verdict).toEqual({
+      fuse: true,
+      axis: 'terminal',
+      tool: 'memory.save',
+      code: 'memory-save-needs-explicit-instruction',
+      count: 3,
+    });
+  });
+
+  it('拒 2 次 ⇒ 不熔断（提示阈值先到、熔断多留一次余量，防误杀"正好改好参数"）', () => {
+    const execs = [
+      fail('memory.save', 'memory-save-needs-explicit-instruction'),
+      fail('memory.save', 'memory-save-needs-explicit-instruction'),
+    ];
+    expect(evaluateTerminalFuse(execs).fuse).toBe(false);
+    // 同一个输入在提示那根轴上已经触发：证明两根轴独立
+    expect(buildContinuationPrompt('存记忆', execs)).toContain('已被终局拒绝 2 次');
+  });
+
+  it('换 payload（129 种不同 params 那种形态）绕不开熔断：码相同即同一桶', () => {
+    const verdict = evaluateTerminalFuse([
+      fail('memory.save', 'memory-save-needs-explicit-instruction: 第一次（params={"name":"用户","content":"用户"}）'),
+      fail('memory.save', '（memory-save-needs-explicit-instruction）第二次（params={"name":"客厅","content":"设备"}）'),
+      fail('memory.save', 'memory-save-needs-explicit-instruction: 第三次（params={"tags":["u"]}）'),
+    ]);
+    expect(verdict.fuse).toBe(true);
+    expect(verdict.count).toBe(3);
+    expect(verdict.code).toBe('memory-save-needs-explicit-instruction');
+  });
+
+  it('不同码各 2 次 ⇒ 不凑成熔断（桶键含码，不按工具合并）', () => {
+    const verdict = evaluateTerminalFuse([
+      fail('memory.save', 'memory-save-needs-explicit-instruction'),
+      fail('memory.save', 'memory-save-needs-explicit-instruction'),
+      fail('memory.save', 'memory-save-task-snapshot'),
+      fail('memory.save', 'memory-save-task-snapshot'),
+    ]);
+    expect(verdict.fuse).toBe(false);
+  });
+
+  it('折叠回执不计入熔断（与阈值 2 那侧同一口径，两个 N 不能各数一套）', () => {
+    const folded =
+      'duplicate-tool-signature: 同一轮（同流）内已执行过同名同参调用，本枚投递被折叠，结果见前一次。';
+    const verdict = evaluateTerminalFuse([
+      fail('memory.save', folded),
+      fail('memory.save', folded),
+      fail('memory.save', folded),
+    ]);
+    expect(verdict.fuse).toBe(false);
+  });
+
+  it('可重试类失败的 3 枚不熔（通用轴阈值是 5；低于它只是"还没到刷屏止损线"）', () => {
+    const verdict = evaluateTerminalFuse([
+      fail('shell.exec', 'ETIMEDOUT'),
+      fail('shell.exec', 'ETIMEDOUT'),
+      fail('shell.exec', 'HTTP 502 gateway'),
+    ]);
+    expect(verdict.fuse).toBe(false);
+  });
+
+  it('通用轴按归一化失败键分桶：不同首行不凑数，同一首行（带不同后续行）算同一桶', () => {
+    const same = (extra: string) => fail('shell.exec', `ETIMEDOUT${extra}`);
+    // 首行相同、后续行（参数回显）不同 ⇒ 同一个桶 ⇒ 5 枚熔
+    const fused = evaluateTerminalFuse([
+      same('\nparams={"t":1}'),
+      same('\nparams={"t":2}'),
+      same('\nparams={"t":3}'),
+      same('\nparams={"t":4}'),
+      same('\nparams={"t":5}'),
+    ]);
+    expect(fused).toMatchObject({ fuse: true, axis: 'non-terminal', tool: 'shell.exec', count: 5 });
+    // 首行不同 ⇒ 各自 3 枚，谁都没到 5 ⇒ 不熔
+    expect(evaluateTerminalFuse([
+      fail('shell.exec', 'ETIMEDOUT'),
+      fail('shell.exec', 'ETIMEDOUT'),
+      fail('shell.exec', 'ETIMEDOUT'),
+      fail('shell.exec', 'HTTP 502 gateway'),
+      fail('shell.exec', 'HTTP 502 gateway'),
+      fail('shell.exec', 'HTTP 502 gateway'),
+    ]).fuse).toBe(false);
+  });
+
+  it('三个"无页／可能自愈"码一律不进终局族（2026-11-15 裁定，含反证锁）', () => {
+    // 判据是"重试必然同果"，不是"听起来像错误"：页端连上/刷新/导航后这三个码都会变可用。
+    // 标成终局 ⇒ 宿主发 terminate ⇒ shouldSkipAutoContinue（every 语义）整批跳过续跑
+    // ⇒ 那一轮**没有任何模型文本交代**，撞出资人 11-11 拍的"必须给可见提示"判据。
+    for (const code of ['page-not-ready', 'no-page-for-dom-capability', 'no-page-runtime']) {
+      expect(TERMINAL_FAILURE_CODES, code).not.toContain(code);
+      expect(extractFailureCode(code), code).toBeUndefined();
+      expect(classifyToolFailure({ ok: false, error: code }), code).toBe('retryable');
+    }
+    // `no-capability`：出口保留为防御性 fail-closed，但**码同样摘出**（当前不可达，
+    // 留着会让下一个人当成真会发生的终局）。两表若分裂需回表＋补行为锁。
+    expect(TERMINAL_FAILURE_CODES).not.toContain('no-capability');
+    expect(classifyToolFailure({ ok: false, error: 'no-capability' })).toBe('retryable');
+
+    // 终局轴仍然认真正的"同果"码：unknown-capability 3 枚即熔
+    const verdict = evaluateTerminalFuse([
+      fail('chat-read', 'unknown-capability'),
+      fail('chat-read', 'unknown-capability'),
+      fail('chat-read', 'unknown-capability'),
+    ]);
+    expect(verdict).toMatchObject({ fuse: true, axis: 'terminal', tool: 'chat-read', code: 'unknown-capability', count: 3 });
+  });
+
+  it('连接级无页**不得把该轮锁进"零可见交代"**：整批无页不带 terminate ⇒ 续跑不被跳过', () => {
+    // 行为锁（不是我域的文案锁）：宿主对这三个码不再挂 terminate，
+    // 于是 shouldSkipAutoContinue 的 every 判定为 false ⇒ 模型还有机会给用户一句交代。
+    const batch = [
+      fail('chat-read', 'page-not-ready'),
+      fail('chat-send', 'no-page-for-dom-capability'),
+      fail('shell.exec', 'no-page-runtime'),
+    ];
+    // ① 宿主出口形态：这些结果不带 terminate（等价于全部 undefined）
+    const asHostWouldEmit = batch.map((e) => ({ ...e, terminate: undefined }));
+    // ② 分类面：三条都必须落非终局——这一句才是"码表对齐"的真牙齿（把任一条加回表 ⇒ 红）
+    expect(batch.every((e) => classifyToolFailure(e) !== 'terminal')).toBe(true);
+    expect(shouldSkipAutoContinue(asHostWouldEmit)).toBe(false);
+    // ② 熔断也不在 3 枚时触发（要走通用轴的 5）
+    expect(evaluateTerminalFuse(batch).fuse).toBe(false);
+    // ③ 反面对照：整批真终局（exit 不可用）仍然允许跳过续跑——every 语义没被放松
+    expect(shouldSkipAutoContinue([
+      { terminate: true },
+      { terminate: true },
+    ])).toBe(true);
+    expect(shouldSkipAutoContinue([{ terminate: true }, { terminate: undefined }])).toBe(false);
+  });
+
+  it('通用熔断轴：非终局的同一失败键达 5 枚才熔，4 枚不熔（与终局阈值 3 各自独立）', () => {
+    const page = (n: number): PendingResult[] =>
+      Array.from({ length: n }, () => fail('chat-read', 'no-page-for-dom-capability'));
+    expect(evaluateTerminalFuse(page(4)).fuse).toBe(false);
+    expect(evaluateTerminalFuse(page(5))).toMatchObject({
+      fuse: true,
+      axis: 'non-terminal',
+      tool: 'chat-read',
+      count: 5,
+    });
+    // 同一条数轴上的语义区分：终局 3 枚熔（重试无意义），非终局 3 枚**不熔**（可能自愈）
+    expect(evaluateTerminalFuse([
+      fail('chat-read', 'unknown-capability'),
+      fail('chat-read', 'unknown-capability'),
+      fail('chat-read', 'unknown-capability'),
+    ]).axis).toBe('terminal');
+    expect(evaluateTerminalFuse(page(3)).fuse).toBe(false);
+    expect(NON_TERMINAL_FUSE_THRESHOLD).toBe(5);
+  });
+
+  it('接线：生产形态（terminate 在顶层、result 里不含）不影响熔断判定', () => {
+    // 真机形态：宿主返回 `result:{content:[…],isError:true}`，`terminate` 是**同级**字段。
+    const productionShape: PendingResult[] = [
+      {
+        invocationName: 'memory.save',
+        ok: false,
+        error: 'memory-save-needs-explicit-instruction',
+        result: { content: [{ type: 'text', text: '未写入记忆' }], isError: true },
+        terminate: true,
+      },
+      {
+        invocationName: 'memory.save',
+        ok: false,
+        error: 'memory-save-needs-explicit-instruction',
+        result: { content: [{ type: 'text', text: '未写入记忆' }], isError: true },
+        terminate: true,
+      },
+      {
+        invocationName: 'memory.save',
+        ok: false,
+        error: 'memory-save-needs-explicit-instruction',
+        result: { content: [{ type: 'text', text: '未写入记忆' }], isError: true },
+        terminate: true,
+      },
+    ];
+    // result 里没有 terminate（**不许**把判据建在 payload 内）
+    expect(productionShape.every((p) => !('terminate' in (p.result as Record<string, unknown>)))).toBe(true);
+    expect(evaluateTerminalFuse(productionShape).fuse).toBe(true);
+    expect(classifyToolFailure(productionShape[0])).toBe('terminal');
+    // 没有 terminate 字段（旧宿主）同样能判熔断：熔断不依赖宿主是否已升级
+    expect(evaluateTerminalFuse(productionShape.map(({ terminate: _t, ...rest }) => rest)).fuse).toBe(true);
+  });
+});
+
 describe('⑪ 截断／64KB 预算锁：文案被吞后判定与分桶仍成立', () => {
   const LONG_PAD = 'x'.repeat(6000);
-
   it('终局码落在 detail 截断点之后 ⇒ 渲染面无码，仍判终局、仍计数、码仍进结构化字段', () => {
     const tail = `${LONG_PAD}（consent-denied）`;
     const prompt = buildContinuationPrompt('跑 python', [

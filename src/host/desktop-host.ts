@@ -157,6 +157,12 @@ import {
 import { evaluateMemorySaveGate, type MemorySaveGateOptions } from '../shared/memory-write-gate';
 // 2026-11-13（工具执行缺陷 A）：失败结果必须带可读文本（含工具名），否则模型只看到 `{"isError":true}`。
 import { ensureToolFailureText } from '../shared/tool-result-format';
+/**
+ * 2026-11-15 卡⑨：终局族失败码的**单一真相源**。
+ * 宿主出口用它判断"这次拒绝是不是参数再试也不会变"，是则带上 `terminate:true`。
+ * 方向：shared → host（不在宿主里另抄一份码表）。
+ */
+import { extractFailureCode } from '../shared/continuation-prompt';
 import { createUserTurnLedger } from './user-turn-ledger';
 
 export interface DesktopHostOptions {
@@ -523,6 +529,25 @@ function isHighRiskConsent(meta?: ConsentMeta): boolean {
  * 只证写出去了什么、证不了运行时判成什么。**它不改变任何生产调用路径**。
  */
 export const isHighRiskConsentForTest = isHighRiskConsent;
+
+/**
+ * 终局拒绝统一挂**机器可读停止信号**（2026-11-15 卡⑨）。
+ *
+ * 真机依据（装版根 storage，一个 turn `482859b4`）：`memory_save` 被拒 **135 次**、
+ * AutoForge 一次没被调用——硬闸拦住了每一次，但返回体里没有停止信号，
+ * 模型就一直重试到 `MAX_LOOP=25` 撞顶。
+ *
+ * 判据是**失败码属于终局族**（`extractFailureCode` 抽自 `src/shared/continuation-prompt.ts`
+ * 的 `TERMINAL_FAILURE_CODES`），所以在出口统一加一次，而不是在 memory.save 那一格单独补：
+ * 同类"参数再试也不变"的拒绝（consent-*／origin-denied／outside-workspace／hard-deny／
+ * workspace-unconfigured…）走同一条路。可重试类（网络/5xx/超时）**不加**——
+ * `terminate` 的语义是"别再来"，不是"这次失败了"。
+ */
+function withTerminalSignal(result: ToolExecutionResult): ToolExecutionResult {
+  if (result.ok || result.terminate === true) return result;
+  const code = extractFailureCode(result.reason);
+  return code === undefined ? result : { ...result, terminate: true };
+}
 
 export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   // C3：tool run 事件追踪（Workbench UI 投影）
@@ -1935,9 +1960,12 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     // outcome 初值取 'denied' 仅为满足类型；下方每个出口都会覆盖成真实终态。
     let ctx: AuditInput = { tool: name, summary: summarizeParams(params, name), origin: '', outcome: 'denied' };
 
+    /**
+     * 终局拒绝统一挂**机器可读停止信号**（2026-11-15 卡⑨）——见模块级 `withTerminalSignal`。
+     */
     const finish = (outcome: AuditOutcome, reason: string): ToolExecutionResult => {
       audit.record({ ...ctx, outcome, reason, durationMs: Date.now() - startedAt });
-      return { ok: false, reason };
+      return withTerminalSignal({ ok: false, reason });
     };
 
     // 1) 授权先于执行：consume 失败（重放/过期/错误密钥/畸形令牌）→ fail-closed 拒绝。
@@ -1993,12 +2021,12 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       if (!gate.allow) {
         // 拒绝必须留痕：原因码进审计，人话（含同一个码）进 content 交给模型。
         audit.record({ ...ctx, outcome: 'denied', reason: gate.code, durationMs: Date.now() - startedAt });
-        return {
+        return withTerminalSignal({
           ok: false,
           reason: gate.code,
           isError: true,
           content: [{ type: 'text', text: gate.error }],
-        };
+        });
       }
     }
     // R2-05：宿主内部 origin（HOST_INTERNAL_ORIGIN）显式放行；页面来源仍必须命中白名单，
@@ -2635,7 +2663,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     // 更糟的情况是页端若被劫持，特权命令就有了被页面驱动的路径。
     if (executionSide(def) === 'host') {
       const tool = hostTools.get(name);
-      if (!tool) return { ok: false, reason: 'unknown-capability' };
+      if (!tool) return withTerminalSignal({ ok: false, reason: 'unknown-capability' });
       // M8-E2：写前快照（file.edit / file.write）
       if ((name === 'file.edit' || name === 'file.write') && typeof (params as Record<string, unknown>)?.path === 'string') {
         const p = (params as Record<string, unknown>).path as string;
@@ -2647,7 +2675,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         }
       }
       const r = await tool.execute(params as Record<string, unknown>, { allowOutsideWorkspace: outsideApproved });
-      return {
+      return withTerminalSignal({
         ok: r.ok,
         reason: r.error,
         data: r.data,
@@ -2656,7 +2684,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         ...(r.details !== undefined ? { details: r.details } : {}),
         ...(r.isError !== undefined ? { isError: r.isError } : {}),
         ...(r.terminate !== undefined ? { terminate: r.terminate } : {}),
-      };
+      });
     }
     // 派发只看可信页：被自检判定为篡改的页面不得再收到工具调用
     // v0.24：无 botId → 沿用「任一可信页在场」；有 botId → 该 bot 自己的可信页在场。
@@ -2667,7 +2695,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         : hub.trustedPages;
       if (targetPages.length > 0) {
         const r = await hub.dispatch(name, params, randomCallId(), botId);
-        return {
+        return withTerminalSignal({
           ok: r.ok,
           reason: r.error,
           data: r.data,
@@ -2676,7 +2704,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           ...(r.details !== undefined ? { details: r.details } : {}),
           ...(r.isError !== undefined ? { isError: r.isError } : {}),
           ...(r.terminate !== undefined ? { terminate: r.terminate } : {}),
-        };
+        });
       }
     }
     // 回退：Node 宿主内 rehydrate。R2-04：只允许无 DOM 依赖的能力（当前仅 echo）。
@@ -2686,7 +2714,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     const cap = capabilities.get(name);
     if (cap) {
       if (!DOM_FREE_FALLBACK.has(name)) {
-        return { ok: false, reason: 'no-page-for-dom-capability' };
+        return withTerminalSignal({ ok: false, reason: 'no-page-for-dom-capability' });
       }
       const scope = createHostResourceScope();
       epoch += 1;
@@ -2695,7 +2723,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       await cap.stop('manual' as ContentLifecycleStopReason);
       return { ok: true, snapshot };
     }
-    return { ok: false, reason: 'no-capability' };
+    return withTerminalSignal({ ok: false, reason: 'no-capability' });
   }
 
   async function invokeTool(tool: string, params: unknown, botId?: string, conversationId?: string): Promise<ToolExecutionResult> {

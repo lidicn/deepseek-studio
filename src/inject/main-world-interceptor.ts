@@ -22,6 +22,7 @@ import {
   buildProtocolRepairPrompt,
   shouldAttemptProtocolRepair,
   extractTaskCompleteSignal,
+  evaluateTerminalFuse,
   MAX_LOOP,
   MAX_ERROR_RETRIES,
   MAX_AUTO_CONTINUE,
@@ -2380,6 +2381,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   finishSentinelEmit = options.onFinishSentinel ?? null;
   let autoContinueTimer: ReturnType<typeof setTimeout> | null = null;
   let loopDepth = 0;
+  /** ⑨ 熔断接线：已发过熔断交代的 turnId 集合（同轮幂等：scheduleAutoContinue 会被同轮多次调用，可见提示只许挂一次）。 */
+  const fuseStoppedTurns = new Set<string>();
   // v1.6：跨整个循环累积的工具执行结果（对标 deepseek-pp collectedExecutions）。
   // pending 每轮清空（防 XHR hook 重复注入），collectedExecutions 保留到循环结束，
   // 让续跑 prompt 带完整历史，模型不会从第 2 步起忘了之前做了什么。
@@ -2745,6 +2748,52 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   };
 
   function scheduleAutoContinue(): void {
+    // ⑨ 熔断接线（2026-11-15 PM 卡）：判定面＝shared evaluateTerminalFuse（两根轴：
+    // 终局轴 3 枚「重试无意义」／通用轴 5 枚「刷屏止损」，结构化判定不含人话）；
+    // 用户可见文案在本域，按 axis 分两副（PM 裁定）：
+    //   - terminal ⇒ 才许写「这条不会再重试」；
+    //   - non-terminal ⇒ 不得宣称「已停止／不再重试」（那是循环保护，不是宿主拒绝，问题可能自愈）。
+    // 同一 turn 只许发一次可见交代（scheduleAutoContinue 会被同轮多次调用）；
+    // 发过之后该轮熔断维持：后续调用静默 return，不再续跑、不再重复挂提示。
+    const fuse = evaluateTerminalFuse(pending);
+    if (fuse.fuse) {
+      if (!fuseStoppedTurns.has(traceTurnId)) {
+        fuseStoppedTurns.add(traceTurnId);
+        if (fuseStoppedTurns.size > 64) {
+          fuseStoppedTurns.clear();
+          fuseStoppedTurns.add(traceTurnId);
+        }
+        const terminal = fuse.axis === 'terminal';
+        d(`auto-continue fuse ${fuse.axis} tool=${fuse.tool} code=${fuse.code} count=${fuse.count}, stopping round with visible notice`);
+        // 防竞态：此前一次未熔断的 scheduleAutoContinue 调用可能已挂 1s 定时器——
+        // 不摘掉它，定时器照发自动续跑请求，熔断形同虚设。
+        if (autoContinueTimer) {
+          clearTimeout(autoContinueTimer);
+          autoContinueTimer = null;
+        }
+        interceptorTrace.record({
+          t: 'continuation.decision',
+          turnId: traceTurnId,
+          reason: terminal ? 'fuse-terminal' : 'fuse-non-terminal',
+          triggered: false,
+          count: fuse.count,
+        });
+        finishStepFlow({
+          code: terminal ? 'fuse-terminal' : 'fuse-non-terminal',
+          message: terminal
+            ? `本轮对 ${fuse.tool} 的同一调用已被终局拒绝 ${fuse.count} 次（原因：${fuse.code}）——重复不会改变结果，这条不会再重试。可改用其他步骤，或直接向用户说明原因。`
+            : `本轮 ${fuse.tool} 的同类失败已重复 ${fuse.count} 次，为防止重试刷屏，系统已暂停本轮自动续跑——这不是对该调用的拒绝，问题可能自行恢复（如页面连接／服务状态恢复后）。请检查环境后稍后重试。`,
+        });
+        loopDepth = 0;
+        interceptorTrace.record({
+          t: 'turn.end',
+          turnId: traceTurnId,
+          finished: true,
+          stopReason: terminal ? 'fuse-terminal' : 'fuse-non-terminal',
+        });
+      }
+      return;
+    }
     // v1.2：terminate 闸门 —— 只有批次内所有工具结果都 terminate===true 才跳过续跑
     // 语义对齐 Pi Agent：terminate 是提示不是强制，混合批次照常续跑，空批次 fail-open
     const pendingResults = pending.map((p) => p.result as { terminate?: boolean } | undefined);

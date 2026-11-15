@@ -153,3 +153,73 @@ describe('bot 路径（conversationId = bot:<botId>）', () => {
     expect(r.reason).toBe('memory-save-no-user-turn');
   });
 });
+
+/**
+ * 2026-11-15 卡⑨：终局拒绝必须带**机器可读停止信号**（`terminate:true`）。
+ *
+ * 真机：一个 turn 内 `memory_save` 被拒 **135 次**、AutoForge 一次没被调用——硬闸每次
+ * 都拦住了，但返回体里没有停止信号，模型就一直重试到 `MAX_LOOP=25` 撞顶。
+ *
+ * 这两枚断言走**真实入口** `executeTool`（不打桩内部函数），测的是**接线**：
+ * `tests/desktop/tool-result-format.test.ts` 那 8 条只喂纯函数入参形状，
+ * 生产端从不产生那种形状（`terminate` 在 `result` 里），所以全绿也抓不到这个缺陷。
+ */
+describe('终局拒绝带停止信号（接线级，真实入口 executeTool）', () => {
+  it('硬闸拒绝 ⇒ terminate:true，reason 仍是规范码（不带人话前缀）', async () => {
+    const r = await saveVia({ type: 'user', name: '无话语信号', content: '内容' }, CONV);
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('memory-save-no-user-turn');
+    expect(r.terminate).toBe(true);
+  });
+
+  it('参数再改也不变的另一码（任务快照）同样带 terminate', async () => {
+    host.recordUserTurn(CONV, '请记住：用 af_list_entities 查设备');
+    const r = await saveVia(
+      { type: 'project', name: '任务', content: '调用 af_list_entities 查询客厅设备' },
+      CONV,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('memory-save-task-snapshot');
+    expect(r.terminate).toBe(true);
+  });
+
+  it('真放行 ⇒ 不带 terminate（成功不许终止续跑）', async () => {
+    host.recordUserTurn(CONV, '请记住：我偏好中文回复，项目一律用 PowerShell');
+    const r = await saveVia({ type: 'user', name: '语言偏好2', content: '偏好中文回复' }, CONV);
+    expect(r.ok).toBe(true);
+    expect(r.terminate).toBeUndefined();
+  });
+
+  it('无可信页的 DOM 能力（no-page-for-dom-capability）**不带** terminate（2026-11-15 复议裁定）', async () => {
+    // 裁定而非疏漏：页端注册/刷新/导航后 DOM 能力会变可用 ⇒ 不必然同果，
+    // 判终局会让宿主直接发 terminate、注入层整批跳过续跑，模型连"请打开页面"都说不出来。
+    // 它的刷屏风险由 shared 侧的通用熔断轴（NON_TERMINAL_FUSE_THRESHOLD = 5）兜。
+    // ★ 谁把这行的期望改成 true，等于把复议裁定推翻——先报 PM。
+    const r = await host.invokeTool('chat-read', {});
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('no-page-for-dom-capability');
+    expect(r.terminate).toBeUndefined();
+  });
+
+  it('能力不存在（unknown-capability，注册表闸）也带 terminate', async () => {
+    // 2026-11-15 ⑨-补：原先"能力不存在"这一族只有分类锁、没有接线锁。
+    // 走真实入口 invokeTool 打一个不在注册表里的名字：不是 memory.save（避开硬闸）、
+    // 也不是 chat-read（避开 DOM 回退）。
+    const r = await host.invokeTool('studio-definitely-not-a-capability', {});
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('unknown-capability');
+    expect(r.terminate).toBe(true);
+  });
+
+  it('【如实记录】宿主能力表尾出口 `no-capability` 走不到：真实入口打不存在的名字回的是 unknown-capability', async () => {
+    // 这不是锁，是把一条**不可达性**写进测试，免得下一个人照 PM 卡面写"打不存在的名字 ⇒ no-capability"。
+    // 现读 `executeTool` 的顺序：① 注册表闸 `registry.get(name)` → 没登记就 `finish('unknown-capability')`；
+    // ② 执行侧闸 `side === 'host' ? hostTools.get(name) : capabilities.get(name)` → 没找到 `finish('unknown-capability')`；
+    // ③ 最后 `const cap = capabilities.get(name)` —— 与 ② 同一张表、同一次调用内无人增删，
+    //    所以 ② 通过 ⇒ ③ 必然也拿到同一个对象 ⇒ `no-capability` 那一行**当前不可达**。
+    // ⇒ 它的接线（`withTerminalSignal`）目前**无法用行为锁咬住**，只能靠码表＋本注释；
+    //    已报 PM 裁定：是删掉这个死出口，还是接受"无行为锁"。
+    const r = await host.invokeTool('studio-definitely-not-a-capability', {});
+    expect(r.reason).toBe('unknown-capability'); // 与上一枚同源：都是 unknown-capability
+  });
+});
