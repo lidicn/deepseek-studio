@@ -148,8 +148,8 @@ describe('bom-drift · 推送基线模式（⑥ 甲案）', () => {
     const r = spawnSync(
       process.execPath,
       ['--import', 'tsx', join(REAL_ROOT, 'tools', 'audit', 'bom-drift.ts'), '--root', repo, '--base', beforeSha],
-      // cwd 必须在主仓：`--import tsx` 从 cwd 解析包，tmp 仓（TEMP 下）没有 node_modules
-      { cwd: REAL_ROOT, encoding: 'utf8' },
+      // ⑥-补5：显式带 CI=true——CI 与本机走同一条路（今晚"本机绿 CI 红"那类的防回归）
+      { cwd: REAL_ROOT, encoding: 'utf8', env: { ...process.env, CI: 'true' } },
     );
     expect(r.status).toBe(0);
     // ⑥-补3 的语义：基线外文件的 git fatal 不许喷进闸日志（stdio 拦截）——
@@ -157,6 +157,28 @@ describe('bom-drift · 推送基线模式（⑥ 甲案）', () => {
     expect(r.stderr ?? '').not.toContain('fatal:');
     expect(r.stdout ?? '').toContain('通过');
     expect(r.stdout ?? '').not.toContain('brand-new.ts'); // HEAD 新增文件被排除、不被判
+  });
+
+  it('18. ⑥-补4：--root 缺值 ⇒ exit 2＋用法提示，不崩栈', () => {
+    const r = spawnSync(
+      process.execPath,
+      ['--import', 'tsx', join(REAL_ROOT, 'tools', 'audit', 'bom-drift.ts'), '--root'],
+      { cwd: REAL_ROOT, encoding: 'utf8' },
+    );
+    expect(r.status).toBe(2);
+    expect(r.stderr ?? '').toContain('用法:');
+    expect(r.stderr ?? '').toContain('--root');
+  });
+
+  it('19. ⑥-补4：--base 缺值 ⇒ exit 2＋用法提示，不静默回落、不崩栈', () => {
+    const r = spawnSync(
+      process.execPath,
+      ['--import', 'tsx', join(REAL_ROOT, 'tools', 'audit', 'bom-drift.ts'), '--base'],
+      { cwd: REAL_ROOT, encoding: 'utf8' },
+    );
+    expect(r.status).toBe(2);
+    expect(r.stderr ?? '').toContain('用法:');
+    expect(r.stderr ?? '').toContain('--base');
   });
 
   it('10. 回落链：BOM_BASE 全零 → HEAD~1（仍能判）', () => {
@@ -216,5 +238,17 @@ describe('bom-drift · decideBomFace（⑥-补，CI 必跑）', () => {
   it('16. ⑥-补2：非 CI 无参数 ⇒ work 面（对照）', () => {
     expect(decideBomFace({}, []).mode).toBe('work');
     expect(decideBomFace({}, []).baseRaw).toBeUndefined();
+  });
+
+  it('20. ⑥-补5：CI ＋ argv --base ⇒ base（环境默认值不得吞掉显式意图——今日 CI 红的靶）', () => {
+    const v = decideBomFace({ CI: 'true' }, ['--base', 'HEAD~1']);
+    expect(v.mode).toBe('base');
+    expect(v.baseRaw).toBe('HEAD~1');
+  });
+
+  it('21. ⑥-补5：CI ＋ argv --base 优先于 env BOM_BASE（双给时 argv 赢）', () => {
+    const v = decideBomFace({ CI: 'true', BOM_BASE: '43660126937' }, ['--base', 'HEAD~1']);
+    expect(v.mode).toBe('base');
+    expect(v.baseRaw).toBe('HEAD~1');
   });
 });

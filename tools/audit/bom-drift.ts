@@ -78,29 +78,29 @@ export function resolveBase(root: string, raw?: string): string | undefined {
 /**
  * ⑥-补（群PM 判据）：判据面决策抽成可注入纯函数（decideDryRun 同款）——env 层只决
  * 「哪个面」，**可达性**（GHOST：浅检出下基线对象不存在）由调用方在 resolveBase 后判。
- *   - CI（process.env.CI 真）＋ BOM_BASE 有值 ⇒ 'base'（复判面；对象不可达时调用方打 N/A）；
- *   - CI ＋ BOM_BASE 未设/全零 ⇒ 'na'（**缺失≠干净**——host-freshness 同族，不许打「通过」）；
- *   - 非 CI ＋ argv 给了 `--base` ⇒ 'base'（⑥-补2：显式开关不许被静默吞——本机也能点名复判面）；
- *   - 非 CI 无参 ⇒ 'work'（本机预检面：工作树 vs HEAD——回落链不许吃掉本机射程）。
- * base 模式带出 baseRaw（argv 优先于 env），调用方拿它走 resolveBase。
+ * ⑥-补5（群PM 判据，第三次显形那类）：**argv 的 `--base` 在所有环境下优先于 env**——
+ * 「手上有开关就必须真生效，环境的默认值不得吞掉调用方的显式意图」：
+ *   - 给了 `--base <ref>`（任何环境）⇒ 'base'＋baseRaw=ref；
+ *   - env 与 argv 都没给基线时：CI ⇒ 'na'（缺失≠干净，不许打「通过」）、非 CI ⇒ 'work'；
+ *   - CI ＋ env BOM_BASE 有值（无 argv）⇒ 'base'（⑥-补 行为保留）。
+ * base 模式带出 baseRaw，调用方拿它走 resolveBase。
  */
 export function decideBomFace(
   env?: { CI?: string; BOM_BASE?: string },
   argv?: string[],
 ): { mode: 'work' | 'base' | 'na'; reason: string; baseRaw?: string } {
   const isCI = env?.CI === 'true' || env?.CI === '1';
-  const raw = env?.BOM_BASE;
-  if (isCI) {
-    if (!raw || /^0{40}$/.test(raw)) {
-      return { mode: 'na', reason: 'CI 上无推送基线可比对（BOM_BASE 未设或全零）——本步未判，缺失≠干净' };
-    }
-    return { mode: 'base', reason: `CI 推送基线复判面：${raw} vs HEAD`, baseRaw: raw };
+  const argvBase = argv && argv.includes('--base') ? argv[argv.indexOf('--base') + 1] : undefined;
+  const raw = argvBase ?? env?.BOM_BASE;
+  if (raw && !/^0{40}$/.test(raw)) {
+    return {
+      mode: 'base',
+      reason: `${isCI ? 'CI 推送基线复判面' : '本机显式基线复判面'}：${raw} vs HEAD`,
+      baseRaw: raw,
+    };
   }
-  if (argv && argv.includes('--base')) {
-    const baseRaw = argv[argv.indexOf('--base') + 1];
-    if (baseRaw) {
-      return { mode: 'base', reason: `本机显式基线复判面：${baseRaw} vs HEAD`, baseRaw };
-    }
+  if (isCI) {
+    return { mode: 'na', reason: 'CI 上无推送基线可比对（BOM_BASE 未设或全零）——本步未判，缺失≠干净' };
   }
   return { mode: 'work', reason: '本机预检面：工作树 vs HEAD（提交前拦截）' };
 }
@@ -153,6 +153,17 @@ export function scanBomDrift(root: string, opts?: { base?: string }): { issues: 
 
 function main(): void {
   const argv = process.argv.slice(2);
+  // ⑥-补4（群PM 判据）：argv 消费收一个口——任一已知 flag 缺值 ⇒ 用法提示 + exit 2，
+  // 不许崩栈（--root 缺值曾 TypeError 喷 653 B 栈；--base 缺值曾静默回落 work 面）。
+  const flagMissingValue = (name: string): boolean => {
+    const i = argv.indexOf(name);
+    return i >= 0 && (i + 1 >= argv.length || argv[i + 1].startsWith('--'));
+  };
+  if (flagMissingValue('--root') || flagMissingValue('--base')) {
+    console.error('用法: npx tsx tools/audit/bom-drift.ts [--root <dir>] [--base <ref>]');
+    console.error('--root：判据面对准的仓根（默认主仓）；--base：CI 推送基线 ref（默认走工作树 vs HEAD）。两者均需带值。');
+    process.exit(2);
+  }
   // ⑥-补3：root 可指（默认主仓）——tmp 仓集成/契约需要把判据面对准别的仓。
   const rootIdx = argv.indexOf('--root');
   const root = rootIdx >= 0
