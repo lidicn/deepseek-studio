@@ -940,6 +940,100 @@ function recordPendingClosure(fin: { clean: string; hasUnclosedToolTag: boolean 
   interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason, triggered: false });
 }
 
+/** ⑩ 格3（fetch 侧）：set-cookie 留痕（不记值）。getSetCookie 缺失（旧 WebView）只记一次 unavailable，不假装拿到。 */
+let warnedNoGetSetCookie = false;
+function logFetchSetCookies(diag: (s: string) => void, response: Response, on: string): void {
+  try {
+    const headers = (response?.headers ?? null) as unknown as { getSetCookie?: () => string[] } | null;
+    if (!headers || typeof headers.getSetCookie !== 'function') {
+      if (!warnedNoGetSetCookie) {
+        warnedNoGetSetCookie = true;
+        diag(`[auth] set-cookie unavailable (headers.getSetCookie missing) on ${on}`);
+      }
+      return;
+    }
+    for (const c of headers.getSetCookie()) {
+      const name = c.split('=')[0].trim();
+      const expires = (c.match(/expires=([^;]+)/i)?.[1] ?? '').trim();
+      const cpath = (c.match(/path=([^;]+)/i)?.[1] ?? '').trim();
+      diag(`[auth] set-cookie ${name}${expires ? ` expires=${expires}` : ''}${cpath ? ` path=${cpath}` : ''} on ${on}`);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+// ---------------------------------------------------------------- ⑩ 登录态全量取证（2026-11-15 PM 卡⑩）
+// 出资人反复掉登录态：本机侧全排除后，取证盲区＝「服务端何时作废会话」在日志里不可见。
+// 四格：① HTTP 状态码入日志（chat /api，含 401/403 独立 [auth] 行）② auth 面接口全量留痕
+// （users/*：脱敏请求参数＋响应码＋响应体首 200 字）③ set-cookie 变动（不记值，拿不到就记
+// unavailable、不假装拿到）④ 页面载入登录态自检 ⑤ 本地存储读失败探针（只读）。
+// 纪律：只记 chat.deepseek.com 域；非 deepseek 域零新增行；XHR 侧零实例自有属性
+// （状态走模块级 WeakMap，观测走 addEventListener——原生监听器是 SDK 常规手段，不触发站点基线差分）。
+
+/** ⑩ 格2/3：auth 面端点（users/login、users/mfa/*、users/logout、users/current 等「我是谁」接口）。 */
+const AUTH_PATH_RE = /\/users\//;
+/** ⑩ 格5：会话存储键模式（命中且读空才记 ls-read-fail）。 */
+const AUTH_KEY_RE = /token|user|session|login|auth/i;
+/** ⑩ 格5：localStorage 读失败探针的落行出口（始终指向最新一次安装的 diag；探针包装只建一次，
+ * 出口可换——重复注入（不重载页面）场景下行跟最新 diag，不叠层包装）。 */
+let lsProbeSink: ((line: string) => void) | null = null;
+
+/** URL 的 host（相对路径按 location 解析，解析不了返回空串）。 */
+function hostOfUrl(raw: string): string {
+  try {
+    return new URL(raw, globalThis.location?.href ?? 'https://chat.deepseek.com/').hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+/** URL 的 pathname（同上兜底）。 */
+function pathOfUrl(raw: string): string {
+  try {
+    return new URL(raw, globalThis.location?.href ?? 'https://chat.deepseek.com/').pathname;
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * ⑩ 格2：auth 面请求参数脱敏留痕。只落「键名＋device_id 有无＋*type 字段的值（验证码类型）」，
+ * 不落明文密码/验证码值（值只经 *type 键名出现，密码类键名仅计数）。
+ */
+function logMaskedAuthRequest(diag: (s: string) => void, method: string, url: string, body: unknown): void {
+  const path = pathOfUrl(url);
+  try {
+    if (typeof body === 'string' && body.trim().startsWith('{')) {
+      const o = JSON.parse(body) as Record<string, unknown>;
+      const keys = Object.keys(o);
+      const didPresent = o.device_id != null && String(o.device_id) !== '';
+      const typeKey = keys.find((k) => /type$/i.test(k) && typeof o[k] === 'string');
+      diag(
+        `[auth] req ${method} ${path} keys=${keys.join(',') || '-'} device_id=${didPresent ? 'present' : 'absent'}` +
+          (typeKey ? ` ${typeKey}=${o[typeKey]}` : ''),
+      );
+    } else {
+      diag(`[auth] req ${method} ${path} bodyType=${typeof body === 'string' ? 'string(unparsed)' : typeof body}`);
+    }
+  } catch {
+    diag(`[auth] req ${method} ${path} body-unparsable`);
+  }
+}
+
+/** ⑩ 格3：set-cookie 留痕（不记值，只记 name＋expires/path 属性；每请求一行）。 */
+function logSetCookie(diag: (s: string) => void, raw: string | null, on: string, whenUnavailable: 'log' | 'silent'): void {
+  if (raw === null) {
+    if (whenUnavailable === 'log') diag(`[auth] set-cookie unavailable on ${on}`);
+    return;
+  }
+  // 注意：Expires 属性值本身含逗号（「Thu, 01 Jan 2027 00:00:00 GMT」）——attrs 用 [^;] 取，
+  // 不用 split(',') 切 cookie（legacy 拼接会把日期切碎）。
+  const name = raw.split('=')[0].split(';')[0].trim();
+  const expires = (raw.match(/expires=([^;]+)/i)?.[1] ?? '').trim();
+  const cpath = (raw.match(/path=([^;]+)/i)?.[1] ?? '').trim();
+  diag(`[auth] set-cookie ${name || '(multi)'}${expires ? ` expires=${expires}` : ''}${cpath ? ` path=${cpath}` : ''} on ${on}`);
+}
+
 /**
  * QD-R4-04：用户主动 abort 的标记。
  *
@@ -964,6 +1058,8 @@ interface XhrLayerState {
   aborted: boolean;
   isChat: boolean;
   scanned: number;
+  /** ⑩：本 XHR 是否已记过 [auth] 401/403 行（每请求至多一行，不随 chunk 刷屏）。 */
+  authStatusLogged?: boolean;
   sse?: SseTextStreamExtractor;
   parser?: StreamingToolCallParser;
   frameDec?: DeepSeekSseFrameDecoder;
@@ -1740,6 +1836,24 @@ function installFetchHook(
       diag(`memory.bytes=${lastMemorySegmentBytes} rows=${lastMemorySegmentRows}`);
     }
 
+    // ⑩ 格2/3（fetch 侧）：auth 面端点全量留痕＋set-cookie。非 auth 的非 chat 域仍原样放行、零新增行。
+    const fetchHost = hostOfUrl(url);
+    if (fetchHost === 'chat.deepseek.com' && AUTH_PATH_RE.test(pathOfUrl(url))) {
+      logMaskedAuthRequest(diag, method, url, init?.body);
+      const authResp = await origFetch(input, init);
+      try {
+        if (authResp.status > 0) diag(`[auth] resp ${method} ${pathOfUrl(url)} HTTP ${authResp.status}`);
+        const rb = await authResp
+          .clone()
+          .text()
+          .catch(() => '');
+        if (rb) diag(`[auth] resp-body ${pathOfUrl(url)} ${rb.slice(0, 200).replace(/\s+/g, ' ')}`);
+        logFetchSetCookies(diag, authResp, pathOfUrl(url));
+      } catch {
+        /* ignore */
+      }
+      return authResp;
+    }
     // 非对话响应不拦截（直接放行，避免影响其它请求）
     if (!isDeepSeekChatEndpoint(url, method)) {
       return origFetch(input, init);
@@ -1760,6 +1874,14 @@ function installFetchHook(
       reportContextBudget(init.body, loopState.chatUI);
     }
     const response = await origFetch(input, init);
+    // ⑩ 取证盲区补齐（2026-11-15 PM 卡⑩）：本分支只处理 chat 端点（非 chat 在上方已原样放行），
+    // 响应到达即记 HTTP 状态码；401/403 另记 [auth] 独立行（每请求至多一次）。
+    if (response.status > 0) diag(`fetch resp[HTTP ${response.status}]`);
+    if (response.status === 401 || response.status === 403) {
+      diag(`[auth] HTTP ${response.status} on ${url}`);
+    }
+    // ⑩ 格3：chat 端点的 set-cookie（会话续期/清掉，日志里直接看见；不记值）。
+    logFetchSetCookies(diag, response, pathOfUrl(url));
     if (loopState && !response.ok) {
       const verdict = classifyResponse(response.status, null);
       // QD-R5-01：首轮 retryable 失败先原样重发，封顶 2 次；预算耗尽才上报。
@@ -2016,6 +2138,31 @@ function installXhrHooks(
     }
     const xhr = this;
     const sendNow = () => (origSend as (...a: unknown[]) => unknown).call(xhr, body);
+    // ⑩ 格2/3（auth 面全量留痕＋set-cookie）：挂在 early-return 之前——这些端点正是「非 chat」，
+    // 走 zero-trace 透传分支，唯一的观测手段是 addEventListener（EventTarget 内部存储，
+    // 不产生实例自有属性，不触发站点基线差分——device_id 纪律不破）。
+    const xhrHost = hostOfUrl(url);
+    const isAuthEndpoint = xhrHost === 'chat.deepseek.com' && AUTH_PATH_RE.test(pathOfUrl(url));
+    if (isAuthEndpoint) logMaskedAuthRequest(diag, method, url, body);
+    if (xhrHost === 'chat.deepseek.com' && typeof xhr.addEventListener === 'function') {
+      xhr.addEventListener('loadend', () => {
+        try {
+          if (xhr.status > 0) {
+            if (isAuthEndpoint) {
+              diag(`[auth] resp ${method} ${pathOfUrl(url)} HTTP ${xhr.status}`);
+              const rb = xhr.responseText ?? '';
+              if (rb) diag(`[auth] resp-body ${pathOfUrl(url)} ${rb.slice(0, 200).replace(/\s+/g, ' ')}`);
+            }
+            // set-cookie：XHR getResponseHeader('set-cookie') 多数 WebView 场景被浏览器隐藏——
+            // 拿不到就记 unavailable（auth 端点）、不假装拿到；chat 端点拿不到则静默（避免刷屏）。
+            const sc = xhr.getResponseHeader('set-cookie');
+            logSetCookie(diag, sc, pathOfUrl(url), isAuthEndpoint ? 'log' : 'silent');
+          }
+        } catch {
+          /* ignore */
+        }
+      });
+    }
     // 零实例痕迹透传（2026-11-13 device_id 修复）：非 chat 请求（登录/埋点等）原样交给原生层，
     // 不包实例 handler、不写任何自有属性——站点 SDK 对实例做自有属性基线差分，多出的属性
     // 会被判「篡改」并拒发 device_id（真机二分定因：send 层实例痕迹是唯一致因）。
@@ -2183,8 +2330,17 @@ function installXhrHooks(
         const scanned = st.scanned;
         const part = text.slice(scanned);
         st.scanned = text.length;
+        // ⑩ 取证盲区补齐（2026-11-15 PM 卡⑩）：服务端 401/403（会话失效）到达时刻在日志里一眼可见。
+        // 只对 chat 端点记（st.isChat）；每枚 XHR 至多一行（authStatusLogged 去重）；
+        // 放 part 判空之前——401 响应体可能是空的，等不到 part 就永远不记。
+        if (st.isChat && xhr.status > 0 && (xhr.status === 401 || xhr.status === 403) && !st.authStatusLogged) {
+          st.authStatusLogged = true;
+          diag(`[auth] HTTP ${xhr.status} on ${st.url}`);
+        }
         if (part && st.isChat) {
-          diag(`xhr resp[${part.length}]: ${part.slice(0, 400).replace(/\s+/g, ' ')}`);
+          // ⑩：响应日志旁挂 HTTP 状态码——原 `resp[N]` 的 N＝字节数语义逐字保留（既有读数引用它），
+          // 状态码只在已收到响应头（status>0）时追加，头前保持旧行逐字节不变。
+          diag(`xhr resp[${part.length}]: ${part.slice(0, 400).replace(/\s+/g, ' ')}${xhr.status > 0 ? ` (HTTP ${xhr.status})` : ''}`);
           // QD-R7-01（F2）：累计本条流的字节数，供三态判定用。
           if (loopState) loopState.streamBytes = (loopState.streamBytes ?? 0) + part.length;
           // 提取 response_message_id（event: ready data: {"request_message_id":1,"response_message_id":2}）
@@ -2364,6 +2520,90 @@ function installXhrHooks(
 export function installMainWorldInterceptor(options: MainWorldInterceptorOptions): MainWorldInterceptorHandle {
   console.log('[interceptor] installed, fetch hook + XHR hook ready');
   const { sender, diag, onAssistantReply, onMemoriesUpdate, chatUI, onStreamDelta } = options;
+
+  // ── ⑩ 格4：页面载入登录态自检（每次安装恰好一行）——把「起手就没登录」与「用到一半掉」区分开。
+  const dbg = diag ?? (() => {});
+  const logBootCheck = (): void => {
+    try {
+      const cookieStr = typeof document !== 'undefined' ? document.cookie : '';
+      const names = cookieStr ? cookieStr.split(';').map((s) => s.trim().split('=')[0]).filter(Boolean) : [];
+      let lsKeys: string[] = [];
+      try {
+        lsKeys = Object.keys(globalThis.localStorage ?? {});
+      } catch {
+        /* ignore */
+      }
+      const userPresent =
+        names.some((n) => /user|session|token/i.test(n)) || lsKeys.some((k) => /token|user|session/i.test(k));
+      let did = 'none';
+      const didRe = /device_?id|^did$/i;
+      for (const n of names) {
+        if (didRe.test(n)) {
+          const v = (cookieStr.split(`; ${n}=`)[1] ?? '').split(';')[0];
+          if (v) {
+            did = v.slice(0, 8);
+            break;
+          }
+        }
+      }
+      if (did === 'none') {
+        for (const k of lsKeys) {
+          if (didRe.test(k)) {
+            let v = '';
+            try {
+              v = globalThis.localStorage.getItem(k) ?? '';
+            } catch {
+              /* ignore */
+            }
+            if (v) {
+              did = v.slice(0, 8);
+              break;
+            }
+          }
+        }
+      }
+      dbg(`[auth] boot-check user=${userPresent ? '存在' : '缺失'} cookie_count=${names.length} did=${did}`);
+    } catch {
+      /* ignore */
+    }
+  };
+  if (typeof document !== 'undefined' && document.readyState === 'complete') logBootCheck();
+  else globalThis.window?.addEventListener?.('load', logBootCheck, { once: true });
+
+  // ── ⑩ 格5：本地存储读失败探针（只读、零写入）——站点 SDK 读不到会话存储的那刻落一行
+  // （每键至多一次，防轮询刷屏）。document.cookie 的「读失败」不可观测（getter 恒返回串），
+  // 只探 localStorage.getItem；包装函数过 disguiseNative，不露非原生特征。
+  // ⚠️ 必须包 **Storage.prototype**，不能 `ls.getItem = wrapped`：Storage 具名属性存储语义
+  // 把实例属性赋值 trap 成 setItem（`localStorage.getItem = fn` 实际是往存储里塞键 'getItem'，
+  // 方法纹丝不动——jsdom 已实测赋值不落、方法原样；与规范同语义）。包装只建一次（__studioLsProbe
+  // 旗标），行经 lsProbeSink 落最新安装的 diag（防重复注入叠层）。
+  lsProbeSink = dbg;
+  try {
+    const StorageCtor = globalThis.Storage;
+    if (
+      StorageCtor
+      && typeof StorageCtor.prototype.getItem === 'function'
+      && (StorageCtor.prototype.getItem as unknown as Record<string, unknown>).__studioLsProbe !== true
+    ) {
+      const proto = StorageCtor.prototype;
+      const origGetItem = proto.getItem;
+      const failedKeys = new Set<string>();
+      // 箭头函数不能带 this 形参——用普通函数表达式（原型包装要保留调用者 this）。
+      const wrapped: Storage['getItem'] = function (this: Storage, key: string): string | null {
+        const v = origGetItem.call(this, key);
+        if (v === null && AUTH_KEY_RE.test(key) && !failedKeys.has(key)) {
+          failedKeys.add(key);
+          lsProbeSink?.(`[auth] ls-read-fail ${key}`);
+        }
+        return v;
+      };
+      (wrapped as unknown as Record<string, unknown>).__studioLsProbe = true;
+      Object.defineProperty(proto, 'getItem', { value: wrapped, writable: true, configurable: true });
+      disguiseNative(wrapped, 'getItem');
+    }
+  } catch {
+    /* ignore */
+  }
   // P0：启动加载与运行期刷新共用同一个 sender，避免两套 skill.list 拉取逻辑。
   skillsRefreshSender = sender;
   const pending: PendingResult[] = [];
