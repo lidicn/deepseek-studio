@@ -187,23 +187,19 @@ function main(): void {
       process.exit(0);
     }
   }
-  // ⑦（PM 派卡）：--root 指向非 git 目录时 collectChangedFiles 裸抛——与 argv 缺值同族，
-  // 显式文案＋exit 2，不许喷栈（stderr 里 git 的 fatal 由 stdio 拦截后在此转译）。
-  // ⑦-补（群PM 实弹）：--root 指向非 git 目录时 git 走 --no-index 分支、喷 7.7 KB usage——
-  // collectChangedFiles 的 stdio 已拦 stderr，故预检改显式问 git：非 git ⇒ exit 2，不许喷栈。
+  // ⑦／⑦-补（PM 派卡＋群PM 实弹）：--root 指向非 git 目录时，git 走 --no-index 分支、
+  // stderr 喷 7.7 KB usage（大写 N、无 fatal:）。**预检法**：先显式问 git，非 git ⇒
+  // exit 2＋一行拒绝文案——事后文本匹配有三坑（Error.message 是命令串／大小写／
+  // stdio 拦截后 stderr=null），已废弃。
+  // 语义边界（⑦-补2）：`rev-parse --is-inside-work-tree` 对 **bare 仓返回 false**，
+  // 故 --root 指 bare 仓同样被拒——CI 的 checkout 不是 bare，不影响射程，但这是设计而非漏洞。
   try {
     execSync('git rev-parse --is-inside-work-tree', { cwd: root, stdio: 'ignore' });
   } catch {
     console.error(`[bom-drift] 拒绝：--root 指向非 git 目录（BOM 漂移判据依赖 git diff，无法对非 git 树执行）：${root}`);
     process.exit(2);
   }
-  let issues: BomDriftIssue[];
-  let scanned: number;
-  try {
-    ({ issues, scanned } = scanBomDrift(root, { base }));
-  } catch (e) {
-    throw e;
-  }
+  const { issues, scanned } = scanBomDrift(root, { base });
   console.log(`[bom-drift] 本批（${base ? `基线 ${base.slice(0, 12)} vs HEAD` : '工作树 vs HEAD'}）改动文本文件 ${scanned} 枚`);
   if (issues.length > 0) {
     console.error('=== BOM 漂移（同批内同一文件 BOM 有↔无翻转）===');
