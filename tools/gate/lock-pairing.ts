@@ -58,19 +58,62 @@ const ANCHOR_RE =
  *  是调用方职责，本函数只管提取）；正序捕获仍停在分隔符（与 structuredHeadOk 同套 ｜：（）*）。
  *  返回 undefined ＝ 行内无 CLAIM 动作词（非锁行）。 */
 export function executorOfLine(line: string): string | undefined {
-  const m = /CLAIM\s+(?:commit|push|tag)(?:\+\S+)?/.exec(line);
+  // 卡㊳ 补格：动作词复合段的 `\+\S+` 会把全角括注（\S 含全角）吞进动作 token
+  // （`CLAIM commit+push（给 AGENTS…` 实咬 L3171）——限定 + 后缀只吃 ASCII 复合
+  // （commit+push 形态），全角字符（含括注）不属动作词。
+  const m = /CLAIM\s+(?:commit|push|tag)(?:\+[a-z]+)?/.exec(line);
   if (!m) return undefined;
   const before = line.slice(0, m.index);
   const inverted = /\*{0,2}(群PM|私聊PM|Gate|Chief|轮询器|Core|UI|Verify)(?:[（(][^）)\n]{1,12}[）)])?\s*｜\s*$/.exec(before);
   if (inverted) return inverted[1];
-  const after = line.slice(m.index + m[0].length);
-  return /^\s+([^\s｜：（）*]+)/.exec(after)?.[1];
+  let after = line.slice(m.index + m[0].length);
+  // 卡㊳ 补格（真台账 L3171/L4514 实咬）：动作词可直跟括注（`CLAIM commit+push（给…）**`）⇒
+  // 括注属动作段、执行方在括注后；动作词也可能多打（`CLAIM commit push 群PM`）⇒ 跳过
+  // 动作词表内 token。括注后的下一个词才是执行方候选。
+  for (;;) {
+    after = after.replace(/^\s+/, '');
+    if (after.startsWith('（') || after.startsWith('(')) {
+      const close = after.search(/[）)]/);
+      if (close < 0) return undefined;
+      after = after.slice(close + 1);
+      continue;
+    }
+    const w = /^([^\s｜：（）*]+)/.exec(after);
+    if (!w) return undefined;
+    if (/^(?:commit|push|tag)$/.test(w[1])) { after = after.slice(w[0].length); continue; }
+    return w[1];
+  }
+}
+
+/** 卡㊳：**收口行**（RELEASE 行）的执行方提取——与锁行不同源（RELEASE 不是 CLAIM）。
+ *  B 型实样：`06:34:08 **群PM（轮询器自动收口）｜RELEASE <sha> …` ⇒ 席名在前文、以 ｜ 收尾；
+ *  A 型（`[ts] RELEASE(挂账) <sha>`）前文无席名 ⇒ undefined ＝ 不可归属（不判销任何锁）。
+ *  席名不进死名单（⑤ 套件合成执行方 gate-test 也要能自销）——取 ｜ 前最后一个非分隔 token，
+ *  且其前文必须过 structuredHeadOk（锚段/加粗/分隔符合法，叙述行不得借道）。 */
+export function releaseActorOfLine(line: string): string | undefined {
+  const m = /RELEASE(?:\([^)]*\)|（[^）]*）)?\s+[0-9a-fA-F]{7}/.exec(line);
+  if (!m) return undefined;
+  const before = line.slice(0, m.index);
+  const inv = /(?:^|[\s*｜:（(])([^\s｜:（）*]+)(?:[（(][^）)\n]{1,12}[）)])?\s*｜\s*$/.exec(before);
+  if (inv && structuredHeadOk(before.slice(0, inv.index))) return inv[1];
+  return undefined;
 }
 
 /** 结构式前文判定（锁与 B 型收口共用）：锚段/执行方名（可带 ≤12 字括注）/加粗/分隔符自由组合，
- *  走到尾即放行（无论是否含锚——`**群PM｜` 加粗前缀本身就是锁行惯例）；剩余含叙述字符＝句中引用。 */
-function structuredHeadOk(before: string): boolean {
+ *  走到尾即放行（无论是否含锚——`**群PM｜` 加粗前缀本身就是锁行惯例）；剩余含叙述字符＝句中引用。
+ *  卡㊳ allowBareActor＝B 型收口判定专用：head 已剥掉「席名（括注）｜」的 `｜` 与括注，
+ *  以裸席名（gate-test 等合成执行方，≤12 字非分隔 token）收尾也放行——叙述行进不到这条
+ *  链路（调用点只在 mb 正则命中「收口）｜RELEASE sha」之后），不构成叙述借道面。 */
+function structuredHeadOk(before: string, allowBareActor = false): boolean {
   if (before.length === 0) return true; // 行首直跟（裸 CLAIM 锁）
+  // 卡㊳（L4700 实咬后收窄）：allowBareActor **不许逐段蚕食**——上面的逐段循环会以 `｜?`
+  // 可空尾把整句叙述当成席名序列吃光（叙述行被判真收口）。bare actor 只允许一种形态：
+  // 整段 head（剥掉「席名（括注）｜」后）＝合法结构式前缀 + 一枚裸席名收尾。整体锚定判定：
+  if (allowBareActor) {
+    const bare = /(?:^|[\s*｜:（(])([^\s｜:（）*]{1,12})$/.exec(before);
+    if (bare && structuredHeadOk(before.slice(0, bare.index))) return true;
+    // 非 bare 收尾形态走默认逐段（genericActor 仍要求 ｜ 收尾，叙述行进不来）
+  }
   let rest = before;
   while (rest.length > 0) {
     rest = rest.replace(/^[\s*]+/, '');
@@ -88,6 +131,14 @@ function structuredHeadOk(before: string): boolean {
       if (paren) rest = rest.slice(paren[0].length);
       continue;
     }
+    // 卡㊳：合成执行方（⑤ 套件 gate-test 等）不进死名单——仅认「席名（可带括注）＋｜收尾」
+    // 的倒置形态（与 releaseActorOfLine 的 B 型收口同款）；bare 收尾形态已在上面整体锚定
+    // 处理。叙述行不得借道——枚 7/7b/7c 叙述负样本守的就是这格。
+    const genericActor = /^([^\s｜:（）*]{1,12})(?:[（(][^）)\n]{1,12}[）)])?\s*｜/.exec(rest);
+    if (genericActor) {
+      rest = rest.slice(genericActor[0].length);
+      continue;
+    }
     if (/^[｜:：（）]/.test(rest)) {
       rest = rest.slice(1);
       continue;
@@ -101,9 +152,10 @@ function isRealLock(line: string, idx: number): boolean {
   return structuredHeadOk(line.slice(0, idx));
 }
 
-/** ⑰-补4 收口 B 型同套结构式（`…收口）｜RELEASE` 前文＝执行方前缀/锚段＋分隔符）。 */
+/** ⑰-补4 收口 B 型同套结构式（`…收口）｜RELEASE` 前文＝执行方前缀/锚段＋分隔符）。
+ *  卡㊳：allowBareActor——head 剥完括注＋｜ 后以裸席名（合成执行方）收尾也放行。 */
 function isRealReleaseB(line: string, idx: number): boolean {
-  return structuredHeadOk(line.slice(0, idx));
+  return structuredHeadOk(line.slice(0, idx), true);
 }
 
 export interface LockPairingResult {
@@ -119,6 +171,14 @@ export interface LockPairingResult {
   dropped: { line: number; kind: 'lock' | 'release'; text: string }[];
   lastLockLine?: number;
   lastReleaseLine?: number;
+  /** 卡㊳（私聊PM 派卡，2026-11-17）：按执行方配对视图——**新增字段，不动 locks/releases/unpaired
+   *  的位置式旧语义**（unpaired＝位置式、含跨执行方互销，收紧须先报 PM 另批）。
+   *  sameActorClosedLines＝被"执行方可归属且等执行方"收口行闭合的锁行号；
+   *  unpairedByActor＝未被同执行方收口行闭合的锁按执行方分桶（锁自身执行方推不出 ⇒ 不可归属桶）；
+   *  releasesUnattributable＝执行方推不出的收口行枚数（严格式行、读时推断，禁回写台账）。 */
+  unpairedByActor: Record<string, number>;
+  sameActorClosedLines: number[];
+  releasesUnattributable: number;
   structure: { h2: number; h3: number; lines: number; bytes: number };
 }
 
@@ -164,12 +224,36 @@ export function parseLockPairing(text: string, bytes?: number): LockPairingResul
     if (r < releases.length) pairs.push({ lockLine: l, releaseLine: releases[r] });
     else unpaired.push(l);
   }
+  // 卡㊳（私聊PM 派卡）：**读时归属推断，不改位置式旧语义**。锁的执行方＝executorOfLine（卡㊲
+  // 单源）；收口行执行方＝executorOfLine（A 型无执行方 ⇒ undefined ⇒ 归"不可归属"档，不得
+  // 默认判销）。位置式 pairs 保留作向后兼容视图；同执行方闭合/未闭合分桶另出新字段。
+  
+  const sameActorClosedLines: number[] = [];
+  const unpairedByActor: Record<string, number> = {};
+  for (const l of locks) {
+    const lockActor = executorOfLine(lines[l - 1] ?? '');
+    // 卡㊳ 判据：其后存在**任一**同执行方收口行 ⇒ 已销（不限位置式首条——批次释放/多收口
+    // 形态下，同执行方的收口可能排在别席收口之后）。收口行推不出执行方 ⇒ 不参与判销。
+    const relActor = lockActor === undefined ? undefined
+      : releases.find((n) => n > l && releaseActorOfLine(lines[n - 1] ?? '') === lockActor);
+    if (lockActor !== undefined && relActor !== undefined) {
+      sameActorClosedLines.push(l);
+      continue;
+    }
+    // 未被同执行方收口闭合 ⇒ 未销（按执行方分桶；锁自身推不出执行方 ⇒ 不可归属桶）
+    const bucket = lockActor ?? '不可归属';
+    unpairedByActor[bucket] = (unpairedByActor[bucket] ?? 0) + 1;
+  }
+  const releasesUnattributable = releases.filter((n) => releaseActorOfLine(lines[n - 1] ?? '') === undefined).length;
   return {
     locks,
     releases,
     unpaired,
     pairs,
     dropped,
+    unpairedByActor,
+    sameActorClosedLines,
+    releasesUnattributable,
     lastLockLine: locks.length > 0 ? locks[locks.length - 1] : undefined,
     lastReleaseLine: releases.length > 0 ? releases[releases.length - 1] : undefined,
     structure: {
@@ -207,6 +291,17 @@ function main(): void {
   }
   console.log(`lastLockLine=${res.lastLockLine ?? '-'}`);
   console.log(`lastReleaseLine=${res.lastReleaseLine ?? '-'}`);
+  // 卡㊳：按执行方配对视图（新增行，旧三行语义不动）。bump 键序固定：群PM／私聊PM／不可归属／其余按序。
+  const bucketOrder = ['群PM', '私聊PM', '不可归属'];
+  const buckets = Object.keys(res.unpairedByActor).sort((a, b) => {
+    const ia = bucketOrder.indexOf(a); const ib = bucketOrder.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
+  const bucketStr = buckets.length > 0
+    ? buckets.map((k) => `${k}:${res.unpairedByActor[k]}`).join('／')
+    : '全零（各锁均已被同执行方收口行闭合或无锁）';
+  console.log(`unpaired_by_actor=${bucketStr}`);
+  console.log(`releases_unattributable=${res.releasesUnattributable}`);
   console.log(`h2=${res.structure.h2}`);
   console.log(`h3=${res.structure.h3}`);
   console.log(`lines=${res.structure.lines}`);
@@ -226,33 +321,58 @@ function main(): void {
     // isExecutor 与未在册剔除两处共用它，杜绝"锁判定认、CLI 执行方不认"的相反判定
     // （路线图 §十二 ⑩：倒置行此前被误取卡号为执行方）。
     const executorOf = (n: number): string | undefined => executorOfLine(lines[n - 1] ?? '');
-    const isExecutor = (n: number): boolean => {
-      // ㉑：执行方提取通用化——⑰ 硬编码 (群PM|私聊PM) 让 ⑤ 套件的 gate-test 合成
-      //   执行方不被识别（⑱ 单源化迁移遗漏，⑤ 套件本机 11 failed 的隐藏半边）。通用捕获
-      //   停在分隔符（与 structuredHeadOk 同套 ｜：（）*）上，不把 `群PM｜④②c`／`群PM（⑤` 整段吃掉。
-      // ㉑-加闸（群PM 探针裁定，2026-11-16）：空 actor（钩默认口径）＝任一**在册**执行方——
-      //   名册单一真相＝⑤-补 口径（群PM／私聊PM）。非在册名（随手编的执行方）不得经空
-      //   actor 放行（越权绕过面）；具名入口不查名册（gate-test 合成夹具走具名精确比名）。
-      //   缺参与传空串两入口同分支（L199 ?? ''）。
-      const exec = executorOf(n);
-      return exec !== undefined ? (who === '' ? REGISTERED.includes(exec) : exec === who) : who === '';
-    };
     const lastRelease = res.lastReleaseLine ?? 0;
     // ㉑-加闸可观测面：空 actor 下被名册剔除的锁逐枚列出（双向可证伪——剔了什么必须可见）
     const unregistered: number[] = [];
+    // 卡㊳（私聊PM 派卡，2026-11-17；群PM 06:1x 裁定＋06:4x L4757 归一定稿）：销锁判据三层——
+    // ① **带席名收口只销本席**（卡㊳ 本体：两 PM 不可互销）；
+    // ② **A 型不可归属收口按位置销所有席**（63 枚历史 A 型若判"从未销锁"＝私聊PM 侧钩恒
+    //    放行＝放开越权面，06:2x per-actor 版已废；位置销保留计数与 stderr 提示）；
+    // ③ **sha 配对自愈出口**：锁行与收口行内 sha 相等即配对判销（不依赖席名——CLAIM 与
+    //    RELEASE 同 sha 是强凭证——sha 配对作为**正信号**保留在 (g) 夹具与 sha 相等即配对
+    //    语义中；"不等"不作否决权（否则 L4582/L4585 形态会因 sha 不等漏销＝死账复活）。
+    // 窗口：⑱-② 的窗口意图由 soldBy 的"其后无任何收口 ⇒ 未销"表达（06:1x 单窗预筛与
+    //    归一销锁判据互斥——「锁+唯一收口」形态永远出窗，卡㊳ 三格夹具两连咬后定稿撤销）。
+    const releaseActorLine = (n: number): string | undefined => releaseActorOfLine(lines[n - 1] ?? '');
+    const soldBy = (l: number, lockActor: string | undefined): boolean => {
+      for (const n of res.releases) {
+        if (n <= l) continue;
+        const relActor = releaseActorLine(n);
+        if (relActor !== undefined) {
+          if (lockActor !== undefined && relActor === lockActor) return true; // ① 带席名只销本席
+          continue; // 他席带席名收口不销本席锁
+        }
+        // ② A 型不可归属：按位置销所有席（06:4x L4757 归一——防单席钩恒放行）。
+        return true;
+      }
+      return false;
+    };
     const openClaims = res.locks.filter((n) => {
-      if (n <= lastRelease) return false;
+      const exec0 = executorOf(n);
       if (who === '') {
-        const exec = executorOf(n);
-        if (exec !== undefined && !REGISTERED.includes(exec)) {
+        if (exec0 !== undefined && !REGISTERED.includes(exec0)) {
           unregistered.push(n);
           return false;
         }
+        if (exec0 === undefined) {
+          // 锁自身推不出执行方 ⇒ 归不可归属档，不计入任何席的未销（与 parse 层 unpairedByActor
+          // 的"不可归属"桶同语义——不参与判销也不顶门）
+          return false;
+        }
+        return !soldBy(n, exec0);
       }
-      return isExecutor(n);
+      // 具名：只看本执行方的锁（带席名收口只销本席；A 型按位置销＋sha 配对自愈）
+      const exec = executorOf(n);
+      if (exec !== who) return false;
+      return !soldBy(n, exec);
     });
+    // 不可归属收口诊断（可观测面：A 型按位置销所有席——计数保留、判销语义随 06:4x 归一）
+    const unattributableCount = res.releases.filter((n: number) => releaseActorLine(n) === undefined).length;
     for (const n of unregistered) {
       console.error(`[check-claim] 执行方未在册剔除 L${n}（空 actor 只认在册 群PM／私聊PM）: ${(lines[n - 1] ?? '').slice(0, 120)}`);
+    }
+    if (unattributableCount > 0) {
+      console.error(`[check-claim] ${unattributableCount} 枚收口行执行方不可归属（A 型无席名）——按位置销所有席（L4757 归一），计数保留`);
     }
     if (openClaims.length > 0) {
       for (const n of openClaims) {

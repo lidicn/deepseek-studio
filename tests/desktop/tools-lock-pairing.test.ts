@@ -213,6 +213,12 @@ describe('lock-pairing · CLI 与真实仓现跑（期望值现算）', () => {
     ]);
     expect(res.unpaired).toEqual([]); // 全配对（1→3、2→3）
     expect(res.dropped.map((d) => d.line)).toEqual([5]); // 唯一被剔＝叙述行，行号在 dropped 清单
+    // 卡㊳：同执行方配对视图（新字段，旧三键语义不动）。锁 1＝私聊PM 被 ④ 私聊PM 的 B 型
+    // 收口闭合 ⇒ sameActorClosed；锁 2＝群PM 位置式被 ③ A 型（无席名）闭合＝旧语义销，
+    // 按执行方视图 ⇒ 未销（收口不可归属）。锁 2 行首有席名群PM。
+    expect(res.sameActorClosedLines).toEqual([1]); // 仅锁 1（私聊PM→私聊PM）
+    expect(res.unpairedByActor).toEqual({ 群PM: 1 }); // 锁 2 未被同执行方收口闭合
+    expect(res.releasesUnattributable).toBe(1); // L3 A 型无席名（L4 B 型带 私聊PM）
   });
 
   it('8. CLI：台账缺席 ⇒ N/A exit 0（缺失≠干净）', () => {
@@ -260,16 +266,18 @@ describe('lock-pairing · CLI 与真实仓现跑（期望值现算）', () => {
     try {
       // 真台账锚行（现读，非写死行号）——RELEASE 用严格式筛（裸字样会抓到叙述行）
       const claimLine = lines.find((l) => /^\[2026-11-16 15:10:42\] CLAIM/.test(l));
+      // 卡㊳：销锁判据＝同执行方可归属收口 ⇒ RELEASE 锚行筛**带群PM 席名的 B 型**（A 型无席名
+      // 不判销，用它会得 exit 0＝修复本体而非缺陷；S2/S4 的验收意图是"锁被同席收口后拦"）
       const releaseLine = lines.find((l) =>
-        /^\[[0-9-]{10} [0-9:]{8}\] RELEASE(?:\([^)]*\)|（[^）]*）)?\s+[0-9a-fA-F]{7}/.test(l),
+        /^[0-9]{2}-[0-9]{2} [0-9:]{5,8} \*\*群PM（[^）]{1,12}）｜RELEASE\s+[0-9a-fA-F]{7}/.test(l),
       );
       const inspLine = lines.filter((l) => /巡检 OK/.test(l)).slice(-1)[0];
       expect(claimLine, '台账应含真 CLAIM 锚行').toBeTruthy();
-      expect(releaseLine, '台账应含真 RELEASE 锚行').toBeTruthy();
+      expect(releaseLine, '台账应含群PM 席名 B 型真收口行（卡㊳ 销锁语义）').toBeTruthy();
       expect(inspLine, '台账应含巡检叙述行').toBeTruthy();
       // S1 真 CLAIM 无收口 ⇒ exit 0（放行）
       expect(run(`${claimLine}\n`, '群PM')).toBe(0);
-      // S2 真 CLAIM＋真 RELEASE ⇒ exit 2（销锁生效＝拦新提交）
+      // S2 真 CLAIM＋同席真 RELEASE ⇒ exit 2（销锁生效＝拦新提交；卡㊳ 起须同执行方）
       expect(run(`${claimLine}\n${releaseLine}\n`, '群PM')).toBe(2);
       // S3 叙述行（含 RELEASE 字样＋7 位 sha）⇒ 不得销锁也不当锁 ⇒ 纯叙述 exit 2（拦）
       expect(run(`${inspLine}\n`, '群PM')).toBe(2);
@@ -277,6 +285,11 @@ describe('lock-pairing · CLI 与真实仓现跑（期望值现算）', () => {
       expect(run(`${inspLine}\n${claimLine}\n`, '群PM')).toBe(0);
       // S4 叙述＋真锁＋真 RELEASE ⇒ 销锁生效（叙述不得保锁）＋真 RELEASE 判据来自严格式
       expect(run(`${inspLine}\n${claimLine}\n${releaseLine}\n`, '群PM')).toBe(2);
+      // 卡㊳ 互销格（06:4x L4757 归一后重定义）：真 CLAIM（群PM）＋他席**带席名**收口 ⇒ 不得销 ⇒ exit 0
+      //（A 型无席名收口按位置销所有席 ⇒ 不再是互销格——改用 B 型私聊PM 收口作他席形态）
+      const otherRelease = lines.find((l) => /^06:34:08 \*\*私聊PM（[^）]{1,12}）｜RELEASE\s+[0-9a-fA-F]{7}/.test(l));
+      expect(otherRelease, '台账应含私聊PM 席名 B 型收口行（他席形态，L3425 实样）').toBeTruthy();
+      expect(run(`${claimLine}\n${otherRelease}\n`, '群PM')).toBe(0);
       // actor 隔离：真锁属 群PM，按 私聊PM 判 ⇒ 无未销锁 ⇒ 拦
       expect(run(`${claimLine}\n`, '私聊PM')).toBe(2);
     } finally {
@@ -363,8 +376,8 @@ describe('lock-pairing · CLI 与真实仓现跑（期望值现算）', () => {
       // rGood 已提交 probe.js ⇒ 需新 staged 文件才触发钩（钩检查暂存非空才跑）
       writeFileSync(join(tmpRepo, 'probe2.js'), 'probe2', 'utf8');
       execSync('git add probe2.js', { cwd: tmpRepo, encoding: 'utf8' });
-      // 复现锁③：销锁态（真收口行）⇒ 拦且文案第一因
-      writeFileSync(logPath, '[2026-11-16 16:40:00] CLAIM commit 群PM 试\n[2026-11-16 16:41:00] RELEASE(挂账) abc1234 run 1\n', 'utf8');
+      // 复现锁③：销锁态（同执行方可归属真收口＝B 型带席名；卡㊳ 起 A 型不判销）⇒ 拦且文案第一因
+      writeFileSync(logPath, '[2026-11-16 16:40:00] CLAIM commit 群PM 试\n16:41:08 **群PM（轮询器自动收口）｜RELEASE abc1234 run 1\n', 'utf8');
       const rSold = spawnSync('git', ['commit', '-m', 'probe2'], {
         cwd: tmpRepo,
         encoding: 'utf8',
@@ -414,7 +427,8 @@ describe('lock-pairing · CLI 与真实仓现跑（期望值现算）', () => {
     };
     try {
       const claim = '[2026-11-16 17:00:00] CLAIM commit 群PM 卡㉑ 夹具（真行形态）';
-      const release = '[2026-11-16 17:01:00] RELEASE(挂账) abc1234 run 21';
+      // 卡㊳：销锁判据＝同执行方可归属收口 ⇒ 夹具收口行改 B 型带席名（A 型无席名不判销）
+      const release = '17:01:08 **群PM（轮询器自动收口）｜RELEASE abc1234 run 21';
       const claimSep = '[2026-11-16 17:02:00] CLAIM commit+push 群PM｜④②c 入库分两笔（真台账形态：执行方后接分隔符）';
       // 缺参：--check-claim 不带参 ⇒ 落空串分支（钩不设 GATE_ACTOR 的默认路径）；真带名锁 ⇒ 放行
       expect(run(`${claim}\n`, '--check-claim')).toBe(0);
@@ -544,5 +558,150 @@ describe('executorOfLine 单源化（卡㊲）', () => {
       rmSync(tmp, { recursive: true, force: true });
     }
     expect(readFileSync(src, 'utf8')).toBe(before); // 还原逐字节相等（utf8 串等价＝字节等价）
+  });
+});
+
+// ── 卡㊳（私聊PM 派卡，2026-11-17）：锁的闭合按**同执行方收口**判定，两 PM 不可互销；
+// 收口行推不出执行方（A 型无席名）归"不可归属"档、不判销、单独计数。默认模式旧三键
+// （locks／releases／unpaired）语义不动，新增 unpaired_by_actor 行。
+describe('同执行方销锁（卡㊳）', () => {
+  it('a. A 的 CLAIM ＋ 他席带席名收口 ⇒ A 的锁仍未销（互销格：带席名只销本席——卡㊳ 本体）', () => {
+    const res = parseLockPairing('[2026-11-17 05:00:00] CLAIM commit 群PM 卡㊳ 互销格\n06:05:08 **私聊PM（轮询器自动收口）｜RELEASE abc1234 run 1\n');
+    // 位置式旧语义不动：unpaired 仍 []（位置式已配对）；按执行方视图 ⇒ 他席带席名不销本席
+    expect(res.unpaired).toEqual([]);
+    expect(res.sameActorClosedLines).toEqual([]);
+    expect(res.unpairedByActor).toEqual({ 群PM: 1 });
+    // CLI：群PM 的锁仍算在途 ⇒ 放行（改前此处被 B 的收口销掉 ⇒ exit 2＝互销缺陷本体）
+    const tmp = mkdtempSync(join(tmpdir(), 'lockpair38-'));
+    try {
+      const log = join(tmp, 'PM-LOG.md');
+      writeFileSync(log, '[2026-11-17 05:00:00] CLAIM commit 群PM 卡㊳ 互销格\n06:05:08 **私聊PM（轮询器自动收口）｜RELEASE abc1234 run 1\n', 'utf8');
+      const r = runCheckCli(log, '--check-claim 群PM');
+      expect(r.status, '他席带席名收口不得销本席锁（改前 exit 2＝互销）').toBe(0);
+      expect(r.stderr).toContain('未销锁 CLAIM L1');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('b. A 的 CLAIM ＋ A 的收口行 ⇒ 销（sameActorClosed＋CLI exit 2）', () => {
+    const res = parseLockPairing('[2026-11-17 05:10:00] CLAIM commit 群PM 卡㊳ 自销格\n06:11:08 **群PM（轮询器自动收口）｜RELEASE abc1234 run 2\n');
+    expect(res.sameActorClosedLines).toEqual([1]);
+    expect(res.unpairedByActor).toEqual({});
+    const tmp = mkdtempSync(join(tmpdir(), 'lockpair38b-'));
+    try {
+      const log = join(tmp, 'PM-LOG.md');
+      writeFileSync(log, '[2026-11-17 05:10:00] CLAIM commit 群PM 卡㊳ 自销格\n06:11:08 **群PM（轮询器自动收口）｜RELEASE abc1234 run 2\n', 'utf8');
+      const r = runCheckCli(log, '--check-claim 群PM');
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain('无未销锁 CLAIM');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('c. A 的 CLAIM ＋ 无执行方 A 型收口 ⇒ 裁定（L4757）按位置销所有席 ⇒ 拦＋保留计数提示', () => {
+    const res = parseLockPairing('[2026-11-17 05:20:00] CLAIM commit 群PM 卡㊳ 无主收口格\n[2026-11-17 05:25:00] RELEASE(挂账) abc1234 run 3\n');
+    expect(res.releasesUnattributable).toBe(1);
+    const tmp = mkdtempSync(join(tmpdir(), 'lockpair38c-'));
+    try {
+      const log = join(tmp, 'PM-LOG.md');
+      writeFileSync(log, '[2026-11-17 05:20:00] CLAIM commit 群PM 卡㊳ 无主收口格\n[2026-11-17 05:25:00] RELEASE(挂账) abc1234 run 3\n', 'utf8');
+      const r = runCheckCli(log, '--check-claim 群PM');
+      // 06:4x 归一：A 型位置销（防私聊PM 侧恒放行＝放开越权面）；计数与提示保留（可观测面）
+      expect(r.status, 'A 型位置销 ⇒ 锁已销 ⇒ 拦（per-actor 版曾返 0）').toBe(2);
+      expect(r.stderr).toContain('不可归属');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('d. 负控：带席名销锁判定退回位置式（他席收口也销本席）⇒ (a) 互销格必红（备份→变异→红→还原→逐字节比）', () => {
+    const src = join(REAL_ROOT, 'tools', 'gate', 'lock-pairing.ts');
+    const bak = join(tmpdir(), `lockpair38-bak-${Date.now()}.ts`);
+    copyFileSync(src, bak);
+    const before = readFileSync(src, 'utf8');
+    // 变异：soldBy 里带席名分支改回"任何带席名收口都销"（跨席互销复活）
+    const mutated = before.replace(
+      'if (lockActor !== undefined && relActor === lockActor) return true; // ① 带席名只销本席',
+      'if (lockActor !== undefined) return true; // 变异：任何带席名收口都销＝跨席互销复活',
+    );
+    expect(mutated, '变异点必须存在（判定行被改名时本负控需同步）').not.toBe(before);
+    const tmp = mkdtempSync(join(tmpdir(), 'lockpair38d-'));
+    try {
+      writeFileSync(src, mutated, 'utf8');
+      const log = join(tmp, 'PM-LOG.md');
+      // (a) 互销格：群PM 锁＋私聊PM 带席名收口 ⇒ 变异下销掉 ⇒ exit 2＝负控红
+      writeFileSync(log, '[2026-11-17 05:00:00] CLAIM commit 群PM 卡㊳ 互销格\n06:05:08 **私聊PM（轮询器自动收口）｜RELEASE abc1234 run 1\n', 'utf8');
+      const r = runCheckCli(log, '--check-claim 群PM');
+      expect(r.status, '负控：跨席互销复活后 (a) 必红（exit 2）').toBe(2);
+    } finally {
+      copyFileSync(bak, src);
+      rmSync(bak, { force: true });
+      rmSync(tmp, { recursive: true, force: true });
+    }
+    expect(readFileSync(src, 'utf8')).toBe(before);
+  });
+
+  it('e. 正控（群PM 06:1x 裁定）：窗口前有同执行方历史锁＋窗口内零新锁 ⇒ 该执行方必须 EXIT=2（窗口外历史锁不顶门）', () => {
+    // 夹具：L1 群PM 锁＋L2 A 型收口（旧位置式销掉）＋L3 B 型群PM 收口 ＋ L4 私聊PM 锁＋L5 私聊PM B 型收口
+    // ⇒ lastRelease=L5；群PM 的 L1 锁在窗口外 ⇒ 不得顶开 door ⇒ exit 2
+    const body = [
+      '[2026-11-17 06:20:00] CLAIM commit 群PM 窗口外历史锁',
+      '[2026-11-17 06:21:00] RELEASE(挂账) abc0001 run 1',
+      '06:22:08 **群PM（轮询器自动收口）｜RELEASE abc0002 run 2',
+      '[2026-11-17 06:23:00] CLAIM commit 私聊PM 窗口内新锁',
+      '06:24:08 **私聊PM（轮询器自动收口）｜RELEASE abc0003 run 3',
+    ].join('\n');
+    const tmp = mkdtempSync(join(tmpdir(), 'lockpair38e-'));
+    try {
+      const log = join(tmp, 'PM-LOG.md');
+      writeFileSync(log, body + '\n', 'utf8');
+      const r = runCheckCli(log, '--check-claim 群PM');
+      expect(r.status, '窗口外历史锁不得顶开门：窗口内零新锁 ⇒ 拦（06:0x 版曾返 0）').toBe(2);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('f. 互证：窗口内新锁只跟 A 型收口 ⇒ 仍 EXIT=2（不可归属收口不判销）＋跨席对照', () => {
+    // per-actor 窗口下：群PM 无历史带席名收口 ⇒ 窗口起点 0 ⇒ L1 锁在窗内。
+    // L1 群PM 锁＋L2 A 型无席名收口 ⇒ 不判销 ⇒ 在途 ⇒ 放行；跨席＝私聊PM 带席名收口 ⇒ 仍放行
+    // （A 型与他席收口都不销群PM 的锁——这一格两态都是 0，销锁面由 (b) 与负控 (d) 锁死）
+    const bodyA = '[2026-11-17 06:30:00] CLAIM commit 群PM 窗口内锁\n[2026-11-17 06:31:00] RELEASE(挂账) abc0004 run 4\n';
+    const tmp = mkdtempSync(join(tmpdir(), 'lockpair38f-'));
+    try {
+      const log = join(tmp, 'PM-LOG.md');
+      writeFileSync(log, bodyA, 'utf8');
+      // 卡㊳ 归一（L4757）：A 型不可归属收口按位置销所有席 ⇒ 锁已销 ⇒ 拦（per-actor 版曾返 0）
+      expect(runCheckCli(log, '--check-claim 群PM').status, 'A 型位置销 ⇒ 锁已销 ⇒ 拦').toBe(2);
+      const bodyB = '[2026-11-17 06:30:00] CLAIM commit 群PM 窗口内锁\n06:31:08 **私聊PM（轮询器自动收口）｜RELEASE abc0005 run 5\n';
+      writeFileSync(log, bodyB, 'utf8');
+      expect(runCheckCli(log, '--check-claim 群PM').status, '他席带席名收口不销本席锁 ⇒ 在途 ⇒ 放行').toBe(0);
+      // 对照格：同席带席名收口 ⇒ 销 ⇒ 拦（这一枚把 (f) 的两面锁死）
+      const bodyC = '[2026-11-17 06:30:00] CLAIM commit 群PM 窗口内锁\n06:31:08 **群PM（轮询器自动收口）｜RELEASE abc0006 run 6\n';
+      writeFileSync(log, bodyC, 'utf8');
+      expect(runCheckCli(log, '--check-claim 群PM').status, '同席带席名收口 ⇒ 销 ⇒ 拦').toBe(2);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('g. 裁定格（群PM 06:4x L4757 归一）：A 型不可归属收口按位置销所有席 ⇒ 同席锁 EXIT=2（本格在 06:2x 版上红）', () => {
+    // L1 群PM 锁（带 sha 引用 f3e59e6）＋L2 A 型无席名收口（sha abc1234 与锁不等 ⇒ sha 配对
+    // 自愈不出）⇒ 按裁定 A 型位置销 ⇒ 拦。06:2x per-actor 版（A 型不判销）上此格返 0＝红。
+    const body = '[2026-11-17 06:30:00] CLAIM commit 群PM 窗口内锁 f3e59e6\n[2026-11-17 06:31:00] RELEASE(挂账) abc1234 run 4\n';
+    const tmp = mkdtempSync(join(tmpdir(), 'lockpair38g-'));
+    try {
+      const log = join(tmp, 'PM-LOG.md');
+      writeFileSync(log, body, 'utf8');
+      expect(runCheckCli(log, '--check-claim 群PM').status, 'A 型位置销 ⇒ 拦（per-actor 版曾返 0）').toBe(2);
+      // sha 配对自愈对照格：收口 sha 与锁行 sha 相等 ⇒ 强配对判销（不依赖席名，也在窗口语义内）
+      const body2 = '[2026-11-17 06:30:00] CLAIM commit 群PM 窗口内锁 f3e59e6\n[2026-11-17 06:31:00] RELEASE(挂账) f3e59e6 run 4\n';
+      writeFileSync(log, body2, 'utf8');
+      expect(runCheckCli(log, '--check-claim 群PM').status, 'sha 配对 ⇒ 判销 ⇒ 拦（自愈出口）').toBe(2);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

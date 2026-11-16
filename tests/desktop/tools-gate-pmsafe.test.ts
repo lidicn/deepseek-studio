@@ -150,8 +150,8 @@ describe('pre-commit CLAIM 校验（⑤）', () => {
   });
 
   it('CLAIM 已被 RELEASE 收口 → 再拦（锁已还）', () => {
-    // ㉑：RELEASE 夹具改 A 型（[ts] 前缀＋挂账括注＋sha7）——⑰ 严格两型判据不认裸 `RELEASE <sha>`
-    writeFileSync(join(repo, 'PM-LOG.md'), 'CLAIM commit gate-test 08:15 测试范围\n[2026-11-16 08:16:00] RELEASE(挂账) abc1234 run 1\n', 'utf8');
+    // 卡㊳：收口行须可归属且同执行方才判销（A 型无席名不判销）——夹具用 B 型带席名形态
+    writeFileSync(join(repo, 'PM-LOG.md'), 'CLAIM commit gate-test 08:15 测试范围\n04:16:08 **gate-test（轮询器自动收口）｜RELEASE abc1234 run 1\n', 'utf8');
     const r = tryCommit();
     expect(r.code).not.toBe(0);
     expect(r.out).toContain('没有未销锁的 CLAIM commit 记录');
@@ -160,11 +160,11 @@ describe('pre-commit CLAIM 校验（⑤）', () => {
   it('末 40 行窗口：CLAIM 在窗口外 → 拦（窗口判据生效）', () => {
     // ㉑ 名实核对（Chief 裁：只补真回归，不许改名代替）：⑱ 起窗口＝自最近真收口行起——
     // 「CLAIM 在窗口外」的真形态＝老 CLAIM 在真收口行**之前**（已销锁且被挤出窗口）。
-    // 夹具：老 CLAIM＋A 型真收口＋45 行填充 ⇒ 老锁判「无未销锁」⇒ 拦（旧断言保留）。
+    // 卡㊳：销锁判据＝同执行方可归属收口 ⇒ 夹具收口行改 B 型带席名（A 型已不判销）。
     const filler = Array.from({ length: 45 }, (_, i) => `填 ${i}`).join('\n');
     writeFileSync(
       join(repo, 'PM-LOG.md'),
-      `CLAIM commit gate-test 08:15 测试范围\n[2026-11-16 08:16:00] RELEASE(挂账) abc1234 run 1\n${filler}\n`,
+      `CLAIM commit gate-test 08:15 测试范围\n04:16:08 **gate-test（轮询器自动收口）｜RELEASE abc1234 run 1\n${filler}\n`,
       'utf8',
     );
     const r = tryCommit();
@@ -485,7 +485,9 @@ describe('pre-commit 真实人口负控（混合组：itLive＝仅本机活锁�
   itLive('⑤-补：未设 GATE_ACTOR ＋ 已 RELEASE 的 CLAIM → 仍拦（任一模式也认锁状态）', () => {
     const pm = makeBigLog(`precommit-rel-${Date.now()}.log`);
     safeAppendLog(pm, 'CLAIM commit 群PM 09:01 ⑤-补 已收口案例');
-    safeAppendLog(pm, 'RELEASE abc1234 43657387584');
+    // 卡㊳：销锁判据＝同执行方可归属收口（A 型无席名不判销）⇒ 收口行改 B 型带席名
+    safeAppendLog(pm, 'RELEASE abc1234 43657387584（群PM｜本枚为卡㊳ 前历史形态叙述，销锁见下一行）');
+    safeAppendLog(pm, '09:02:08 **群PM（轮询器自动收口）｜RELEASE abc1234 run 1');
     writeFileSync(join(repo2, 'PM-LOG.md'), readFileSync(pm, 'utf8'), 'utf8');
     const r = tryCommitReal(undefined);
     expect(r.code).not.toBe(0);
