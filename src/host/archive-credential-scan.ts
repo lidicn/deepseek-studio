@@ -23,6 +23,11 @@
  *    `JSON.stringify` 全量重写」（`file-storage-backend.ts`），若在合并结果上计数，
  *    **每写一次就把历史内容重数一遍**，N 会随写入次数增长而不随出现次数增长，判据当即作废。
  *
+ * ④ **两个面分列，不合并计数**（卡㉛ 增）：**值面**（`batch.set` 的值）与**键名面**
+ *    （`batch.set` 的键名）各自出一行诊断——`archive credential-shaped hits: …` 与
+ *    `archive credential-shaped keys: …`。合并成一个数就回答不了「窄口径掩码的射程要不要
+ *    覆盖键名」，而键名面存在的唯一理由就是这个射程问题。
+ *
  * 本模块不做 IO、不打日志、不抛错：调用方（宿主 flush 处）决定何时落诊断行。
  */
 
@@ -41,17 +46,34 @@ export const CREDENTIAL_SHAPE_PATTERNS: Record<keyof CredentialShapeCounts, RegE
   sk: /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{16,}/g,
 };
 
+/**
+ * 键名面模式表（卡㉛）：回答「KV 的**键名**里有没有凭证形串」——即窄口径前缀掩码的射程问题。
+ *
+ * 口径与值面**同源**，且是结构上同源：直接取值面模式表的 `source` 另造独立 RegExp 实例。
+ * 两条理由：① `g` 标志下正则自带 `lastIndex` 状态，两个面共用同一实例会互相污染；
+ * ② 复制 `source` 而不是把正则再手打一遍，让「复用 ㉕ 的非字母数字前界口径」由代码保证，
+ * 而不是靠注释里一句约定（今天已因手抄口径出过一次误报）。
+ * 日后键名面若确需更窄的口径，改这里并同步测试里那条同源断言。
+ */
+export const CREDENTIAL_KEY_PATTERNS: Record<keyof CredentialShapeCounts, RegExp> = {
+  bearer: new RegExp(CREDENTIAL_SHAPE_PATTERNS.bearer.source, 'g'),
+  sk: new RegExp(CREDENTIAL_SHAPE_PATTERNS.sk.source, 'g'),
+};
+
 const SHAPE_KEYS: Array<keyof CredentialShapeCounts> = ['bearer', 'sk'];
 
 function emptyCounts(): CredentialShapeCounts {
   return { bearer: 0, sk: 0 };
 }
 
-/** 计数单段文本。不截断、不打印原文。 */
-export function countCredentialShapesInText(text: string): CredentialShapeCounts {
+/** 用给定模式表计数一段文本（值面／键名面共用同一实现，保证两侧口径不会各写一套）。 */
+function countWith(
+  patterns: Record<keyof CredentialShapeCounts, RegExp>,
+  text: string,
+): CredentialShapeCounts {
   const out = emptyCounts();
   for (const kind of SHAPE_KEYS) {
-    const re = CREDENTIAL_SHAPE_PATTERNS[kind];
+    const re = patterns[kind];
     // matchAll 内部克隆正则，不复用 lastIndex——同一模式在多个值上连续调用是安全的。
     for (const _ of text.matchAll(re)) {
       out[kind] += 1;
@@ -59,6 +81,16 @@ export function countCredentialShapesInText(text: string): CredentialShapeCounts
     }
   }
   return out;
+}
+
+/** 计数单段文本的**值面**命中。不截断、不打印原文。 */
+export function countCredentialShapesInText(text: string): CredentialShapeCounts {
+  return countWith(CREDENTIAL_SHAPE_PATTERNS, text);
+}
+
+/** 计数单段文本的**键名面**命中（键名是裸字符串，不做 JSON 序列化）。 */
+export function countCredentialShapeKeysInText(text: string): CredentialShapeCounts {
+  return countWith(CREDENTIAL_KEY_PATTERNS, text);
 }
 
 /**
@@ -94,6 +126,22 @@ export function countCredentialShapesInKvSet(
   return out;
 }
 
+/**
+ * 计数**一个落盘批次的键名面**（`Object.keys(set)`）。与值面分列，理由见文件头判据④；
+ * 同样只数本批 `set`（判据③对键名面同样成立，数 `current` 会让 N 随写入次数增长）。
+ */
+export function countCredentialShapeKeysInKvSet(
+  set: Record<string, unknown>,
+): CredentialShapeCounts {
+  const out = emptyCounts();
+  for (const key of Object.keys(set)) {
+    const one = countCredentialShapeKeysInText(key);
+    out.bearer += one.bearer;
+    out.sk += one.sk;
+  }
+  return out;
+}
+
 /** 是否至少命中一枚（0 命中时调用方整行不落，避免每 100ms 一行刷屏）。 */
 export function hasCredentialShapeHit(counts: CredentialShapeCounts): boolean {
   return counts.bearer > 0 || counts.sk > 0;
@@ -105,4 +153,12 @@ export function hasCredentialShapeHit(counts: CredentialShapeCounts): boolean {
  */
 export function formatCredentialShapeHits(counts: CredentialShapeCounts): string {
   return `archive credential-shaped hits: bearer=${counts.bearer} sk=${counts.sk}`;
+}
+
+/**
+ * 键名面诊断行定字（Studio-PM 卡㉛）：与值面行**分列、不合并计数**（文件头判据④）。
+ * 两个前缀刻意长得像但有 `keys`／`hits` 之别——按前缀筛选日志时能互不误吞。
+ */
+export function formatCredentialKeyHits(counts: CredentialShapeCounts): string {
+  return `archive credential-shaped keys: bearer=${counts.bearer} sk=${counts.sk}`;
 }

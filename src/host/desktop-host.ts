@@ -67,7 +67,9 @@ import { createOfflineRunExecutor } from './bot/offline-runner';
 import { createAuditDispatcher } from './bot/audit-meeting';
 import { createFileStorageKvBackend } from './file-storage-backend';
 import {
+  countCredentialShapeKeysInKvSet,
   countCredentialShapesInKvSet,
+  formatCredentialKeyHits,
   formatCredentialShapeHits,
   hasCredentialShapeHit,
 } from './archive-credential-scan';
@@ -1841,6 +1843,13 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     const shapeHits = countCredentialShapesInKvSet(set);
     if (hasCredentialShapeHit(shapeHits)) {
       console.warn(formatCredentialShapeHits(shapeHits));
+    }
+    // 卡㉛（2026-11-16）：**键名面**计数——问的是「KV 的键名里有没有凭证形串」，
+    // 用来量窄口径前缀掩码的射程（值面管不到键名）。与值面**分列、不合并**（文件头判据④），
+    // 同样只数本批 set、0 命中整行不落、落在写成功之后。
+    const keyHits = countCredentialShapeKeysInKvSet(set);
+    if (hasCredentialShapeHit(keyHits)) {
+      console.warn(formatCredentialKeyHits(keyHits));
     }
   }
   // C1 墨鉴 R2-2：在途 KV 操作计数。
