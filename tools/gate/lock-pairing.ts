@@ -47,6 +47,26 @@ const H3_RE = /^### /;
  *  配套 dropped 诊断（loose 命中 − 计入，带被剔行号）——收紧判据必须双向可证伪。 */
 const ANCHOR_RE =
   /^(?:\[[0-9-]{10} [0-9:]{8}\]|#{2,3} @[^\n]{0,26}|### \[[0-9:]{4,8}\]|[0-9]{2}-[0-9]{2} [0-9:]{5,8}|[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)(?=\s|$)/;
+/** 卡㊲（私聊PM 派卡，2026-11-17）：执行方提取**单一真相**——同一枚 CLAIM 行在
+ *  锁判定（isRealLock/structuredHeadOk）与 CLI 执行方判定（isExecutor／未在册剔除）两处
+ *  必须同结果（记就两处都记、剔就两处都剔且打印行号）。认两种形态：
+ *  ① 正序 `CLAIM commit 群PM …`——动作词（可带 +，如 commit+push）之后第一个非分隔词＝执行方；
+ *  ② 加粗前缀＋词序倒置 `**群PM｜CLAIM commit+push 卡号 …`——执行方在 CLAIM **之前**、
+ *     `｜` 分隔（structuredHeadOk 同款"加粗前缀本身就是锁行惯例"），动作词后跟的是卡号/范围
+ *     ——此前被误取成执行方（恰是路线图 §十二 ⑩ 记的那格：锁判定认、CLI 执行方不认）。
+ *  倒置形态的席名交替与 structuredHeadOk 的 actor 交替**同源**（含非在册席名——名册过滤
+ *  是调用方职责，本函数只管提取）；正序捕获仍停在分隔符（与 structuredHeadOk 同套 ｜：（）*）。
+ *  返回 undefined ＝ 行内无 CLAIM 动作词（非锁行）。 */
+export function executorOfLine(line: string): string | undefined {
+  const m = /CLAIM\s+(?:commit|push|tag)(?:\+\S+)?/.exec(line);
+  if (!m) return undefined;
+  const before = line.slice(0, m.index);
+  const inverted = /\*{0,2}(群PM|私聊PM|Gate|Chief|轮询器|Core|UI|Verify)(?:[（(][^）)\n]{1,12}[）)])?\s*｜\s*$/.exec(before);
+  if (inverted) return inverted[1];
+  const after = line.slice(m.index + m[0].length);
+  return /^\s+([^\s｜：（）*]+)/.exec(after)?.[1];
+}
+
 /** 结构式前文判定（锁与 B 型收口共用）：锚段/执行方名（可带 ≤12 字括注）/加粗/分隔符自由组合，
  *  走到尾即放行（无论是否含锚——`**群PM｜` 加粗前缀本身就是锁行惯例）；剩余含叙述字符＝句中引用。 */
 function structuredHeadOk(before: string): boolean {
@@ -202,12 +222,10 @@ function main(): void {
     const whoRaw = argv[argv.indexOf('--check-claim') + 1] ?? '';
     const who = whoRaw.trim();
     const lines = text.split(/\r?\n/);
-    // 执行方提取：真行形态「CLAIM commit+push 群PM …」／「CLAIM commit 群PM …」——
-    // 动作 token 可带 +（commit+push），执行方紧跟动作之后的第一个非动作词
-    const executorOf = (n: number): string | undefined => {
-      const line = lines[n - 1] ?? '';
-      return /CLAIM\s+(?:commit|push|tag)(?:\+\S+)?\s+([^\s｜：（）*]+)/.exec(line)?.[1];
-    };
+    // 执行方提取：**单一真相**＝executorOfLine（卡㊲）——正序与加粗倒置两形态同函数判定，
+    // isExecutor 与未在册剔除两处共用它，杜绝"锁判定认、CLI 执行方不认"的相反判定
+    // （路线图 §十二 ⑩：倒置行此前被误取卡号为执行方）。
+    const executorOf = (n: number): string | undefined => executorOfLine(lines[n - 1] ?? '');
     const isExecutor = (n: number): boolean => {
       // ㉑：执行方提取通用化——⑰ 硬编码 (群PM|私聊PM) 让 ⑤ 套件的 gate-test 合成
       //   执行方不被识别（⑱ 单源化迁移遗漏，⑤ 套件本机 11 failed 的隐藏半边）。通用捕获

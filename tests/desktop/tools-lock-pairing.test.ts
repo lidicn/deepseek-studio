@@ -10,7 +10,8 @@ import { existsSync, readFileSync, statSync, mkdtempSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseLockPairing } from '../../tools/gate/lock-pairing';
+import { copyFileSync } from 'node:fs';
+import { parseLockPairing, executorOfLine } from '../../tools/gate/lock-pairing';
 
 const REAL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const REAL_PMLOG = join(REAL_ROOT, 'PM-LOG.md');
@@ -454,5 +455,94 @@ describe('lock-pairing · CLI 与真实仓现跑（期望值现算）', () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+// ── 卡㊲（私聊PM 派卡，2026-11-17）：执行方提取单源化——同一枚 CLAIM 行在
+// 锁判定（isRealLock/structuredHeadOk）与 CLI 执行方判定（isExecutor／未在册剔除）必须同结果。
+// 实样＝路线图 §十二 ⑩：`**群PM｜CLAIM commit+push 卡号…` 倒置行此前被误取卡号为执行方。
+// 卡㊲ CLI 小跑器：与既有枚 9/12 同形（execSync 字符串命令；Windows 下 spawnSync('npx',…) 无 shell
+// 解析不了 .cmd ⇒ status=null）。stderr 经 2>&1 并入捕获（成功路径 execSync 只回 stdout，
+// 而未销锁诊断正落在 stderr）；失败时另取 err.stderr/status。退出码先落变量、不与截断同管道。
+function runCheckCli(log: string, extra: string): { status: number; stderr: string } {
+  try {
+    const merged = execSync(`npx tsx tools/gate/lock-pairing.ts --pmlog "${log}" ${extra} 2>&1`, {
+      cwd: REAL_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return { status: 0, stderr: merged };
+  } catch (e) {
+    const err = e as { status?: number; stderr?: string; stdout?: string };
+    return { status: err.status ?? 1, stderr: (err.stderr || '') + (err.stdout || '') };
+  }
+}
+
+describe('executorOfLine 单源化（卡㊲）', () => {
+  it('a. 正序 CLAIM＋真 RELEASE ⇒ paired（提取式单源化后正序语义不变）', () => {
+    const res = parseLockPairing('[2026-11-17 02:00:00] CLAIM commit 群PM 正序试\n[2026-11-17 02:05:00] RELEASE(挂账) abc1234 run 1\n');
+    expect(res.locks).toEqual([1]);
+    expect(res.pairs).toEqual([{ lockLine: 1, releaseLine: 2 }]);
+    expect(executorOfLine('[2026-11-17 02:00:00] CLAIM commit 群PM 正序试')).toBe('群PM');
+    expect(executorOfLine('[2026-11-17 02:00:00] CLAIM commit+push 群PM 复合动作')).toBe('群PM');
+  });
+
+  it('b. 加粗前缀＋词序倒置 ⇒ 两判据同结果：isRealLock 记锁、CLI 执行方认 群PM（修复锁）', () => {
+    const line = '**群PM｜CLAIM commit+push 卡㊲ 单源化测试范围';
+    // 锁判定侧：结构式前缀（加粗前缀本身就是锁行惯例）⇒ 记锁
+    const res = parseLockPairing(line + '\n');
+    expect(res.locks).toEqual([1]);
+    // 执行方侧：单源提取认出倒置前缀的 群PM（修复前误取 卡㊲ ⇒ 未在册剔除）
+    expect(executorOfLine(line)).toBe('群PM');
+    // CLI 同一结果：空 actor 下该锁计入 openClaims ⇒ exit 0（修复前 exit 2＝拦合法提交）
+    const tmp = mkdtempSync(join(tmpdir(), 'lockpair37-'));
+    try {
+      const log = join(tmp, 'PM-LOG.md');
+      writeFileSync(log, line + '\n', 'utf8');
+      const out = runCheckCli(log, '--check-claim 群PM');
+      expect(out.status).toBe(0);
+      expect(out.stderr).toContain('未销锁 CLAIM L1');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('c. 倒置＋非在册执行方（Chief）⇒ 空 actor 下剔除且 stderr 带行号（记锁与剔除一致）', () => {
+    const line = '**Chief｜CLAIM commit 卡㊲ 非在册倒置试';
+    const res = parseLockPairing(line + '\n');
+    expect(res.locks).toEqual([1]); // 锁判定侧：Chief 在 structuredHeadOk 的 actor 交替内 ⇒ 记
+    const tmp = mkdtempSync(join(tmpdir(), 'lockpair37c-'));
+    try {
+      const log = join(tmp, 'PM-LOG.md');
+      writeFileSync(log, line + '\n', 'utf8');
+      const r = runCheckCli(log, '--check-claim');
+      expect(r.status).toBe(2); // 空 actor＝任一在册执行方 ⇒ Chief 不在册 ⇒ 无未销锁
+      expect(r.stderr).toContain('执行方未在册剔除 L1');
+      expect(r.stderr).toContain('Chief');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('d. 负控：提取式退回"只认动作词之后" ⇒ (b) 倒置格必红（变异前备份、还原比逐字节相等）', () => {
+    const src = join(REAL_ROOT, 'tools', 'gate', 'lock-pairing.ts');
+    const bak = join(tmpdir(), `lockpair37-bak-${Date.now()}.ts`);
+    copyFileSync(src, bak);
+    const before = readFileSync(src, 'utf8');
+    const mutated = before.replace('if (inverted) return inverted[1];', 'if (false && inverted) return inverted[1];');
+    expect(mutated, '变异点必须存在（提取式实现被改名时本负控需同步）').not.toBe(before);
+    const line = '**群PM｜CLAIM commit+push 卡㊲ 单源化测试范围';
+    const tmp = mkdtempSync(join(tmpdir(), 'lockpair37d-'));
+    try {
+      writeFileSync(src, mutated, 'utf8');
+      const log = join(tmp, 'PM-LOG.md');
+      writeFileSync(log, line + '\n', 'utf8');
+      // 退回旧提取式 ⇒ exec=卡㊲ ⇒ 未在册 ⇒ exit 2（(b) 的放行面被击穿＝负控红）
+      const r = runCheckCli(log, '--check-claim 群PM');
+      expect(r.status, '负控：旧提取式下倒置格必须红').toBe(2);
+    } finally {
+      copyFileSync(bak, src);
+      rmSync(bak, { force: true });
+      rmSync(tmp, { recursive: true, force: true });
+    }
+    expect(readFileSync(src, 'utf8')).toBe(before); // 还原逐字节相等（utf8 串等价＝字节等价）
   });
 });
