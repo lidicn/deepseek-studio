@@ -15,6 +15,8 @@ import { safeAppendLog, safeAppendBlock, nextGateRunNo, writeGateRunning, writeG
  *  都会让套件在干净树上炸（43660126937 前一发 CI 红的根因）。 */
 const REAL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const INSTALLER = join(REAL_ROOT, 'scripts', 'install-pre-commit-hook.mjs');
+/** ㉑：钩夹具注入绝对 CLI 路径（GATE_LOCK_CLI）——tmp 仓无 tools/，相对路径 ERR_MODULE_NOT_FOUND。 */
+const LOCK_CLI = join(REAL_ROOT, 'tools', 'gate', 'lock-pairing.ts');
 const MIN_BYTES = 100 * 1024;
 
 /** 控制面台账同构夹具：≥100KB（safeAppendBlock 写前判定的规模下限）。 */
@@ -105,7 +107,7 @@ describe('pmsafe · 闸自写 RUNNING/END（⑤）', () => {
 // ── pre-commit CLAIM 校验（⑤）：真实临时 git 仓装钩跑 commit 四态（合成人口）──────
 describe('pre-commit CLAIM 校验（⑤）', () => {
   let repo: string;
-  const env = { GATE_ACTOR: 'gate-test' } as Record<string, string>;
+  const env = { GATE_ACTOR: 'gate-test', GATE_LOCK_CLI: LOCK_CLI } as Record<string, string>;
 
   beforeAll(() => {
     repo = mkdtempSync(join(tmpdir(), 'precommit-'));
@@ -137,7 +139,8 @@ describe('pre-commit CLAIM 校验（⑤）', () => {
   it('无 CLAIM（无 PM-LOG）→ 拦，提示带执行方名', () => {
     const r = tryCommit();
     expect(r.code).not.toBe(0);
-    expect(r.out).toContain('CLAIM commit gate-test');
+    expect(r.out).toContain('PM-LOG.md 不存在');
+    expect(r.out).toContain('gate-test'); // ㉑：钩文案改字面占位后，执行方名在 actorNote 行
   });
 
   it('CLAIM commit gate-test 未 RELEASE → 放行（exit 0）', () => {
@@ -147,17 +150,36 @@ describe('pre-commit CLAIM 校验（⑤）', () => {
   });
 
   it('CLAIM 已被 RELEASE 收口 → 再拦（锁已还）', () => {
-    writeFileSync(join(repo, 'PM-LOG.md'), 'CLAIM commit gate-test 08:15 测试范围\nRELEASE abc1234 43657387584\n', 'utf8');
+    // ㉑：RELEASE 夹具改 A 型（[ts] 前缀＋挂账括注＋sha7）——⑰ 严格两型判据不认裸 `RELEASE <sha>`
+    writeFileSync(join(repo, 'PM-LOG.md'), 'CLAIM commit gate-test 08:15 测试范围\n[2026-11-16 08:16:00] RELEASE(挂账) abc1234 run 1\n', 'utf8');
     const r = tryCommit();
     expect(r.code).not.toBe(0);
-    expect(r.out).toContain('未 RELEASE');
+    expect(r.out).toContain('没有未销锁的 CLAIM commit 记录');
   });
 
   it('末 40 行窗口：CLAIM 在窗口外 → 拦（窗口判据生效）', () => {
+    // ㉑ 名实核对（Chief 裁：只补真回归，不许改名代替）：⑱ 起窗口＝自最近真收口行起——
+    // 「CLAIM 在窗口外」的真形态＝老 CLAIM 在真收口行**之前**（已销锁且被挤出窗口）。
+    // 夹具：老 CLAIM＋A 型真收口＋45 行填充 ⇒ 老锁判「无未销锁」⇒ 拦（旧断言保留）。
+    const filler = Array.from({ length: 45 }, (_, i) => `填 ${i}`).join('\n');
+    writeFileSync(
+      join(repo, 'PM-LOG.md'),
+      `CLAIM commit gate-test 08:15 测试范围\n[2026-11-16 08:16:00] RELEASE(挂账) abc1234 run 1\n${filler}\n`,
+      'utf8',
+    );
+    const r = tryCommit();
+    expect(r.code).not.toBe(0);
+    expect(r.out, '拦因必须是第一因（窗口外判无未销锁），不是工具失败').toContain('没有未销锁的 CLAIM commit 记录');
+  });
+
+  it('窗口判据对照格（⑱ 新边界另一半）：无真收口 ⇒ 窗口从头扫，长文件 CLAIM 不被行数挤出 → 放行', () => {
+    // 旧「末 40 行」语义下此夹具会被行数挤出窗口误拦；新语义无 RELEASE ⇒ lastReleaseLine=0
+    // ⇒ 窗口＝全文件 ⇒ CLAIM 仍在途 ⇒ 放行。与上一枚合起来钉住新窗口的两半边界。
     const filler = Array.from({ length: 45 }, (_, i) => `填 ${i}`).join('\n');
     writeFileSync(join(repo, 'PM-LOG.md'), `CLAIM commit gate-test 08:15 测试范围\n${filler}\n`, 'utf8');
     const r = tryCommit();
-    expect(r.code).not.toBe(0);
+    expect(r.code, '无收口 ⇒ 窗口从头起，CLAIM 不被行数挤出 → 应放行（⑱ 真回归）').toBe(0);
+    expect(r.out, '放行时 stderr 不含拦下标题').not.toContain('pre-commit 拦下');
   });
 });
 
@@ -199,7 +221,7 @@ describe('pre-commit 真实人口形态锁（静态夹具，CI 必跑）', () =>
   const tryCommitS = (actor?: string): { code: number; out: string } => {
     writeFileSync(join(repoS, 'a.txt'), `x-${Math.random()}\n`, 'utf8');
     execSync('git add a.txt', { cwd: repoS });
-    const envPack: Record<string, string | undefined> = { ...process.env };
+    const envPack: Record<string, string | undefined> = { ...process.env, GATE_LOCK_CLI: LOCK_CLI };
     if (actor === undefined) delete envPack.GATE_ACTOR;
     else envPack.GATE_ACTOR = actor;
     try {
@@ -250,10 +272,25 @@ describe('pre-commit 真实人口形态锁（静态夹具，CI 必跑）', () =>
     expect(r.code).not.toBe(0);
   });
 
-  it('未设 GATE_ACTOR ＋ pmsafe 形态 CLAIM → 放行（任一在册执行方）', () => {
+  it('㉑ 空 actor ＋真带名未销锁 → 放行（钩本体 stderr 不含拦下标题）', () => {
     writeFileSync(join(repoS, 'PM-LOG.md'), STATIC_CLAIM_PMSAFE + '\n', 'utf8');
     const r = tryCommitS(undefined);
     expect(r.code, `拦截原文：${r.out}`).toBe(0);
+    expect(r.out, '放行时 stderr 应为空，不含拦下标题').not.toContain('pre-commit 拦下');
+  });
+
+  it('㉑ 空 actor ＋他席锁已销 → 拦（钩本体 stderr 头条＝无未销锁 CLAIM）', () => {
+    writeFileSync(join(repoS, 'PM-LOG.md'), STATIC_CLAIM_PMSAFE + '\n' + STATIC_RELEASE + '\n', 'utf8');
+    const r = tryCommitS(undefined);
+    expect(r.code, '锁已销 ⇒ 空 actor 也判无未销锁 ⇒ 拦').not.toBe(0);
+    expect(r.out, '钩本体 stderr 头条必须是第一因').toContain('没有未销锁的 CLAIM');
+  });
+
+  it('㉑ 具名 actor 仍比名：私聊PM 判 群PM 的锁 → 拦（钩本体 stderr 头条）', () => {
+    writeFileSync(join(repoS, 'PM-LOG.md'), STATIC_CLAIM_PMSAFE + '\n', 'utf8');
+    const r = tryCommitS('私聊PM');
+    expect(r.code, '私聊PM 不认 群PM 的锁 ⇒ 判无未销锁 ⇒ 拦').not.toBe(0);
+    expect(r.out, '钩本体 stderr 头条必须是第一因').toContain('没有未销锁的 CLAIM');
   });
 
   it('未设 GATE_ACTOR ＋ 无 CLAIM 只有叙述 → 拦', () => {
@@ -408,7 +445,7 @@ describe('pre-commit 真实人口负控（混合组：itLive＝仅本机活锁�
   const tryCommitReal = (actor?: string): { code: number; out: string } => {
     writeFileSync(join(repo2, 'a.txt'), `x-${Math.random()}\n`, 'utf8');
     execSync('git add a.txt', { cwd: repo2 });
-    const envPack: Record<string, string | undefined> = { ...process.env };
+    const envPack: Record<string, string | undefined> = { ...process.env, GATE_LOCK_CLI: LOCK_CLI };
     if (actor === undefined) delete envPack.GATE_ACTOR;
     else envPack.GATE_ACTOR = actor;
     try {

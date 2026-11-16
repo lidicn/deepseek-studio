@@ -397,6 +397,45 @@ describe('lock-pairing · CLI 与真实仓现跑（期望值现算）', () => {
     }
   });
 
+  it('15. 卡㉑ --check-claim 空 actor／缺参同分支＋执行方通用化（钩默认路径的 CLI 级行为锁）', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'lockpair21-'));
+    const run = (body: string, ...cli: string[]): number => {
+      const log = join(tmp, 'PM-LOG.md');
+      writeFileSync(log, body, 'utf8');
+      try {
+        execSync(`npx tsx tools/gate/lock-pairing.ts --pmlog "${log}" ${cli.join(' ')}`, {
+          cwd: REAL_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        return 0;
+      } catch (e) {
+        return (e as { status?: number }).status ?? 1;
+      }
+    };
+    try {
+      const claim = '[2026-11-16 17:00:00] CLAIM commit 群PM 卡㉑ 夹具（真行形态）';
+      const release = '[2026-11-16 17:01:00] RELEASE(挂账) abc1234 run 21';
+      const claimSep = '[2026-11-16 17:02:00] CLAIM commit+push 群PM｜④②c 入库分两笔（真台账形态：执行方后接分隔符）';
+      // 缺参：--check-claim 不带参 ⇒ 落空串分支（钩不设 GATE_ACTOR 的默认路径）；真带名锁 ⇒ 放行
+      expect(run(`${claim}\n`, '--check-claim')).toBe(0);
+      // 传空串：显式 '' ⇒ 任一在册执行方 ⇒ 放行（两入口同分支，一并锁死）
+      expect(run(`${claim}\n`, '--check-claim', '""')).toBe(0);
+      // 空 actor ＋ 已销锁 ⇒ 拦（任一模式也认锁状态）
+      expect(run(`${claim}\n${release}\n`, '--check-claim')).toBe(2);
+      // 执行方后接分隔符的真台账形态（群PM｜…）：捕获停在分隔符上，具名仍比中 ⇒ 放行
+      expect(run(`${claimSep}\n`, '--check-claim', '群PM')).toBe(0);
+      // gate-test：⑤ 套件合成执行方——通用化前不被 (群PM|私聊PM) 识别 ⇒ 拦（旧缺陷锁）
+      expect(run('CLAIM commit gate-test 08:15 测试\n', '--check-claim', 'gate-test')).toBe(0);
+      // ㉑-加闸格①（群PM 探针裁定）：空 actor ＋非在册执行方名 ⇒ 拦（越权绕过面，exit 2）
+      expect(run('[2026-11-16 09:00:00] CLAIM commit 假执行方 卡ZZ 有人随手编的执行方名\n', '--check-claim')).toBe(2);
+      // ㉑-加闸格②：具名 gate-test ＋同一条非在册锁 ⇒ 放行（具名入口不查名册，⑤ 族保命格）
+      expect(run('CLAIM commit gate-test 08:15 测试\n', '--check-claim', 'gate-test')).toBe(0);
+      // 具名隔离不破：私聊PM 判 群PM 的锁 ⇒ 无未销锁 ⇒ 拦
+      expect(run(`${claim}\n`, '--check-claim', '私聊PM')).toBe(2);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('9. CLI --pmlog 指向合成台账：读数与 parseLockPairing 纯函数一致（参数化生效）', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'lockpair2-'));
     try {

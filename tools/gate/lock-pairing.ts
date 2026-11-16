@@ -32,6 +32,9 @@ import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const LOCK_RE = /CLAIM\s+(commit|push|tag)/;
+/** ㉑-加闸（群PM 裁定）：在册执行方名册——空 actor（钩默认口径）只认在册锁；
+ *  具名入口不查名册（gate-test 合成夹具走具名）。单一真相，⑤-补 口径。 */
+const REGISTERED = ['群PM', '私聊PM'];
 const REL_A = /^\[[0-9-]{10} [0-9:]{8}\] RELEASE(?:\([^)]*\)|（[^）]*）)?\s+[0-9a-fA-F]{7}/;
 const H2_RE = /^## /;
 const H3_RE = /^### /;
@@ -201,20 +204,45 @@ function main(): void {
     const lines = text.split(/\r?\n/);
     // 执行方提取：真行形态「CLAIM commit+push 群PM …」／「CLAIM commit 群PM …」——
     // 动作 token 可带 +（commit+push），执行方紧跟动作之后的第一个非动作词
-    const isExecutor = (n: number): boolean => {
+    const executorOf = (n: number): string | undefined => {
       const line = lines[n - 1] ?? '';
-      const m = /CLAIM\s+(?:commit|push|tag)(?:\+\S+)?\s+(群PM|私聊PM)/.exec(line);
-      return m ? m[1] === who : who === ''; // 缺省口径＝任一在册执行方
+      return /CLAIM\s+(?:commit|push|tag)(?:\+\S+)?\s+([^\s｜：（）*]+)/.exec(line)?.[1];
+    };
+    const isExecutor = (n: number): boolean => {
+      // ㉑：执行方提取通用化——⑰ 硬编码 (群PM|私聊PM) 让 ⑤ 套件的 gate-test 合成
+      //   执行方不被识别（⑱ 单源化迁移遗漏，⑤ 套件本机 11 failed 的隐藏半边）。通用捕获
+      //   停在分隔符（与 structuredHeadOk 同套 ｜：（）*）上，不把 `群PM｜④②c`／`群PM（⑤` 整段吃掉。
+      // ㉑-加闸（群PM 探针裁定，2026-11-16）：空 actor（钩默认口径）＝任一**在册**执行方——
+      //   名册单一真相＝⑤-补 口径（群PM／私聊PM）。非在册名（随手编的执行方）不得经空
+      //   actor 放行（越权绕过面）；具名入口不查名册（gate-test 合成夹具走具名精确比名）。
+      //   缺参与传空串两入口同分支（L199 ?? ''）。
+      const exec = executorOf(n);
+      return exec !== undefined ? (who === '' ? REGISTERED.includes(exec) : exec === who) : who === '';
     };
     const lastRelease = res.lastReleaseLine ?? 0;
-    const openClaims = res.locks.filter((n) => n > lastRelease && isExecutor(n));
+    // ㉑-加闸可观测面：空 actor 下被名册剔除的锁逐枚列出（双向可证伪——剔了什么必须可见）
+    const unregistered: number[] = [];
+    const openClaims = res.locks.filter((n) => {
+      if (n <= lastRelease) return false;
+      if (who === '') {
+        const exec = executorOf(n);
+        if (exec !== undefined && !REGISTERED.includes(exec)) {
+          unregistered.push(n);
+          return false;
+        }
+      }
+      return isExecutor(n);
+    });
+    for (const n of unregistered) {
+      console.error(`[check-claim] 执行方未在册剔除 L${n}（空 actor 只认在册 群PM／私聊PM）: ${(lines[n - 1] ?? '').slice(0, 120)}`);
+    }
     if (openClaims.length > 0) {
       for (const n of openClaims) {
         console.error(`[check-claim] 未销锁 CLAIM L${n} : ${(lines[n - 1] ?? '').slice(0, 120)}`);
       }
       process.exit(0);
     }
-    console.error(`[check-claim] 无未销锁 CLAIM（窗口＝自 L${lastRelease + 1} 真收口起；${who === '' ? '任一在册执行方' : `执行方 ${who}`}）。落一行：CLAIM commit <执行方> <时刻> <范围一句话>——然后重试；应急 --no-verify 但必须写日志。`);
+    console.error(`[check-claim] 无未销锁 CLAIM（窗口＝自 L${lastRelease + 1} 真收口起；${who === '' ? `任一在册执行方${unregistered.length > 0 ? `；${unregistered.length} 枚执行方未在册锁已剔除` : ''}` : `执行方 ${who}`}）。落一行：CLAIM commit <执行方> <时刻> <范围一句话>——然后重试；应急 --no-verify 但必须写日志。`);
     process.exit(2);
   }
   // 卡⑰-补（Chief 判据 ③）：unpaired>0 ⇒ exit 1——可直接被看门狗当闸位调用，不必人读输出。
