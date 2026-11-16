@@ -13,6 +13,8 @@
 
 **装版／bundle 锚计数口径（AGENTS 抬号批后 Core 实测＋PM 复现，执行日必读）**：凡判据写「锚命中 ≥N **枚**」只能用 `[regex]::Matches([IO.File]::ReadAllText($f), $锚).Count`——压缩产物里同一枚锚的多份出现常落在**同一行**（现读 entry.js `omitted: mask-failed`＝2 枚 1 行），`Select-String`／`Measure-Object` 只答「有没有」、答「几枚」必假低，会把合格的包判红。另：`main.mjs` 整目录被 gitignore（`src-tauri/host/`），**没有 HEAD 版可比**，装版验收只与 dev 树现读值或锚枚数对照，不以 sha 相等为前提。
 
+**dev 实例行为面等同 0.14.24 发布树（可引用形式，PM 01:0x 证成、勿再写「dev 树在 6dc7992」）**：报告统一写「HEAD＝`<起 dev 时现读>`，与 tag 提交 `6dc7992` 之间 `src/**`、`src-tauri/src/**`、`package.json` 零改动 ⇒ 行为面等同 0.14.24 发布树」——判据是无路径 `git diff --numstat 6dc7992..HEAD` 现跑，断**运行时面（`src/**`、`src-tauri/src/**`、`package.json`）0 枚**（01:0x 时点现算 7 枚文件：AGENTS／路线图／判据表／执行单／Gate 定性件／验收报告／JUDGE（含本文件），全非运行时代码面；时点读数只留痕、不冻死，起 dev 前重跑一遍）。起 dev 时报的 tag＋exe 用 Core 卡㉟ 后现读组：`target\debug\deepseek-studio.exe` FileVersion **0.14.24**／24,177,152 B／mtime 00:58:58（22:00 那枚 0.14.23 壳作废，勿再引）。
+
 ## §1 证据通道分型（关键：两件半不依赖 CDP）
 | 通道 | 依赖 | 覆盖 |
 |---|---|---|
