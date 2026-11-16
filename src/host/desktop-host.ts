@@ -66,6 +66,11 @@ import { FileReportStore } from './bot/report-store';
 import { createOfflineRunExecutor } from './bot/offline-runner';
 import { createAuditDispatcher } from './bot/audit-meeting';
 import { createFileStorageKvBackend } from './file-storage-backend';
+import {
+  countCredentialShapesInKvSet,
+  formatCredentialShapeHits,
+  hasCredentialShapeHit,
+} from './archive-credential-scan';
 import { listFiles, grepFiles } from '../capabilities/search-files';
 import { webFetch } from '../capabilities/web-fetch';
 import { webSearch } from '../capabilities/web-search';
@@ -1826,6 +1831,16 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       await kvBackend.writeBatch({ set, remove });
     } catch (err) {
       console.warn('[kv] flush failed:', err);
+      return;
+    }
+    // 卡㉕（2026-11-16）：档案面凭证形串「按型计数」——只计数，不改内容、不动正文语义。
+    // 三条口径（改之前先看 src/host/archive-credential-scan.ts 文件头）：
+    //   ① 只数本批 set 的值，**不数合并后的整对象**——后者会让 N 随写入次数增长而非出现次数；
+    //   ② 0 命中整行不落（一事件一行；否则每次 100ms 防抖都刷一行）；
+    //   ③ 落在写成功之后：这一行说的是「已落进档案」的东西，写失败就不该报成已落。
+    const shapeHits = countCredentialShapesInKvSet(set);
+    if (hasCredentialShapeHit(shapeHits)) {
+      console.warn(formatCredentialShapeHits(shapeHits));
     }
   }
   // C1 墨鉴 R2-2：在途 KV 操作计数。
