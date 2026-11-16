@@ -973,8 +973,119 @@ function logFetchSetCookies(diag: (s: string) => void, response: Response, on: s
 
 /** ⑩ 格2/3：auth 面端点（users/login、users/mfa/*、users/logout、users/current 等「我是谁」接口）。 */
 const AUTH_PATH_RE = /\/users\//;
-/** ⑩ 格5：会话存储键模式（命中且读空才记 ls-read-fail）。 */
-const AUTH_KEY_RE = /token|user|session|login|auth/i;
+/** ㉒ 格2：会话存储键模式收窄——只认凭证形键（token／device 标识／口令类）。
+ * 旧表 `token|user|session|login|auth` 过宽：装版实读 `ls-read-fail` 打在 `__session_page_size__`
+ * （UI 态）与 `__tea_session_id_20006317`（腾讯分析会话号）上——两者都不是 DeepSeek 登录会话键，
+ * 命中只会刷噪音、稀释真信号（PM 卡㉒ 第二格）。站点真实会话键 `userToken` 仍被 `token` 子串命中。 */
+const AUTH_KEY_RE = /token|device_?id|^did$|password|secret|api_?key/i;
+
+/** ㉒ 格1：auth 响应体敏感键表（PM 卡㉒ 定死的 10 枚，值→长度＋摘要形态；
+ * 取证键如 `device_id`／`biz_code`／`code`／`msg`／`id` **不在表内**——键名表边界锁防后来人误加）。 */
+export const AUTH_SENSITIVE_KEYS: ReadonlySet<string> = new Set([
+  'token', 'access_token', 'refresh_token', 'api_key', 'secret', 'password', 'captcha', 'verify_code', 'authorization', 'cookie',
+]);
+
+/**
+ * ㉒ 格1：同步 SHA-256（纯 JS 自包含——注入层纪律：不得 import 宿主侧模块；Web Crypto 是异步，
+ * 而 XHR loadend／fetch 日志点是同步发射）。只出前 16 位十六进制（大写），与全项目 sha16 指纹口径一致，
+ * 且与 PM 止血脚本的 `sha256[:16]` 证据锚可互核（「有没有换过、是不是同一枚」仍可读，值不可还原）。
+ */
+function sha256Hex16(input: string): string {
+  const bytes = new TextEncoder().encode(input);
+  // K 表＝前 64 个素数立方根分数部分的前 32 位（FIPS 180-4 §4.2.2）。逐枚对照
+  // @noble/hashes（经 node:crypto 验证）落表——2026-11-16 ㉒ 自写初版誊错自第 3 枚起，
+  // 摘要整体作废后才对出，此表为对照后唯一可信版本。
+  const K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+  ];
+  // IV＝前 8 个素数平方根分数部分的前 32 位（与 K 表同次对照 @noble/hashes 落值）
+  let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
+  let h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+  const rotr = (x: number, n: number) => (x >>> n) | (x << (32 - n));
+  const total = bytes.length;
+  const padded = new Uint8Array((((total + 8) >> 6) + 1) << 6);
+  padded.set(bytes);
+  padded[total] = 0x80;
+  // 64 位长度（big-endian），长度单位＝位。上 4 字节在我们的量级（<512MB 体）恒 0，
+  // 仍按 total>>29 写出（防将来大体越界）；下 4 字节＝(total*8) 的 32 位低半。
+  const lo = (total * 8) >>> 0;
+  padded[padded.length - 8] = Math.floor(total / 0x20000000) & 0xff;
+  padded[padded.length - 4] = (lo >>> 24) & 0xff;
+  padded[padded.length - 3] = (lo >>> 16) & 0xff;
+  padded[padded.length - 2] = (lo >>> 8) & 0xff;
+  padded[padded.length - 1] = lo & 0xff;
+  const w = new Uint32Array(64);
+  for (let off = 0; off < padded.length; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = (padded[off + i * 4] << 24) | (padded[off + i * 4 + 1] << 16) | (padded[off + i * 4 + 2] << 8) | padded[off + i * 4 + 3];
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+    let a = h0, b2 = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + K[i] + w[i]) >>> 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b2) ^ (a & c) ^ (b2 & c);
+      const t2 = (S0 + maj) >>> 0;
+      h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b2; b2 = a; a = (t1 + t2) >>> 0;
+    }
+    h0 = (h0 + a) >>> 0; h1 = (h1 + b2) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0;
+    h4 = (h4 + e) >>> 0; h5 = (h5 + f) >>> 0; h6 = (h6 + g) >>> 0; h7 = (h7 + h) >>> 0;
+  }
+  return [h0, h1, h2, h3, h4, h5, h6, h7]
+    .map((x) => (x >>> 0).toString(16).padStart(8, '0'))
+    .join('')
+    .slice(0, 16)
+    .toUpperCase();
+}
+
+/**
+ * ㉒ 格1：auth 响应体落盘前的敏感值掩码（PM 复核裁定＝按端点分射程，auth 端点面内全遮）：
+ * - JSON 对象／数组：深度遍历，敏感键（`AUTH_SENSITIVE_KEYS`，键名小写精确匹配）的**字符串**值
+ *   → `<len=N sha16=…>`；非敏感键（biz_code/code/msg/id 等）照常可读；
+ * - 非 JSON 体（HTML 错误页、纯文本）与 JSON 原始值（裸串／数字）：**整串** →
+ *   `<len=N sha16=…>`（无键结构可保留可读面，整串摘要化，原值零出现）；
+ * - 形似 JSON 但解析失败（corrupt）：fail-closed 返回空串——调用点落 `<omitted: mask-failed>` 行，
+ *   宁可丢这行取证，不可把原值带出去。掩码不静默，泄露面必须为零。
+ */
+export function maskAuthResponseBody(raw: string): string {
+  const t = raw.trim();
+  const whole = () => `<len=${raw.length} sha16=${sha256Hex16(raw)}>`;
+  if (!t.startsWith('{') && !t.startsWith('[')) return whole();
+  try {
+    const v: unknown = JSON.parse(t);
+    if (v === null || typeof v !== 'object') return whole();
+    const walk = (o: unknown): unknown => {
+      if (Array.isArray(o)) return o.map(walk);
+      if (o !== null && typeof o === 'object') {
+        const out: Record<string, unknown> = {};
+        for (const [k, val] of Object.entries(o as Record<string, unknown>)) {
+          if (typeof val === 'string' && val.length > 0 && AUTH_SENSITIVE_KEYS.has(k.toLowerCase())) {
+            out[k] = `<len=${val.length} sha16=${sha256Hex16(val)}>`;
+          } else {
+            out[k] = walk(val);
+          }
+        }
+        return out;
+      }
+      return o;
+    };
+    return JSON.stringify(walk(v));
+  } catch {
+    // 掩码失败＝宁可丢这行取证，不可把原值带出去
+    return '';
+  }
+}
 /** ⑩ 格5：localStorage 读失败探针的落行出口（始终指向最新一次安装的 diag；探针包装只建一次，
  * 出口可换——重复注入（不重载页面）场景下行跟最新 diag，不叠层包装）。 */
 let lsProbeSink: ((line: string) => void) | null = null;
@@ -1847,7 +1958,9 @@ function installFetchHook(
           .clone()
           .text()
           .catch(() => '');
-        if (rb) diag(`[auth] resp-body ${pathOfUrl(url)} ${rb.slice(0, 200).replace(/\s+/g, ' ')}`);
+        // ㉒ 格1：敏感值掩码后再落盘（长度＋摘要形态，值不可还原；非敏感键照常可读）
+        const rbm = maskAuthResponseBody(rb);
+        if (rb) diag(`[auth] resp-body ${pathOfUrl(url)} ${rbm ? rbm.slice(0, 200).replace(/\s+/g, ' ') : '<omitted: mask-failed, body not written>'}`);
         logFetchSetCookies(diag, authResp, pathOfUrl(url));
       } catch {
         /* ignore */
@@ -2151,7 +2264,9 @@ function installXhrHooks(
             if (isAuthEndpoint) {
               diag(`[auth] resp ${method} ${pathOfUrl(url)} HTTP ${xhr.status}`);
               const rb = xhr.responseText ?? '';
-              if (rb) diag(`[auth] resp-body ${pathOfUrl(url)} ${rb.slice(0, 200).replace(/\s+/g, ' ')}`);
+              // ㉒ 格1：敏感值掩码后再落盘（与 fetch 侧同口径；mask-fail ⇒ 可省略行、不写原值）
+              const rbm = maskAuthResponseBody(rb);
+              if (rb) diag(`[auth] resp-body ${pathOfUrl(url)} ${rbm ? rbm.slice(0, 200).replace(/\s+/g, ' ') : '<omitted: mask-failed, body not written>'}`);
             }
             // set-cookie：XHR getResponseHeader('set-cookie') 多数 WebView 场景被浏览器隐藏——
             // 拿不到就记 unavailable（auth 端点）、不假装拿到；chat 端点拿不到则静默（避免刷屏）。

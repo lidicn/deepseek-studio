@@ -21,7 +21,8 @@ vi.mock('../../src/inject/pow', () => ({
   createPowHeaders: vi.fn(async () => ({ 'X-DS-PoW-Response': 'http-status-stub' })),
 }));
 
-import { installMainWorldInterceptor } from '../../src/inject/main-world-interceptor';
+import { createHash } from 'node:crypto';
+import { installMainWorldInterceptor, AUTH_SENSITIVE_KEYS, maskAuthResponseBody } from '../../src/inject/main-world-interceptor';
 
 type Handler = ((...args: unknown[]) => void) | null;
 const CHAT_URL = 'https://chat.deepseek.com/api/v0/chat/completion';
@@ -365,6 +366,176 @@ describe('⑩ 格5：本地存储读失败探针（只读、零写入）', () =>
     } finally {
       localStorage.removeItem('studio_probe_token');
       localStorage.removeItem('plain_key_zz');
+      handle.stop();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('㉒ 格1：auth 响应体敏感值掩码（掩码值不删行；非敏感键照常可读）', () => {
+  const TOKEN64 = 'a'.repeat(32) + 'b'.repeat(32); // 64 字符假令牌
+  const expectedSha16 = createHash('sha256').update(TOKEN64).digest('hex').slice(0, 16).toUpperCase();
+
+  it('XHR users/current 200 体含 64 字符 token ⇒ resp-body 行无原值、含 <len=64 sha16=…>（摘要与 node sha256 互核）、非敏感键 biz_code 可读', () => {
+    vi.useFakeTimers();
+    const diag = vi.fn();
+    const { FakeXHR, handle } = installHarness(diag);
+    try {
+      const x = newXhr(FakeXHR);
+      x.open('GET', 'https://chat.deepseek.com/api/v0/users/current');
+      x.send('');
+      x.respond(200, JSON.stringify({ code: 0, msg: '', data: { biz_code: 0, token: TOKEN64 } }));
+      const line = diagLines(diag).find((l) => l.startsWith('[auth] resp-body /api/v0/users/current'));
+      expect(line).toBeDefined();
+      expect(line).not.toContain(TOKEN64);
+      expect(line).toContain(`<len=64 sha16=${expectedSha16}>`);
+      expect(line).toContain('biz_code');
+    } finally {
+      handle.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('fetch 侧同形：clone().text() 体含 token ⇒ 掩码后落行、摘要同值', async () => {
+    vi.useFakeTimers();
+    const diag = vi.fn();
+    const body = JSON.stringify({ code: 0, data: { token: TOKEN64, biz_code: 7 } });
+    const fetchStub = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      clone: () => ({ text: async () => body }),
+    }));
+    vi.stubGlobal('fetch', fetchStub as unknown as typeof fetch);
+    const { handle } = installHarness(diag);
+    try {
+      void (globalThis.fetch as unknown as (u: string, i?: unknown) => Promise<unknown>)('https://chat.deepseek.com/api/v0/users/current');
+      await vi.advanceTimersByTimeAsync(500);
+      const line = diagLines(diag).find((l) => l.startsWith('[auth] resp-body /api/v0/users/current'));
+      expect(line).toBeDefined();
+      expect(line).not.toContain(TOKEN64);
+      expect(line).toContain(`<len=64 sha16=${expectedSha16}>`);
+      expect(line).toContain('biz_code');
+    } finally {
+      handle.stop();
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('格1 边界锁：device_id 等取证键不进掩码表（值照常可读；表恰为卡面 10 枚，防后来人误加）', () => {
+    vi.useFakeTimers();
+    const diag = vi.fn();
+    const { FakeXHR, handle } = installHarness(diag);
+    try {
+      const x = newXhr(FakeXHR);
+      x.open('GET', 'https://chat.deepseek.com/api/v0/users/current');
+      x.send('');
+      x.respond(200, JSON.stringify({ code: 0, data: { device_id: 'ENCRYPTED-DEVICE-ID', biz_code: 1 } }));
+      const line = diagLines(diag).find((l) => l.startsWith('[auth] resp-body /api/v0/users/current'));
+      expect(line).toBeDefined();
+      expect(line).toContain('ENCRYPTED-DEVICE-ID'); // 取证键不掩
+      expect(AUTH_SENSITIVE_KEYS.has('device_id')).toBe(false);
+      expect(AUTH_SENSITIVE_KEYS.size).toBe(10);
+      for (const k of ['token', 'access_token', 'refresh_token', 'api_key', 'secret', 'password', 'captcha', 'verify_code', 'authorization', 'cookie']) {
+        expect(AUTH_SENSITIVE_KEYS.has(k)).toBe(true);
+      }
+    } finally {
+      handle.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('掩码单元自检：已知向量 sha256("abc") 前 16 位＋非 JSON／JSON 原始值整串掩码＋corrupt 返回空串', () => {
+    const masked = maskAuthResponseBody(JSON.stringify({ token: 'abc' }));
+    expect(masked).toContain('<len=3 sha16=BA7816BF8F01CFEA>');
+    // PM 裁定：auth 端点面内非 JSON 整串 <len=N sha16=…>（原值零出现）
+    const html = '<html>error page</html>';
+    const mHtml = maskAuthResponseBody(html);
+    expect(mHtml).toContain('<len=');
+    expect(mHtml).not.toContain(html);
+    const mPlain = maskAuthResponseBody('plain text body');
+    expect(mPlain).not.toContain('plain text body');
+    // corrupt（形似 JSON 解析失败）⇒ 空串＝调用点落 <omitted…> 行
+    expect(maskAuthResponseBody('{broken json')).toBe('');
+    expect(maskAuthResponseBody(JSON.stringify('"bare-string-token"'))).not.toContain('"bare-string-token"');
+  });
+
+  it('㉒ 复核补锁①：corrupt JSON（以 { 开头解析失败）⇒ resp-body 行含 omitted、原值零出现（XHR）', () => {
+    vi.useFakeTimers();
+    const diag = vi.fn();
+    const { FakeXHR, handle } = installHarness(diag);
+    try {
+      const x = newXhr(FakeXHR);
+      x.open('GET', 'https://chat.deepseek.com/api/v0/users/current');
+      x.send('');
+      const corrupt = '{"code":0,"data":{"token":"TRUNC";'; // 以 { 开头、解析必失败
+      x.respond(200, corrupt);
+      const line = diagLines(diag).find((l) => l.startsWith('[auth] resp-body /api/v0/users/current'));
+      expect(line).toBeDefined();
+      expect(line).toContain('<omitted: mask-failed, body not written>');
+      expect(line).not.toContain('TRUNC');
+    } finally {
+      handle.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('㉒ 复核补锁②：非 JSON 响应体（HTML）⇒ 整串 <len=N sha16=…>、原值零出现（XHR＋fetch 两路）', async () => {
+    vi.useFakeTimers();
+    const diag = vi.fn();
+    // 拦截器安装时捕获 globalThis.fetch——stub 必须先于 installHarness 就位（同族既有 fetch 锁的顺序纪律）
+    const html = '<html><body>waf-blocked</body></html>';
+    const fetchStub = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      clone: () => ({ text: async () => html }),
+    }));
+    vi.stubGlobal('fetch', fetchStub as unknown as typeof fetch);
+    const { FakeXHR, handle } = installHarness(diag);
+    try {
+      const x = newXhr(FakeXHR);
+      x.open('GET', 'https://chat.deepseek.com/api/v0/users/current');
+      x.send('');
+      x.respond(200, html);
+      void (globalThis.fetch as unknown as (u: string) => Promise<unknown>)('https://chat.deepseek.com/api/v0/users/logout');
+      await vi.advanceTimersByTimeAsync(500);
+      const lines = diagLines(diag);
+      const xLine = lines.find((l) => l.startsWith('[auth] resp-body /api/v0/users/current'));
+      expect(xLine).toBeDefined();
+      expect(xLine).toContain('<len=');
+      expect(xLine).not.toContain('waf-blocked');
+      const fLine = lines.find((l) => l.startsWith('[auth] resp-body /api/v0/users/logout'));
+      expect(fLine).toBeDefined();
+      expect(fLine).toContain('<len=');
+      expect(fLine).not.toContain('waf-blocked');
+    } finally {
+      handle.stop();
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('㉒ 格2：ls-read-fail 键名射程收窄（UI 态／第三方分析键不得触发）', () => {
+  it('`__session_page_size__`／`__tea_session_id_20006317` 读 miss ⇒ 零行；`userToken`（DeepSeek 会话键）miss ⇒ 恰一行', () => {
+    vi.useFakeTimers();
+    const diag = vi.fn();
+    const { handle } = installHarness(diag);
+    try {
+      localStorage.removeItem('__session_page_size__');
+      localStorage.getItem('__session_page_size__'); // UI 态：不得触发
+      localStorage.removeItem('__tea_session_id_20006317');
+      localStorage.getItem('__tea_session_id_20006317'); // 腾讯分析会话号：不得触发
+      expect(diagLines(diag).filter((l) => l.startsWith('[auth] ls-read-fail')).length).toBe(0);
+      localStorage.removeItem('userToken');
+      localStorage.getItem('userToken'); // 站点真实会话键：触发
+      expect(diagLines(diag).filter((l) => l.startsWith('[auth] ls-read-fail userToken'))).toHaveLength(1);
+    } finally {
+      localStorage.removeItem('__session_page_size__');
+      localStorage.removeItem('__tea_session_id_20006317');
+      localStorage.removeItem('userToken');
       handle.stop();
       vi.useRealTimers();
     }
