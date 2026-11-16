@@ -37,19 +37,39 @@ if [ ! -f "$log" ]; then
   echo "   应急可用 --no-verify，但按 AGENTS 必须写日志。" >&2
   exit 1
 fi
+# 卡⑳（群PM 判据，CI 两发连红根因）：**路径一律绝对**——钩从任意 cwd 被调，相对路径
+#   tools/gate/lock-pairing.ts 在 tmp 夹具仓/干净检出里不存在 ⇒ ERR_MODULE_NOT_FOUND，
+#   文案与退出码全走偏。GATE_LOCK_CLI 可注入（夹具指到绝对 CLI 路径，不赌 cwd）。
+lock_cli="\${GATE_LOCK_CLI:-$top/tools/gate/lock-pairing.ts}"
 if [ -z "$actor" ]; then
-  verdict=$(npx tsx tools/gate/lock-pairing.ts --pmlog "$log" --check-claim "" 2>&1 >/dev/null; echo "EXIT=$?")
+  verdict=$(npx tsx "$lock_cli" --pmlog "$log" --check-claim "" 2>&1 >/dev/null; echo "EXIT=$?")
 else
-  verdict=$(npx tsx tools/gate/lock-pairing.ts --pmlog "$log" --check-claim "$actor" 2>&1 >/dev/null; echo "EXIT=$?")
+  verdict=$(npx tsx "$lock_cli" --pmlog "$log" --check-claim "$actor" 2>&1 >/dev/null; echo "EXIT=$?")
 fi
+# 卡⑲（Chief 定字）：拦下文案**分三因，不得共用一个标题**——第二因（工具执行失败）在无依赖
+# 环境（新克隆、node_modules 缺失）下会被误报成第一因，操作者被告知去落 CLAIM 而真因是没装
+# 依赖，头条误导比不提示更坏。verdict 原文保留在下一行（可诊断）。
 case "$verdict" in
   *EXIT=0*)
     exit 0
     ;;
-  *)
+  *EXIT=2*)
     echo "pre-commit 拦下：PM-LOG.md 内没有未销锁的 CLAIM commit 记录。$actorNote" >&2
+    echo "   处置：落一行 CLAIM commit <执行方> <时刻> <范围一句话>——然后重试。" >&2
     echo "$verdict" | sed 's/^/   /' >&2
     echo "   应急可用 --no-verify，但按 AGENTS 必须写日志。" >&2
+    exit 1
+    ;;
+  *EXIT=127*)
+    echo "pre-commit 拦下：工具执行失败（npx tsx 缺失或非预期退出）。$actorNote" >&2
+    echo "   处置：先装依赖（npm ci）再重试；或应急 --no-verify 并按 AGENTS 落账。" >&2
+    echo "$verdict" | sed 's/^/   /' >&2
+    exit 1
+    ;;
+  *)
+    echo "pre-commit 拦下：工具执行失败（npx tsx 缺失或非预期退出）。$actorNote" >&2
+    echo "   处置：先装依赖（npm ci）再重试；或应急 --no-verify 并按 AGENTS 落账。" >&2
+    echo "$verdict" | sed 's/^/   /' >&2
     exit 1
     ;;
 esac

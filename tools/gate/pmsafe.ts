@@ -61,6 +61,16 @@ export function safeAppendBlock(file: string, block: string): void {
     appendFileSync(file, '\n');
   }
   const ts = timestamp();
+  // 卡⑳（群PM 16:3x 实弹）：正文开头已带时间戳 ⇒ 追加机器锚会造**双时刻行**——结构式锁判据
+  // 把整行判成叙述（CLAIM 不落锁＝钩要抓的绕过面）。正文首行以 `[YYYY-MM-DD …` 开头 ⇒
+  // 拒写（调用方自行决定用正文时刻还是机器锚，两套不可混）；其余块仍由本入口统一加锚。
+  if (/^\s*\[\d{4}-\d{2}-\d{2} /.test(normalized(block).split('\n')[0])) {
+    throw new Error(
+      'SafeAppend 拒绝：正文开头已带时间戳（[YYYY-MM-DD…]）——机器锚会与之叠成双时刻行，' +
+        '锁判据会把整行判成叙述（CLAIM 不落锁）。请二选一：去掉正文的时刻锚（用本入口的机器锚），' +
+        '或直接用裸写入入口并自担三段式自检。卡⑳ 20261116 PM 实弹。',
+    );
+  }
   const record = `${ts} ${normalized(block)}\n`;
   const before = readFileSync(file, 'utf8');
   appendFileSync(file, record);

@@ -4,7 +4,8 @@
  * 未配对复算＋空表＋台账缺席 N/A＋真实仓现跑（期望值现算，与 ps1 同命令互证）。
  */
 import { describe, it, expect } from 'vitest';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
+import * as pmsafeModule from '../../tools/gate/pmsafe';
 import { existsSync, readFileSync, statSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
@@ -287,6 +288,113 @@ describe('lock-pairing · CLI 与真实仓现跑（期望值现算）', () => {
     expect(installer).toContain('--check-claim');
     expect(installer).not.toMatch(/awk -v actor/); // 旧 awk 判据段已删
     expect(installer).not.toMatch(/tail -n 40/); // 末 40 行窗口已废（⑱-②）
+  });
+
+  it('12. 卡⑲ 拦下文案三因分立：exit 2＝无未销锁 CLAIM／工具失败＝npx 不可用（假 PATH 实测）／PM-LOG 缺失', () => {
+    const installer = readFileSync(resolve(REAL_ROOT, 'scripts', 'install-pre-commit-hook.mjs'), 'utf8');
+    expect(installer).toContain('没有未销锁的 CLAIM commit 记录');
+    expect(installer).toContain('工具执行失败（npx tsx 缺失或非预期退出）');
+    expect(installer).toContain('PM-LOG.md 不存在');
+    if (existsSync(REAL_PMLOG)) {
+      const inspLine = readFileSync(REAL_PMLOG, 'utf8').split(/\r?\n/).filter((l) => /巡检 OK/.test(l)).slice(-1)[0];
+      const tmp = mkdtempSync(join(tmpdir(), 'hook19-'));
+      try {
+        const log = join(tmp, 'PM-LOG.md');
+        writeFileSync(log, inspLine, 'utf8');
+        const r = spawnSync(process.execPath, [
+          '--import', 'tsx', join(REAL_ROOT, 'tools', 'gate', 'lock-pairing.ts'), '--pmlog', log, '--check-claim', '群PM',
+        ], { cwd: REAL_ROOT, encoding: 'utf8' });
+        expect(r.status, '纯叙述无真锁应 exit 2（第一因）').toBe(2);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    }
+    const tmp2 = mkdtempSync(join(tmpdir(), 'hook19-nopath-'));
+    try {
+      const log = join(tmp2, 'PM-LOG.md');
+      writeFileSync(log, '[2026-11-16 16:30:00] CLAIM commit 群PM 试\n', 'utf8');
+      const r = spawnSync('npx', ['tsx', join(REAL_ROOT, 'tools', 'gate', 'lock-pairing.ts'), '--pmlog', log, '--check-claim', '群PM'], {
+        cwd: tmp2,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: 'C:\\Windows\\System32;C:\\Windows' },
+      });
+      expect(r.status, 'npx 不可用应非预期退出（非 0/2 的失败态）').not.toBe(2);
+      expect(r.status ?? -1, '工具失败态不该是 exit 0（放行）').not.toBe(0);
+    } finally {
+      rmSync(tmp2, { recursive: true, force: true });
+    }
+  });
+
+  it('13. 卡⑳ tmp 仓真跑钩：绝对 CLI（GATE_LOCK_CLI 注入）＋假 PATH 双因分派——CI 连红根因的复现与修复锁', () => {
+    // CI 连红根因（群PM 现读）：钩与夹具用相对路径 tools/gate/lock-pairing.ts，tmp 仓无该文件
+    // ⇒ ERR_MODULE_NOT_FOUND ⇒ 文案/退出码全偏。复现条件＝tmp 仓＋暂存非空＋cwd 在 tmp 仓。
+    const installerPath = resolve(REAL_ROOT, 'scripts', 'install-pre-commit-hook.mjs');
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'hook20-repo-'));
+    const logPath = join(tmpRepo, 'PM-LOG.md');
+    writeFileSync(logPath, '[2026-11-16 16:40:00] CLAIM commit 群PM 试（真片段形态，非合成短语）\n', 'utf8');
+    execSync('git init', { cwd: tmpRepo, encoding: 'utf8' });
+    execSync('git config user.email t@t', { cwd: tmpRepo, encoding: 'utf8' });
+    execSync('git config user.name t', { cwd: tmpRepo, encoding: 'utf8' });
+    writeFileSync(join(tmpRepo, 'probe.js'), 'probe', 'utf8');
+    execSync('git add probe.js', { cwd: tmpRepo, encoding: 'utf8' });
+    // 在 tmp 仓装钩（安装器读 git toplevel=tmp 仓），钩从 tmp 仓 cwd 真跑
+    execSync(`node "${installerPath}"`, { cwd: tmpRepo, encoding: 'utf8' });
+    try {
+      // 复现 CI 红的条件：不注入 GATE_LOCK_CLI（⑱ 版钩相对路径在这必炸）——修复版钩的
+      // lock_cli 默认 `$top/tools/gate/...` 在 tmp 仓也不存在 ⇒ 仍炸，但 ERR 形态可验
+      const rBad = spawnSync('git', ['commit', '-m', 'probe'], {
+        cwd: tmpRepo,
+        encoding: 'utf8',
+        env: { ...process.env, GATE_ACTOR: '群PM' },
+      });
+      // 修复锁：tmp 仓跑钩必被拦（没有 node_modules）且文案是第二因（工具执行失败），非第一因
+      expect(rBad.status, 'tmp 仓无依赖环境应拦提交').toBe(1);
+      const err = rBad.stderr ?? '';
+      expect(err).toContain('工具执行失败（npx tsx 缺失或非预期退出）');
+      expect(err).not.toContain('没有未销锁的 CLAIM commit 记录'); // 三因不共用标题
+      // 修复锁②：注入 GATE_LOCK_CLI ⇒ CLI 真跑 ⇒ 判定走真实判据（真片段：CLAIM 未收口 ⇒ 放行）
+      const rGood = spawnSync('git', ['commit', '-m', 'probe'], {
+        cwd: tmpRepo,
+        encoding: 'utf8',
+        env: { ...process.env, GATE_ACTOR: '群PM', GATE_LOCK_CLI: join(REAL_ROOT, 'tools', 'gate', 'lock-pairing.ts') },
+      });
+      expect(rGood.status, '注入绝对 CLI 后按真实判据放行（CLAIM 未销锁）').toBe(0);
+      // rGood 已提交 probe.js ⇒ 需新 staged 文件才触发钩（钩检查暂存非空才跑）
+      writeFileSync(join(tmpRepo, 'probe2.js'), 'probe2', 'utf8');
+      execSync('git add probe2.js', { cwd: tmpRepo, encoding: 'utf8' });
+      // 复现锁③：销锁态（真收口行）⇒ 拦且文案第一因
+      writeFileSync(logPath, '[2026-11-16 16:40:00] CLAIM commit 群PM 试\n[2026-11-16 16:41:00] RELEASE(挂账) abc1234 run 1\n', 'utf8');
+      const rSold = spawnSync('git', ['commit', '-m', 'probe2'], {
+        cwd: tmpRepo,
+        encoding: 'utf8',
+        env: { ...process.env, GATE_ACTOR: '群PM', GATE_LOCK_CLI: join(REAL_ROOT, 'tools', 'gate', 'lock-pairing.ts') },
+      });
+      expect(rSold.status, '销锁态应拦').toBe(1);
+      expect(rSold.stderr ?? '').toContain('没有未销锁的 CLAIM commit 记录');
+    } finally {
+      rmSync(tmpRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('14. 卡⑳ pmsafe 双时刻防御：正文开头带时间戳的块 ⇒ 拒写（CLAIM 不落锁的绕过面）', () => {
+    const { safeAppendBlock } = pmsafeModule;
+    const tmp = mkdtempSync(join(tmpdir(), 'pmsafe20-'));
+    try {
+      const big = join(tmp, 'PM-LOG.md');
+      writeFileSync(big, 'x'.repeat(100 * 1024) + '\n', 'utf8'); // 过 MIN_LOG_BYTES 闸
+      let threw = '';
+      try {
+        safeAppendBlock(big, '[2026-11-16 16:34:19] CLAIM commit 群PM 双时刻正文（机器锚会叠加）');
+      } catch (e) {
+        threw = (e as Error).message;
+      }
+      expect(threw).toContain('正文开头已带时间戳');
+      // 正常块仍可写（回归面）
+      safeAppendBlock(big, 'CLAIM commit 群PM 正常块无正文锚');
+      expect(readFileSync(big, 'utf8')).toContain('正常块无正文锚');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('9. CLI --pmlog 指向合成台账：读数与 parseLockPairing 纯函数一致（参数化生效）', () => {
