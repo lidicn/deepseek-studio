@@ -37,6 +37,22 @@ describe('release workflow 锚点锁（卡㉚）', () => {
     expect(REL).toContain('-F make_latest=true');
   });
 
+  it('release.yml：卡㊱ job 末有界重读步骤在位（拦发版窗口内的绑定翻转，只加格不放宽）', () => {
+    // 步本体在位
+    expect(REL).toContain('Re-assert draft binding at job end (bounded)');
+    // 有界参数与判定串（步被删/参数被改即红）
+    expect(REL).toContain('[re-assert-bind] attempt');
+    expect(REL).toContain('[re-assert-bind] draft tag_name flipped after creation');
+    expect(REL).toContain('draft binding re-asserted at job end');
+    // 不越位护栏：本步只读不 PATCH（重绑归发布后闸/私聊PM）
+    const stepBody = REL.slice(REL.indexOf('Re-assert draft binding at job end'));
+    const bodyUptoNext = stepBody.slice(0, stepBody.indexOf('# G3：闸失败必须删掉 draft'));
+    expect(bodyUptoNext, '重读步内不得出现 PATCH/写动作').not.toMatch(/Method Patch|Method Patch/i);
+    expect(bodyUptoNext).not.toContain('-X PATCH');
+    // 原有 fail-fast 断言未被放宽（卡㉚-c 定性：判据本身没错，只加格）
+    expect(REL).toContain("throw \"draft tag_name '$($rel.tag_name)' != expected '$env:TAG_NAME' — release not bound to git tag, must delete and investigate\"");
+  });
+
   it('漂移锁：make_latest 出现次数为非零（防判定段整体被删后仍被泛匹配放行）', () => {
     const countPub = PUB.split('make_latest').length - 1;
     const countRel = REL.split('make_latest').length - 1;

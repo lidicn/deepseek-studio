@@ -609,6 +609,47 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "signature verification failed (exit $LASTEXITCODE)" }
           Write-Host 'preflight gate PASS'
 
+      # 卡㊱（群PM 派卡 2026-11-17，依据卡㉚-c 定性件 docs/验收/20261117-发版闸tag绑定空格定性.md）：
+      #   v0.14.24 发版（run 43906234216）实测——「Assert draft bound to tag」读取时刻 tag_name=v0.14.24
+      #   为真值（check-run 注解原文为证），随后草稿被 GitHub 侧翻成 untagged 合成名 ⇒ fail-fast 盖不住
+      #   "读后才翻"。本步＝job 末尾**有界重读**拦截格：重取 tag_name 与期望比，不等则有界重试
+      #   （3 次 × 10s，GitHub 对象偶发最终一致），耗尽仍不等才 throw——走既有「Delete draft on
+      #   failure」撤稿，不带任何 PATCH（重绑归发布后闸/私聊PM，CI 不越位）。只加格不放宽：
+      #   上面那条 fail-fast 断言与 html_url warning 分工原样保留。时序护栏：两发观测均为
+      #   "创建即真值"，无"初期 untagged 后自愈成真"观测；本步距创建 ≥6 分钟且有重试兜底，
+      #   不误删合法草稿（撤稿步另有只匹配 draft=true 的构造护栏）。
+      - name: Re-assert draft binding at job end (bounded)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.create_release.outputs.id }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = '${{ github.repository }}'
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+            'User-Agent' = 'studio-release-gate'
+          }
+          $rebindRetries = 3
+          $rebindWaitSecs = 10
+          $bound = $false
+          $actualTag = $null
+          for ($attempt = 1; $attempt -le $rebindRetries; $attempt++) {
+            $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$env:RELEASE_ID"
+            $actualTag = $rel.tag_name
+            Write-Host "::notice::[re-assert-bind] attempt $attempt/$rebindRetries : tag_name=$actualTag expected=$env:TAG_NAME draft=$($rel.draft)"
+            if ($actualTag -eq $env:TAG_NAME) { $bound = $true; break }
+            if ($attempt -lt $rebindRetries) { Start-Sleep -Seconds $rebindWaitSecs }
+          }
+          if (-not $bound) {
+            Write-Host "::error::[re-assert-bind] draft tag_name flipped after creation: expected=$env:TAG_NAME actual=$actualTag id=$env:RELEASE_ID — publish window binding lost, fail-closed"
+            throw "draft tag_name '$actualTag' != expected '$env:TAG_NAME' after $rebindRetries bounded re-reads — binding flipped inside the publish window; must delete draft and investigate"
+          }
+          Write-Host "draft binding re-asserted at job end: $env:TAG_NAME (id=$env:RELEASE_ID)"
+
       # G3：闸失败必须删掉 draft（fail-closed），不留半成品；已公开的 Release 绝不删。
       # 查草稿必须走全量列表按 tag 过滤（GET /releases/tags/{tag} 不返回 draft——run#12 404 根因，
       # 与 Preflight gate 同坑）；只匹配 draft=true，已发布的 Release 天然不会命中，
