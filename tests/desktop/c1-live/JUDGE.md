@@ -8,8 +8,10 @@
 
 ## §0 红线（本轮与实跑期）
 - 本轮（落地轮）：不建实例、不动装版、不跑全量闸。装版 PID 30676（18:22:59 起，非本席位所起）让位。
-- 实跑期：0.14.24 装版＋30 分钟合并窗，需出资人点头；起实例前报 tag+exe、起来补 appPid、收工报「进程 0／8760 free／webview 归零」。
+- 实跑期：0.14.24 装版＋30 分钟合并窗，需出资人点头；起实例前报 tag+exe、起来补 appPid、收工报**四项**（AGENTS ㉞ 新口径，旧三句「进程 0／8760 free／webview 归零」已被取代，证明不了退干净）：① `deepseek-studio.exe` 进程数；② 宿主 node 子进程数（命令行含 `host\main.mjs` 现算，装版在跑时它是独立一枚）；③ 8760 端口只认 `Test-NetConnection -InformationLevel Quiet` 或同步 `TcpClient.Connect`（`BeginConnect`＋`CanConnect` 返回假 closed，本仓巡检行整批失真过）；④ 两棵 sidecar 日志根的 mtime 现读（`sidecar.rs crash_log_path`：`host_entry.log_dir()` 缺省回落 config 根下 `deepseek-studio\logs` ⇒ dev＝`%APPDATA%\deepseek-studio\logs\sidecar-*.log`、装版＝`%APPDATA%\com.deepseek.studio\logs\sidecar-*.log`，两棵根各有 21 枚）——父进程消失 ≠ 宿主立刻退出（孤儿防护 self-exit 是异步的，dev 侧末行「父进程消失，孤儿防护触发 self-exit」要现读）。
 - 证据面纪律：截图（`shot`）只作辅助；主证据＝CDP DOM/innerText 片段＋trace jsonl 行原文＋sidecar log 行原文；每条文件面读数带**根＋mtime＋行数**。
+
+**装版／bundle 锚计数口径（AGENTS 抬号批后 Core 实测＋PM 复现，执行日必读）**：凡判据写「锚命中 ≥N **枚**」只能用 `[regex]::Matches([IO.File]::ReadAllText($f), $锚).Count`——压缩产物里同一枚锚的多份出现常落在**同一行**（现读 entry.js `omitted: mask-failed`＝2 枚 1 行），`Select-String`／`Measure-Object` 只答「有没有」、答「几枚」必假低，会把合格的包判红。另：`main.mjs` 整目录被 gitignore（`src-tauri/host/`），**没有 HEAD 版可比**，装版验收只与 dev 树现读值或锚枚数对照，不以 sha 相等为前提。
 
 ## §1 证据通道分型（关键：两件半不依赖 CDP）
 | 通道 | 依赖 | 覆盖 |
