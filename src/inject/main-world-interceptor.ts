@@ -2563,8 +2563,17 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
         }
       }
       dbg(`[auth] boot-check user=${userPresent ? '存在' : '缺失'} cookie_count=${names.length} did=${did}`);
-    } catch {
-      /* ignore */
+    } catch (e) {
+      // ⑩-b：不许静默（AGENTS「缺失≠干净」同族）：boot-check 本体抛错时留一条可读出口
+      // `[auth] boot-check-failed <reason>`；出口自身包 try（diag 通道也坏 ⇒ 吞掉、不递归，
+      // 此时 sidecar 日志整体缺失本身即可读状态）。刻意不加新 trace 事件变体：`StudioTraceEvent`
+      // 是 shared 域 union（M3 落盘白名单冻结），加变体需先报 PM 跨域。
+      const reason = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      try {
+        dbg(`[auth] boot-check-failed ${reason}`);
+      } catch {
+        /* diag 通道同时坏：吞掉 */
+      }
     }
   };
   if (typeof document !== 'undefined' && document.readyState === 'complete') logBootCheck();

@@ -321,6 +321,32 @@ describe('⑩ 格4：页面载入登录态自检（每次安装恰好一行）',
       vi.useRealTimers();
     }
   });
+
+  it('⑩-b：boot-check 本体抛错 ⇒ 恰好 1 行 `[auth] boot-check-failed <reason>`（catch 不再静默）', () => {
+    vi.useFakeTimers();
+    const diag = vi.fn();
+    // 让 logBootCheck 的 try 块在读 document.cookie 时抛错（jsdom 的 cookie 访问器可被实例级覆写）
+    const original = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie');
+    Object.defineProperty(document, 'cookie', {
+      configurable: true,
+      get() {
+        throw new Error('cookie-denied');
+      },
+    });
+    let handle: { stop: () => void } | undefined;
+    try {
+      ({ handle } = installHarness(diag)); // 安装即走 readyState=complete 即时路径 ⇒ catch 当场触发
+      const failed = diagLines(diag).filter((l) => l.startsWith('[auth] boot-check-failed'));
+      expect(failed).toHaveLength(1);
+      expect(failed[0]).toContain('cookie-denied');
+      // 异常路径不出正常 boot-check 行（两者互斥、各至多一行）
+      expect(diagLines(diag).filter((l) => l.startsWith('[auth] boot-check user='))).toHaveLength(0);
+    } finally {
+      handle?.stop();
+      if (original) Object.defineProperty(document, 'cookie', original);
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('⑩ 格5：本地存储读失败探针（只读、零写入）', () => {
