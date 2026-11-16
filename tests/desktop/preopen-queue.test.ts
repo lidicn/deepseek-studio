@@ -109,7 +109,7 @@ describe('卡⑪ 预 OPEN 有界队列', () => {
     });
   });
 
-  it('③ 不入队类型未 OPEN 时与改前逐字相同（fail-fast，不排队、不补发）', async () => {
+  it('③ 不入队类型未 OPEN 时与改前逐字相同（fail-fast，不排队、不补发；卡⑫ 起允许一条 dropped log）', async () => {
     const { client, socket } = makeClient();
     client.streamDelta('delta');
     client.assistantReply('reply', 1);
@@ -122,7 +122,10 @@ describe('卡⑪ 预 OPEN 有界队列', () => {
     socket().open();
     const tail = parsed(socket()).slice(1);
     const banned = ['stream-delta', 'assistant-reply', 'finish-sentinel', 'tool-call', 'kv-get'];
+    // 卡⑫ 口径（PM 2026-11-16 批准）：三型本体仍不得出现，但**允许恰好一条** dropped `log`。
     expect(tail.filter((m) => typeof m.type === 'string' && banned.includes(m.type))).toEqual([]);
+    const dropLines = tail.filter((m) => typeof m.text === 'string' && m.text.startsWith('[transport] preopen dropped'));
+    expect(dropLines).toHaveLength(1);
     // 断开让那枚 tool-call 立刻结算，避免挂到 30s 超时
     socket().close();
     await expect(toolPending).resolves.toMatchObject({ ok: false });
@@ -184,5 +187,83 @@ describe('卡⑪ 预 OPEN 有界队列', () => {
     // 但**新发生**的篡改告警在重连后照旧发得出去（不能因为"不重放"而对新告警失聪）
     client.reportIntegrity({ reason: 'host-object-tampered-again' });
     expect(parsed(second).filter((m) => m.type === 'integrity-alert')).toHaveLength(1);
+  });
+});
+
+/**
+ * 卡⑫（2026-11-16）：续跑三型在预 OPEN 窗口**仍不投递**，但丢弃必须**可数、按型分列**。
+ * 这组是"取证面"的牙：没有它，三型丢了就是静默丢失（宿主只能靠超时兜底、断流被当答完）。
+ */
+describe('卡⑫ 预 OPEN 丢弃计数（按型分列、不跨连接、正常路径零噪音）', () => {
+  const DROP_PREFIX = '[transport] preopen dropped';
+
+  function dropLines(msgs: Parsed[]): Parsed[] {
+    return msgs.filter((m) => typeof m.text === 'string' && String(m.text).startsWith(DROP_PREFIX));
+  }
+
+  it('① 三型各丢若干 ⇒ OPEN 后恰一条 dropped 行，且**逐型分列**（顺序固定）', () => {
+    const { client, socket } = makeClient();
+    client.assistantReply('a1', 1);
+    client.assistantReply('a2', 2);
+    for (let i = 0; i < 3; i += 1) client.streamDelta(`d${i}`);
+    client.finishSentinel(1, true);
+
+    socket().open();
+    const lines = dropLines(parsed(socket()));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.text).toBe(
+      '[transport] preopen dropped 2 assistant-reply / 3 stream-delta / 1 finish-sentinel (since last open)',
+    );
+    // 三型本体仍然一个都没投递（甲不改变投递语义）
+    expect(parsed(socket()).slice(1).filter((m) => m.type !== 'log')).toEqual([]);
+  });
+
+  it('② 计数**不跨连接累计**：第二次 open 不重报上一次的数，新丢的只数新的', async () => {
+    const { client, socket } = makeClient();
+    client.streamDelta('d1');
+    const first = socket();
+    first.open();
+    expect(dropLines(parsed(first))).toHaveLength(1);
+
+    // 掉线重连（新 socket），这期间再丢一条
+    first.onclose?.();
+    await new Promise((r) => setTimeout(r, 700));
+    const second = socket();
+    expect(second).not.toBe(first);
+    client.finishSentinel(2, false);
+    second.open();
+
+    const lines = dropLines(parsed(second));
+    expect(lines).toHaveLength(1);
+    // 只有这一次窗口的 1 条 finish-sentinel，不含上一窗的 1 stream-delta、也不是累加值
+    expect(lines[0]?.text).toBe('[transport] preopen dropped 1 finish-sentinel (since last open)');
+  });
+
+  it('③ 正常路径（OPEN 期发送）⇒ 零 dropped 行（不许把噪音塞进日常日志）', () => {
+    const { client, socket } = makeClient();
+    socket().open(); // 先 OPEN
+    client.assistantReply('a', 1);
+    client.streamDelta('d');
+    client.finishSentinel(1, true);
+    expect(dropLines(parsed(socket()))).toEqual([]);
+    // 三型本体照常直发
+    expect(parsed(socket()).filter((m) => m.type === 'stream-delta')).toHaveLength(1);
+  });
+
+  it('④ 三型一条都没丢 ⇒ 不发 dropped 行（空窗口不许刷一行 0）', () => {
+    const { client, socket } = makeClient();
+    client.log('only-a-log'); // 这类会入队、不算丢弃
+    socket().open();
+    expect(dropLines(parsed(socket()))).toEqual([]);
+  });
+
+  it('⑤ finish-sentinel 被丢 ⇒ 宿主侧只能看到 `undefined`（不判 interrupted 的老语义不变）', () => {
+    const { client, socket } = makeClient();
+    client.finishSentinel(3, false); // 预 OPEN 被丢
+    socket().open();
+    // 没有任何 finish-sentinel 本体到宿主 ⇒ 宿主 finishSentinels 拿不到值 ⇒ m1c 的
+    // 「undefined ⇒ 不判 interrupted」语义原样成立；我们只把"丢过一条"记在 dropped 行里。
+    expect(parsed(socket()).filter((m) => m.type === 'finish-sentinel')).toEqual([]);
+    expect(dropLines(parsed(socket()))[0]?.text).toContain('1 finish-sentinel');
   });
 });

@@ -124,6 +124,20 @@ const PREOPEN_QUEUE_MAX = 256;
 const PREOPEN_QUEUE_TYPES: ReadonlySet<string> = new Set(['log', 'trace', 'integrity-alert']);
 
 /**
+ * 卡⑫（2026-11-16）：**预 OPEN 被丢弃的续跑三型**，按类型分别计数。
+ *
+ * 为什么单独数：这三型驱动续跑回路（`assistant-reply` 是"模型答完了"、`stream-delta` 是
+ * 可见文本增量、`finish-sentinel` 是"本轮有无完成哨兵"），丢了不会报错、只会让宿主
+ * 靠超时兜底或把断流当答完——**静默丢失**。卡⑪ 把它们排除在队列外（无轮次 id 的迟到
+ * 重放会串轮），所以这里只做**取证**：丢了就数出来，连接建立后补一行可读的 dropped 行。
+ *
+ * 与 `preopenQueue` 的区别：队列是"补发"，本表是"记账"——**不改变投递语义**（仍然不投递），
+ * 只把"缺失≠干净"落到日志里。顺序固定，日志行才稳定可比。
+ */
+const PREOPEN_DROP_TRACKED: readonly string[] = ['assistant-reply', 'stream-delta', 'finish-sentinel'];
+const PREOPEN_DROP_TRACKED_SET: ReadonlySet<string> = new Set(PREOPEN_DROP_TRACKED);
+
+/**
  * D1：重复 `connect()` 的去抖窗口。
  *
  * 同一轮在飞时由 `roundActive` 挡住；但同步连调（entry.ts 初始化 + 调用方各调一次）
@@ -165,6 +179,8 @@ export function createHostClient(options: HostClientOptions): HostClient {
    */
   const preopenQueue: string[] = [];
   let preopenOverflow = 0;
+  /** 卡⑫：预 OPEN 期被丢弃的续跑三型计数（按类型分列，flush 后清零、不跨连接累计）。 */
+  const preopenDropped = new Map<string, number>();
 
   /**
    * R3-C1 修复：连接断开时立即结算所有待决请求。
@@ -199,7 +215,13 @@ export function createHostClient(options: HostClientOptions): HostClient {
     }
     // —— 卡⑪：未 OPEN ——
     // 非 fire-and-forget 类型保持今日语义：**直接丢**（fail-fast），一行都不变。
-    if (!PREOPEN_QUEUE_TYPES.has(msg.type)) return;
+    if (!PREOPEN_QUEUE_TYPES.has(msg.type)) {
+      // 卡⑫：续跑三型虽然仍不投递，但**丢了要数出来**（缺失≠干净）。
+      if (PREOPEN_DROP_TRACKED_SET.has(msg.type)) {
+        preopenDropped.set(msg.type, (preopenDropped.get(msg.type) ?? 0) + 1);
+      }
+      return;
+    }
     // 已经断开（主动 disconnect）后不再攒：那些永远等不到 flush，攒着只会假装"还在路上"。
     if (stopped) return;
     if (preopenQueue.length >= PREOPEN_QUEUE_MAX) {
@@ -213,6 +235,33 @@ export function createHostClient(options: HostClientOptions): HostClient {
       preopenQueue.push(JSON.stringify(msg));
     } catch (e) {
       options.reportError?.('host-client preopen serialize failed', e);
+    }
+  }
+
+  /**
+   * 卡⑫：补一行「预 OPEN 期丢了哪些续跑事件、各几条」。
+   *
+   * - **队列 flush 之后**发（顺序：hello → 补发日志 → 本行），保证这行是"这一连接窗口"的总结；
+   * - **按类型分列**（`n assistant-reply / m stream-delta / k finish-sentinel`）：只有合计数
+   *   无法判断"丢的是哪一型"，而乙方案要不要做正是看哪一型丢过；
+   * - 补完**立即清零**，不跨连接累计（否则数字越滚越大、失去"这一窗口"的含义）；
+   * - 一条都不丢时**不发**：日常日志里不许凭空多出噪音（锁③）。
+   */
+  function flushDroppedSummary(socket: WebSocketLike): void {
+    const parts: string[] = [];
+    for (const type of PREOPEN_DROP_TRACKED) {
+      const n = preopenDropped.get(type) ?? 0;
+      if (n > 0) parts.push(`${n} ${type}`);
+    }
+    if (parts.length === 0) return;
+    preopenDropped.clear();
+    try {
+      socket.send(JSON.stringify({
+        type: 'log',
+        text: `[transport] preopen dropped ${parts.join(' / ')} (since last open)`,
+      }));
+    } catch (e) {
+      options.reportError?.('host-client preopen dropped report failed', e);
     }
   }
 
@@ -440,6 +489,8 @@ export function createHostClient(options: HostClientOptions): HostClient {
         send({ type: 'hello', origin, sessionId: crypto.randomUUID(), botId: options.botId, accountFingerprint: readAccountFingerprint() });
         // 卡⑪：hello 先落地（宿主据它登记 origin／botId），再按原顺序补发预 OPEN 攒下的日志。
         flushPreopen(socket);
+        // 卡⑫：补发之后补一行"这一窗口丢了哪些续跑事件"（按类型分列；一条没丢则不发）。
+        flushDroppedSummary(socket);
         for (const callback of connectedCallbacks) {
           try {
             callback();
@@ -633,6 +684,8 @@ export function createHostClient(options: HostClientOptions): HostClient {
       // 卡⑪：主动断开后不再保留预 OPEN 队列——它们永远等不到 flush，留着只会假装"还在路上"。
       preopenQueue.length = 0;
       preopenOverflow = 0;
+      // 卡⑫：丢弃计数同理（这一窗口已经结束，数字不该带到下次连接）。
+      preopenDropped.clear();
       // F-L3：清除待执行的重连定时器
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
