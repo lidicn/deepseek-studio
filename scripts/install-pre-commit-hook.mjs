@@ -13,13 +13,12 @@ import { join } from 'node:path';
 
 const HOOK_SH = `#!/bin/sh
 # ⑤ pre-commit CLAIM 校验（20261115 PM 派卡，由 scripts/install-pre-commit-hook.mjs 安装）：
-# 暂存区非空 ⇒ PM-LOG.md 末 40 行内必须有本执行方未 RELEASE 的 CLAIM commit 行。
-# ⑤ 回炉（群PM 实弹裁定）：解析与**真实人口**同构——真行「## @HH:mm CLAIM commit+push 群PM｜…」、
-#   pmsafe 行「[时刻] CLAIM commit 群PM …」、合成行「CLAIM commit <actor> …」三形态都认；
-#   RELEASE 真行「…｜RELEASE <sha> CI run <id> …」用「RELEASE token＋hex 锚」判，叙述行裸
-#   "RELEASE" 三连字不会把锁还上。--no-verify 可应急绕过，须写日志。
-# ⑤-补（群PM 四案实弹裁定）：**未设 GATE_ACTOR ≠ 拦死**——缺省按**任一在册执行方
-#   （群PM／私聊PM）**的未还锁 CLAIM 判（提示写明按哪个口径判的）；设了则按 actor 精确隔离。
+# 暂存区非空 ⇒ 控制面台账须有本执行方未销锁的 CLAIM commit。
+# 卡⑱（群PM 派卡，20261116）：**判据单一真相**——钩不再自己 awk 解析台账（旧 awk 判
+#   "同行含 RELEASE 字样＋任意 7 位 hex 即销锁"，一句叙述带 HEAD=sha 就能假装锁不存在，
+#   群PM 15:40 合法提交被误拦＝活案例），改调 tools/gate/lock-pairing.ts --check-claim
+#   （严格 A/B 两型收口＋结构式前缀，叙述行不得销锁）。窗口＝自最近真收口行起（不是末 40 行，
+#   CLAIM 被挤到窗口外的第二个绕过面已消除）。--no-verify 可应急绕过，须写日志。
 staged=$(git diff --cached --name-only | head -n 1)
 if [ -z "$staged" ]; then
   exit 0
@@ -33,45 +32,27 @@ fi
 top=$(git rev-parse --show-toplevel)
 log="$top/PM-LOG.md"
 if [ ! -f "$log" ]; then
-  if [ -z "$actor" ]; then
-    echo "pre-commit 拦下：PM-LOG.md 不存在（仓根唯一协调日志）。$actorNote" >&2
-    echo "   落一行：CLAIM commit <执行方> <时刻> <范围一句话>（执行方＝群PM 或 私聊PM）——然后重试。" >&2
-  else
-    echo "pre-commit 拦下：PM-LOG.md 不存在（仓根唯一协调日志）。$actorNote" >&2
-    echo "   缺：CLAIM commit $actor（未 RELEASE）。落行后重试；应急 --no-verify 但必须写日志。" >&2
-  fi
+  echo "pre-commit 拦下：PM-LOG.md 不存在（仓根唯一协调日志）。$actorNote" >&2
+  echo "   落一行：CLAIM commit <执行方> <时刻> <范围一句话>（执行方＝群PM 或 私聊PM）——然后重试。" >&2
   echo "   应急可用 --no-verify，但按 AGENTS 必须写日志。" >&2
   exit 1
 fi
-verdict=$(tail -n 40 "$log" | awk -v actor="$actor" '
-  {
-    hit = 0
-    for (i = 1; i <= NF; i++) {
-      if ($i == "CLAIM") {
-        act = $(i+1); who = $(i+2)
-        if (act ~ /^commit/) {
-          if (actor == "") {
-            if (index(who, "群PM") == 1 || index(who, "私聊PM") == 1) { hit = 1 }
-          } else if (index(who, actor) == 1) { hit = 1 }
-        }
-      }
-    }
-    if (hit) { claimed = NR; released = 0 }
-    if (claimed && NR > claimed && $0 ~ /(^|[^A-Za-z0-9])RELEASE([^A-Za-z0-9]|$)/ && $0 ~ /[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]/) { released = 1 }
-  }
-  END { if (claimed && !released) print "OK"; else print "BLOCK" }')
-if [ "$verdict" != "OK" ]; then
-  if [ -z "$actor" ]; then
-    echo "pre-commit 拦下：PM-LOG.md 末 40 行内没有未 RELEASE 的 CLAIM commit 记录。$actorNote" >&2
-    echo "   落一行：CLAIM commit <执行方> <时刻> <范围一句话>（执行方＝群PM 或 私聊PM）——然后重试。" >&2
-  else
-    echo "pre-commit 拦下：PM-LOG.md 末 40 行内没有「CLAIM commit $actor」的未 RELEASE 记录。$actorNote" >&2
-    echo "   落一行：CLAIM commit $actor <时刻> <范围一句话> ——然后重试。" >&2
-  fi
-  echo "   应急可用 --no-verify，但按 AGENTS 必须写日志。" >&2
-  exit 1
+if [ -z "$actor" ]; then
+  verdict=$(npx tsx tools/gate/lock-pairing.ts --pmlog "$log" --check-claim "" 2>&1 >/dev/null; echo "EXIT=$?")
+else
+  verdict=$(npx tsx tools/gate/lock-pairing.ts --pmlog "$log" --check-claim "$actor" 2>&1 >/dev/null; echo "EXIT=$?")
 fi
-exit 0
+case "$verdict" in
+  *EXIT=0*)
+    exit 0
+    ;;
+  *)
+    echo "pre-commit 拦下：PM-LOG.md 内没有未销锁的 CLAIM commit 记录。$actorNote" >&2
+    echo "$verdict" | sed 's/^/   /' >&2
+    echo "   应急可用 --no-verify，但按 AGENTS 必须写日志。" >&2
+    exit 1
+    ;;
+esac
 `;
 
 const top = execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim();

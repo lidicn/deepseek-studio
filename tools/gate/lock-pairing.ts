@@ -188,6 +188,35 @@ function main(): void {
   console.log(`h3=${res.structure.h3}`);
   console.log(`lines=${res.structure.lines}`);
   console.log(`bytes=${res.structure.bytes}`);
+  if (argv.includes('--check-claim')) {
+    // 卡⑱（群PM 派卡）：pre-commit 钩的单一真相入口——钩不再自己解析台账。
+    // 用法：--check-claim <执行方>（空串/缺省＝任一在册执行方，与 ⑤-补 口径同）。
+    // 判定复用 parseLockPairing 的严格判据（A/B 两型收口＋结构式前缀）：
+    //   exit 0 ＝ 该执行方存在未销锁 CLAIM（放行提交）
+    //   exit 2 ＝ 无未销锁（拦提交， stderr 给落行指引）
+    // ⑱-② 窗口：**自最近一次真收口行起扫描**（不是末 40 行）——CLAIM 被叙述挤到
+    //   窗口外的绕过面消除；台账全量读入，窗口只影响"哪些历史锁仍算在途"。
+    const whoRaw = argv[argv.indexOf('--check-claim') + 1] ?? '';
+    const who = whoRaw.trim();
+    const lines = text.split(/\r?\n/);
+    // 执行方提取：真行形态「CLAIM commit+push 群PM …」／「CLAIM commit 群PM …」——
+    // 动作 token 可带 +（commit+push），执行方紧跟动作之后的第一个非动作词
+    const isExecutor = (n: number): boolean => {
+      const line = lines[n - 1] ?? '';
+      const m = /CLAIM\s+(?:commit|push|tag)(?:\+\S+)?\s+(群PM|私聊PM)/.exec(line);
+      return m ? m[1] === who : who === ''; // 缺省口径＝任一在册执行方
+    };
+    const lastRelease = res.lastReleaseLine ?? 0;
+    const openClaims = res.locks.filter((n) => n > lastRelease && isExecutor(n));
+    if (openClaims.length > 0) {
+      for (const n of openClaims) {
+        console.error(`[check-claim] 未销锁 CLAIM L${n} : ${(lines[n - 1] ?? '').slice(0, 120)}`);
+      }
+      process.exit(0);
+    }
+    console.error(`[check-claim] 无未销锁 CLAIM（窗口＝自 L${lastRelease + 1} 真收口起；${who === '' ? '任一在册执行方' : `执行方 ${who}`}）。落一行：CLAIM commit <执行方> <时刻> <范围一句话>——然后重试；应急 --no-verify 但必须写日志。`);
+    process.exit(2);
+  }
   // 卡⑰-补（Chief 判据 ③）：unpaired>0 ⇒ exit 1——可直接被看门狗当闸位调用，不必人读输出。
   // N/A 面（台账缺席）仍 exit 0：缺失≠未闭合锁，两级语义不同。
   process.exit(res.unpaired.length > 0 ? 1 : 0);

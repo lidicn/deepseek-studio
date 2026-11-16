@@ -235,6 +235,60 @@ describe('lock-pairing · CLI 与真实仓现跑（期望值现算）', () => {
     }
   });
 
+  it('10. 卡⑱ --check-claim：真实人口四态（真台账片段驱动，非合成短语）', () => {
+    if (!existsSync(REAL_PMLOG)) {
+      console.log('N/A：CI 无 PM-LOG／ps1，本枚未判');
+      return;
+    }
+    const real = readFileSync(REAL_PMLOG, 'utf8');
+    const lines = real.split(/\r?\n/);
+    const tmp = mkdtempSync(join(tmpdir(), 'hook18-'));
+    const run = (body: string, actor: string): number => {
+      const log = join(tmp, 'PM-LOG.md');
+      writeFileSync(log, body, 'utf8');
+      try {
+        execSync(`npx tsx tools/gate/lock-pairing.ts --pmlog "${log}" --check-claim "${actor}"`, {
+          cwd: REAL_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        return 0;
+      } catch (e) {
+        return (e as { status?: number }).status ?? 1;
+      }
+    };
+    try {
+      // 真台账锚行（现读，非写死行号）——RELEASE 用严格式筛（裸字样会抓到叙述行）
+      const claimLine = lines.find((l) => /^\[2026-11-16 15:10:42\] CLAIM/.test(l));
+      const releaseLine = lines.find((l) =>
+        /^\[[0-9-]{10} [0-9:]{8}\] RELEASE(?:\([^)]*\)|（[^）]*）)?\s+[0-9a-fA-F]{7}/.test(l),
+      );
+      const inspLine = lines.filter((l) => /巡检 OK/.test(l)).slice(-1)[0];
+      expect(claimLine, '台账应含真 CLAIM 锚行').toBeTruthy();
+      expect(releaseLine, '台账应含真 RELEASE 锚行').toBeTruthy();
+      expect(inspLine, '台账应含巡检叙述行').toBeTruthy();
+      // S1 真 CLAIM 无收口 ⇒ exit 0（放行）
+      expect(run(`${claimLine}\n`, '群PM')).toBe(0);
+      // S2 真 CLAIM＋真 RELEASE ⇒ exit 2（销锁生效＝拦新提交）
+      expect(run(`${claimLine}\n${releaseLine}\n`, '群PM')).toBe(2);
+      // S3 叙述行（含 RELEASE 字样＋7 位 sha）⇒ 不得销锁也不当锁 ⇒ 纯叙述 exit 2（拦）
+      expect(run(`${inspLine}\n`, '群PM')).toBe(2);
+      // 叙述不干扰真锁（对照格）：叙述＋真锁仍放行
+      expect(run(`${inspLine}\n${claimLine}\n`, '群PM')).toBe(0);
+      // S4 叙述＋真锁＋真 RELEASE ⇒ 销锁生效（叙述不得保锁）＋真 RELEASE 判据来自严格式
+      expect(run(`${inspLine}\n${claimLine}\n${releaseLine}\n`, '群PM')).toBe(2);
+      // actor 隔离：真锁属 群PM，按 私聊PM 判 ⇒ 无未销锁 ⇒ 拦
+      expect(run(`${claimLine}\n`, '私聊PM')).toBe(2);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('11. 卡⑱ 钩单一真相：安装器产物不含 awk 解析段、含 --check-claim 调用（判据单源）', () => {
+    const installer = readFileSync(resolve(REAL_ROOT, 'scripts', 'install-pre-commit-hook.mjs'), 'utf8');
+    expect(installer).toContain('--check-claim');
+    expect(installer).not.toMatch(/awk -v actor/); // 旧 awk 判据段已删
+    expect(installer).not.toMatch(/tail -n 40/); // 末 40 行窗口已废（⑱-②）
+  });
+
   it('9. CLI --pmlog 指向合成台账：读数与 parseLockPairing 纯函数一致（参数化生效）', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'lockpair2-'));
     try {
