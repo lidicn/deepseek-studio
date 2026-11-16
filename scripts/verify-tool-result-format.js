@@ -1,3 +1,4 @@
+// 人工一次性取证件（非受支持入口）：路径为写死示例；要复用请自行改路径或走 scripts/e2e-verify.cjs（⑦ 已参数化）。不参数化：改动即需回归，收益低于留着"像活接口"的错误暗示。
 // 验证工具结果新格式：通过 WebSocket 直接调用 shell.exec，检查返回是否包含 content/details/isError
 import WebSocket from 'ws';
 
