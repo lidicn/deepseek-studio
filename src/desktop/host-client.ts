@@ -6,6 +6,9 @@
  *   - 收到 dispatch → 按 tool 路由到对应能力（ExecutableCapability）执行 → 回传 result；
  *   - 收到 consent-required → 渲染同意模态 → 决策回传 consent-decision。
  * 断线指数退避重连（上界默认 10s）。所有执行包 try/catch，失败转 result.ok=false + error 码。
+ *
+ * **域归属**：`src/desktop/**` 属 Core 域（2026-11-16 卡⑪ 即由此域落地）。
+ * 跨域席位要改本文件请先 @Studio-PM 转卡，避免两席同写（「并行归属」条）。
  */
 
 import type { ExecutableCapability, ExecuteResult } from '../capabilities/types';
@@ -102,6 +105,25 @@ export interface HostClient {
 const OPEN = 1;
 
 /**
+ * 卡⑪（2026-11-16）：**预 OPEN 有界队列**的容量上限。
+ *
+ * 现场：`[auth] boot-check` 这类诊断行在 socket 还没 OPEN 时就被 `send()` 静默丢弃
+ * （旧实现在非 OPEN 直接不进 `ws.send`，无队列无痕迹），于是「掉登录那一刻发生了什么」
+ * 在宿主机上永远看不到。日志/取证/安全告警丢不得，但也不能无限攒，取 256 条封顶。
+ */
+const PREOPEN_QUEUE_MAX = 256;
+
+/**
+ * **只给 fire-and-forget 类入队**（卡⑪ 裁定）：`log`／`trace`／`integrity-alert`。
+ *
+ * 为什么不给别的：`result`／`consent-decision`／`kv-*`／`runtime-envelope`／
+ * `debug-eval-result`／`tool-call` 全都挂着 pending＋超时，排队等于让宿主去答一个
+ * **已经过期**的请求（调用方早就 failAllPending 结算过了）；`assistant-reply`／
+ * `stream-delta`／`finish-sentinel` 驱动续跑循环，迟到重放会串轮——本卡不动它们的语义。
+ */
+const PREOPEN_QUEUE_TYPES: ReadonlySet<string> = new Set(['log', 'trace', 'integrity-alert']);
+
+/**
  * D1：重复 `connect()` 的去抖窗口。
  *
  * 同一轮在飞时由 `roundActive` 挡住；但同步连调（entry.ts 初始化 + 调用方各调一次）
@@ -137,6 +159,12 @@ export function createHostClient(options: HostClientOptions): HostClient {
   const pendingKv = new Map<string, { resolve: (v: unknown, error?: string) => void }>();
   const pendingEnvelope = new Map<string, { resolve: (v: unknown) => void }>();
   const connectedCallbacks = new Set<() => void>();
+  /**
+   * 卡⑪：预 OPEN 期间攒下的 fire-and-forget 消息（已序列化，避免二次 stringify 变序）。
+   * `preopenOverflow` 记被**丢掉的最新**条数，OPEN 后补一行可读提示。
+   */
+  const preopenQueue: string[] = [];
+  let preopenOverflow = 0;
 
   /**
    * R3-C1 修复：连接断开时立即结算所有待决请求。
@@ -166,6 +194,53 @@ export function createHostClient(options: HostClientOptions): HostClient {
         ws.send(JSON.stringify(msg));
       } catch (e) {
         options.reportError?.('host-client send failed', e);
+      }
+      return;
+    }
+    // —— 卡⑪：未 OPEN ——
+    // 非 fire-and-forget 类型保持今日语义：**直接丢**（fail-fast），一行都不变。
+    if (!PREOPEN_QUEUE_TYPES.has(msg.type)) return;
+    // 已经断开（主动 disconnect）后不再攒：那些永远等不到 flush，攒着只会假装"还在路上"。
+    if (stopped) return;
+    if (preopenQueue.length >= PREOPEN_QUEUE_MAX) {
+      // 溢出**丢最新**并计数：diagnostics 里最有价值的是**故障发生时刻的那几行**（时序起点），
+      // 后来的行多半是同一状态在反复重打；丢最旧会把"现场第一手"挤掉，丢最新只损失重复信息。
+      // 且绝不静默（AGENTS「缺失≠干净」）：被丢条数在 OPEN 后补一行 overflow 提示。
+      preopenOverflow += 1;
+      return;
+    }
+    try {
+      preopenQueue.push(JSON.stringify(msg));
+    } catch (e) {
+      options.reportError?.('host-client preopen serialize failed', e);
+    }
+  }
+
+  /**
+   * OPEN 后同步保序 flush（卡⑪）。
+   *
+   * - **先 drain 再发**：`splice` 清空后逐条 `send`，所以「二次 open」不会重放同一批
+   *   —— 队列里已经没有它们了；
+   * - **溢出计数单独补一行** `[transport] preopen queue overflow N`，走 `log` 通道；
+   * - 单条发送失败只报错不中断，后面的日志比前面的更重要（时间上更近）。
+   */
+  function flushPreopen(socket: WebSocketLike): void {
+    if (preopenQueue.length === 0 && preopenOverflow === 0) return;
+    const batch = preopenQueue.splice(0, preopenQueue.length);
+    for (const payload of batch) {
+      try {
+        socket.send(payload);
+      } catch (e) {
+        options.reportError?.('host-client preopen flush failed', e);
+      }
+    }
+    if (preopenOverflow > 0) {
+      const dropped = preopenOverflow;
+      preopenOverflow = 0;
+      try {
+        socket.send(JSON.stringify({ type: 'log', text: `[transport] preopen queue overflow ${dropped}` }));
+      } catch (e) {
+        options.reportError?.('host-client preopen overflow report failed', e);
       }
     }
   }
@@ -363,6 +438,8 @@ export function createHostClient(options: HostClientOptions): HostClient {
         // v0.31：同时上报账号身份指纹（localStorage.userToken 派生），宿主据此做
         // 同账号双窗口去重——两窗口登同一 DeepSeek 账号 → 同指纹 → 第二个 fail-closed。
         send({ type: 'hello', origin, sessionId: crypto.randomUUID(), botId: options.botId, accountFingerprint: readAccountFingerprint() });
+        // 卡⑪：hello 先落地（宿主据它登记 origin／botId），再按原顺序补发预 OPEN 攒下的日志。
+        flushPreopen(socket);
         for (const callback of connectedCallbacks) {
           try {
             callback();
@@ -553,6 +630,9 @@ export function createHostClient(options: HostClientOptions): HostClient {
     },
     disconnect() {
       stopped = true;
+      // 卡⑪：主动断开后不再保留预 OPEN 队列——它们永远等不到 flush，留着只会假装"还在路上"。
+      preopenQueue.length = 0;
+      preopenOverflow = 0;
       // F-L3：清除待执行的重连定时器
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
