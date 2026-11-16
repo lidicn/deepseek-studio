@@ -381,6 +381,8 @@ jobs:
           Write-Host "[publish-guide] release id=$($rel.id) tag=$env:TAG_NAME 期望版本=$pubVer"
           Write-Host "[publish-guide] PATCH 命令（含 make_latest）原文："
           Write-Host "[publish-guide] gh api repos/$repo/releases/$($rel.id) -X PATCH -f tag_name=`"$env:TAG_NAME`" -F make_latest=true"
+          Write-Host "[publish-guide] curl.exe 形态（本机 gh 不可用时，私聊PM 实际走此形态＋经典 repo 令牌）："
+          Write-Host "[publish-guide] curl.exe -X PATCH -H `"Authorization: Bearer <经典repo令牌>`" -H `"Accept: application/vnd.github+json`" https://api.github.com/repos/$repo/releases/$($rel.id) -d `"{`"tag_name`":`"$env:TAG_NAME`",`"make_latest`":`"true`"}`""
           # html_url 对 draft 天然合成（20261114 现读：tag_name 真值与合成 html_url 同框＝合法态，不 throw；
           # 真绑定＋自修在发布后闸 release-published.yml）。若观测到 draft 期 html_url 为真 tag 形态，
           # 说明 GitHub 语义已变，届时再评估加严。

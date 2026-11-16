@@ -96,8 +96,54 @@ jobs:
           if ($manifest) {
             Write-Host "[pub-chain] manifest acquired from latest endpoint"
           } elseif ($lastLatestVer) {
-            Write-Host "::error::[pub-chain] latest pointer did not reach $version after $latestRetries attempts (endpoint announces $lastLatestVer) — make_latest 未生效"
-            throw "latest endpoint announces '$lastLatestVer', expected '$version' after $latestRetries attempts — make_latest not effective (revert to draft follows)"
+            # 卡㉗-b（群PM 判据，2026-11-16）：指针传播延迟 ≠ make_latest 未生效——撤稿会把已发布、
+            # 验签全过的正式版撤下公开口，与 body 空只 Warning 的取舍同族（不成比例）。照本文件
+            # L158-L170 自愈先例：先 PATCH make_latest=true，再走同一有界重读；自愈成功打
+            # ::warning:: 续跑，自愈失败（PATCH 4xx 或重读耗尽仍不等）才 throw（撤稿随后）。
+            # RELEASE_API_URL 可注入（本地三格真跑用；CI 不设 ⇒ 真 API）。
+            $healUrl = if ($env:RELEASE_API_URL) { $env:RELEASE_API_URL } else { "https://api.github.com/repos/$repo/releases/$env:RELEASE_ID" }
+            Write-Host "::warning::[pub-chain] latest pointer lag: announces $lastLatestVer expected $version after $latestRetries attempts — attempting self-heal PATCH make_latest=true (id=$env:RELEASE_ID)"
+            $healHeaders = @{
+              Authorization = "Bearer $env:GH_TOKEN"
+              Accept = 'application/vnd.github+json'
+              'X-GitHub-Api-Version' = '2022-11-28'
+              'User-Agent' = 'studio-release-gate'
+            }
+            $healBody = @{ make_latest = 'true' } | ConvertTo-Json
+            $healOk = $false
+            try {
+              [void](Invoke-RestMethod -Method Patch -Headers $healHeaders -Uri $healUrl -ContentType 'application/json' -Body $healBody)
+              $healOk = $true
+            } catch {
+              $hcode = $null; if ($_.Exception.Response) { $hcode = [int]$_.Exception.Response.StatusCode }
+              Write-Host "::error::[pub-chain] self-heal PATCH failed: HTTP=$hcode msg=$($_.Exception.Message)"
+            }
+            if ($healOk) {
+              for ($h = 1; $h -le $latestRetries; $h++) {
+                try {
+                  $m = Invoke-RestMethod -Uri $latestEndpoint -Headers @{ 'User-Agent' = 'studio-release-gate' } -TimeoutSec 60
+                  $lastLatestVer = $m.version
+                  if ($m.version -eq $version) {
+                    $manifest = $m
+                    $manifestSource = $latestEndpoint
+                    Write-Host "::warning::[pub-chain] self-heal ok: latest now announces $lastLatestVer (re-read attempt $h) — continuing (pointer was lagging, not missing)"
+                    break
+                  }
+                  Write-Host "[pub-chain] self-heal re-read attempt $h/${latestRetries}: announces $lastLatestVer — retrying in ${latestWaitSecs}s"
+                  if ($h -lt $latestRetries) { Start-Sleep -Seconds $latestWaitSecs }
+                } catch {
+                  Write-Warning "[pub-chain] self-heal re-read attempt $h failed: $($_.Exception.Message)"
+                  if ($h -lt $latestRetries) { Start-Sleep -Seconds $latestWaitSecs }
+                }
+              }
+              if (-not $manifest) {
+                Write-Host "::error::[pub-chain] self-heal PATCH succeeded but latest pointer still announces $lastLatestVer after $latestRetries re-reads — make_latest not effective"
+                throw "self-heal succeeded but latest pointer still announces '$lastLatestVer', expected '$version' — make_latest not effective (revert to draft follows)"
+              }
+            } else {
+              Write-Host "::error::[pub-chain] self-heal PATCH failed — latest announces $lastLatestVer, expected $version — make_latest not effective"
+              throw "latest pointer announces '$lastLatestVer', expected '$version'; self-heal PATCH failed — make_latest not effective (revert to draft follows)"
+            }
           } else {
             Write-Host "[pub-chain] latest endpoint unreachable — falling back to this tag's asset (not a failure)"
             try {
