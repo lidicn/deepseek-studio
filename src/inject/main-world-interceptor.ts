@@ -2909,7 +2909,20 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       d(`forward: unsupported, skipping`);
       return;
     }
-    const callId = call.id || crypto.randomUUID();
+    // ㉓（2026-11-16）：删掉空 id 死兜底（原 `|| crypto.randomUUID()`）。生产者
+    // `StreamingToolCallParser.genId` 恒填非空值、类型 `ParsedToolCall.id` 为必填
+    // `readonly string`——原兜底是「契约陷阱」：将来 id 被放开成可选、或新增不填 id
+    // 的生产者，这一层会静默随机顶替，callId 级去重与回执关联无声失效而不报错。
+    // 现由类型系统兜住：`ParsedToolCall['id']` 一旦放开，本行及全部 callId 使用点
+    // tsc 必红，tests/desktop/duplicate-tool-signature.test.ts 的 ㉓ 类型锁同红。
+    // 取证面（两处重置口径，2026-11-16 外部散列键提案被否的关键；勿静默改语义）：
+    //   - `toolCallDedupe.claim`（seen callId 认领）只在**新用户回合** reset()（见
+    //     onNewUserMessage 处理处）；同 turn 内跨续跑流保留——同 callId 重投递仍被拦。
+    //   - `claimSignature`（签名集）**每条流开始**经 onStreamBegin→resetSignatures() 清空
+    //     （封顶计数同清），turn 开始时随 reset() 一并清；跨流同签名＝合法重跑
+    //     （N2-03 裁定，唯一出处＝tool-call-dedupe.ts 头注释）。
+    //   再提「签名去重提散列键／跨流共享」前先答：该层何时重置＋被拦那刻有无结算出口。
+    const callId = call.id;
     if (!toolCallDedupe.claim(callId)) {
       d(`forward: duplicate callId=${callId}, skip (same turn)`);
       return;

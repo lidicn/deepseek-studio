@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 /**
  * 2026-11-14 登录卡死修复（出资人报「studio 工具调用还是有问题」，trace-2026-11-14.jsonl
@@ -32,6 +32,7 @@ import {
   installMainWorldInterceptor,
   interceptorTraceSnapshot,
 } from '../../src/inject/main-world-interceptor';
+import { ParsedToolCall, StreamingToolCallParser } from '../../src/inject/streaming-tool-parser';
 
 type Handler = ((...args: unknown[]) => void) | null;
 const CHAT_URL = 'https://chat.deepseek.com/api/v0/chat/completion';
@@ -330,5 +331,29 @@ describe('判据 ③ 根因取证：pending 段闭合判定 trace（closed/unclo
       handle.stop();
       vi.useRealTimers();
     }
+  });
+});
+
+describe('㉓（2026-11-16）：空 id 死兜底已删——类型系统兜住生产者契约', () => {
+  // 类型锁（模块级，tsc 即判）：`ParsedToolCall['id']` 必须是**必填 string**。
+  // 谁把 id 放开成可选（`id?: string`⇒ 值类型变 `string | undefined`），这两枚断言必红，
+  // 拦截器 `forward()` 里全部 `call.id` 使用点同红——「类型放开 ⇒ 套件必红」的锁。
+  expectTypeOf<ParsedToolCall['id']>().toEqualTypeOf<string>();
+  expectTypeOf<ParsedToolCall>().toHaveProperty('id');
+
+  it('类型锁：缺 `id` 字段的对象不得通过 `ParsedToolCall` 类型检查（放开即红的另一半）', () => {
+    // @ts-expect-error —— 必填 id 缺失必须报错；一旦有人把 id 改成可选，本行 @ts-expect-error 变「未使用」⇒ tsc 红
+    const noId: ParsedToolCall = { invocationName: 'shell_exec', params: {}, raw: '' };
+    expect(noId).toBeTypeOf('object');
+  });
+
+  it('运行时生产者保证：解析器恒产非空 id，且同流两枚互异（被删兜底确实无活路可走）', () => {
+    const parser = new StreamingToolCallParser(['shell_exec']);
+    const r1 = parser.feed('<shell_exec>{"command":"echo hi"}</shell_exec>');
+    const r2 = parser.feed('<shell_exec>{"command":"echo yo"}</shell_exec>');
+    expect(r1.calls).toHaveLength(1);
+    expect(r1.calls[0].id.length).toBeGreaterThan(0);
+    expect(r2.calls[0].id.length).toBeGreaterThan(0);
+    expect(r2.calls[0].id).not.toBe(r1.calls[0].id);
   });
 });
