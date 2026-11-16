@@ -62,28 +62,51 @@ jobs:
           $gitRefState = if ($gitRef -and $gitRef.object.sha) { "hit sha=$($gitRef.object.sha)" } else { "miss" }
           Write-Host "::notice::[pub-chain] release context: id=$env:RELEASE_ID tag_name=$tag name=$env:RELEASE_NAME target_commitish=$env:TARGET_COMMITISH html_url=$env:RELEASE_HTML_URL git_ref_tags/$tag=$gitRefState"
 
-          # 1) 取 latest.json：优先读**客户端实际用的** Latest 端点；若刚发布的不是 Latest，退回本 tag 的资产
-          $manifestSource = $null
+          # 1) 取 latest.json：优先读**客户端实际用的** Latest 端点。
+          #    卡㉗②（群PM 派卡）：Latest 端点宣布旧版本＝make_latest 未生效 ⇒ 从 Warning 升级为
+          #    **有界重试后 throw**（latest 指针有传播延迟，重试必须有界；耗尽仍不等＝fail，
+          #    触发 Revert to draft 撤稿）。端点不可达（含 latest 指针缺失态）⇒ 保持回退本 tag
+          #    资产的旧语义，不判死。URL 与重试参数可注入（LATEST_URL／TAG_LATEST_URL／
+          #    LATEST_RETRIES／LATEST_WAIT_SECS，本地三格真跑用）；CI 缺省＝真实端点，
+          #    workflow env 不设它们 ⇒ 无外部可设路径。
+          $latestEndpoint = if ($env:LATEST_URL) { $env:LATEST_URL } else { $latestUrl }
+          $tagAssetUrl = if ($env:TAG_LATEST_URL) { $env:TAG_LATEST_URL } else { $tagLatestUrl }
+          $latestRetries = if ($env:LATEST_RETRIES) { [int]$env:LATEST_RETRIES } else { 3 }
+          $latestWaitSecs = if ($env:LATEST_WAIT_SECS) { [int]$env:LATEST_WAIT_SECS } else { 10 }
           $manifest = $null
-          try {
-            $manifest = Invoke-RestMethod -Uri $latestUrl -Headers @{ 'User-Agent' = 'studio-release-gate' } -TimeoutSec 60
-            if ($manifest.version -eq $version) {
-              $manifestSource = $latestUrl
-            } else {
-              Write-Warning "Latest endpoint announces $($manifest.version), not $version — checking this tag's manifest instead"
-              $manifest = $null
-            }
-          } catch {
-            Write-Warning "Latest endpoint not usable yet: $($_.Exception.Message)"
-          }
-          if (-not $manifest) {
+          $manifestSource = $null
+          $lastLatestVer = $null
+          for ($latestAttempt = 1; $latestAttempt -le $latestRetries; $latestAttempt++) {
             try {
-              $manifest = Invoke-RestMethod -Uri $tagLatestUrl -Headers @{ 'User-Agent' = 'studio-release-gate' } -TimeoutSec 60
-              $manifestSource = $tagLatestUrl
+              $m = Invoke-RestMethod -Uri $latestEndpoint -Headers @{ 'User-Agent' = 'studio-release-gate' } -TimeoutSec 60
+              $lastLatestVer = $m.version
+              if ($m.version -eq $version) {
+                $manifest = $m
+                $manifestSource = $latestEndpoint
+                Write-Host "[pub-chain] latest endpoint announces $lastLatestVer (attempt $latestAttempt/$latestRetries) — matches expected"
+                break
+              }
+              Write-Host "[pub-chain] latest endpoint announces $lastLatestVer, expected $version (attempt $latestAttempt/$latestRetries) — pointer may lag, retrying in ${latestWaitSecs}s"
+              if ($latestAttempt -lt $latestRetries) { Start-Sleep -Seconds $latestWaitSecs }
+            } catch {
+              Write-Warning "[pub-chain] latest endpoint not usable (attempt $latestAttempt): $($_.Exception.Message)"
+              break
+            }
+          }
+          if ($manifest) {
+            Write-Host "[pub-chain] manifest acquired from latest endpoint"
+          } elseif ($lastLatestVer) {
+            Write-Host "::error::[pub-chain] latest pointer did not reach $version after $latestRetries attempts (endpoint announces $lastLatestVer) — make_latest 未生效"
+            throw "latest endpoint announces '$lastLatestVer', expected '$version' after $latestRetries attempts — make_latest not effective (revert to draft follows)"
+          } else {
+            Write-Host "[pub-chain] latest endpoint unreachable — falling back to this tag's asset (not a failure)"
+            try {
+              $manifest = Invoke-RestMethod -Uri $tagAssetUrl -Headers @{ 'User-Agent' = 'studio-release-gate' } -TimeoutSec 60
+              $manifestSource = $tagAssetUrl
             } catch {
               $pcode = $null; if ($_.Exception.Response) { $pcode = [int]$_.Exception.Response.StatusCode }
-              Write-Host "::error::[pub-chain] tag-asset latest.json fetch failed: url=$tagLatestUrl HTTP=$pcode msg=$($_.Exception.Message) tag_name=$tag ref_name=$env:REF_NAME"
-              throw "tag-asset latest.json not reachable (HTTP=$pcode): $tagLatestUrl — $($_.Exception.Message)"
+              Write-Host "::error::[pub-chain] tag-asset latest.json fetch failed: url=$tagAssetUrl HTTP=$pcode msg=$($_.Exception.Message) tag_name=$tag ref_name=$env:REF_NAME"
+              throw "tag-asset latest.json not reachable (HTTP=$pcode): $tagAssetUrl — $($_.Exception.Message)"
             }
           }
           Write-Host "manifest source=$manifestSource manifest_version=$($manifest.version) expected_version=$version release_name=$env:RELEASE_NAME tag_name=$tag ref_name=$env:REF_NAME"

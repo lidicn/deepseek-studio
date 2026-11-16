@@ -373,6 +373,14 @@ jobs:
             Write-Host "::error::[assert-bind] draft not bound to git tag: expected=$env:TAG_NAME actual_tag_name=$($rel.tag_name) id=$($rel.id) html_url=$($rel.html_url) — fail-closed before PATCH/Preflight/Publish"
             throw "draft tag_name '$($rel.tag_name)' != expected '$env:TAG_NAME' — release not bound to git tag, must delete and investigate"
           }
+          # 卡㉗①（群PM 派卡）：草稿收口处把发布指引打进 job 日志——只打印不执行，
+          # CI 不越 Publish 的位（Publish 归私聊PM 经出资人授权）。make_latest: true 显式
+          # 给出＝AGENTS 发版硬判据②（已两次踩坑：不显式 ⇒ releases/latest 指针不推进）。
+          $pubVer = $env:TAG_NAME.TrimStart('v')
+          Write-Host "─── 发布指引（人工执行，CI 不代发）───"
+          Write-Host "[publish-guide] release id=$($rel.id) tag=$env:TAG_NAME 期望版本=$pubVer"
+          Write-Host "[publish-guide] PATCH 命令（含 make_latest）原文："
+          Write-Host "[publish-guide] gh api repos/$repo/releases/$($rel.id) -X PATCH -f tag_name=`"$env:TAG_NAME`" -F make_latest=true"
           # html_url 对 draft 天然合成（20261114 现读：tag_name 真值与合成 html_url 同框＝合法态，不 throw；
           # 真绑定＋自修在发布后闸 release-published.yml）。若观测到 draft 期 html_url 为真 tag 形态，
           # 说明 GitHub 语义已变，届时再评估加严。
