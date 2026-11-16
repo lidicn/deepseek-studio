@@ -1,0 +1,7 @@
+{"kind":"msel","at":1799900000000,"sessionId":"fx","seq":1,"durationMs":90,"ok":true,"count":5}
+{"kind":"msel","at":1799900001000,"sessionId":"fx","seq":2,"durationMs":300,"ok":true,"count":3}
+{"t":"continuation.decision","turnId":"turn-fx-2","reason":"fuse-terminal","triggered":false,"count":3}
+{"t":"turn.end","turnId":"turn-fx-2","finished":true,"stopReason":"fuse-terminal"}
+{"t":"continuation.decision","turnId":"turn-fx-3","reason":"no-tools","triggered":false}
+{"t":"turn.end","turnId":"turn-fx-3","finished":true,"stopReason":"completed"}
+{"t":"turn.end","turnId":"turn-fx-4","finished":false,"stopReason":"stream-error"}
