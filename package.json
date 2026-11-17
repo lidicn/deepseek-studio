@@ -17,6 +17,7 @@
     "build": "npm run build:inject && npm run build:host",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
+    "tauri:dev:isolated": "tauri dev --config src-tauri/tauri.conf.dev.json",
     "tauri:build": "tauri build",
     "eval:golden": "tsx tools/eval/run.ts",
     "metrics:report": "tsx tools/metrics/report.ts",
