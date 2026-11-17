@@ -2982,6 +2982,7 @@ mod tests {
             body
         );
     }
+    #[test]
     fn window_state_path_dev_falls_back_to_config_dir() {
         let fallback = std::path::PathBuf::from("X:\\roaming");
         // 无注入 / 空串 / 纯空白：一律回落（空白 env 视为未设，与 Node 侧 resolveConfigDir 同口径）
