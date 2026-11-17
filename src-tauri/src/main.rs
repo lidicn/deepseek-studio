@@ -869,8 +869,47 @@ fn load_host_grant_script_with(cfg_path: &std::path::Path, audience: &str) -> St
     )
 }
 
+/// 页端宿主 URL 的注入脚本（卡㊸，设计稿 §八 item 2）：**端口单一真相的页端投影**。
+///
+/// host/port 由调用方从 `studio_host_port()` 取（host 读同一份 `config.json`、port 走
+/// `sidecar::health_port()` 那条 `env → config.json.port → 8760` 的解析链）。本函数
+/// **不含任何端口字面量** —— 它是「页端连的端口 == 宿主监听的端口」的唯一接线点。
+///
+/// 为什么必须注入：页端 `src/desktop/entry.ts` 的 `DEFAULT_HOST_URL` 是常量
+/// `ws://127.0.0.1:8760/studio`，dev 实例起在 8761 时页端会连到**装版那棵树**。
+/// 页端改为「优先读本值、缺省才回落常量」的那一半属 UI 域（设计稿 §8.3 item 1）。
+fn host_url_script(host: &str, port: u16) -> String {
+    let url = format!("ws://{}:{}/studio", host, port);
+    format!(
+        "window.__studioHostUrl = {};\n",
+        serde_json::to_string(&url).unwrap_or_else(|_| "\"\"".to_string())
+    )
+}
+
+/// 把「宿主 URL 投影」与「bootstrap grant」拼成一份注入脚本（bot 窗口那条路径）。
+///
+/// 抽成独立函数是为了让单测能拿临时 config **真跑一遍**「两个全局变量都在、且端口不是
+/// 常量 8760」，而不是只比对源码串——源码串比对抓不住值错位。
+///
+/// ⚠️ 顺序与失败分支语义都不变：`load_host_grant_script_with` 的四个失败分支仍各自返回
+/// 空串并留一行 grep 日志（`grant_script_logs_each_failure_branch` 锁着），本函数只在
+/// **前面**再拼一段 host URL；即使 grant 为空，页端也能拿到正确的宿主端口。
+fn host_injection_script(
+    cfg_path: &std::path::Path,
+    audience: &str,
+    host: &str,
+    port: u16,
+) -> String {
+    format!(
+        "{}{}",
+        host_url_script(host, port),
+        load_host_grant_script_with(cfg_path, audience)
+    )
+}
+
 fn load_host_grant_script(audience: &str) -> String {
-    load_host_grant_script_with(&config_dir().join("config.json"), audience)
+    let (host, port) = studio_host_port();
+    host_injection_script(&config_dir().join("config.json"), audience, &host, port)
 }
 
 /// TD-02：Rust 侧签发 bootstrap grant（与 host-token.ts 的 signRaw 同算法）。
@@ -1989,9 +2028,16 @@ fn main() {
                 // 而页面往往更晚才连 —— 这正是「1288 拒 / 0 accepted」的直接成因）。
                 // 改为注入取券闭包：页面每次连接/重连前现取。
                 let grant_script = grant_request_closure_script();
+                // 卡㊸（设计稿 §八 item 2）：主窗**不走路 `load_host_grant_script`**（P0 卡 (A)
+                // 把静态券换成了取券闭包），所以 host URL 投影必须在这里单独拼一次。
+                // host/port 取自 `studio_host_port()` —— 与 sidecar 探活、`/agent` 工作台、
+                // 审批窗同一个真源；**不新增第二处端口常量**。
+                let (host, port) = studio_host_port();
+                let host_url = host_url_script(&host, port);
                 let init_script = format!(
-                    "{}{}{}",
+                    "{}{}{}{}",
                     chat_config_script,
+                    host_url,
                     grant_script,
                     load_init_script(resource_dir.as_deref())
                 );
@@ -2863,6 +2909,78 @@ mod tests {
         assert!(read_log().contains("grant: ok aud=main"), "{}", read_log());
 
         set_sidecar_log_path(None);
+    }
+
+    /// 卡㊸ item 6 正控：`__studioHostUrl` 的值必须**跟着 host/port 走**，不是常量。
+    #[test]
+    fn host_url_script_projects_resolved_host_and_port() {
+        let s = host_url_script("127.0.0.1", 8761);
+        assert!(s.contains("window.__studioHostUrl"), "必须注入 __studioHostUrl：{:?}", s);
+        assert!(
+            s.contains(r#""ws://127.0.0.1:8761/studio""#),
+            "注入值必须等于实际 host/port：{:?}",
+            s
+        );
+        // 负控：换到 8761 之后注入串里不得再出现 8760 ——
+        // 出现即说明值没跟随（回落到常量），端口分档会静默失效。
+        assert!(!s.contains(":8760/"), "注入值不得回落到常量端口 8760：{:?}", s);
+        // 边界：空白 host 也不许 panic（注入退化由页端回落常量兜底）
+        let _ = host_url_script("", 0);
+    }
+
+    /// 卡㊸ item 6 接线锁 A：**bot 窗口**那条路径（`host_injection_script`）必须真把
+    /// host URL 与 grant 一起吐出来，且值取自传入的 host/port（生产侧就是
+    /// `studio_host_port()` 的结果）——拿临时 config 真跑一遍，不是源码串比对。
+    #[test]
+    fn host_injection_script_carries_host_url_and_grant() {
+        let tmp = fresh_tmp("host-url-inject");
+        let good = tmp.join("good.json");
+        std::fs::write(&good, r#"{"token":"t","secret":"s3cr3t-value"}"#).unwrap();
+
+        let script = host_injection_script(&good, "main", "127.0.0.1", 8761);
+        assert!(script.contains("window.__studioHostUrl"), "注入脚本必须带 host URL 投影：{:?}", script);
+        assert!(
+            script.contains(r#""ws://127.0.0.1:8761/studio""#),
+            "投影值必须等于传入的 host/port：{:?}",
+            script
+        );
+        assert!(script.contains("window.__studioGrant"), "原有 grant 注入不得丢：{:?}", script);
+        assert!(!script.contains(":8760/"), "组合脚本里不得回落到常量端口：{:?}", script);
+
+        // 失败分支语义不变：config 缺失时 grant 段为空，但 host URL 段仍在
+        // （dev 首启竞态下页端裸连，靠它才不会串到装版那棵树）。
+        let missing = tmp.join("nope").join("config.json");
+        let only_url = host_injection_script(&missing, "main", "127.0.0.1", 8761);
+        assert!(!only_url.contains("__studioGrant"), "无 config 时不得凭空注入 grant");
+        assert!(
+            only_url.contains("window.__studioHostUrl"),
+            "无 grant 也必须给出宿主端口（裸连形态靠它不串树）：{:?}",
+            only_url
+        );
+    }
+
+    /// 卡㊸ item 6 接线锁 B：**主窗口**那条路径（不经过 `load_host_grant_script`，走
+    /// `grant_request_closure_script()`）也必须拼上 host URL 投影。
+    ///
+    /// 用源码串锁是因为主窗脚本在 `setup` 闭包里内联组装、没有可注入的纯函数；
+    /// needle 运行时拼串，避免断言文字自匹配（同 `sidecar.rs` 的 td06 写法）。
+    #[test]
+    fn main_window_init_script_includes_host_url_projection() {
+        let src = include_str!("main.rs");
+        let needle = format!("let {} = host_url_script(&{}, {});", "host_url", "host", "port");
+        assert!(
+            src.contains(&needle),
+            "主窗初始化脚本必须拼上 host URL 投影（needle={:?}）",
+            needle
+        );
+        // 反向：投影函数体内不得出现端口字面量（出现＝又从常量读回来了）
+        let after = src.split("fn host_url_script").nth(1).unwrap_or("");
+        let body = after.split("///").next().unwrap_or("");
+        assert!(
+            !body.contains("8760"),
+            "host_url_script 函数体内不得出现端口字面量：{:?}",
+            body
+        );
     }
     fn window_state_path_dev_falls_back_to_config_dir() {
         let fallback = std::path::PathBuf::from("X:\\roaming");

@@ -182,7 +182,7 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
     <div class="studio-info-row"><span class="studio-info-label">版本</span><span class="studio-info-value" data-settings-version></span></div>
     <div class="studio-info-row"><span class="studio-info-label">日志路径</span><span class="studio-info-value" data-settings-logpath>加载中…</span></div>
     <div class="studio-info-row"><span class="studio-info-label">配置路径</span><span class="studio-info-value" data-settings-configpath>加载中…</span></div>
-    <div class="studio-info-row"><span class="studio-info-label">宿主端口</span><span class="studio-info-value">8760</span></div>
+    <div class="studio-info-row"><span class="studio-info-label">宿主端口</span><span class="studio-info-value" data-settings-hostport>加载中…</span></div>
   `;
   // 版本行：构建期注入的真值（runtimeAppVersion 读 `__STUDIO_APP_VERSION__`，dev 树为 unknown）。
   generalTab.querySelector('[data-settings-version]')!.textContent = runtimeAppVersion();
@@ -683,6 +683,7 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
       logDirSource: 'env' | 'fallback';
       configDir: string;
       dataDir: string | null;
+      port: number | string;
     }> = {};
     let gotData = false; // settings.get 是否取到可用数据（宿主通道是否连着）
     try {
@@ -694,6 +695,7 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
           logDirSource: 'env' | 'fallback';
           configDir: string;
           dataDir: string | null;
+          port: number | string;
         }>;
         gotData = true;
       }
@@ -730,12 +732,25 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
           ? '宿主 trace：不可用（当前形态未注入数据根）'
           : `宿主 trace：不可用${noDataNote}`;
     const cfgValue = typeof info.configDir === 'string' && info.configDir.length > 0 ? info.configDir : `不可用${noDataNote}`;
+    // 卡㊺（2026-11-17，端口分档 item 4）：宿主端口现读（settings.get.port＝Core 卡㊸ 在宿主侧
+    // 新加的字段，值＝宿主实际解析的 config 端口）。字段缺/非数字/空串 ⇒ 显「不可用」（沿用
+    // noDataNote 分性：宿主未连接/限流带注记、宿主可达但字段缺不带注记），**绝不回填 8760 假值**——
+    // 端口分档（dev 8761）后写死 8760 就是谎报。
+    const portValue =
+      typeof info.port === 'number'
+        ? String(info.port)
+        : typeof info.port === 'string' && info.port.length > 0
+          ? info.port
+          : `不可用${noDataNote}`;
     const logText = `sidecar 日志：${logValue} · ${traceValue}`;
     for (const tab of [generalTab, diagnosticsTab]) {
       const logEl = tab.querySelector('[data-settings-logpath]');
       if (logEl) logEl.textContent = logText;
       const cfgEl = tab.querySelector('[data-settings-configpath]');
       if (cfgEl) cfgEl.textContent = cfgValue;
+      // 卡㊺：两枚面板实例（General／Diagnostics）同循环填，锚缺失的 tab 由 if 守卫跳过。
+      const portEl = tab.querySelector('[data-settings-hostport]');
+      if (portEl) portEl.textContent = portValue;
     }
   }
   // fillPathRows 内部已全捕获（永不 reject）；.catch 是防 unhandled rejection 的保险丝。

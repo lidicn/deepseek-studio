@@ -1177,6 +1177,12 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
                 logDir: resolveLogDir().dir,
                 logDirSource: resolveLogDir().source,
                 dataDir: resolveStudioDataDir(),
+                // 卡㊸（设计稿 §八 item 4）：宿主**实际解析端口**。面板的「宿主端口」行
+                // 靠它现读，别再写死 8760。取值就是 `createDesktopHost` 收到的
+                // `config.port` —— 也就是 `config-loader.ts` 里
+                // `parsePort(process.env.DEEPSEEK_STUDIO_PORT ?? stored.port ?? 8760)`
+                // 的结果。**不在这里重新解析、不新增第二处端口常量**（TD-06 单源）。
+                port: options.config.port,
               },
             };
           },

@@ -62,10 +62,23 @@ export function hostAudience(botId: string): string {
   return botId === 'main' ? 'main' : `bot:${botId}`;
 }
 
+/**
+ * 端口分档（设计稿 §八，卡㊸/㊹，2026-11-17）：宿主 WS URL 基址优先取 Rust 注入闭包写入的
+ * `window.__studioHostUrl`（值＝`studio_host_port()` 解析出的 `ws://{host}:{port}/studio`，
+ * 与页面实际连的宿主同源，单源＝sidecar.rs fallback＋config-loader，不新增第二处端口常量）。
+ * 只认非空 string；缺失/异型返回 undefined，由调用方回落缺省（DEFAULT_HOST_URL 保留为最后兜底，不删）。
+ */
+export function injectedHostUrl(): string | undefined {
+  const v = (globalThis as { __studioHostUrl?: unknown }).__studioHostUrl;
+  return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
 export function resolveHostUrl(
   bootstrapGrant: string | undefined,
   botId: string,
-  fallback: string = DEFAULT_HOST_URL,
+  // 卡㊹ item 1：未显式传 fallback 时，先读注入值 `__studioHostUrl`，缺省才回落 DEFAULT_HOST_URL。
+  // 显式传参（如 L339 把 options.hostUrl 链传进来）仍优先——注入值不夺显式覆盖的位。
+  fallback: string = injectedHostUrl() ?? DEFAULT_HOST_URL,
 ): string {
   const aud = hostAudience(botId);
   return bootstrapGrant

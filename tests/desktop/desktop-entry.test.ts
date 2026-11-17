@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { installChromeShims } from '../../src/bridge';
-import { installStudio, resolveHostUrl } from '../../src/desktop/entry';
+import { installStudio, injectedHostUrl, resolveHostUrl } from '../../src/desktop/entry';
 import { createEchoCapability } from '../../src/capabilities/echo';
 import type { ContentCapabilityController, ContentDocumentLifecycle } from '../../src/inject/types';
 
@@ -29,6 +29,7 @@ describe('注入装配（entry + shims）', () => {
     delete (globalThis as { document?: unknown }).document;
     delete (globalThis as { chrome?: unknown }).chrome;
     delete (globalThis as { __deepseekStudio?: unknown }).__deepseekStudio;
+    delete (globalThis as { __studioHostUrl?: unknown }).__studioHostUrl;
   });
 
   it('installChromeShims 挂上 window.chrome.runtime / storage', () => {
@@ -92,5 +93,36 @@ describe('TD-02 · resolveHostUrl（bootstrap grant → 宿主 WS URL）', () =>
     const src = readFileSync('src/desktop/entry.ts', 'utf8');
     expect(src.includes('__studioHostToken')).toBe(false);
     expect(src.includes('__studioGrant')).toBe(true);
+  });
+
+  it('卡㊹ item 6（UI 半）：注入值在位时跟随（无 grant 裸 URL 与有 grant 带参两条路都跟）', () => {
+    (globalThis as { __studioHostUrl?: string }).__studioHostUrl = 'ws://127.0.0.1:8761/studio';
+    expect(injectedHostUrl()).toBe('ws://127.0.0.1:8761/studio');
+    expect(resolveHostUrl(undefined, 'main')).toBe('ws://127.0.0.1:8761/studio');
+    expect(resolveHostUrl('grant-abc', 'main')).toBe(
+      'ws://127.0.0.1:8761/studio?token=grant-abc&aud=main',
+    );
+  });
+
+  it('卡㊹ item 6（UI 半）：缺省时回落常量（DEFAULT_HOST_URL 兜底不删）', () => {
+    delete (globalThis as { __studioHostUrl?: unknown }).__studioHostUrl;
+    expect(injectedHostUrl()).toBeUndefined();
+    expect(resolveHostUrl(undefined, 'main')).toBe('ws://127.0.0.1:8760/studio');
+  });
+
+  it('卡㊹ item 6（UI 半）：注入值异型（非 string／空串）不跟随，按缺失处理', () => {
+    (globalThis as { __studioHostUrl?: unknown }).__studioHostUrl = 8761;
+    expect(injectedHostUrl()).toBeUndefined();
+    (globalThis as { __studioHostUrl?: unknown }).__studioHostUrl = '';
+    expect(injectedHostUrl()).toBeUndefined();
+    delete (globalThis as { __studioHostUrl?: unknown }).__studioHostUrl;
+  });
+
+  it('卡㊹ item 6（UI 半）：显式 fallback 参优先于注入值（L339 把 options.hostUrl 链传进来时不夺位）', () => {
+    (globalThis as { __studioHostUrl?: string }).__studioHostUrl = 'ws://127.0.0.1:8761/studio';
+    expect(resolveHostUrl(undefined, 'main', 'ws://127.0.0.1:9999/studio')).toBe(
+      'ws://127.0.0.1:9999/studio',
+    );
+    delete (globalThis as { __studioHostUrl?: unknown }).__studioHostUrl;
   });
 });

@@ -459,6 +459,54 @@ describe('设置面板：限流态误报文案（待修②，noDataNote 分支�
     handle.destroy();
   });
 
+  /**
+   * 卡㊺（2026-11-17，端口分档 item 4）：宿主端口行从写死 8760 改为现读
+   * （settings.get.port＝Core 卡㊸ 在宿主侧新加字段，宿主实际解析的 config 端口）。
+   * 判据：字段在位⇒原样渲染（number/string 两形态）；缺字段⇒裸「不可用」（宿主可达但没给，
+   * 沿用 cfgValue 的分性不注记）；宿主不可达⇒「不可用（宿主未连接，读不到）」（noDataNote 同路）；
+   * **任何形态都不得回填 8760 假值**（端口分档 dev=8761 时写死 8760 即谎报）。
+   */
+  function hostPortText(handle: { container: HTMLElement }): string | null {
+    const el = handle.container.querySelector('[data-tab-panel="general"] [data-settings-hostport]');
+    return el ? el.textContent : null;
+  }
+
+  it('卡㊺：settings.get 带 port（number 形态，dev 8761 现读）⇒ 宿主端口行＝现读值，非写死 8760', async () => {
+    setHostBridge(settingsBridge({ logDir: '/opt/studio/logs', configDir: '/opt/studio/config', port: 8761 }));
+    const handle = mountDiag();
+    await flushOneTick();
+    expect(hostPortText(handle)).toBe('8761');
+    // 双实例面：锚只落在 General tab（Diagnostics 无此行，循环守卫跳过）；填过的节点恰 1 枚且值已翻
+    const filled = handle.container.querySelectorAll('[data-settings-hostport]');
+    expect(filled.length).toBe(1);
+    expect(filled[0].textContent).not.toBe('8760');
+    handle.destroy();
+  });
+
+  it('卡㊺：port 为 string 形态（config 读出口径变化）⇒ 原样渲染，不转型、不丢', async () => {
+    setHostBridge(settingsBridge({ port: '8762' }));
+    const handle = mountDiag();
+    await flushOneTick();
+    expect(hostPortText(handle)).toBe('8762');
+    handle.destroy();
+  });
+
+  it('卡㊺：宿主可达但 port 字段缺 ⇒ 裸「不可用」（无注记），绝不回填 8760', async () => {
+    setHostBridge(settingsBridge({ logDir: '/opt/studio/logs', configDir: '/opt/studio/config' }));
+    const handle = mountDiag();
+    await flushOneTick();
+    expect(hostPortText(handle)).toBe('不可用');
+    handle.destroy();
+  });
+
+  it('卡㊺：宿主不可达（deadBridge）⇒「不可用（宿主未连接，读不到）」，与路径行同路注记', async () => {
+    setHostBridge(deadBridge);
+    const handle = mountDiag();
+    await flushOneTick();
+    expect(hostPortText(handle)).toBe('不可用（宿主未连接，读不到）');
+    handle.destroy();
+  });
+
   it('重取半边（补刀）：限流态首开显冷却文案 → 宿主恢复后重开面板 ⇒ 路径行翻回真路径（不永久停旧值；摘 open() 里的 fillPathRows 必红）', async () => {
     setHostBridge(deadBridge); // 首开：限流态且取不到数据
     setGrantStatus({ stage: 'resolver-invoked', failed: true, aud: 'main', lastError: 'rate-limited', cause: null, ts: 1_000 });

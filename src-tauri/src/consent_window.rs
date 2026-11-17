@@ -16,14 +16,16 @@
 //! 两个方向都交给已有的本机 HTTP：
 //!
 //! ```text
-//! Rust 后台线程（200ms）── GET  /v1/consent/pending ──► node 宿主（8760）
+//! Rust 后台线程（200ms）── GET  /v1/consent/pending ──► node 宿主（端口见下）
 //!   └ 有 pending ⇒ 开/复用窗口；无 pending ⇒ 关窗（destroy，不 hide）
 //! 窗口内页面 ── GET /v1/consent/pending、POST /v1/consent/reply ──► node 宿主
 //! ```
 //!
 //! Rust 只负责「有没有待审批」，**不碰决议内容**：决议由窗口内页面 POST 给宿主，
-//! 由宿主侧做 nonce 一次性消费 + ownerId 绑定（K2）。这样 8760 仍是唯一信任边界，
-//! Rust 侧无需理解审批语义。
+//! 由宿主侧做 nonce 一次性消费 + ownerId 绑定（K2）。这样**信任边界跟随
+//! `studio_host_port()`**（host 读同一份 `config.json`、port 走 `sidecar::health_port()`
+//! 那条 `env → config.json.port → 8760` 的解析链），**不再写死 8760**：端口分档后
+//! 轮询地址与窗口 origin 会一起迁到新端口，Rust 侧仍无需理解审批语义。
 //!
 //! ── 与 MCP 设置窗口（`main.rs:1357`）的关系 ──────────────────────────────────
 //! 同一套骨架：`WebviewWindowBuilder` + `initialization_script` 注入 + `on_navigation`
