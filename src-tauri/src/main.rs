@@ -1892,11 +1892,6 @@ fn main() {
             // 自动更新：注册状态 + 启动后 60s 一次性检查（失败静默，见 updater.rs）
             updater::init_state(app.handle());
             updater::spawn_startup_check(app.handle().clone());
-            // K1（2026-11-09 审批重设计阶段一）：审批窗的后台轮询。
-            // 放在这里而不是 command 里：它要「宿主说有 pending 就自己开窗」，
-            // 没有 IPC 入口——node→Rust 没有上行 RPC，所以只能 Rust 主动轮询
-            // （`GET /v1/consent/pending`，200ms）。token 空时不起线程（端到端必然 401）。
-            consent_window::spawn_poller(app.handle().clone());
                 // v0.12：受监管 sidecar 启动
             if std::env::var("STUDIO_DISABLE_HOST").is_err() {
                 // TD-04(a)：包内 bundled node.exe 优先。先算出候选，再决定是否探活。
@@ -2004,6 +1999,25 @@ fn main() {
                 app.manage(handle);
                 eprintln!("[studio] sidecar supervisor started");
             }
+
+            // K1（2026-11-09 审批重设计阶段一）：审批窗的后台轮询。
+            // 放在这里而不是 command 里：它要「宿主说有 pending 就自己开窗」，
+            // 没有 IPC 入口——node→Rust 没有上行 RPC，所以只能 Rust 主动轮询
+            // （`GET /v1/consent/pending`，200ms）。token 空时不起线程（端到端必然 401）。
+            //
+            // 卡㊾（2026-11-19，装版跨启动端口漂移的真因）：**本调用必须晚于上面那段
+            // `CONFIG_DIR_OVERRIDE.set(...)`**，不得早于它。两条同源理由：
+            //   ① `spawn_poller` 同步读 `host_token_from_config()` → `config_dir()`；
+            //   ② 它起的线程读 `studio_host_port()` → `sidecar::health_port()`，
+            //      而 `health_port()` 是 `OnceLock`（**进程内只解析一次**）。
+            // 若本调用早于覆盖设置、且线程赢下竞态：整个进程终身按 dev 根
+            // `~/.config/deepseek-studio/config.json` 的 `port` 解析（本机 8761），
+            // 再经 `cmd.env(HEALTH_PORT_ENV, …)` 注入宿主 ⇒ 宿主绑 8761；
+            // 而 v0.14.24 的页面侧 entry.js 硬编码连 8760 ⇒ ws 永远握手不上、
+            // grant 空转（rate-limited 飙升）。同一枚 exe 跨启动两态
+            // （17:39 绑 8760／00:39、01:56 绑 8761）就是该竞态的直接指纹。
+            // 另一条同族缺陷：早调时 poller 的 token 也取自 dev 根 ⇒ 装版上必然 401。
+            consent_window::spawn_poller(app.handle().clone());
 
             let disable_inject = std::env::var("STUDIO_DISABLE_INJECT").is_ok();
 
@@ -2872,6 +2886,99 @@ mod tests {
             text.contains("1 passed"),
             "子进程没有真的跑这个用例（防假绿）:\n{}",
             text
+        );
+    }
+
+    /// 卡㊾ 回归锁：**装版形态下，端口与 poller token 都必须解析自覆盖根**。
+    ///
+    /// 锁的是本批修掉的竞态：`consent_window::spawn_poller` 曾早于
+    /// `CONFIG_DIR_OVERRIDE.set`，而 `sidecar::health_port()` 是 `OnceLock`
+    /// （进程内只解析一次）⇒ 线程赢下竞态时整个进程终身按 dev 根
+    /// `~/.config/deepseek-studio/config.json` 的 port 解析 ⇒ 宿主绑错口、
+    /// 页面 ws 永远握手不上（grant 空转、rate-limited 飙升）。
+    ///
+    /// ⚠️ 必须子进程跑：`CONFIG_DIR_OVERRIDE` 与 `RESOLVED_HEALTH_PORT` 都是进程级
+    /// `OnceLock`，同进程内先设后断会污染 td05 那组「端口=8760」装置
+    /// （与 `config_dir_override_makes_rust_and_node_read_same_file` 同一理由）。
+    #[test]
+    fn installed_form_resolves_port_and_token_from_override_root() {
+        const PROBE_ENV: &str = "STUDIO_CARD49_OVERRIDE_PROBE";
+        const PROBE_PORT: u16 = 19001;
+
+        if let Some(probe) = std::env::var_os(PROBE_ENV) {
+            let dir = std::path::PathBuf::from(probe);
+            let _ = CONFIG_DIR_OVERRIDE.set(dir);
+            // ① 端口：首次解析必须命中覆盖根的 config.json，不得回落到 dev 根
+            assert_eq!(
+                crate::sidecar::health_port(),
+                PROBE_PORT,
+                "装版形态：health_port() 首次解析必须读覆盖根，实际回落到 dev 根"
+            );
+            // ② token：poller 与宿主必须同根同值（否则装版上轮询必然 401）
+            assert_eq!(
+                host_token_from_config(),
+                "t",
+                "poller token 必须取自覆盖根（与宿主同一份 config.json）"
+            );
+            return;
+        }
+
+        let dir = fresh_tmp("card49-override-probe");
+        std::fs::write(
+            dir.join("config.json"),
+            format!(
+                "{{\"host\":\"127.0.0.1\",\"port\":{},\"token\":\"t\",\"secret\":\"probe-secret\"}}",
+                PROBE_PORT
+            ),
+        )
+        .expect("write probe config");
+
+        let exe = std::env::current_exe().expect("current_exe");
+        let out = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "tests::installed_form_resolves_port_and_token_from_override_root",
+                "--nocapture",
+            ])
+            .env(PROBE_ENV, &dir)
+            // 环境变量优先级高于 config.json ⇒ 必须先摘掉，否则测的是 env 分支、不是覆盖根
+            .env_remove("DEEPSEEK_STUDIO_PORT")
+            .output()
+            .expect("spawn self");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "子进程断言失败（覆盖未生效？）:\n{}", text);
+        // 反向自检：子进程确实跑了 1 个测试（防止「0 个测试也算成功」的假绿）
+        assert!(
+            text.contains("1 passed"),
+            "子进程没有真的跑这个用例（防假绿）:\n{}",
+            text
+        );
+    }
+
+    /// 卡㊾ 顺序锁：setup 里 `consent_window::spawn_poller` 必须**晚于**
+    /// `CONFIG_DIR_OVERRIDE.set(...)`。
+    ///
+    /// 上面那条锁钉的是「覆盖设置后解析正确」这个机制；本锁钉的是**执行顺序**——
+    /// 那才是本次真机故障的成因。运行期顺序单测测不到（setup 要真起 Tauri app），
+    /// 故用源码位置比较钉住：一旦有人把它挪回覆盖之前，本断言立刻红。
+    #[test]
+    fn spawn_poller_is_wired_after_config_override() {
+        let src = include_str!("main.rs");
+        let set_pos = src.find("CONFIG_DIR_OVERRIDE.set(").expect("必须存在覆盖设置");
+        let poller_pos = src
+            .find("consent_window::spawn_poller(")
+            .expect("必须存在 poller 启动");
+        assert!(
+            poller_pos > set_pos,
+            "spawn_poller 必须晚于 CONFIG_DIR_OVERRIDE.set（set 偏置={}，poller 偏置={}）——\
+             早于它会让 sidecar::health_port() 的 OnceLock 锁定 dev 根端口，\
+             装版宿主绑到 dev 端口、页面 ws 永远握手不上",
+            set_pos,
+            poller_pos
         );
     }
 
