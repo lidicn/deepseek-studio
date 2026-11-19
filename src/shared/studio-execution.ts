@@ -47,6 +47,12 @@ export interface StudioToolResultEvent {
   durationMs?: number;
   result: StudioToolPayload;
   error?: string;
+  /**
+   * ㊾-补案甲：终局停止信号，与 result／error 同级（AGENTS「拒绝即止损」：
+   * 必须与 payload 同级、不得塞进 payload 内）。可选字段：旧 v2 事件缺省即
+   * undefined、向后兼容，STUDIO_EXECUTION_VERSION 与存储键前缀均不变。
+   */
+  terminate?: boolean;
 }
 
 export interface StudioFinalAnswerEvent {

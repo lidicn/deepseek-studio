@@ -1020,9 +1020,11 @@ export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioCha
         content: result.content,
         details: result.details,
         isError: result.isError,
-        terminate: result.terminate,
       }),
       error: result.error,
+      // ㊾-补案甲：停止信号出在事件顶层（与 result 同级），不再塞进 result payload——
+      // 塞入时 limitToolPayload 超限会整段换成 {truncated,…}，嵌套 terminate 随之丢失。
+      terminate: result.terminate,
     });
     scrollToBottom();
     return true;
@@ -1134,6 +1136,8 @@ export function createStudioChatUI(options: StudioChatUIOptions = {}): StudioCha
             data: event.result,
             error: event.error,
             isError: !event.ok,
+            // ㊾-补案甲：重放按顶层 terminate 重建卡，与实线路径的卡形态对齐。
+            terminate: event.terminate,
           }, target, event.durationMs);
         }
       } else if (event.type === 'final-answer') {

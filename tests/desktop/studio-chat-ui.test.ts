@@ -4,9 +4,13 @@ import { createStudioChatUI, type StudioChatUIHandle } from '../../src/ui/studio
 import { createStudioExecutionStore, type StudioExecutionKv } from '../../src/ui/studio-execution-store';
 import {
   STUDIO_EXECUTION_INDEX_KEY,
+  STUDIO_EXECUTION_VERSION,
   appendExecutionEvent,
   createEmptyStudioExecutionSession,
+  isStudioExecutionSession,
   type StudioExecutionSession,
+  type StudioToolResultEvent,
+  type StudioTruncatedPayload,
 } from '../../src/shared/studio-execution';
 
 function historySession(
@@ -807,5 +811,133 @@ describe('U1-02 discardOpenAssistantBubble（重发清理原语）', () => {
     const second = ui!.container.querySelector('.ds-sc-msg-assistant')!;
     expect(second).not.toBe(first);
     expect(first.isConnected).toBe(false);
+  });
+});
+
+/**
+ * ㊾-补（2026-11-19 案甲裁定）：终局拒绝的顶层 terminate。
+ * AGENTS「拒绝即止损」：任何工具拒绝／失败出口必须带 terminate:true，**与 payload 同级**、
+ * 不得塞进 payload 内、不得在组装 tool-result 时丢弃。旧实现把它塞进 result payload：
+ * limitToolPayload 超限时整段换成 {truncated,originalBytes,preview}，停止信号随之丢失。
+ * 案甲＝顶层出＋不再塞 payload＋版本号不动（旧 v2 事件仍可解析）。
+ *
+ * 可证伪性：负控（记录层漏顶层 terminate）在 logs/ui-card55-negctl 副本上跑必红；
+ * 副本不入库、无需还原，原件前后逐字节不变。
+ */
+describe('㊾-补：终局拒绝顶层 terminate（截断安全）', () => {
+  let ui: StudioChatUIHandle | null = null;
+
+  function mountWithKv(): { handle: StudioChatUIHandle; kv: ReturnType<typeof memoryKv> } {
+    const kv = memoryKv();
+    const persistence = createStudioExecutionStore({
+      kv,
+      onConnected: () => () => {},
+      isConnected: () => true,
+    });
+    return { handle: mount({ persistence, initialSessionKey: 'chat:term' }), kv };
+  }
+
+  async function persistedToolResult(kv: ReturnType<typeof memoryKv>, callId: string): Promise<StudioToolResultEvent> {
+    const findSession = (): StudioExecutionSession | undefined =>
+      [...kv.values.values()].find((value) =>
+        ((value as { events?: Array<{ callId?: string }> } | undefined)?.events ?? []).some((e) => e.callId === callId),
+      ) as unknown as StudioExecutionSession | undefined;
+    await vi.waitFor(() => {
+      expect(findSession()).toBeDefined();
+    });
+    const session = findSession();
+    if (!session) throw new Error('persisted session not found');
+    const ev = session.events.find((event) => event.type === 'tool-result' && event.callId === callId);
+    if (!ev || ev.type !== 'tool-result') throw new Error('tool-result event not persisted');
+    return ev;
+  }
+
+  function driveToolResult(callId: string, data: unknown, terminate: boolean): void {
+    ui!.addUserMessage('写入记忆');
+    ui!.startAssistantMessage();
+    ui!.startToolCard(callId, { toolName: 'memory.save', params: { content: 'x' } });
+    ui!.finishToolCard(
+      callId,
+      { toolName: 'memory.save', params: { content: 'x' } },
+      { ok: false, isError: true, error: 'memory-save-needs-explicit-instruction', data, terminate },
+      132,
+    );
+  }
+
+  beforeEach(() => {
+    document.head.innerHTML = '';
+    document.body.innerHTML = '';
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 1;
+    });
+    addMeasuredComposer();
+    ui = null;
+  });
+
+  afterEach(() => {
+    ui?.destroy();
+    ui = null;
+    vi.unstubAllGlobals();
+    document.body.innerHTML = '';
+  });
+
+  it('正控：终局拒绝 + payload >16KB ⇒ 持久化事件顶层 terminate===true 且 result 已截断', async () => {
+    const { handle, kv } = mountWithKv();
+    ui = handle;
+    await ui.activateSession('chat:term');
+    // 20000 个 ASCII 字符＝20000 UTF-8 字节 > STUDIO_TOOL_PAYLOAD_LIMIT（16*1024）⇒ 必触发截断。
+    driveToolResult('call-term-big', { saved: false, blob: 'A'.repeat(20000) }, true);
+    const ev = await persistedToolResult(kv, 'call-term-big');
+    // PM 硬判据：顶层 terminate===true 且 result 已 truncated，两条同时成立才算过
+    // （只断言顶层会在 result 未超限时假绿，故同时钉住 truncated 形态）。
+    expect(ev.terminate).toBe(true);
+    expect(ev.result).toMatchObject({ truncated: true });
+    const truncated = ev.result as StudioTruncatedPayload;
+    expect(truncated.originalBytes).toBeGreaterThan(16 * 1024);
+    expect('terminate' in (truncated as unknown as Record<string, unknown>)).toBe(false);
+    expect(ev.error).toBe('memory-save-needs-explicit-instruction');
+  });
+
+  it('payload 未超限：terminate 不再塞进 result（顶层仍出）', async () => {
+    const { handle, kv } = mountWithKv();
+    ui = handle;
+    await ui.activateSession('chat:term');
+    driveToolResult('call-term-small', { saved: false }, true);
+    const ev = await persistedToolResult(kv, 'call-term-small');
+    expect(ev.terminate).toBe(true);
+    // 未超限时 result 原样返回：键集合里不得再有 terminate（防回塞 payload 的回归断言）。
+    expect('truncated' in (ev.result as Record<string, unknown>)).toBe(false);
+    expect('terminate' in (ev.result as Record<string, unknown>)).toBe(false);
+    expect(ev.result).toMatchObject({ isError: true, data: { saved: false } });
+  });
+
+  it('旧 v2 事件（无顶层 terminate）仍可解析：版本号不得升', () => {
+    // 裁定硬约束：L105/L120 对 version 不等严格拒读 ⇒ 升 3 会让两棵 storage 里既有 v2
+    // 事件整库不可读。旧形态事件（无 terminate）必须仍可解析。
+    const legacySession: StudioExecutionSession = {
+      version: 2,
+      key: 'chat:legacy',
+      createdAt: 1000,
+      updatedAt: 2000,
+      events: [
+        { type: 'user-message', at: 1001, turnId: 't1', text: '旧式提问' },
+        {
+          type: 'tool-result',
+          at: 1002,
+          turnId: 't1',
+          callId: 'c1',
+          toolName: 'memory.save',
+          ok: false,
+          result: { saved: false },
+          error: 'memory-save-needs-explicit-instruction',
+          // 旧形态：无顶层 terminate
+        },
+      ],
+    };
+    expect(isStudioExecutionSession(legacySession)).toBe(true);
+    // 若有人把 STUDIO_EXECUTION_VERSION 升成 3：上方字面 `version: 2` 不再满足类型
+    // （typeof 常量＝3），tsc 当场红；此运行期断言双保险。
+    expect(STUDIO_EXECUTION_VERSION).toBe(2);
   });
 });
