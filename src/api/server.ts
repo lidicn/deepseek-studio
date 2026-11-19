@@ -81,7 +81,12 @@ export interface McpServersApi {
 
 import { chunksToResponse, emptyDelta, formatSSE, isUnimplementedPath, SSE_DONE } from './compat';
 import { DEEPSEEK_ORIGIN } from '../host/tool-definitions';
-import { APPROVAL_CLASSES, type ApprovalClass } from '../shared/consent-contract';
+import {
+  APPROVAL_CLASSES,
+  CONSENT_DECISIONS,
+  type ApprovalClass,
+  type ConsentDecision,
+} from '../shared/consent-contract';
 import {
   decideAgentAccess,
   agentAccessDeniedBody,
@@ -297,18 +302,55 @@ function toConsentPendingRequest(entry: PendingConsentEntryShape): Record<string
     typeof rawClass === 'string' && (APPROVAL_CLASSES as readonly string[]).includes(rawClass)
       ? (rawClass as ApprovalClass)
       : undefined;
+  // 风险事实四字段（2026-11-19）：都是宿主 `meta` 经队列透传下来的**事实**，不是页端推断。
+  // `riskFlags`（id）最要紧——窗口页的红色高风险外观（`isHighRiskPresentation`）只认它。
+  const strOrUndef = (k: string): string | undefined =>
+    typeof view[k] === 'string' && (view[k] as string) !== '' ? (view[k] as string) : undefined;
+  const strArray = (k: string): string[] | undefined => {
+    const v = view[k];
+    if (!Array.isArray(v)) return undefined;
+    const out = v.filter((x): x is string => typeof x === 'string' && x !== '');
+    return out.length > 0 ? out : undefined;
+  };
+  const hardRule = strOrUndef('hardRule');
+  const riskLabel = strOrUndef('riskLabel');
+  const riskFlags = strArray('riskFlags');
+  const riskFlagLabels = strArray('riskFlagLabels');
+  // 条目级授权面（2026-11-19 补卡②）：窗口页要按它渲染按钮集，回执端也按它判越权。
+  // 三条硬要求：① 只认合法决议词（与 `CONSENT_DECISIONS` 取交集），脏值丢弃；
+  // ② **宿主没登记就不写这个键**（缺省＝按最严，绝不缺省成全集）；
+  // ③ 保序去重。
+  const allowedDecisions = ((): ConsentDecision[] | undefined => {
+    const v = view.allowedDecisions;
+    if (!Array.isArray(v)) return undefined;
+    const out: ConsentDecision[] = [];
+    for (const item of v) {
+      if (typeof item !== 'string') continue;
+      if (!(CONSENT_DECISIONS as readonly string[]).includes(item)) continue;
+      const decision = item as ConsentDecision;
+      if (!out.includes(decision)) out.push(decision);
+    }
+    return out.length > 0 ? out : undefined;
+  })();
   return {
     callId: str('callId'),
     tool: str('tool'),
     paramsSummary: str('summary'),
     modeLabel,
     nonce: entry.nonce,
+    // 放 `request` 层（与 callId／tool／nonce 同级），**不放 meta**：
+    // `ConsentMeta` 是展示元数据契约，没有这个字段；授权面属于请求本身。
+    ...(allowedDecisions ? { allowedDecisions } : {}),
     meta: {
       outside: view.outside === true,
       canonicalTarget: str('target'),
       modeLabel,
       // approvalClass 由宿主透传（来源＝`auth.approvalClass` ← `approvalClassOf(def)`）。
       ...(approvalClass ? { approvalClass } : {}),
+      ...(hardRule ? { hardRule } : {}),
+      ...(riskFlags ? { riskFlags } : {}),
+      ...(riskLabel ? { riskLabel } : {}),
+      ...(riskFlagLabels ? { riskFlagLabels } : {}),
     },
   };
 }
@@ -931,7 +973,13 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
           sendJson(200, { ok: true, decision: outcome.decision });
         } else {
           // 校验失败一律 4xx + 机器码；**请求保持挂起**，最终由超时兜底为 deny。
-          const status = outcome.code === 'unknown-call' ? 404 : outcome.code === 'bad-nonce' ? 403 : 400;
+          // `decision-not-allowed`（2026-11-19 条目级授权面收紧）判 403：这不是脏输入，
+          // 是"该条目没登记这个决议"的越权尝试，审计要能与 `bad-decision`（400）分开。
+          const status =
+            outcome.code === 'unknown-call' ? 404
+            : outcome.code === 'bad-nonce' ? 403
+            : outcome.code === 'decision-not-allowed' ? 403
+            : 400;
           sendJson(status, { ok: false, error: { code: outcome.code } });
         }
         return;

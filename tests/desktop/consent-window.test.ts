@@ -62,6 +62,8 @@ const HIGH_RISK_REQ: ConsentPendingRequest = {
   paramsSummary: 'cmd: rm -rf build/ …',
   modeLabel: '询问审批',
   nonce: 'n-1',
+  // 显式带授权面：收紧后「三按钮」语义＝授权集含 allow-conversation（L274 断言口径不变）
+  allowedDecisions: ['allow-once', 'deny', 'allow-conversation'],
   meta: {
     outside: true,
     riskFlags: ['recursive-delete'],
@@ -275,7 +277,7 @@ describe('K3 窗口页 · ② 卡片渲染', () => {
   });
 
   it('非高风险 pending（meta 缺省）：无危险外观、无风险行，三按钮仍在', async () => {
-    const req: ConsentPendingRequest = { callId: 'c-2', tool: 'file.read', paramsSummary: 'path: a.txt', nonce: 'n-2' };
+    const req: ConsentPendingRequest = { callId: 'c-2', tool: 'file.read', paramsSummary: 'path: a.txt', nonce: 'n-2', allowedDecisions: ['allow-once', 'deny', 'allow-conversation'] };
     const { root } = mountPanel(req);
     await flush();
     expect(root.querySelector<HTMLElement>('.ds-consent-card')!.dataset.risk).toBeUndefined();
@@ -428,6 +430,56 @@ describe('K3 窗口页 · ⑤ 轮询与稳定性', () => {
     await panel.tick(); // 显式第二次轮询（同一请求）
     expect(root.querySelector<HTMLElement>('.ds-consent-card')).toBe(card1); // 同一元素，未被替换
     expect(root.querySelector<HTMLElement>('.cw-remembered')!.hidden).toBe(false); // 两级态保留
+  });
+});
+
+// ── ⑦ 按钮集随条目级授权面（allowedDecisions，端点同源收紧） ─────────────
+
+const STRICT_TWO_BUTTONS = ['允许一次', '拒绝'];
+
+function authReq(over: Partial<ConsentPendingRequest>): ConsentPendingRequest {
+  return { callId: 'c-9', tool: 'memory.purge', paramsSummary: 'id: m-9', nonce: 'n-9', ...over };
+}
+
+describe('K3 窗口页 · ⑦ 按钮集随条目级授权面', () => {
+  it('授权面 [allow-once, deny] ⇒ 只两枚按钮；「本对话始终允许」不渲染、「将记住什么」块不挂', async () => {
+    const { root } = mountPanel(authReq({ allowedDecisions: ['allow-once', 'deny'] }));
+    await flush();
+    const labels = [...root.querySelectorAll('button')].map((b) => b.textContent);
+    expect(labels).toEqual(STRICT_TWO_BUTTONS);
+    expect(root.querySelector('.cw-remembered')).toBeNull(); // 块未挂载（两级确认只随发得出回执的授权面挂）
+    expect(root.textContent).not.toContain('本对话始终允许');
+  });
+
+  it('新用例：授权面含 allow-conversation ⇒ 三枚齐全＋两级块（与 L274 口径同形、独立用例）', async () => {
+    const { root } = mountPanel(authReq({ allowedDecisions: ['allow-once', 'deny', 'allow-conversation'] }));
+    await flush();
+    const labels = [...root.querySelectorAll('button')].map((b) => b.textContent);
+    expect(labels).toEqual(['允许一次', '拒绝', '本对话始终允许', '确认：本对话始终允许', '取消']);
+    expect(root.querySelector('.cw-remembered')).not.toBeNull();
+  });
+
+  it('缺省（无 allowedDecisions 键）⇒ 按最严只两枚', async () => {
+    const { root } = mountPanel(authReq({}));
+    await flush();
+    const labels = [...root.querySelectorAll('button')].map((b) => b.textContent);
+    expect(labels).toEqual(STRICT_TWO_BUTTONS);
+    expect(root.querySelector('.cw-remembered')).toBeNull();
+  });
+
+  it('allow-session 在授权面里也不单独出按钮（窗口页无会话按钮契约）', async () => {
+    const { root } = mountPanel(authReq({ allowedDecisions: ['allow-once', 'deny', 'allow-session'] }));
+    await flush();
+    const labels = [...root.querySelectorAll('button')].map((b) => b.textContent);
+    expect(labels).toEqual(STRICT_TWO_BUTTONS);
+    expect(root.textContent).not.toContain('本次会话');
+  });
+
+  it('空数组授权面 ⇒ 允许类按钮零枚、只「拒绝」（键在也不缺省成全集）', async () => {
+    const { root } = mountPanel(authReq({ allowedDecisions: [] }));
+    await flush();
+    const labels = [...root.querySelectorAll('button')].map((b) => b.textContent);
+    expect(labels).toEqual(['拒绝']);
   });
 });
 

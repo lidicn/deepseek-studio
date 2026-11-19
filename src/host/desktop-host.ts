@@ -2546,6 +2546,13 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         // 2026-11-19 接缝修复：窗口页要它才显示「高风险（始终审批）」这类分类标签。
         // 只是展示透传，不参与任何判定（判定在 authorization.ts）。
         ...(meta?.approvalClass ? { approvalClass: meta.approvalClass } : {}),
+        // 2026-11-19 风险事实四字段（一个真源：都在 `meta` 里，此处只做透传）。
+        // `riskFlags` 是其中**最要紧**的一枚：窗口页的红色高风险外观
+        // （`isHighRiskPresentation`）只认它，缺了最危险那类会被画成普通卡。
+        ...(meta?.hardRule ? { hardRule: meta.hardRule } : {}),
+        ...(meta?.riskFlags?.length ? { riskFlags: [...meta.riskFlags] } : {}),
+        ...(meta?.riskLabel ? { riskLabel: meta.riskLabel } : {}),
+        ...(meta?.riskFlagLabels?.length ? { riskFlagLabels: [...meta.riskFlagLabels] } : {}),
       });
     };
 

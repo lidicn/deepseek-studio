@@ -52,8 +52,28 @@ export interface PendingConsentView {
   readonly approvalClass?: ApprovalClass;
   /** **是否越界**——窗口上必须显形，这是本设计最想让用户看见的一格。 */
   readonly outside: boolean;
-  /** 允许的按钮集合（宿主侧确认只给 allow-once / deny，长时效回页内模态）。 */
-  readonly allowedDecisions: readonly ConsentDecision[];
+  /**
+   * 允许的按钮集合（宿主侧确认只给 allow-once / deny，长时效回页内模态）。
+   *
+   * ⚠️ **这是条目级授权面，`reply()` 必须执行它**（2026-11-19 收紧）：
+   * 旧实现只查全局 `ALLOWED_DECISIONS` 全集，宿主对高风险类收窄出的
+   * `['allow-once','deny']` 从未被执行 ⇒ 回执端可回 `allow-conversation`。
+   * **缺省（宿主没登记）按最严处理**：只许 `allow-once` / `deny`。
+   */
+  readonly allowedDecisions?: readonly ConsentDecision[];
+  /** 命中的硬拒规则 id（风险事实；仅 governed 分支才带）。 */
+  readonly hardRule?: string;
+  /**
+   * 命中的风险项 **id**（如 `recursive-delete`；未翻译的事实字段）。
+   *
+   * 审批窗页面的**红色高风险外观只认它**（`isHighRiskPresentation` 读
+   * `outside`／`hardRule`／`riskFlags`），所以缺了它，最危险那类会被画成普通卡。
+   */
+  readonly riskFlags?: readonly string[];
+  /** 风险等级展示名（如「特权级」）。 */
+  readonly riskLabel?: string;
+  /** 命中的风险项中文标签（给人看，不参与判定）。 */
+  readonly riskFlagLabels?: readonly string[];
   /** 登记时刻（epoch ms），窗口可用于展示"等了多久"。 */
   readonly requestedAt: number;
 }
@@ -85,7 +105,14 @@ export interface ConsentQueueOptions {
 /** 回执处理结果（HTTP 端点据此决定状态码）。 */
 export type ReplyOutcome =
   | { readonly ok: true; readonly decision: ConsentDecision }
-  | { readonly ok: false; readonly code: 'unknown-call' | 'bad-nonce' | 'bad-decision' };
+  | {
+      readonly ok: false;
+      /**
+       * `decision-not-allowed`＝该条目**没登记**这个决议（条目级授权面收紧，2026-11-19）。
+       * 与 `bad-decision`（根本不是合法决议词）分开，便于审计区分「越权尝试」与「脏输入」。
+       */
+      readonly code: 'unknown-call' | 'bad-nonce' | 'bad-decision' | 'decision-not-allowed';
+    };
 
 export interface ConsentQueue {
   /**
@@ -108,6 +135,14 @@ const ALLOWED_DECISIONS: readonly ConsentDecision[] = [
   'allow-session',
   'allow-conversation',
 ];
+
+/**
+ * 条目**没登记** `allowedDecisions` 时的兜底集合（fail-closed，2026-11-19）。
+ *
+ * 只给「一次」与「拒绝」：缺省情况下任何长时效／对话级放行都必须被回执端拒绝
+ * （`decision-not-allowed`）。宿主侧正常路径总会显式登记，这条只是防"漏登记即放开"。
+ */
+const DEFAULT_ALLOWED_DECISIONS: readonly ConsentDecision[] = ['allow-once', 'deny'];
 
 export function isConsentDecision(v: unknown): v is ConsentDecision {
   return typeof v === 'string' && (ALLOWED_DECISIONS as readonly string[]).includes(v);
@@ -207,6 +242,13 @@ export function createConsentQueue(options: ConsentQueueOptions): ConsentQueue {
       const slot = slots.get(input.callId);
       if (!slot || slot.settled) return { ok: false, code: 'unknown-call' };
       if (!isConsentDecision(input.decision)) return { ok: false, code: 'bad-decision' };
+      // ── 条目级授权面（2026-11-19 收紧）──
+      // 宿主对高风险类把允许集收窄成 `['allow-once','deny']`（`highRiskAllowedDecisions`）
+      // 并经 `request({ allowedDecisions })` 登记进本条。旧实现只查全局全集 ⇒ 回执端仍可回
+      // `allow-conversation`／`allow-session`，等于把「只能允许一次」放大成「本对话始终允许」。
+      // **缺省按最严**：宿主没登记就只许一次，fail-closed。
+      const allowed: readonly ConsentDecision[] = slot.entry.view.allowedDecisions ?? DEFAULT_ALLOWED_DECISIONS;
+      if (!allowed.includes(input.decision)) return { ok: false, code: 'decision-not-allowed' };
       // 不变量：nonce 一次性 + 常数时间相等。校验不过**不结算**。
       if (typeof input.nonce !== 'string' || slot.consumed || !nonceEqual(input.nonce, slot.entry.nonce)) {
         return { ok: false, code: 'bad-nonce' };

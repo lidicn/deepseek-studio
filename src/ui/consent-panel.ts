@@ -39,9 +39,10 @@ import {
   describeConsentRequest,
   describeRiskReason,
   isHighRiskPresentation,
-  type ConsentDecision,
   type ConsentMeta,
 } from './consent';
+// 条目级授权面类型与端点同源（shared 契约单一真源，不手写字面量联合）
+import type { ConsentDecision } from '../shared/consent-contract';
 
 declare global {
   interface Window {
@@ -64,6 +65,12 @@ export interface ConsentPendingRequest {
   meta?: ConsentMeta;
   /** 一次性 nonce：回执必须原样带回；缺失 ⇒ 页端不得产生允许类回执（fail-closed）。 */
   nonce?: string;
+  /**
+   * 条目级授权面（端点同源：与 CONSENT_DECISIONS 交集保合法词、脏值丢弃、保序去重；
+   * 宿主没登记时端点不写本键）。键缺失 ⇒ 按最严（只许 allow-once/deny），
+   * 页端只渲染授权面允许的按钮集。
+   */
+  allowedDecisions?: readonly ConsentDecision[];
 }
 
 export interface ConsentPendingPayload {
@@ -260,13 +267,19 @@ export function mountConsentPanel(options: ConsentPanelOptions): ConsentPanel {
       scopeHint.textContent = scopeParts.join(' · ');
     }
 
-    // ── 三按钮（K3 卡面）：允许一次 ／ 本对话始终允许 ／ 拒绝 ──
+    // ── 按钮集（K3 卡面＋条目级授权面收紧）：由 request.allowedDecisions 决定 ──
+    // 缺省（键不存在）＝按最严：只「允许一次」＋「拒绝」——端点不会缺省成全集，
+    // 键不存在语义上等于「只许 allow-once／deny」；allow-conversation 不在集里按钮
+    // 不渲染（不渲染也不置灰，不呈现一条发不出的回执路径）；allow-session 在集里
+    // 也不单独出按钮（契约：窗口页无会话按钮，session grant 由宿主侧 mode 类发放）。
     const actions = doc.createElement('div');
     actions.className = 'ds-consent-actions';
     const btnDeny = mkBtn('拒绝', 'ds-consent-deny');
     const hasNonce = typeof req.nonce === 'string' && req.nonce !== '';
-    let btnAllowOnce: HTMLButtonElement | undefined;
-    let btnAllowConversation: HTMLButtonElement | undefined;
+
+    const decisions: readonly ConsentDecision[] = req.allowedDecisions ?? ['allow-once', 'deny'];
+    const showAllowOnce = decisions.includes('allow-once');
+    const showAllowConversation = decisions.includes('allow-conversation');
 
     // 「将记住什么」确认块（OpenCode permissionAlwaysLines 同族）：先展示、再显式确认
     const rememberedBox = doc.createElement('div');
@@ -293,24 +306,32 @@ export function mountConsentPanel(options: ConsentPanelOptions): ConsentPanel {
     }
 
     if (hasNonce) {
-      btnAllowOnce = mkBtn('允许一次', 'ds-consent-allow-once');
-      btnAllowConversation = mkBtn('本对话始终允许', 'ds-consent-allow-conversation');
-      actions.append(btnAllowOnce, btnDeny, btnAllowConversation);
-
-      btnAllowOnce.addEventListener('click', guarded('allow-once'));
+      if (showAllowOnce) {
+        const btnAllowOnce = mkBtn('允许一次', 'ds-consent-allow-once');
+        actions.append(btnAllowOnce);
+        btnAllowOnce.addEventListener('click', guarded('allow-once'));
+      }
+      // 「拒绝」是止损出口、无条件渲染：deny 不是授权面的一部分，即使授权集不含
+      // deny 也不隐藏按钮——回执仍由宿主条目级校验（越权 decision-not-allowed 403），
+      // 宿主超时拒绝兜底 fail-closed，不会静默放行；保留它不放大授权面。
+      actions.append(btnDeny);
       btnDeny.addEventListener('click', guarded('deny'));
-      btnAllowConversation.addEventListener('click', (e: Event) => {
-        if (e.isTrusted !== true) return;
-        // 两级：先展示「将记住什么」，再显式确认才发 allow-conversation 回执
-        actions.hidden = true;
-        rememberedBox.hidden = false;
-      });
-      btnConfirmConversation.addEventListener('click', guarded('allow-conversation'));
-      btnCancel.addEventListener('click', (e: Event) => {
-        if (e.isTrusted !== true) return;
-        rememberedBox.hidden = true;
-        actions.hidden = false;
-      });
+      if (showAllowConversation) {
+        const btnAllowConversation = mkBtn('本对话始终允许', 'ds-consent-allow-conversation');
+        actions.append(btnAllowConversation);
+        btnAllowConversation.addEventListener('click', (e: Event) => {
+          if (e.isTrusted !== true) return;
+          // 两级：先展示「将记住什么」，再显式确认才发 allow-conversation 回执
+          actions.hidden = true;
+          rememberedBox.hidden = false;
+        });
+        btnConfirmConversation.addEventListener('click', guarded('allow-conversation'));
+        btnCancel.addEventListener('click', (e: Event) => {
+          if (e.isTrusted !== true) return;
+          rememberedBox.hidden = true;
+          actions.hidden = false;
+        });
+      }
     } else {
       // fail-closed：无 nonce ⇒ 回执无法绑定到这次请求 ⇒ 允许类按钮不渲染，
       // 只给「拒绝」（宿主对无 nonce 回执按忽略处理，最终由宿主超时拒）。
@@ -332,7 +353,8 @@ export function mountConsentPanel(options: ConsentPanelOptions): ConsentPanel {
       actions,
       // 「将记住什么」块是 actions 的兄弟（DOM 序在其后）：点「本对话始终允许」时
       // actions 整行隐藏、rememberedBox 显形；若嵌在 actions 里会被一起藏掉。
-      ...(hasNonce ? [rememberedBox] : []),
+      // 只在 allow-conversation 按钮真的渲染时挂载（授权面发不出的回执不呈现两级确认）。
+      ...(hasNonce && showAllowConversation ? [rememberedBox] : []),
     );
     root.append(card);
   }

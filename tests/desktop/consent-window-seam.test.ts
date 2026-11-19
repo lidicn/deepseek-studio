@@ -26,6 +26,11 @@ import { createBearerAuthenticator } from '../../src/api/auth';
 import { createFakeOfficialBackend, chunk } from '../../src/api/official-backend';
 import type { ApiConfig } from '../../src/api/types';
 import type { PendingConsentEntry } from '../../src/host/consent-queue';
+import { createConsentQueue } from '../../src/host/consent-queue';
+import type { ConsentDecision } from '../../src/shared/consent-contract';
+// 窗口页的呈现层判定（只 import 纯函数，不改 UI 文件）：`isHighRiskPresentation` 只认
+// outside／hardRule／riskFlags(id)，本文件用它钉「风险外观不丢」。
+import { isHighRiskPresentation } from '../../src/ui/consent';
 // 宿主侧真源：approvalClass 不许在测试里手抄，跟着 tool-definitions 走。
 import { DEFAULT_TOOL_DEFINITIONS } from '../../src/host/tool-definitions';
 import { approvalClassOf } from '../../src/host/tool-registry';
@@ -169,5 +174,162 @@ describe('接缝 · 真端点同时满足 Rust 侧与窗口页侧', () => {
     // 退回到修复前的形态（只有扁平 pending）
     const legacy: SeamBody = { ok: body.ok, pending: body.pending };
     expect(() => assertSeam(legacy)).toThrow();
+  });
+});
+
+// ── 风险事实四字段（2026-11-19 (c)）────────────────────────────────────────
+
+describe('风险事实四字段 · 映射进 meta 且高风险外观成立', () => {
+  /** governed 场景下宿主会带的四字段（值按宿主 `meta` 的真实形态给）。 */
+  const governed = (over: Partial<PendingConsentEntry['view']> = {}) => ({
+    hardRule: 'disk-format',
+    riskFlags: ['recursive-delete', 'privilege-escalation'],
+    riskLabel: '特权级',
+    riskFlagLabels: ['递归删除', '提权执行'],
+    ...over,
+  });
+
+  it('四字段整组透传：缺一枚都会让窗口页少一格显示', async () => {
+    const view = governed();
+    const base = await startServer([entry(view)]);
+    const body = (await fetchPending(base)) as SeamBody;
+    const meta = (body.request as Record<string, unknown>).meta as Record<string, unknown>;
+
+    expect(meta.hardRule).toBe('disk-format');
+    expect(meta.riskFlags).toEqual(['recursive-delete', 'privilege-escalation']);
+    expect(meta.riskLabel).toBe('特权级');
+    expect(meta.riskFlagLabels).toEqual(['递归删除', '提权执行']);
+  });
+
+  it('`riskFlags` 是高风险外观的**唯一**事实来源：映射后 `isHighRiskPresentation` 必须为 true', async () => {
+    // 场景刻意让 outside 与 hardRule 都不命中——只靠 riskFlags 触发高风险外观
+    const view = { hardRule: undefined, outside: false, riskFlags: ['recursive-delete'] };
+    const base = await startServer([entry(view)]);
+    const body = (await fetchPending(base)) as SeamBody;
+    const meta = (body.request as Record<string, unknown>).meta as Record<string, unknown>;
+
+    // 装置自检：这条 meta 确实不含 outside/hardRule（否则下面的 true 可能来自别处）
+    expect(meta.outside).toBe(false);
+    expect(meta.hardRule).toBeUndefined();
+    expect(isHighRiskPresentation(meta as never)).toBe(true);
+  });
+
+  it('负控：把 `riskFlags` 摘掉 ⇒ 同一场景 `isHighRiskPresentation` 必须变 false（证明确实只认它）', async () => {
+    const view = { hardRule: undefined, outside: false, riskFlags: undefined };
+    const base = await startServer([entry(view)]);
+    const body = (await fetchPending(base)) as SeamBody;
+    const meta = (body.request as Record<string, unknown>).meta as Record<string, unknown>;
+    expect(isHighRiskPresentation(meta as never)).toBe(false);
+  });
+});
+
+// ── 条目级授权面（2026-11-19 补卡②）──────────────────────────────────────
+
+describe('条目级授权面 · request.allowedDecisions 送到窗口页', () => {
+  const reqOf = (body: SeamBody) => body.request as Record<string, unknown>;
+
+  it("宿主登记 ['allow-once','deny'] ⇒ 窗口页拿到逐字相同的一份", async () => {
+    const base = await startServer([entry({ allowedDecisions: ['allow-once', 'deny'] })]);
+    const body = (await fetchPending(base)) as SeamBody;
+    expect(reqOf(body).allowedDecisions).toEqual(['allow-once', 'deny']);
+  });
+
+  it('登记含 allow-conversation 的组 ⇒ 逐字等于它且保序', async () => {
+    const base = await startServer([
+      entry({ allowedDecisions: ['deny', 'allow-once', 'allow-conversation'] }),
+    ]);
+    const body = (await fetchPending(base)) as SeamBody;
+    expect(reqOf(body).allowedDecisions).toEqual(['deny', 'allow-once', 'allow-conversation']);
+  });
+
+  it('**未登记 ⇒ 必须 undefined**（缺省按最严，绝不凭空编全集）', async () => {
+    const base = await startServer([entry({ allowedDecisions: undefined })]);
+    const body = (await fetchPending(base)) as SeamBody;
+    expect(reqOf(body).allowedDecisions).toBeUndefined();
+    // 自检：该键确实不在对象里，而不是"值为 undefined 的键"
+    expect(Object.prototype.hasOwnProperty.call(reqOf(body), 'allowedDecisions')).toBe(false);
+  });
+
+  it('脏值/非法决议词被丢弃、重复项保序去重', async () => {
+    const base = await startServer([
+      entry({
+        // 故意混入：非字符串、非决议词、重复项
+        allowedDecisions: ['allow-once', 'not-a-decision', 123, 'allow-once', 'deny'] as never,
+      }),
+    ]);
+    const body = (await fetchPending(base)) as SeamBody;
+    expect(reqOf(body).allowedDecisions).toEqual(['allow-once', 'deny']);
+  });
+});
+
+describe('回执收紧 · reply() 必须执行条目级 allowedDecisions', () => {
+  /** 起一条真队列（不等超时：本组用例只判 reply() 的返回，不判 Promise 结果）。 */
+  function queueWith(allowedDecisions?: readonly ConsentDecision[]) {
+    const q = createConsentQueue({ timeoutMs: 60_000, pollerGraceMs: 60_000 });
+    const pending = q.request({
+      callId: 'c-reply',
+      tool: 'memory.purge',
+      summary: '彻底删除一条记忆',
+      riskReason: '',
+      mode: '完全放开',
+      target: 'memory-id:mem-x',
+      outside: false,
+      ...(allowedDecisions ? { allowedDecisions } : {}),
+    });
+    void pending.catch(() => {});
+    // 取 nonce（pending() 同时把该条标成"窗口侧活着"）
+    const list = q.pending();
+    const nonce = list[0].nonce;
+    return { q, nonce, cleanup: () => q.drain() };
+  }
+
+  it('条目只给 allow-once/deny ⇒ 回 allow-conversation 必须被拒（decision-not-allowed）', () => {
+    const { q, nonce, cleanup } = queueWith(['allow-once', 'deny']);
+    try {
+      expect(q.reply({ callId: 'c-reply', decision: 'allow-conversation', nonce })).toEqual({
+        ok: false,
+        code: 'decision-not-allowed',
+      });
+      // 该条目本身没被结算（仍挂起）⇒ 窗口页还能点「允许一次」
+      expect(q.size()).toBe(1);
+      expect(q.reply({ callId: 'c-reply', decision: 'allow-once', nonce })).toEqual({
+        ok: true,
+        decision: 'allow-once',
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('条目登记了 allow-conversation ⇒ 回它必须放行（不得把合法集也拦掉）', () => {
+    const { q, nonce, cleanup } = queueWith(['allow-once', 'deny', 'allow-conversation']);
+    try {
+      expect(q.reply({ callId: 'c-reply', decision: 'allow-conversation', nonce })).toEqual({
+        ok: true,
+        decision: 'allow-conversation',
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('缺省（宿主没登记）⇒ 按最严：allow-conversation／allow-session 必须被拒，allow-once 放行', () => {
+    const { q, nonce, cleanup } = queueWith(undefined);
+    try {
+      expect(q.reply({ callId: 'c-reply', decision: 'allow-conversation', nonce })).toEqual({
+        ok: false,
+        code: 'decision-not-allowed',
+      });
+      expect(q.reply({ callId: 'c-reply', decision: 'allow-session', nonce })).toEqual({
+        ok: false,
+        code: 'decision-not-allowed',
+      });
+      expect(q.reply({ callId: 'c-reply', decision: 'allow-once', nonce })).toEqual({
+        ok: true,
+        decision: 'allow-once',
+      });
+    } finally {
+      cleanup();
+    }
   });
 });

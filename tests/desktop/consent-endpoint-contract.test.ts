@@ -245,6 +245,27 @@ describe('POST /v1/consent/reply', () => {
     expect(r.status).toBe(400);
   });
 
+  /**
+   * `decision-not-allowed`（2026-11-19 条目级授权面收紧）：条目不登记某决议却收到它。
+   *
+   * 为什么必须单独立一枚：端点那段三元表达式若被改坏（例如落进 `400` 兜底分支），
+   * 行为从「越权尝试」退化成「脏输入」——两者的审计含义完全不同，而**既有三枚
+   * （bad-nonce／unknown-call／bad-decision）都不会因此变红**。
+   */
+  it('decision-not-allowed ⇒ 403 且 body.error.code 逐字保留（越权尝试不是脏输入）', async () => {
+    const queue = emptyQueue();
+    queue.replyResult = { ok: false, code: 'decision-not-allowed' };
+    const base = await startServer(queue);
+    const r = await postReply(
+      base,
+      { callId: 'c1', decision: 'allow-conversation', nonce: 'n1' },
+      `http://127.0.0.1:${new URL(base).port}`,
+    );
+    expect(r.status).toBe(403);
+    const body = (await r.json()) as { ok: boolean; error: { code: string } };
+    expect(body.error.code).toBe('decision-not-allowed');
+  });
+
   it('非回环 Origin ⇒ 403（即便 token 正确；公网页面拿不到这条通道）', async () => {
     const queue = emptyQueue();
     const base = await startServer(queue);
