@@ -38,17 +38,24 @@ describe('release workflow 锚点锁（卡㉚）', () => {
   });
 
   it('release.yml：卡㊱ job 末有界重读步骤在位（拦发版窗口内的绑定翻转，只加格不放宽）', () => {
-    // 步本体在位
-    expect(REL).toContain('Re-assert draft binding at job end (bounded)');
+    // 步本体在位（卡㊿：步名随自愈形态更新，群PM 批准 2026-11-19）
+    expect(REL).toContain('Re-assert draft binding at job end (bounded, with self-heal)');
     // 有界参数与判定串（步被删/参数被改即红）
     expect(REL).toContain('[re-assert-bind] attempt');
     expect(REL).toContain('[re-assert-bind] draft tag_name flipped after creation');
     expect(REL).toContain('draft binding re-asserted at job end');
-    // 不越位护栏：本步只读不 PATCH（重绑归发布后闸/私聊PM）
+    // 卡㊿ 正向锁（群PM 批准，2026-11-19）：自愈前移后步内**必须**有——
+    // ① 重绑 PATCH 本体；② 回读确认；③ fail-closed throw（回读不等照旧撤稿）。
+    // 不是删护栏放水：方向从「禁 PATCH」翻成「必须有 PATCH＋必须回读＋必须保兜底」。
     const stepBody = REL.slice(REL.indexOf('Re-assert draft binding at job end'));
     const bodyUptoNext = stepBody.slice(0, stepBody.indexOf('# G3：闸失败必须删掉 draft'));
-    expect(bodyUptoNext, '重读步内不得出现 PATCH/写动作').not.toMatch(/Method Patch|Method Patch/i);
-    expect(bodyUptoNext).not.toContain('-X PATCH');
+    expect(bodyUptoNext, '自愈前移后本步必须含重绑 PATCH').toMatch(/-Method Patch/);
+    expect(bodyUptoNext, '重绑后必须回读确认').toContain('self-heal verify');
+    expect(bodyUptoNext, '回读不等必须 fail-closed throw').toContain('self-heal re-read mismatch');
+    // 合成名按前缀形态识别（不按具体 hash——两发合成名不同）
+    expect(bodyUptoNext).toContain("-like 'untagged-*'");
+    // PATCH 前提：target_commitish 必须校验（target 不对＝真异常，不许自愈）
+    expect(bodyUptoNext).toContain('target_commitish -eq $env:COMMIT_SHA');
     // 原有 fail-fast 断言未被放宽（卡㉚-c 定性：判据本身没错，只加格）
     expect(REL).toContain("throw \"draft tag_name '$($rel.tag_name)' != expected '$env:TAG_NAME' — release not bound to git tag, must delete and investigate\"");
   });

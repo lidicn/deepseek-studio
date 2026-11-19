@@ -609,21 +609,23 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "signature verification failed (exit $LASTEXITCODE)" }
           Write-Host 'preflight gate PASS'
 
-      # 卡㊱（群PM 派卡 2026-11-17，依据卡㉚-c 定性件 docs/验收/20261117-发版闸tag绑定空格定性.md）：
-      #   v0.14.24 发版（run 43906234216）实测——「Assert draft bound to tag」读取时刻 tag_name=v0.14.24
-      #   为真值（check-run 注解原文为证），随后草稿被 GitHub 侧翻成 untagged 合成名 ⇒ fail-fast 盖不住
-      #   "读后才翻"。本步＝job 末尾**有界重读**拦截格：重取 tag_name 与期望比，不等则有界重试
-      #   （3 次 × 10s，GitHub 对象偶发最终一致），耗尽仍不等才 throw——走既有「Delete draft on
-      #   failure」撤稿，不带任何 PATCH（重绑归发布后闸/私聊PM，CI 不越位）。只加格不放宽：
-      #   上面那条 fail-fast 断言与 html_url warning 分工原样保留。时序护栏：两发观测均为
-      #   "创建即真值"，无"初期 untagged 后自愈成真"观测；本步距创建 ≥6 分钟且有重试兜底，
-      #   不误删合法草稿（撤稿步另有只匹配 draft=true 的构造护栏）。
-      - name: Re-assert draft binding at job end (bounded)
+      # 卡㊼/㊿（群PM 派卡 2026-11-19）：卡㊱ 那格在 v0.14.25 两发实咬（run 44458455865 attempt=1/2，
+      #   注解原文见群卡面）——GitHub 对未发布 draft 返回合成 tag_name（untagged-<hash>，每发不同，
+      #   由草稿派生）是常态而非偶发：attempt=1 合成 eb331ff…、attempt=2 合成 9b6d7da…，重跑必复现。
+      #   旧形态读不到真值就 throw ⇒ 每一发都 fail-closed 撤稿，发布链被自家闸拦死。
+      #   本步改为**同形自愈**（对齐 release-published.yml L196-236 的 0.14.20 先例）：有界重读耗尽后，
+      #   若读到的 tag_name 是 untagged- 合成名（按前缀形态识别，不按具体 hash）**且** target_commitish
+      #   指向本 tag 的 commit（github.sha）⇒ 先 PATCH 重绑 tag_name 回真值、删 stray 合成 tag、
+      #   回读确认；重绑成功 ::warning:: 续跑（草稿仍 draft 未发布，Publish 前必须绑真 tag 的
+      #   AGENTS 判据①不放宽——自愈是把草稿改对，不是接受合成名）。重绑后回读仍不等、或出现
+      #   非合成名却不等（真异常）才 throw，走既有「Delete draft on failure」撤稿。
+      - name: Re-assert draft binding at job end (bounded, with self-heal)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ steps.create_release.outputs.id }}
           TAG_NAME: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
         run: |
           $ErrorActionPreference = 'Stop'
           $repo = '${{ github.repository }}'
@@ -637,6 +639,7 @@ jobs:
           $rebindWaitSecs = 10
           $bound = $false
           $actualTag = $null
+          $rel = $null
           for ($attempt = 1; $attempt -le $rebindRetries; $attempt++) {
             $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$env:RELEASE_ID"
             $actualTag = $rel.tag_name
@@ -645,8 +648,44 @@ jobs:
             if ($attempt -lt $rebindRetries) { Start-Sleep -Seconds $rebindWaitSecs }
           }
           if (-not $bound) {
-            Write-Host "::error::[re-assert-bind] draft tag_name flipped after creation: expected=$env:TAG_NAME actual=$actualTag id=$env:RELEASE_ID — publish window binding lost, fail-closed"
-            throw "draft tag_name '$actualTag' != expected '$env:TAG_NAME' after $rebindRetries bounded re-reads — binding flipped inside the publish window; must delete draft and investigate"
+            $isSynthetic = $actualTag -like 'untagged-*'
+            $targetOk = $rel.target_commitish -eq $env:COMMIT_SHA
+            Write-Host "::notice::[re-assert-bind] bounded re-reads exhausted: tag_name=$actualTag synthetic=$isSynthetic target_commitish=$($rel.target_commitish) expected_commit=$env:COMMIT_SHA target_ok=$targetOk"
+            if ($isSynthetic -and $targetOk) {
+              # ── 卡㊼/㊿ 自愈：合成名＋target 正确 ⇒ PATCH 重绑回真值（形态对齐 release-published.yml
+              #    0.14.20 先例；stray 合成 tag 只删 untagged- 前缀形态，绝不碰真版本 tag）
+              Write-Host "::warning::[re-assert-bind] draft tag flipped to synthetic name '$actualTag' (target_commitish correct) — attempting self-heal (PATCH tag_name back to '$env:TAG_NAME')"
+              $healBody = @{ tag_name = $env:TAG_NAME } | ConvertTo-Json
+              try {
+                $healed = Invoke-RestMethod -Method Patch -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$env:RELEASE_ID" -ContentType 'application/json' -Body $healBody
+                Write-Host "::notice::[re-assert-bind] self-heal PATCH ok: tag_name=$($healed.tag_name) draft=$($healed.draft)"
+              } catch {
+                $hcode = $null; if ($_.Exception.Response) { $hcode = [int]$_.Exception.Response.StatusCode }
+                Write-Host "::error::[re-assert-bind] self-heal PATCH failed: HTTP=$hcode msg=$($_.Exception.Message) id=$env:RELEASE_ID"
+                throw "self-heal PATCH failed (HTTP=$hcode): draft tag_name '$actualTag' != expected '$env:TAG_NAME' — must delete draft and investigate"
+              }
+              if ($actualTag -like 'untagged-*') {
+                try {
+                  Invoke-RestMethod -Method Delete -Headers $headers -Uri "https://api.github.com/repos/$repo/git/refs/tags/$actualTag"
+                  Write-Host "::notice::[re-assert-bind] self-heal: deleted stray synthetic tag $actualTag"
+                } catch {
+                  $dcode = $null; if ($_.Exception.Response) { $dcode = [int]$_.Exception.Response.StatusCode }
+                  Write-Host "::warning::[re-assert-bind] self-heal: delete stray tag $actualTag failed HTTP=$dcode msg=$($_.Exception.Message)（不阻断，release 已重绑）"
+                }
+              }
+              Start-Sleep -Seconds 5
+              $rel2 = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$env:RELEASE_ID"
+              Write-Host "::notice::[re-assert-bind] self-heal verify: draft=$($rel2.draft) tag_name=$($rel2.tag_name) html_url=$($rel2.html_url)"
+              if ($rel2.tag_name -ne $env:TAG_NAME) {
+                Write-Host "::error::[re-assert-bind] self-heal did not take: tag_name still '$($rel2.tag_name)', expected '$env:TAG_NAME' id=$env:RELEASE_ID — fail-closed"
+                throw "self-heal re-read mismatch: tag_name '$($rel2.tag_name)' != expected '$env:TAG_NAME' after PATCH — must delete draft and investigate"
+              }
+              Write-Host "::warning::[re-assert-bind] self-heal ok: draft re-bound to $env:TAG_NAME (id=$env:RELEASE_ID) — continuing (draft still un-published)"
+              $bound = $true
+            } else {
+              Write-Host "::error::[re-assert-bind] draft tag_name flipped after creation (real anomaly, no self-heal): expected=$env:TAG_NAME actual=$actualTag synthetic=$isSynthetic target_ok=$targetOk id=$env:RELEASE_ID — publish window binding lost, fail-closed"
+              throw "draft tag_name '$actualTag' != expected '$env:TAG_NAME' after $rebindRetries bounded re-reads (synthetic=$isSynthetic target_ok=$targetOk) — binding flipped inside the publish window; must delete draft and investigate"
+            }
           }
           Write-Host "draft binding re-asserted at job end: $env:TAG_NAME (id=$env:RELEASE_ID)"
 
