@@ -2543,6 +2543,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         target: meta?.canonicalTarget ?? '',
         outside: meta?.outside === true,
         allowedDecisions: [...allowed] as ConsentDecision[],
+        // 2026-11-19 接缝修复：窗口页要它才显示「高风险（始终审批）」这类分类标签。
+        // 只是展示透传，不参与任何判定（判定在 authorization.ts）。
+        ...(meta?.approvalClass ? { approvalClass: meta.approvalClass } : {}),
       });
     };
 

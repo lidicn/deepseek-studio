@@ -12,6 +12,8 @@ import {
   type StudioToolResultEvent,
   type StudioTruncatedPayload,
 } from '../../src/shared/studio-execution';
+import { runToolCall } from '../../src/shared/tool-loop';
+import type { ToolCallParams, ToolCallResult } from '../../src/shared/tool-hooks';
 
 function historySession(
   key: string,
@@ -815,16 +817,23 @@ describe('U1-02 discardOpenAssistantBubble（重发清理原语）', () => {
 });
 
 /**
- * ㊾-补（2026-11-19 案甲裁定）：终局拒绝的顶层 terminate。
- * AGENTS「拒绝即止损」：任何工具拒绝／失败出口必须带 terminate:true，**与 payload 同级**、
- * 不得塞进 payload 内、不得在组装 tool-result 时丢弃。旧实现把它塞进 result payload：
- * limitToolPayload 超限时整段换成 {truncated,originalBytes,preview}，停止信号随之丢失。
- * 案甲＝顶层出＋不再塞 payload＋版本号不动（旧 v2 事件仍可解析）。
+ * ㊾-补（2026-11-19 案甲裁定＋卡面㊾-补-实-夹具补线）：终局拒绝的顶层 terminate，**真入口驱动**。
+ * AGENTS「拒绝即止损」：任何工具拒绝／失败出口必须带 terminate:true、与 payload 同级、
+ * 不得塞进 payload、不得在组装 tool-result 时丢弃。案甲＝顶层出＋不塞 payload＋版本号不升。
  *
- * 可证伪性：负控（记录层漏顶层 terminate）在 logs/ui-card55-negctl 副本上跑必红；
+ * 驱动面（卡面要求：真入口、不得手拼 result 对象）：
+ * - 终局拒绝：真 `runToolCall` before 钩子拦截支（tool-loop.ts L50-72，terminateOnSkip 默认 true）
+ *   产出 terminate=true，值逐字段搬进卡形（与 main-world-interceptor.ts L3087-3093 同形）。
+ * - >16KB 面：真 `runToolCall` 成功路径 `execute` 返回大结果（20,000 ASCII＝20,000 UTF-8 字节 > 16*1024）
+ *   ⇒ 真触发 limitToolPayload 截断面。
+ * 口径说明：原裁定组合「终局拒绝＋payload>16KB」在真链不可达——skip 结果（tool-loop.ts L55-64）
+ * 是固定小形态（error 文案＋buildErrorExtras、无 data 通道），真拒绝永不带大载荷 ⇒
+ * 截断面由真成功大结果钉住、顶层 terminate 由真拒绝支钉住，两格合盖缺陷面。
+ *
+ * 可证伪性：负控（记录层漏顶层 terminate）在 logs/ui-card55-negctl 副本（见卡㊾-补-实交卷）；
  * 副本不入库、无需还原，原件前后逐字节不变。
  */
-describe('㊾-补：终局拒绝顶层 terminate（截断安全）', () => {
+describe('㊾-补：终局拒绝顶层 terminate（截断安全·真入口）', () => {
   let ui: StudioChatUIHandle | null = null;
 
   function mountWithKv(): { handle: StudioChatUIHandle; kv: ReturnType<typeof memoryKv> } {
@@ -852,16 +861,17 @@ describe('㊾-补：终局拒绝顶层 terminate（截断安全）', () => {
     return ev;
   }
 
-  function driveToolResult(callId: string, data: unknown, terminate: boolean): void {
-    ui!.addUserMessage('写入记忆');
-    ui!.startAssistantMessage();
-    ui!.startToolCard(callId, { toolName: 'memory.save', params: { content: 'x' } });
-    ui!.finishToolCard(
-      callId,
-      { toolName: 'memory.save', params: { content: 'x' } },
-      { ok: false, isError: true, error: 'memory-save-needs-explicit-instruction', data, terminate },
-      132,
-    );
+  /** 照 main-world-interceptor.ts L3087-3093 的逐字段搬法（宿主→页面卡形），值逐字、不手拼。 */
+  function cardShapeFrom(r: ToolCallResult) {
+    return {
+      ok: r.ok,
+      data: r.data,
+      error: r.error,
+      content: r.content,
+      details: r.details,
+      isError: r.isError,
+      terminate: r.terminate,
+    };
   }
 
   beforeEach(() => {
@@ -882,34 +892,69 @@ describe('㊾-补：终局拒绝顶层 terminate（截断安全）', () => {
     document.body.innerHTML = '';
   });
 
-  it('正控：终局拒绝 + payload >16KB ⇒ 持久化事件顶层 terminate===true 且 result 已截断', async () => {
+  it('真链·终局拒绝：before 钩子拦截 ⇒ 事件顶层 terminate===true 且 payload 内无 terminate', async () => {
     const { handle, kv } = mountWithKv();
     ui = handle;
     await ui.activateSession('chat:term');
-    // 20000 个 ASCII 字符＝20000 UTF-8 字节 > STUDIO_TOOL_PAYLOAD_LIMIT（16*1024）⇒ 必触发截断。
-    driveToolResult('call-term-big', { saved: false, blob: 'A'.repeat(20000) }, true);
+    // 真实执行段：runToolCall 的 before 钩子拦截支产出终局拒绝
+    // （tool-loop.ts L52-72；terminateOnSkip 默认 true ⇒ skipResult.terminate=true，L64）。
+    const realResult = await runToolCall({
+      toolName: 'memory.save',
+      params: { content: 'x' },
+      hooks: {
+        runBefore: async () => ({ proceed: false, reason: 'memory-save-needs-explicit-instruction' }),
+      } as never,
+      execute: async () => ({ ok: true }),
+    });
+    expect(realResult.terminate).toBe(true); // 真链产出的 terminate
+    expect(realResult.ok).toBe(false);
+
+    ui.addUserMessage('写入记忆');
+    ui.startAssistantMessage();
+    ui.startToolCard('call-term-real', { toolName: 'memory.save', params: { content: 'x' } });
+    ui.finishToolCard(
+      'call-term-real',
+      { toolName: 'memory.save', params: { content: 'x' } },
+      cardShapeFrom(realResult) as never,
+      132,
+    );
+    const ev = await persistedToolResult(kv, 'call-term-real');
+    expect(ev.terminate).toBe(true); // 顶层出事件
+    expect('terminate' in (ev.result as Record<string, unknown>)).toBe(false); // 不再塞 payload
+  });
+
+  it('真链·>16KB 面：真 execute 大结果 ⇒ result 已截断且顶层 terminate 不假发', async () => {
+    const { handle, kv } = mountWithKv();
+    ui = handle;
+    await ui.activateSession('chat:term');
+    // 真成功路径：execute 返回 20000 ASCII 大结果（UTF-8 20,000 字节 > 16*1024）⇒ 真触发截断。
+    const realResult = await runToolCall({
+      toolName: 'shell_exec',
+      params: { command: 'echo big' },
+      hooks: {
+        runBefore: async (_toolName: string, params: ToolCallParams) => ({ proceed: true, params }),
+        runAfter: async (_toolName: string, _params: ToolCallParams, result: ToolCallResult) => result,
+      } as never,
+      execute: async () => ({ ok: true, data: { stdout: 'A'.repeat(20000) } }),
+    });
+    expect(realResult.ok).toBe(true);
+    expect(realResult.terminate ?? false).toBe(false); // 成功无停止信号
+
+    ui.addUserMessage('跑大输出命令');
+    ui.startAssistantMessage();
+    ui.startToolCard('call-term-big', { toolName: 'shell_exec', params: { command: 'echo big' } });
+    ui.finishToolCard(
+      'call-term-big',
+      { toolName: 'shell_exec', params: { command: 'echo big' } },
+      cardShapeFrom(realResult) as never,
+      42,
+    );
     const ev = await persistedToolResult(kv, 'call-term-big');
-    // PM 硬判据：顶层 terminate===true 且 result 已 truncated，两条同时成立才算过
-    // （只断言顶层会在 result 未超限时假绿，故同时钉住 truncated 形态）。
-    expect(ev.terminate).toBe(true);
-    expect(ev.result).toMatchObject({ truncated: true });
+    expect(ev.terminate).toBeUndefined(); // 成功不得伪造停止信号（反向假绿守门）
+    expect(ev.result).toMatchObject({ truncated: true }); // >16KB 截断面真实
     const truncated = ev.result as StudioTruncatedPayload;
     expect(truncated.originalBytes).toBeGreaterThan(16 * 1024);
     expect('terminate' in (truncated as unknown as Record<string, unknown>)).toBe(false);
-    expect(ev.error).toBe('memory-save-needs-explicit-instruction');
-  });
-
-  it('payload 未超限：terminate 不再塞进 result（顶层仍出）', async () => {
-    const { handle, kv } = mountWithKv();
-    ui = handle;
-    await ui.activateSession('chat:term');
-    driveToolResult('call-term-small', { saved: false }, true);
-    const ev = await persistedToolResult(kv, 'call-term-small');
-    expect(ev.terminate).toBe(true);
-    // 未超限时 result 原样返回：键集合里不得再有 terminate（防回塞 payload 的回归断言）。
-    expect('truncated' in (ev.result as Record<string, unknown>)).toBe(false);
-    expect('terminate' in (ev.result as Record<string, unknown>)).toBe(false);
-    expect(ev.result).toMatchObject({ isError: true, data: { saved: false } });
   });
 
   it('旧 v2 事件（无顶层 terminate）仍可解析：版本号不得升', () => {

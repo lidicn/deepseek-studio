@@ -29,7 +29,7 @@
  */
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import type { ConsentDecision } from '../shared/consent-contract';
+import type { ApprovalClass, ConsentDecision } from '../shared/consent-contract';
 
 /** 一次待审批请求里，会送到窗口页面的那部分。 */
 export interface PendingConsentView {
@@ -43,6 +43,13 @@ export interface PendingConsentView {
   readonly mode: string;
   /** 规范目标描述（路径 / argv / memory id）。 */
   readonly target: string;
+  /**
+   * 本题的 `approvalClass`（透传给审批窗，用于显示「高风险（始终审批）」这类分类）。
+   *
+   * 可选：窗口页缺它就只少一行分类标签，不影响「问不问」的判定；真正的判定在
+   * `authorization.ts`，不读这里。2026-11-19 接缝修复时补（窗口页要它才显示分类）。
+   */
+  readonly approvalClass?: ApprovalClass;
   /** **是否越界**——窗口上必须显形，这是本设计最想让用户看见的一格。 */
   readonly outside: boolean;
   /** 允许的按钮集合（宿主侧确认只给 allow-once / deny，长时效回页内模态）。 */

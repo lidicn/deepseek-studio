@@ -81,6 +81,7 @@ export interface McpServersApi {
 
 import { chunksToResponse, emptyDelta, formatSSE, isUnimplementedPath, SSE_DONE } from './compat';
 import { DEEPSEEK_ORIGIN } from '../host/tool-definitions';
+import { APPROVAL_CLASSES, type ApprovalClass } from '../shared/consent-contract';
 import {
   decideAgentAccess,
   agentAccessDeniedBody,
@@ -268,6 +269,48 @@ export interface ApiServerOptions {
 export interface PendingConsentEntryShape {
   readonly view: unknown;
   readonly nonce: string;
+}
+
+/**
+ * 把队列的 `PendingConsentView` 映射成**审批窗页面**读的 `ConsentPendingRequest`
+ * （`src/ui/consent-panel.ts:56-67`）。
+ *
+ * ── 为什么必须映射、不能直接塞 view（2026-11-19 卡「原生审批窗接缝缺陷」）──
+ * 两套形状**字段名不同**：宿主侧是 `summary`／`mode`／`target`＋扁平的 `outside`，
+ * 窗口页读的是 `paramsSummary`／`modeLabel`／`meta.canonicalTarget`。
+ * 直接塞 view ⇒ `req.meta` 为 undefined ⇒ 档位与规范目标都不显（等于卡片看不出同意的范围）。
+ *
+ * 两侧各自已有锁：`pending` 的扁平形是 **Rust**（`consent_window.rs` 的 `parse_pending_body`
+ * 只读 `pending` 键）的契约；`request` 的嵌套形是**窗口页**的契约。所以这里**并列**给出两份，
+ * 谁都不破：Rust 看 `pending`，页面看 `request`。
+ *
+ * `nonce` 必须与 `pending.nonce` 逐字相同（回执凭据；窗口页拿它 POST `/v1/consent/reply`）。
+ */
+function toConsentPendingRequest(entry: PendingConsentEntryShape): Record<string, unknown> {
+  const view = (entry.view ?? {}) as Record<string, unknown>;
+  const str = (k: string): string => (typeof view[k] === 'string' ? (view[k] as string) : '');
+  const modeLabel = str('mode');
+  // `approvalClass` 认**联合类型**，不认"任意字符串"：认不出就不写，
+  // 让页面按"无该类信息"渲染，而不是把脏值当分类标签显示出来。
+  const rawClass = view.approvalClass;
+  const approvalClass: ApprovalClass | undefined =
+    typeof rawClass === 'string' && (APPROVAL_CLASSES as readonly string[]).includes(rawClass)
+      ? (rawClass as ApprovalClass)
+      : undefined;
+  return {
+    callId: str('callId'),
+    tool: str('tool'),
+    paramsSummary: str('summary'),
+    modeLabel,
+    nonce: entry.nonce,
+    meta: {
+      outside: view.outside === true,
+      canonicalTarget: str('target'),
+      modeLabel,
+      // approvalClass 由宿主透传（来源＝`auth.approvalClass` ← `approvalClassOf(def)`）。
+      ...(approvalClass ? { approvalClass } : {}),
+    },
+  };
 }
 
 /** `/v1/consent/reply` 的处理结果（`server.ts` 与宿主队列共用同一份形状）。 */
@@ -850,6 +893,9 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
           pending: first
             ? { ...(first.view as Record<string, unknown>), nonce: first.nonce }
             : null,
+          // 并列的第二份：**审批窗页面**读的那份（字段名与 `pending` 不同，见
+          // `toConsentPendingRequest` 的注释）。没有它，窗口页会一直渲染「暂无待审批请求」。
+          request: first ? toConsentPendingRequest(first) : null,
         });
         return;
       }
