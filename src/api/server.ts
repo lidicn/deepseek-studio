@@ -47,6 +47,8 @@ export interface McpServerConfigDto {
   readonly transport?: 'stdio' | 'http' | 'sse';
   readonly url?: string;
   readonly headers?: Record<string, string>;
+  /** ㊿-c ③：per-server 开关（缺省 undefined ⇒ 启用；UI 开关走 POST/PUT 落盘）。 */
+  readonly enabled?: boolean;
 }
 
 /** 一台 MCP 服务器（列表项，**明文**）。 */
@@ -59,6 +61,8 @@ export interface McpServerDto {
   readonly cwd?: string;
   readonly url?: string;
   readonly headers?: Record<string, string>;
+  /** ㊿-c ③：当前是否启用（管理面回显；缺省 true）。 */
+  readonly enabled?: boolean;
 }
 
 /**

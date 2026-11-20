@@ -69,6 +69,8 @@ export type HostToPageMessage =
   | { type: 'runtime-envelope-result'; requestId: string; response: unknown }
   /** v1.0：宿主推送当前记忆列表（页端用于注入 "Existing Memories" 到系统提示词）。 */
   | { type: 'memories-update'; memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }> }
+  /** ㊿-c ②：技能开关已变更（页端据此刷新技能清单缓存；无载荷，页端拉 skill.list 取新态）。 */
+  | { type: 'skills-changed' }
   /** 调试：让页端执行 JS。 */
   | { type: 'debug-eval'; requestId: string; code: string }
   /** 调试：让页端刷新。 */

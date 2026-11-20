@@ -190,6 +190,14 @@ const UI_ONLY_TOOLS: Record<string, UpstreamToolMapping> = Object.assign(
   'skill.list': { id: 'skill.list', adapt: (p) => p },
   // 设置面板「技能目录」保存：把路径写回 config.json，让 `/` 弹层与 interceptor 走默认链时也能看到。
   'skill.dir.set': { id: 'skill.dir.set', adapt: (p) => ({ dir: String(p.dir ?? '') }) },
+  // ㊿-c ②：技能开关落盘（仅页端技能面板可调；不进 SUPPORTED_INVOCATION_NAMES，模型面权限不扩）。
+  'skill.enabled.set': {
+    id: 'skill.enabled.set',
+    adapt: (p) => ({
+      id: String(p.id ?? ''),
+      enabled: p.enabled === true,
+    }),
+  },
   } as Record<string, UpstreamToolMapping>,
 );
 

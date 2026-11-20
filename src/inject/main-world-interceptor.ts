@@ -31,6 +31,7 @@ import {
 import {
   classifyResponse,
   classifySseFrame,
+  composeQuotaWallMessage,
   errorBackoffMs,
   filterReplayableHeaders,
   recordVerdict,
@@ -887,6 +888,7 @@ function beginStream(loopState: LoopState): number {
   loopState.streamTruncatedTag = false;
   loopState.streamBytes = 0;
   loopState.streamHadVisibleText = false;
+  loopState.lastResponseText = '';
   loopState.onStreamBegin?.();
   return id;
 }
@@ -1249,6 +1251,9 @@ interface LoopState {
   streamHadVisibleText?: boolean;
   /** R0-R5：本轮流里检测到的 SSE 错误帧（200 内嵌错误），readyState===4 时据此分类。 */
   sseErrorSeen?: ClassifiedResponse | null;
+  /** ㊿-c①：本条流累计的原始响应文本（封顶 8KB），结算「无完成哨兵」时据此识别
+   *  200 外壳的额度墙（短 JSON 错误体）。成功长流封顶后不再增长，避免整条流驻留内存。 */
+  lastResponseText?: string;
   /** v1.6：用户原始任务（首轮请求 prompt 字段，augmentation 前）。XHR/fetch hook 在首条消息时写入，
    *  autoContinueWithPow 读它拼续跑 prompt。 */
   originalTask: string;
@@ -1921,6 +1926,7 @@ function installFetchHook(
     pending: PendingResult[],
     httpStatus?: number,
     streamId?: number,
+    bodyText?: string | null,
   ) => boolean,
   escalateFirstAttemptFailure?: (code: string, why: string) => void,
 ): () => void {
@@ -2041,6 +2047,12 @@ function installFetchHook(
             const rawSse = decoder.decode(value, { stream: true });
             // QD-R7-01（F2）：累计本条流的字节数，供「0 字节 vs 有字节无哨兵」三态判定。
             if (loopState) loopState.streamBytes = (loopState.streamBytes ?? 0) + rawSse.length;
+            // ㊿-c①：累计本条流原始文本（封顶 8KB），供结算识别 200 外壳的额度墙。
+            // 成功长流封顶后即停（不再增长）；结算只在「无哨兵」短错误体分支才读它。
+            if (loopState && (loopState.lastResponseText?.length ?? 0) < 8192) {
+              const prev = loopState.lastResponseText ?? '';
+              loopState.lastResponseText = prev + rawSse.slice(0, 8192 - prev.length);
+            }
             // QD-R4-03：fetch 路径同样要判定完成哨兵（按 frame 判定，见 framesSignalStreamCompletion）。
             // QD-R7-01（F4）：只有当前被认领的那条流才能写哨兵。
             if (loopState && isActiveStream(loopState, streamId) && framesSignalStreamCompletion(frameDec.push(rawSse))) {
@@ -2126,7 +2138,8 @@ function installFetchHook(
           // 只挂在 XHR 上，fetch 拉流时工具标签被截断 / 无完成哨兵依旧静默无反馈。
           // W6：fetch 路径把 response.status 传入 settleStreamEnd，与 XHR 路径同语义
           // （此前传 undefined → httpVerdict=null → 一律误报 stream-incomplete）。
-          settleStreamEnd?.(loopState, pending, response.status, streamId);
+          // ㊿-c①：透传累计的响应体（封顶），让「无哨兵」结算能识别 200 外壳的额度墙。
+          settleStreamEnd?.(loopState, pending, response.status, streamId, loopState.lastResponseText ?? null);
           // 竞态修复：同 XHR 路径，工具结果先于流结束返回时通过 onStreamEnd 补触发
           // QD-R7-01（F6）：结算命中不再吞掉收尾——此前 settle 返回 true 时这里
           // 整段被跳过，页面侧那条助手消息永远不收尾，污染下一轮父节点。
@@ -2171,6 +2184,7 @@ function installXhrHooks(
     pending: PendingResult[],
     httpStatus?: number,
     streamId?: number,
+    bodyText?: string | null,
   ) => boolean,
   escalateFirstAttemptFailure?: (code: string, why: string) => void,
 ): () => void {
@@ -2576,7 +2590,8 @@ function installXhrHooks(
         // QD-R7-01（F4/F6）：透传本条流的序号（并发时只结算自己的流），
         // 并且结算命中不再 return 掉后面的收尾——此前 return 让 onStreamEnd 永不执行，
         // 页面侧那条助手消息永远不收尾，父节点残留 → 下一轮更容易再判错。
-        const settled = settleStreamEnd?.(loopState, pending, xhr.status, streamId) === true;
+        // ㊿-c①：透传完整响应体，让「无哨兵」结算能识别 200 外壳的额度墙（短 JSON 错误体）。
+        const settled = settleStreamEnd?.(loopState, pending, xhr.status, streamId, xhr.responseText ?? null) === true;
         if (!settled) {
         // QD-R5-01：首轮重发链（含续跑轮）的失败由 autoContinueWithPow 的执行器
         // 分类并升级，这里不再插手——否则一次失败会被计两次预算。
@@ -2593,6 +2608,13 @@ function installXhrHooks(
               // 并发时手工改这里正是在改「别人的」状态。
               loopState.streamActive = false;
               escalateFirstAttemptFailure?.(firstVerdict.reason, '服务器暂时无法访问');
+              return;
+            }
+            if (firstVerdict.verdict === 'quota-exhausted') {
+              // ㊿-c①：额度墙不可重试 ⇒ 明示恢复时刻＋透传上游 alert（不报「本轮不会自动重发」）。
+              try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+              loopState.chatUI?.appendError('quota-exhausted', composeQuotaWallMessage(firstVerdict.quota));
+              loopState.chatUI?.setBusy(false);
               return;
             }
             try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
@@ -2821,6 +2843,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     pending: PendingResult[],
     httpStatus?: number,
     streamId?: number,
+    bodyText?: string | null,
   ): boolean {
     // QD-R7-01（F4）：只结算「当前被认领的那条流」。并发时晚到的旧流若也结算，
     // 读到的就是别人的 streamSawDone / streamBytes —— 实测 243ms 内三次结算、
@@ -2886,7 +2909,19 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       // QD-R5-01 修正：确定性 HTTP 失败不是断流。401/403/402/4xx 重发同一份 body
       // 必然同样失败，还会把「鉴权失败」误报成「连接中断」——此前正是如此。
       // 交回外层 classifyResponse 出正确文案，不占用首轮重试预算。
-      const httpVerdict = httpStatus === undefined ? null : classifyResponse(httpStatus, null);
+      // ㊿-c①：透传 bodyText（此前传 null）——200 外壳的额度墙（data.biz_code:29）就藏在
+      // 响应体里，不喂给分类器它永远判成 ok，落进下面的 stream-incomplete 误判分支。
+      const httpVerdict = httpStatus === undefined ? null : classifyResponse(httpStatus, bodyText ?? null);
+      if (httpVerdict?.verdict === 'quota-exhausted') {
+        // ㊿-c①：额度墙＝200 外壳套 biz_code:29、无完成哨兵 ⇒ 旧路径误判 stream-incomplete 并重试 2 次。
+        // 不可重试（额度不会在退避窗口内恢复）：明示恢复时刻＋透传上游 alert，不烧首轮预算、不 escalate。
+        d(`stream end: quota-exhausted (biz_code=${httpVerdict.quota?.bizCode}), stop without retry`);
+        interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'quota-exhausted' });
+        try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+        loopState.chatUI?.appendError('quota-exhausted', composeQuotaWallMessage(httpVerdict.quota));
+        loopState.chatUI?.setBusy(false);
+        return true;
+      }
       if (httpVerdict?.verdict === 'fatal') {
         d(`stream end: no sentinel but http ${httpStatus} is ${httpVerdict.reason}, defer to classifier`);
         return false;
@@ -3634,7 +3669,12 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
             if (firstAttemptResendActive) {
               firstAttemptResendActive = false;
               loopState.streamActive = false;
-              if (verdict.verdict === 'fatal') {
+              if (verdict.verdict === 'quota-exhausted') {
+                // ㊿-c①：重发后撞额度墙 ⇒ 停手＋明示恢复时刻＋透传上游 alert，不再重发（退避内额度不恢复）。
+                interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'quota-exhausted' });
+                finishStepFlow({ code: 'quota-exhausted', message: composeQuotaWallMessage(verdict.quota) });
+                loopDepth = 0;
+              } else if (verdict.verdict === 'fatal') {
                 // 重发后撞上 401/403/402：再重发必然同样失败，直接停。
                 // 终局 ⇒ 半截正文留给用户看（finish 固化），不 discard。
                 try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
@@ -3660,29 +3700,41 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               xhr.status >= 200 && xhr.status < 300;
             const budgetExhausted =
               verdict.verdict === 'fatal' ||
+              verdict.verdict === 'quota-exhausted' ||
               (verdict.verdict === 'retryable' && errorRetryCount >= MAX_ERROR_RETRIES) ||
               (isTruncated && errorRetryCount >= MAX_ERROR_RETRIES);
             if (budgetExhausted) {
-              // 不可重试（401/403/402/400）或错误预算耗尽（含持续截断）→ 停手上报。
-              const stopReason = isTruncated ? 'continuation-truncated' : verdict.reason;
-              d(`auto-continue ${stopReason}: status=${xhr.status} retries=${errorRetryCount}/${MAX_ERROR_RETRIES}, stop loop`);
-              loopState.streamActive = false;
-              interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: isTruncated ? 'continuation-truncated-budget-out' : 'error-budget-out', triggered: false });
-              interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason });
-              finishStepFlow({
-                code: stopReason,
-                message: isTruncated
-                  ? `模型回复持续不完整（${MAX_ERROR_RETRIES} 次重发仍截断），已停止自动续跑。请手动重试。`
-                  : verdict.reason.startsWith('sse-hint-')
-                    // R6（2026-11-12 实跑现场）：上游以 event:hint 下发 generation_err /
-                    // rate_limit_reached。文案给用户看「暂时不可用 + 稍后重试」，
-                    // 不暴露 sse-hint-* 内部 reason 串。
-                    ? `上游服务暂时不可用（已重试 ${MAX_ERROR_RETRIES} 次），请稍后重试。`
-                    : verdict.reason === 'network-error'
-                      ? '服务器暂时无法访问，已停止自动续跑。请检查网络后手动重试。'
-                      : `自动续跑失败（${verdict.reason}），已停止重试。`,
-              });
-              loopDepth = 0;
+              // ㊿-c①：额度墙不可重试（退避窗口内额度不会恢复）⇒ 停手＋明示恢复时刻＋透传上游 alert，
+              // 不报「截断」、不烧续跑预算。
+              if (verdict.verdict === 'quota-exhausted') {
+                d(`auto-continue quota-exhausted (biz_code=${verdict.quota?.bizCode}), stop without retry`);
+                loopState.streamActive = false;
+                interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'quota-exhausted', triggered: false });
+                interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'quota-exhausted' });
+                finishStepFlow({ code: 'quota-exhausted', message: composeQuotaWallMessage(verdict.quota) });
+                loopDepth = 0;
+              } else {
+                // 不可重试（401/403/402/400）或错误预算耗尽（含持续截断）→ 停手上报。
+                const stopReason = isTruncated ? 'continuation-truncated' : verdict.reason;
+                d(`auto-continue ${stopReason}: status=${xhr.status} retries=${errorRetryCount}/${MAX_ERROR_RETRIES}, stop loop`);
+                loopState.streamActive = false;
+                interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: isTruncated ? 'continuation-truncated-budget-out' : 'error-budget-out', triggered: false });
+                interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason });
+                finishStepFlow({
+                  code: stopReason,
+                  message: isTruncated
+                    ? `模型回复持续不完整（${MAX_ERROR_RETRIES} 次重发仍截断），已停止自动续跑。请手动重试。`
+                    : verdict.reason.startsWith('sse-hint-')
+                      // R6（2026-11-12 实跑现场）：上游以 event:hint 下发 generation_err /
+                      // rate_limit_reached。文案给用户看「暂时不可用 + 稍后重试」，
+                      // 不暴露 sse-hint-* 内部 reason 串。
+                      ? `上游服务暂时不可用（已重试 ${MAX_ERROR_RETRIES} 次），请稍后重试。`
+                      : verdict.reason === 'network-error'
+                        ? '服务器暂时无法访问，已停止自动续跑。请检查网络后手动重试。'
+                        : `自动续跑失败（${verdict.reason}），已停止重试。`,
+                });
+                loopDepth = 0;
+              }
             } else if (verdict.verdict === 'retryable') {
               // 429/断连/5xx/200错误体：独立错误预算 + 指数退避，不占用工具续跑/nudge 预算。
               errorRetryCount += 1;

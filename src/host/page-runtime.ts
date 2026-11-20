@@ -214,6 +214,8 @@ export interface PageRuntimeHub {
   requestConsent(callId: string, tool: string, params: unknown, meta?: ConsentMeta, botId?: string): Promise<ConsentDecision>;
   /** v1.0：向所有已连接页端广播记忆列表更新。 */
   broadcastMemories(memories: Array<{ id: string; type: string; name: string; content: string; tags: string[] }>): void;
+  /** ㊿-c ②：向所有已连接页端广播「技能开关已变更」（无载荷；页端收到后自行拉 skill.list 刷新）。 */
+  broadcastSkillsChanged(): void;
   /** 调试：向所有页端广播 debug-eval 请求。 */
   broadcastDebugEval(requestId: string, code: string): void;
   /**
@@ -959,6 +961,13 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
     broadcastMemories(memories) {
       const msg: HostToPageMessage = { type: 'memories-update', memories };
       // R2-02：未完成 hello 的连接不收广播（避免向未握手连接泄露记忆内容/调试代码）。
+      for (const c of clients.values()) {
+        if (!c.untrusted && c.ready) safeSend(c.ws, msg);
+      }
+    },
+    // ㊿-c ②：技能开关变更广播（同 broadcastMemories 的 untrusted/ready 门）。
+    broadcastSkillsChanged() {
+      const msg: HostToPageMessage = { type: 'skills-changed' };
       for (const c of clients.values()) {
         if (!c.untrusted && c.ready) safeSend(c.ws, msg);
       }

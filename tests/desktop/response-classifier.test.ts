@@ -7,6 +7,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   classifyResponse,
   classifySseFrame,
+  composeQuotaWallMessage,
+  detectQuotaWall,
   errorBackoffMs,
   filterReplayableHeaders,
   recordVerdict,
@@ -138,5 +140,122 @@ describe('错误遥测环（R0-R5）', () => {
     expect(traces).toHaveLength(2);
     expect(traces[0].reason).toBe('rate-limited');
     expect(traces[1].verdict).toBe('fatal');
+  });
+});
+
+describe('quota wall — ㊿-c① quota-exhausted（200 外壳套 data 层业务码）', () => {
+  // 现场装版 sidecar 原文钉死的撞墙形态：外层 code:0（骗过只看 HTTP/外层 code 的分类器），
+  // 真信号在 data 层 biz_code:29 ＋ quotas[0].is_exhausted ＋ reset_at ＋ 上游 alert。
+  const wallBody = JSON.stringify({
+    code: 0,
+    msg: '',
+    data: {
+      biz_code: 29,
+      biz_msg: 'user restricted',
+      quotas: [{ is_exhausted: true, reset_at: 1795107600.0, msg: '服务器繁忙，使用额度已达上限，将于 2026 年 11 月 20 日 01:00 恢复' }],
+      alert: {
+        content: {
+          title: '额度已用完',
+          description: '你的 Coding Plan 额度已用完，将于 2026 年 11 月 20 日 01:00 恢复。',
+          button_group: { buttons: [{ label: '我知道了' }] },
+        },
+      },
+    },
+  });
+
+  it('200 ＋ 额度墙 body ⇒ quota-exhausted（非 ok/retryable），带元数据', () => {
+    const v = classifyResponse(200, wallBody);
+    expect(v.verdict).toBe('quota-exhausted');
+    expect(v.reason).toBe('quota-exhausted');
+    expect(v.quota?.bizCode).toBe(29);
+    expect(v.quota?.resetAtSeconds).toBe(1795107600);
+    expect(v.quota?.quotaMsg).toContain('恢复');
+    expect(v.quota?.alertText).toContain('额度已用完');
+  });
+
+  it('真实 476 B 形态（quotas/alert 在 data.biz_data 层，装版日志原文）⇒ 三断言全中', () => {
+    // ㊿-c① 返工（2026-11-20 PM 探针坐实）：现场真实响应里 quotas/alert 不在 data 层，
+    // 在 data.biz_data 层；读取层不下探 ⇒ 文案退化（丢恢复时刻＋上游文案）。
+    const realBody = JSON.stringify({
+      code: 0,
+      msg: '',
+      data: {
+        biz_code: 29,
+        biz_msg: 'user restricted',
+        biz_data: {
+          generated_at: 1795105580.842,
+          quotas: [
+            {
+              model_type: null,
+              is_exhausted: true,
+              reset_at: 1795107600.0,
+              msg: '服务器繁忙，使用额度已达上限，将于 2026 年 11 月 20 日 01:00 恢复',
+            },
+          ],
+          alert: {
+            content: {
+              title: '服务器繁忙，使用额度已达上限',
+              description: '将于 2026 年 11 月 20 日 01:00 恢复',
+              button_group: { buttons: [] },
+            },
+          },
+        },
+      },
+    });
+    const v = classifyResponse(200, realBody);
+    // ① 判类
+    expect(v.verdict).toBe('quota-exhausted');
+    // ② 文案含恢复时刻（上游 msg 透传，非泛化句）
+    expect(composeQuotaWallMessage(v.quota)).toContain('2026 年 11 月 20 日 01:00 恢复');
+    // ③ reset_at 原值取到
+    expect(v.quota?.resetAtSeconds).toBe(1795107600);
+  });
+
+  it('额度墙在顶层（无 data 层）⇒ 兜底仍能识别', () => {
+    const top = JSON.stringify({ biz_code: 29, quotas: [{ is_exhausted: true, reset_at: 1795107600.0 }] });
+    const v = classifyResponse(200, top);
+    expect(v.verdict).toBe('quota-exhausted');
+    expect(v.quota?.resetAtSeconds).toBe(1795107600);
+  });
+
+  it('is_exhausted:false / biz_code:0 ⇒ 非墙，落回既有分类（200⇒ok）', () => {
+    expect(
+      classifyResponse(200, JSON.stringify({ code: 0, data: { biz_code: 0, quotas: [{ is_exhausted: false }] } })).verdict,
+    ).toBe('ok');
+    expect(detectQuotaWall({ data: { biz_code: 5, quotas: [] } })).toBeNull();
+  });
+
+  it('正常 SSE 200 body 不误判为墙', () => {
+    expect(classifyResponse(200, 'data: {"v":[]}\n\n').verdict).toBe('ok');
+  });
+
+  it('detectQuotaWall 纯函数：无墙输入 ⇒ null', () => {
+    expect(detectQuotaWall(null)).toBeNull();
+    expect(detectQuotaWall({ code: 0 })).toBeNull();
+  });
+});
+
+describe('composeQuotaWallMessage — 额度墙文案三段回退（㊿-c①）', () => {
+  it('① 上游文案已含恢复时刻 ⇒ 原样透传（不硬编码）', () => {
+    const msg = composeQuotaWallMessage({
+      quotaMsg: '服务器繁忙，使用额度已达上限，将于 2026 年 11 月 20 日 01:00 恢复',
+      alertText: '额度已用完 将于 2026 年 11 月 20 日 01:00 恢复 我知道了',
+      resetAtSeconds: 1795107600.0,
+    });
+    expect(msg).toContain('恢复');
+    expect(msg).toContain('2026 年 11 月 20 日 01:00');
+  });
+  it('② 文案无恢复时刻但 reset_at 可得 ⇒ 本地时区明示', () => {
+    const msg = composeQuotaWallMessage({ quotaMsg: '额度已用完', resetAtSeconds: 1795107600.0 });
+    expect(msg).toContain('将于');
+    expect(msg).toContain('恢复');
+  });
+  it('③ 有文案但无时刻、无 reset_at ⇒ 透传文案', () => {
+    const msg = composeQuotaWallMessage({ alertText: '服务暂时不可用，请稍后再试' });
+    expect(msg).toBe('服务暂时不可用，请稍后再试');
+  });
+  it('④ 全无 ⇒ 泛化文案', () => {
+    expect(composeQuotaWallMessage(undefined)).toBe('使用额度已用完，请稍后再试。');
+    expect(composeQuotaWallMessage({})).toBe('使用额度已用完，请稍后再试。');
   });
 });

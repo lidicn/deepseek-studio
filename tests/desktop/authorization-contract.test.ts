@@ -68,6 +68,9 @@ const BASELINE: Record<string, ApprovalClass> = {
   'skill.list': 'none',
   // 2026-11-11：设置面板「技能目录」保存。只对页端 UI 开放（不入模型面），用户点按即同意。
   'skill.dir.set': 'none',
+  // ㊿-c ②（2026-11-20）：技能开关落盘。与 skill.dir.set 同口径——只对页端技能面板开放
+  // （不入 SUPPORTED_INVOCATION_NAMES），用户点按即同意，写 config.json 的 disabledSkills。
+  'skill.enabled.set': 'none',
   web_fetch: 'none',
   web_search: 'none',
   // R2-07（2026-11-12 回归审计）：none → mode。

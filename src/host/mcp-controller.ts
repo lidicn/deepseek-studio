@@ -56,6 +56,17 @@ export interface McpServerConfig {
   readonly url?: string;
   /** HTTP/SSE 传输时的自定义请求头（如 Authorization） */
   readonly headers?: Record<string, string>;
+  /**
+   * ㊿-c ③：per-server 开关（可选；缺省 undefined ⇒ **视为启用**，向后兼容）。
+   * `enabled:false` ⇒ 该服务器对**模型面**（mcp.list / getAllTools / mcp.call）整体不可见；
+   * 管理面（/v1/mcp/servers 与 settings.get）仍全量列出（否则禁用后无处再启用）。
+   */
+  readonly enabled?: boolean;
+}
+
+/** ㊿-c ③：单台服务器是否启用（缺省启用；只有显式 `enabled:false` 才算禁用）。 */
+export function isServerEnabled(cfg: McpServerConfig | null | undefined): boolean {
+  return cfg?.enabled !== false;
 }
 
 export interface McpTool {
@@ -542,6 +553,8 @@ export function maskMcpServerArgs(args: readonly string[] | undefined): string[]
 export interface McpServerSummary {
   readonly id: string;
   readonly transport: 'stdio' | 'http' | 'sse';
+  /** ㊿-c ③：该服务器当前是否启用（缺省 undefined 的配置也显式化成布尔）。 */
+  readonly enabled: boolean;
   readonly url?: string;
   readonly command?: string;
   readonly args?: readonly string[];
@@ -559,7 +572,7 @@ export function toMcpServerSummary(
   toolCount?: number,
 ): McpServerSummary {
   if (!cfg) {
-    return { id, transport: 'stdio', ...(toolCount !== undefined ? { toolCount } : {}) };
+    return { id, transport: 'stdio', enabled: true, ...(toolCount !== undefined ? { toolCount } : {}) };
   }
   const transport = cfg.transport ?? 'stdio';
   const url = maskMcpServerUrl(cfg.url);
@@ -567,6 +580,8 @@ export function toMcpServerSummary(
   return {
     id,
     transport,
+    // ㊿-c ③：条目自带 enabled 标（缺省 undefined 也转成显式布尔，模型/UI 都不用再判）。
+    enabled: isServerEnabled(cfg),
     ...(url !== undefined ? { url } : {}),
     ...(cfg.command !== undefined ? { command: cfg.command } : {}),
     ...(args !== undefined ? { args } : {}),
@@ -989,6 +1004,24 @@ export class McpController {
   }
 
   /**
+   * ㊿-c ③：只列**启用**的服务器 ID（模型面专用）。
+   *
+   * 为什么不并进 `listServerIds()`：后者是管理面（`/v1/mcp/servers`）与设置面
+   * （`settings.get`）的共同入口——禁用的服务器必须继续在管理面列出（否则
+   * 从列表消失＝永远无法再启用），只有**模型面**（`mcp.list`）要过滤。
+   */
+  listEnabledServerIds(): string[] {
+    this.refreshConfigIfChanged();
+    return Object.keys(this.servers).filter((id) => isServerEnabled(this.servers[id]));
+  }
+
+  /** ㊿-c ③：某台服务器当前是否启用（供 mcp.call / 面板回显判定）。 */
+  isServerEnabledById(serverId: string): boolean {
+    this.refreshConfigIfChanged();
+    return isServerEnabled(this.servers[serverId]);
+  }
+
+  /**
    * K9（2026-11-09）：本实例实际读写的配置文件路径。
    *
    * 为什么要有这枚访问器：`configPath` 是 `private readonly`（`L895`／`L900`），
@@ -1025,6 +1058,8 @@ export class McpController {
    */
   async connect(serverId: string): Promise<McpServerConnection | null> {
     this.refreshConfigIfChanged();
+    // ㊿-c ③：禁用的服务器不建立连接（最后一道闸；callTool/getAllTools 已各自先挡）。
+    if (!isServerEnabled(this.servers[serverId])) return null;
     const existing = this.connections.get(serverId);
     if (existing && existing.initialized) return existing;
 
@@ -1300,7 +1335,9 @@ export class McpController {
   async getAllTools(): Promise<Array<McpTool & { serverId: string }>> {
     this.refreshConfigIfChanged();
     const allTools: Array<McpTool & { serverId: string }> = [];
+    // ㊿-c ③：禁用的服务器**不 spawn、不 connect、不进目录**——直接跳过（不是连上再删）。
     for (const serverId of Object.keys(this.servers)) {
+      if (!isServerEnabled(this.servers[serverId])) continue;
       try {
         const conn = await Promise.race([
           this.connect(serverId),
@@ -1328,6 +1365,11 @@ export class McpController {
    */
   async callTool(serverId: string, toolName: string, args: Record<string, unknown>): Promise<McpCallResult> {
     this.refreshConfigIfChanged();
+    // ㊿-c ③：对禁用服务器拒调并给**可见错误码**（不静默、不连）。
+    // 静默会让模型把「关了」误读成「坏了」而反复重试同一工具。
+    if (!isServerEnabled(this.servers[serverId])) {
+      return { ok: false, error: `mcp-server-disabled: MCP server "${serverId}" is disabled` };
+    }
     const conn = await this.connect(serverId);
     if (!conn) return { ok: false, error: `MCP server "${serverId}" not available` };
 

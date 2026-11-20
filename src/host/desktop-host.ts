@@ -132,8 +132,8 @@ import { createFileTools } from '../capabilities/file';
 import { createFileEditCapability } from '../capabilities/edit-engine';
 import { getMemoryStore } from './memory-store';
 import { normalizeMemorySaveParams } from './memory-tool-params';
-import { scanSkills, ensureSkillsDir, resolveSkillsDir, resolveSkillRoots, persistSkillsDir } from './skill-store';
-import { getMcpController, ensureMcpConfig, getMcpServer, removeMcpServer, maskMcpServerSecrets, mergeMaskedSecretsChecked, toMcpServerSummary, type McpServerConfig } from './mcp-controller';
+import { scanSkills, ensureSkillsDir, resolveSkillsDir, resolveSkillRoots, persistSkillsDir, readDisabledSkills, persistDisabledSkills } from './skill-store';
+import { getMcpController, ensureMcpConfig, getMcpServer, removeMcpServer, maskMcpServerSecrets, mergeMaskedSecretsChecked, toMcpServerSummary, isServerEnabled, type McpServerConfig } from './mcp-controller';
 import { createAutomationManager, type AutomationManager } from './automation';
 import { execPythonInSandbox } from './sandbox-executor';
 import {
@@ -407,8 +407,13 @@ export interface AgentFacade {
  *
  * 只做**形状转换**，不做取值策略（空值是否保留由调用方决定）。
  * `command` 是必填（宿主 McpServerConfig 的类型要求），其余缺省留空。
+ *
+ * ㊿-c ③（PM 补正 2）：`enabled` 缺省时**继承 `existing`**（existing 也没有才 undefined）。
+ * 为什么不能「缺省＝启用」：`saveServer` 是**整条覆盖**（`file.servers[id] = config`），
+ * UI 表单只带用户改过的字段——若字段缺省被当成"启用"，用户只改个 url 就会把
+ * 已禁用的服务器**静默重开**（禁用语义从落盘上消失）。显式 true/false 才覆盖。
  */
-function mcpConfigFromDto(config: McpServerConfigDto): McpServerConfig {
+function mcpConfigFromDto(config: McpServerConfigDto, existing?: McpServerConfig | null): McpServerConfig {
   return {
     command: String(config.command ?? ''),
     args: Array.isArray(config.args) ? config.args.map(String) : [],
@@ -417,6 +422,9 @@ function mcpConfigFromDto(config: McpServerConfigDto): McpServerConfig {
     url: typeof config.url === 'string' ? config.url : undefined,
     cwd: typeof config.cwd === 'string' ? config.cwd : undefined,
     headers: config.headers && typeof config.headers === 'object' ? { ...config.headers } : undefined,
+    enabled: typeof config.enabled === 'boolean'
+      ? config.enabled
+      : (existing?.enabled ?? undefined),
   };
 }
 
@@ -739,6 +747,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
                 : undefined;
             const dirs = requested ?? resolveSkillRoots();
             const skills = scanSkills(dirs);
+            // ㊿-c ②：每枚技能带 enabled（config.json 的 disabledSkills 派生）。
+            // 面板开关回显与注入面过滤都以这枚值为准；孤儿 id（目录已删）天然匹配不上。
+            const disabled = readDisabledSkills();
             return {
               ok: true,
               data: {
@@ -750,9 +761,40 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
                   name: s.name,
                   description: s.description,
                   skillMdPath: s.skillMdPath,
+                  enabled: !disabled.has(s.id),
                 })),
               },
             };
+          },
+        },
+        // ㊿-c ②：技能开关落盘（写 config.json 的 disabledSkills 清单）。
+        //
+        // 形态（PM 裁定）：复用 persistConfigPatch 既有通道（同 config.json、原子写、
+        // 0600、undefined＝删键）——**禁用清单为空 ⇒ 整键删除**，不留空数组。
+        // 与 skill.dir.set 同口径：仅页端 UI 可调（不在模型面），用户点按即同意。
+        // 未知 id 照样落盘（无害：孤儿 id 永远匹配不上目录扫描），不回 skill-not-found——
+        // 面板与宿主扫描之间天然存在竞态（目录刚被删、面板还挂着旧卡片），按 id 集合
+        // 语义落盘是对两边都安全的收敛。
+        'skill.enabled.set': {
+          id: 'skill.enabled.set',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const id = typeof params.id === 'string' ? params.id.trim() : '';
+            if (!id) return { ok: false, error: 'missing-argument: id is required' };
+            if (typeof params.enabled !== 'boolean') {
+              return { ok: false, error: 'missing-argument: enabled (boolean) is required' };
+            }
+            const disabled = new Set(readDisabledSkills());
+            if (params.enabled) {
+              disabled.delete(id);
+            } else {
+              disabled.add(id);
+            }
+            const persist = persistDisabledSkills([...disabled]);
+            if (!persist.ok) return { ok: false, error: persist.error ?? 'skills-persist-failed' };
+            // 变更通知：广播 skills-changed，让注入面下轮立即刷新（不接广播也有
+            // 注入侧 5s TTL ＋打字预热兜底，不丢正确性只丢即时性）。
+            hub?.broadcastSkillsChanged();
+            return { ok: true, data: { id, enabled: params.enabled } };
           },
         },
         // 设置面板「技能目录」保存：把路径写回 `config.json`。
@@ -836,7 +878,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           id: 'mcp.list',
           async execute(): Promise<ExecuteResult> {
             const controller = getMcpController();
-            const serverIds = controller.listServerIds();
+            // ㊿-c ③：模型面**只列启用**的服务器（disabled 的对模型整体不可见；
+            // 管理面 /v1/mcp/servers 仍全量，UI 的开关回显走那边，两条路不同源各有其用）。
+            const serverIds = controller.listEnabledServerIds();
             // 回传每台服务器的真实传输配置：UI 列表原来把 transport 写死成 stdio，
             // 编辑弹窗也无处回填，表现为「存的是 HTTP，再打开变成 stdio」。
             //
@@ -1728,6 +1772,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           return {
             id,
             transport: (cfg?.transport ?? 'stdio') as 'stdio' | 'http' | 'sse',
+            // ㊿-c ③：管理面每枚带 enabled 供开关回显（缺省 undefined ⇒ 启用）。
+            // UI 的 MCP 开关状态回显以这里为准；模型面 mcp.list 只列 enabled。
+            enabled: isServerEnabled(cfg),
             ...(cfg?.command !== undefined ? { command: cfg.command } : {}),
             ...(cfg?.args !== undefined ? { args: [...cfg.args] } : {}),
             ...(cfg?.env !== undefined ? { env: { ...cfg.env } } : {}),
@@ -1740,7 +1787,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       },
       async create(id, config) {
         const controller = getMcpController();
-        const next = mcpConfigFromDto(config);
+        const next = mcpConfigFromDto(config, controller.getServerConfig(id));
         // 新增：磁盘上还没有这台 → 没有可还原的基准。仍走 checked 版本：
         // 入参自带掩码位（例如从别处粘来的 `****`）必须**拒写**，不许当真值落盘。
         const mergedResult = mergeMaskedSecretsChecked(next, controller.getServerConfig(id));
@@ -1751,7 +1798,9 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       },
       async update(id, config) {
         const controller = getMcpController();
-        const next = mcpConfigFromDto(config);
+        // ㊿-c ③（PM 补正 2）：带 existing 进转换——`enabled` 字段缺省时继承磁盘现值，
+        // 「只改其它字段」不会把已禁用的服务器静默重开。
+        const next = mcpConfigFromDto(config, controller.getServerConfig(id));
         // 防毁配置：用户没改的字段（表单里躺的是掩码占位 `****`）还原成磁盘原值。
         // 掩码位找不到对应真值 ⇒ 拒写 + 可见错误（PM 裁定五十一 4）。
         const mergedResult = mergeMaskedSecretsChecked(next, controller.getServerConfig(id));

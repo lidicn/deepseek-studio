@@ -19,6 +19,43 @@ import { defaultConfigPath, persistConfigPatch } from './workspace';
 /** `config.json` 里保存「用户指定的技能目录」的键。 */
 export const SKILLS_DIR_CONFIG_KEY = 'skillsDir';
 
+/** ㊿-c ②：`config.json` 里保存「禁用技能 id 清单」的键（`string[]`；缺省＝全开）。 */
+export const DISABLED_SKILLS_CONFIG_KEY = 'disabledSkills';
+
+/**
+ * ㊿-c ②：读禁用技能清单（`config.json` 的 `disabledSkills`）。
+ *
+ * 容错口径与 `readConfiguredSkillsDir` 同族：配置不存在 / 非法 JSON / 读失败 /
+ * 字段不是字符串数组 ⇒ 一律视为「未禁用」（空集合）——**宁可多注入一枚技能，
+ * 也不因配置坏掉把用户全部技能静默隐藏**。孤儿 id（对应目录已删）无害：
+ * 派生 `enabled` 时按「目录里实际扫到的 id」求交，孤儿永远匹配不上。
+ */
+export function readDisabledSkills(homedir: string = os.homedir()): ReadonlySet<string> {
+  try {
+    const raw = fs.readFileSync(defaultConfigPath(homedir), 'utf8');
+    const bag = JSON.parse(raw) as Record<string, unknown>;
+    const value = bag[DISABLED_SKILLS_CONFIG_KEY];
+    if (!Array.isArray(value)) return new Set();
+    return new Set(value.filter((v): v is string => typeof v === 'string'));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * ㊿-c ②：把禁用技能清单写回 `config.json`。
+ *
+ * **空清单 ⇒ 整键删除**（PM 裁定：不留 `"disabledSkills": []` 空数组——那会让配置文件
+ * 语义含混，读侧还得猜「空数组算不算没配」）。走 `persistConfigPatch` 沿用既有
+ * 原子写与 0600 权限（与 `skillsDir` 同一条通道）。
+ */
+export function persistDisabledSkills(ids: readonly string[]): { ok: boolean; error?: string } {
+  const trimmed = [...new Set(ids.map((id) => id.trim()).filter((id) => id.length > 0))];
+  return persistConfigPatch({
+    [DISABLED_SKILLS_CONFIG_KEY]: trimmed.length > 0 ? trimmed : undefined,
+  });
+}
+
 /** `~/.agents/skills`：Agent Skills 跨客户端互操作约定目录（用户级）。 */
 export function agentsSkillsDir(homedir: string = os.homedir()): string {
   return path.join(homedir, '.agents', 'skills');

@@ -150,6 +150,21 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     allowedOrigins: [DEEPSEEK_ORIGIN],
     approvalClass: 'none',
   },
+  // ㊿-c ②：技能开关落盘（写 config.json 的 `disabledSkills` 清单）。
+  //
+  // 为什么 approvalClass 是 `none` 而 risk 是 `privileged`：与 `skill.dir.set` 同口径——
+  // 本工具**只对页端 UI 开放**（不在 `SUPPORTED_INVOCATION_NAMES` 里，模型直调会被拒），
+  // 唯一的调用方是技能面板那枚开关——**用户点按即同意**，再弹一次原生确认只是噪音。
+  // 若将来把它放进模型面，这行必须同步改成 `always`。
+  {
+    id: 'skill.enabled.set',
+    title: '设置技能启用状态',
+    description: '启用或禁用一个本地技能（写用户配置，仅页端技能面板可调）。',
+    risk: 'privileged',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
+  },
   // ORD-001：本地文件检索（listFiles + grepFiles）。
   {
     id: 'search_files',
