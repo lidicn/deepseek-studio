@@ -114,6 +114,8 @@ import {
 } from './authorization';
 import { conversationApprovalKeyOf, createConversationApprovalStore } from './conversation-approval';
 import { createWhitelistStore } from './consent-whitelist-store';
+// 卡 ㊿-b ①：单轮串行护栏（按 turn 重置；与页端按流的 signature 去重是两层，互不复用状态）。
+import { createTurnSerialGuard, stableSignature, turnGuardRejection } from './turn-serial-guard';
 import { createShadowStore } from './shadow-store';
 import {
   createMutableWorkspace,
@@ -163,7 +165,7 @@ import {
 // 2026-11-13：长期记忆写入硬闸（提示词可以被模型无视，写库这一步必须有宿主侧的闸）。
 import { evaluateMemorySaveGate, type MemorySaveGateOptions } from '../shared/memory-write-gate';
 // 2026-11-13（工具执行缺陷 A）：失败结果必须带可读文本（含工具名），否则模型只看到 `{"isError":true}`。
-import { ensureToolFailureText } from '../shared/tool-result-format';
+import { ensureToolFailureText, type ToolResultContentPart } from '../shared/tool-result-format';
 /**
  * 2026-11-15 卡⑨：终局族失败码的**单一真相源**。
  * 宿主出口用它判断"这次拒绝是不是参数再试也不会变"，是则带上 `terminate:true`。
@@ -314,11 +316,10 @@ export interface ToolExecutionResult {
   snapshot?: { total: number; byKind: Record<string, number> };
   // ---- v1.2 新增：Pi Agent 风格统一结果格式（全可选，缺省即回退旧格式）----
   // 语义真相源见 src/shared/tool-result-format.ts 的 ToolResultExtras。
+  // 卡 ㊿-b ②：结构引用 ToolResultContentPart 单源，不再重复内联声明
+  // （与 capabilities/types.ts 同一处修正——两处内联形状会让跨模块赋值变蓝）。
   /** 给模型看的内容（文本 + 图片等多模态）。 */
-  content?: Array<
-    | { type: 'text'; text: string }
-    | { type: 'image_url'; image_url: { url: string } }
-  >;
+  content?: ToolResultContentPart[];
   /** 给 UI 看的元数据（exitCode / durationMs / path 等）。 */
   details?: Record<string, unknown>;
   /** 显式错误标记（等价于 !ok，但语义更清晰）。 */
@@ -335,10 +336,11 @@ export interface DesktopHost {
   /** 签发一张一次性 tool grant（常驻宿主侧调用）。 */
   issueGrant(input: IssueGrantInput): Promise<string>;
   /** 持 grant 执行能力：先 consume（失败即拒绝），再 start/stop。 */
-  executeTool(name: string, params: unknown, grantToken: string, botId?: string, conversationId?: string): Promise<ToolExecutionResult>;
+  executeTool(name: string, params: unknown, grantToken: string, botId?: string, conversationId?: string, signal?: AbortSignal): Promise<ToolExecutionResult>;
   /** 便捷入口：已鉴权的 agent 经此发起工具调用（内部签发+消费一次性 grant，再走同意闸门与页端路由）。
-   *  v0.24：botId 可选——多 bot 下路由到对应窗口的页与同意闸门；缺省='main'。 */
-  invokeTool(tool: string, params: unknown, botId?: string, conversationId?: string): Promise<ToolExecutionResult>;
+   *  v0.24：botId 可选——多 bot 下路由到对应窗口的页与同意闸门；缺省='main'。
+   *  卡 ㊿-b ②：`signal` 用于页端超时/撤回时中断宿主侧执行（见 capabilities/types.ts）。 */
+  invokeTool(tool: string, params: unknown, botId?: string, conversationId?: string, signal?: AbortSignal): Promise<ToolExecutionResult>;
   /** 工具执行审计环（HTTP 端点 /v1/tools/audit 的数据源）。 */
   readonly audit: AuditLog;
   /** 当前生效的执行侧Resolver（测试与外部观察者用）。 */
@@ -674,9 +676,12 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         // 否则 params.root 直通 = 任意绝对路径递归搜盘（配合原 approvalClass:'none' 零审批）。
         'search_files': {
           id: 'search_files',
-          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+          async execute(params: Record<string, unknown>, ctx): Promise<ExecuteResult> {
             const operation = String(params.operation ?? 'list');
             const root = typeof params.root === 'string' ? params.root : mutableWorkspace.root;
+            // 卡 ㊿-b ②：把宿主的取消信号交到遍历里（页端 75s 超时 → tool-cancel → abort）——
+            // 不接这一根，页端放弃后宿主仍会把整棵树扫完（现场 75,002 ms 的孤儿遍历）。
+            const signal = ctx?.signal;
             if (operation === 'grep') {
               return grepFiles({
                 root,
@@ -686,6 +691,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
                 caseInsensitive: Boolean(params.caseInsensitive),
                 glob: typeof params.glob === 'string' ? params.glob : undefined,
                 limit: typeof params.limit === 'number' ? params.limit : undefined,
+                ...(signal ? { signal } : {}),
               });
             }
             // 默认 list
@@ -695,6 +701,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
               pattern: typeof params.pattern === 'string' ? params.pattern : undefined,
               recursive: typeof params.recursive === 'boolean' ? params.recursive : undefined,
               limit: typeof params.limit === 'number' ? params.limit : undefined,
+              ...(signal ? { signal } : {}),
             });
           },
         },
@@ -1627,6 +1634,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     for (const bot of botRegistry.list()) botRegistry.getState(bot.id)?.sessionAllowlist.clear();
     // 对话级放行同样作废（档位语义变了），并递增世代号使在途的审批回调失效。
     conversationStore.bumpGeneration();
+      turnGuard.reset();
     const persist = persistConfigPatch({ policyMode: mode });
     if (!persist.ok) console.warn(`[desktop-host] policyMode 持久化失败: ${persist.error}`);
   }
@@ -1639,6 +1647,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       sessionAllowlist.clear();
       for (const bot of botRegistry.list()) botRegistry.getState(bot.id)?.sessionAllowlist.clear();
       conversationStore.bumpGeneration();
+      turnGuard.reset();
       const persist = persistConfigPatch({ workspaceRoot: '' });
       if (!persist.ok) console.warn(`[desktop-host] workspaceRoot 持久化失败: ${persist.error}`);
       return { ok: true };
@@ -1650,6 +1659,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     sessionAllowlist.clear();
     for (const bot of botRegistry.list()) botRegistry.getState(bot.id)?.sessionAllowlist.clear();
     conversationStore.bumpGeneration();
+      turnGuard.reset();
     const persist = persistConfigPatch({ workspaceRoot: mutableWorkspace.root });
     if (!persist.ok) console.warn(`[desktop-host] workspaceRoot 持久化失败: ${persist.error}`);
     return { ok: true };
@@ -1928,6 +1938,47 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
   const conversationStore = createConversationApprovalStore();
 
   /**
+   * 卡 ㊿-b ①：单轮工具串行护栏实例（2026-11-20）。
+   *
+   * 与页端 `tool-call-dedupe` 的分工：那层**按流**重置、只拦同名同参的重复投递
+   * （N2-03：跨流同签名＝合法重跑，不许改）；本实例**按 turn**（用户回合）管
+   * 「同一轮里多枚调用不许同时执行」，并熔断「本轮已执行过的完全相同调用」。
+   * 两层状态互不共享、互不复用重置时机。
+   */
+  const turnGuard = createTurnSerialGuard();
+
+  /**
+   * 只读工具白名单：**不在**这张表里的一律按「写类／执行类」处理（fail-closed）。
+   *
+   * 为什么用白名单而不是 `def.risk`：`file.read` 的 risk 也是 `privileged`
+   * （风险＝能力触达面，不是「会不会改盘」），拿 risk 当并发判据会把读也拦掉。
+   */
+  const TURN_READ_ONLY_TOOLS = new Set([
+    'echo',
+    'chat-read',
+    'file.read',
+    'file.list',
+    'file.stat',
+    'skill.list',
+    'search_files',
+    'web_fetch',
+    'web_search',
+    'mcp.list',
+    'mcp.get',
+    'mcp.test',
+    'memory.list',
+    'memory.listArchived',
+    'memory.select',
+    'consent.whitelist.list',
+    'settings.get',
+    'project.list',
+  ]);
+
+  function isMutatingTool(name: string): boolean {
+    return !TURN_READ_ONLY_TOOLS.has(name);
+  }
+
+  /**
    * 2026-11-13：`memory.save` 硬闸的「本轮用户话语」台账。
    *
    * 页端聊天路径的证据在宿主 KV 里（页端 `user-message` 事件，见 `readCurrentUserTurn`）；
@@ -1972,9 +2023,41 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     return userTextFromExecutionSession(key);
   }
 
+  /**
+   * 本轮（用户回合）标识：取该对话执行会话里**最近一条** `user-message` 的 `turnId`。
+   *
+   * 卡 ㊿-b ①：串行护栏的键必须**按 turn**，不能用流、也不能用 callId —
+   * 页端 `tool-call-dedupe` 的签名集按流清空（跨流同签名＝合法重跑，N2-03），
+   * 复用那个时机就会把「模型在新流里重新发起同一调用」误吞成重复。
+   *
+   * 读不到（老会话 / KV 未落 / 形状不符）→ undefined，调用方退化成
+   * `<conversationId>|no-turn`：**仍然串行**（更保守），只是失去「新回合自动归零」。
+   */
+  async function latestUserTurnId(conversationId?: string): Promise<string | undefined> {
+    const key = typeof conversationId === 'string' ? conversationId : '';
+    if (!key) return undefined;
+    let raw: unknown;
+    try {
+      raw = await kvGet(studioExecutionStorageKey(key));
+    } catch {
+      return undefined;
+    }
+    if (!isStudioExecutionSession(raw)) return undefined;
+    for (let i = raw.events.length - 1; i >= 0; i -= 1) {
+      const e = raw.events[i];
+      if (e.type !== 'user-message') continue;
+      return typeof e.turnId === 'string' && e.turnId ? e.turnId : undefined;
+    }
+    return undefined;
+  }
+
   function randomCallId(): string {
     return crypto.randomUUID();
   }
+
+  // 卡 P2-a：到达序计数器（每宿主实例一份；reset 不清零——单调性优先于复用，
+  // 重置会导致「旧排队者与新一轮调用同号」，出队序又变成完成序）。
+  let guardArrivalSeq = 0;
 
   async function executeTool(
     name: string,
@@ -1982,8 +2065,15 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     grantToken: string,
     botId?: string,
     conversationId?: string,
+    signal?: AbortSignal,
   ): Promise<ToolExecutionResult> {
     const startedAt = Date.now();
+    // 卡 P2-a：**HTTP 边界单调到达序**——必须在**任何 await 之前**取。
+    // acquire 在 consent／turnId 两条 await 之后才跑，异步链完成序≠HTTP 到达序
+    // （验收 cell12：紧突发下后到者先拿执行权，fifo_interval_ms=−7069）。
+    // 戳只在边界打一次、随参传入 acquire，排队出队按它升序；多宿主实例各持自己的
+    // 计数器（闭包内），不存在跨实例串号。
+    const arrivalSeq = ++guardArrivalSeq;
     // 审计上下文随链路推进逐步补全（grantId/origin/risk/side）。
     // 所有拒绝分支一律经由 finish() 出口，确保「没有一条调用走出未被留痕的路径」——
     // 这是 v0.5 引入高风险能力（shell/file）后唯一能证明 fail-closed 真的生效的手段。
@@ -2242,8 +2332,63 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     // 下游 page-runtime 只把 `reason` 重命名为 `error` 往页端送；`reason` 若是空串
     // （MCP 服务器把错误放在非 text 段时就是这个形态），模型侧只剩 `{"isError":true}`。
     // 补在这里而不是各 handler 里：一条边界覆盖宿主工具、页端派发、Node 回退三条路。
-    const result = ensureToolFailureText(name, await routeExecution(def, name, params, outsideApproved, botId));
+    const guardRejected: { code?: string } = {};
+    const result = ensureToolFailureText(name, await (async (): Promise<ToolExecutionResult> => {
+      // ── 卡 ㊿-b ①：单轮串行护栏（2026-11-20）────────────────────────────
+      //
+      // 现场：装版真机一轮里 `local_file_read{smoke_out.log}` 与
+      // `local_file_read{_core_gates.log}` 两枚**不同参数**的调用并发执行
+      // （storage.json turn 4922ceac：start dt=10494／10600、result dt=10752／10758）。
+      // 页端 `claimSignature` 只拦同名同参 ⇒ 签名不同时放行 ⇒ 宿主侧没有第二道闸。
+      //
+      // 为什么放在**授权之后、执行之前**：护栏要保护的是「不许两枚同时真正执行」，
+      // 而同意框可能要等 60s —— 把排队算在等待期里会让并发判定失真，也会让排队者
+      // 白等一轮审批。放在这里，进入护栏的每一枚都已拿到执行许可。
+      //
+      // 键＝`<conversationId>|<turnId>`：**按 turn 重置**，绝不复用
+      // `tool-call-dedupe.resetSignatures` 的按流时机（N2-03 裁定：跨流同签名＝合法重跑）。
+      const guardTurnId = await latestUserTurnId(conversationId);
+      const guardKey = `${conversationId ?? 'host-agent'}|${guardTurnId ?? 'no-turn'}`;
+      const guardDecision = await turnGuard.acquire({
+        key: guardKey,
+        tool: name,
+        signature: stableSignature(name, paramsBag),
+        mutating: isMutatingTool(name),
+        // 卡 ㊿-b ② 收口时发现：没有 turn 身份时「本轮」不存在，`completed` 永不重置
+        // ⇒ 熔断会把宿主内部路径里第二次合法的相同调用误杀（multibot 两枚 echo 打红）。
+        // turnId 读得到才开熔断；读不到仍串行（并发保护不放松）。
+        dedupe: guardTurnId !== undefined,
+        // 卡 P2-a：边界打的到达戳（见 executeTool 入口注释）。
+        arrivalSeq,
+      });
+      if (guardDecision.kind === 'reject') {
+        // 拒绝也要留痕：与 finish() 同口径（outcome=denied + 机器码），
+        // 但正文必须**可行动**（模型要读到「未被执行、请重发」），否则又一轮自我检讨。
+        audit.record({
+          ...ctx,
+          outcome: 'denied',
+          reason: guardDecision.code,
+          durationMs: Date.now() - startedAt,
+        });
+        // 卡 P3-b（验收提案）：拒绝支**短路径 return**——不再落通用出口的
+        // `execution-failed`（原实现同一次拒绝落 denied＋execution-failed 两枚、
+        // 同 at 同 dur，枚数巡检把「拒绝次数」系统性多算一倍）。
+        // 用旗标告知外层出口跳过第二次记账；⚠️ 非护栏失败的通用出口一字不动：
+        // spawn-failed／io-error 等仍各记 1 枚。
+        guardRejected.code = guardDecision.code;
+        return turnGuardRejection({ code: guardDecision.code, message: guardDecision.message });
+      }
+      try {
+        return await routeExecution(def, name, params, outsideApproved, botId, signal);
+      } finally {
+        guardDecision.release();
+      }
+    })());
     const durationMs = Date.now() - startedAt;
+    // 卡 P3-b：护栏拒绝已在拒绝支记过 denied，这里跳过通用出口的第二次记账。
+    if (guardRejected.code !== undefined) {
+      return result;
+    }
     // C1-F3：`memory.select` 的耗时/轮次必须能从**落盘通道**取证
     // （原来只有内存审计环 + 页内钩子，重启即丢、验收不可复现）。
     const mselSeq = name === 'memory.select' ? ++mselSeqCounter : 0;
@@ -2697,6 +2842,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     params: unknown,
     outsideApproved = false,
     botId?: string,
+    signal?: AbortSignal,
   ): Promise<ToolExecutionResult> {
     // 【v0.5 关键】宿主侧能力优先判定：必须放在「有页连接就派发到页面」之前。
     // 若顺序颠倒，shell/file 会被误派发到页端 host-client，页侧未登记该工具 → unknown-tool；
@@ -2714,7 +2860,14 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
           shadowStore.capture({ absPath: p, relPath, workspaceHash: wsHash, source: name === 'file.edit' ? 'file.edit' : 'file.write' });
         }
       }
-      const r = await tool.execute(params as Record<string, unknown>, { allowOutsideWorkspace: outsideApproved });
+      // 卡 ㊿-b ②：已取消的调用不得再进能力层——否则「页端超时后才取消」仍会跑完一整趟遍历。
+      if (signal?.aborted) {
+        return withTerminalSignal({ ok: false, reason: 'cancelled', isError: true, terminate: true });
+      }
+      const r = await tool.execute(params as Record<string, unknown>, {
+        allowOutsideWorkspace: outsideApproved,
+        ...(signal ? { signal } : {}),
+      });
       return withTerminalSignal({
         ok: r.ok,
         reason: r.error,
@@ -2766,7 +2919,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
     return withTerminalSignal({ ok: false, reason: 'no-capability' });
   }
 
-  async function invokeTool(tool: string, params: unknown, botId?: string, conversationId?: string): Promise<ToolExecutionResult> {
+  async function invokeTool(tool: string, params: unknown, botId?: string, conversationId?: string, signal?: AbortSignal): Promise<ToolExecutionResult> {
     const grant = await authority.requestToolExecution({
       documentId: 'host-agent',
       sessionId: 'host-agent',
@@ -2775,7 +2928,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
       // R2-05：使用专用内部 origin，不再硬编码 DEEPSEEK_ORIGIN 让 origin 闸门恒真。
       origin: HOST_INTERNAL_ORIGIN,
     });
-    return executeTool(tool, params, grant, botId, conversationId);
+    return executeTool(tool, params, grant, botId, conversationId, signal);
   }
 
   return {
@@ -2911,10 +3064,11 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         // v0.25：该 bot 已加载人设时先经其白名单过滤器（SlotRuntime.executorFor）；
         //        未加载人设 / 未注入 SlotRuntime → 直调 invokeTool（v0.24 行为不变）。
         // 注意：白名单只是「拒绝」的一层，命中后仍回到 invokeTool——不绕过同意闸门。
-        executor: (tool, params, botId, conversationId) => {
+        executor: (tool, params, botId, conversationId, signal) => {
           const exec = options.slotRuntime?.executorFor(botId);
           // SlotRuntime（已加载人设的 bot）路径保持原签名——对话级放行只作用于页端直连路径。
-          return exec ? exec(tool, params) : invokeTool(tool, params, botId, conversationId);
+          // 卡 ㊿-b ②：页端 cancel → page-runtime abort → 这里把 signal 交到能力层。
+          return exec ? exec(tool, params) : invokeTool(tool, params, botId, conversationId, signal);
         },
         // M1：AgentLoop 依据该计数决定「工具执行完毕 → 请求模型续跑」。
         // v0.24：按发起 botId 累加对应 bot 的独立 counter（main 缺省保持 v0.23 行为）。
@@ -3038,6 +3192,7 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
         agentChannel?.dispose();
         agentChannel = null;
         conversationStore.bumpGeneration();
+      turnGuard.reset();
       } finally {
         // fail-closed 结算：全部 pending ⇒ `{shown:false, decision:'deny'}`。
         hostConsentQueue.drain();

@@ -12,9 +12,14 @@ import {
   shouldNudge,
   extractTaskCompleteSignal,
   renderWindowedToolResults,
+  renderBudgetedToolResults,
+  renderTurnToolSummary,
+  renderTurnSummaryLine,
+  summarizeToolParams,
   clampText,
   MAX_LOOP,
   FULL_TOOL_RESULT_WINDOW,
+  TURN_SUMMARY_MAX_LINES,
   type PendingResult,
 } from '../../src/shared/continuation-prompt';
 
@@ -284,5 +289,143 @@ describe('R4-N6 英文动词表补齐（保持 \\b 词边界）', () => {
     // 裸写形态（前后无 \b）不允许出现
     expect(src).not.toContain('|cat|');
     expect(src).not.toContain('|find|');
+  });
+});
+
+/**
+ * 卡 ㊿-b ③：本轮已执行工具摘要。
+ *
+ * 现场（装版 storage.json turn 4922ceac）：实发 18 次调用、8 次读文件成功，
+ * 下一轮模型自述「只发了两个标签」「审计一步都没做」——窗口化把老条目压成
+ * summary-only（无参数、无耗时），预算超限还会整条省略 ⇒ 模型失去"本轮做过什么"的事实依据。
+ */
+describe('㊿-b③ renderTurnToolSummary（本轮全部调用单行摘要，永不省略）', () => {
+  const exec: PendingResult[] = [
+    { invocationName: 'local_file_read', ok: true, result: 'content', paramsSummary: 'path:E:/a/smoke_out.log', durationMs: 256 },
+    { invocationName: 'search_files', ok: false, error: 'host-timeout', paramsSummary: 'operation:grep, root:E:/NAS/AutoForge, query:--timeout', durationMs: 75002 },
+    { invocationName: 'search_files', ok: false, error: 'invalid-argument', paramsSummary: 'root:E:/NAS/AutoForge/src/autoforge/af_service.py', durationMs: 36 },
+    { invocationName: 'memory_save', ok: false, error: '', paramsSummary: 'type:user, name:客厅设备' },
+    { invocationName: 'echo', ok: true, result: 'pong' },
+  ];
+
+  it('逐行覆盖全部条目（含序号、参数、状态、耗时）', () => {
+    const s = renderTurnToolSummary(exec);
+    expect(s).toContain('本轮共 5 枚工具调用：');
+    expect(s).toContain('#01 local_file_read{path:E:/a/smoke_out.log} → ok (256ms)');
+    expect(s).toContain('#02 search_files{operation:grep, root:E:/NAS/AutoForge, query:--timeout} → failed: host-timeout (75002ms)');
+    expect(s).toContain('#03 search_files{root:E:/NAS/AutoForge/src/autoforge/af_service.py} → failed: invalid-argument (36ms)');
+    // 空串 error 不许吐 "failed: "（2026-11-13 同族：空串兜不住）
+    expect(s).toContain('#04 memory_save{type:user, name:客厅设备} → failed:');
+    expect(s).not.toContain('failed: \n');
+  });
+
+  it('无 paramsSummary 时只写工具名（不猜参数），无 durationMs 时不写耗时', () => {
+    const line = renderTurnSummaryLine({ invocationName: 'echo', ok: true, result: 'pong' }, 7);
+    expect(line).toBe('#07 echo → ok');
+  });
+
+  it('超出 TURN_SUMMARY_MAX_LINES：尾窗保留＋头部注明省略数，最新事实永远在', () => {
+    const many: PendingResult[] = Array.from({ length: TURN_SUMMARY_MAX_LINES + 10 }, (_, i) => ({
+      invocationName: `tool_${i}`,
+      ok: true,
+      result: 'x',
+    }));
+    const s = renderTurnToolSummary(many);
+    expect(s).toContain(`本轮共 ${TURN_SUMMARY_MAX_LINES + 10} 枚工具调用（最早 10 枚已省略`);
+    expect(s).not.toContain('#01 '); // 最老的已被裁
+    expect(s).toContain(`#${String(TURN_SUMMARY_MAX_LINES + 10).padStart(2, '0')} tool_${TURN_SUMMARY_MAX_LINES + 9}`); // 最新保留
+  });
+
+  it('空执行集 → 空串（不渲染空块）', () => {
+    expect(renderTurnToolSummary([])).toBe('');
+  });
+});
+
+describe('㊿-b③ summarizeToolParams（关键参数单源摘要器）', () => {
+  it('search_files：挑 operation/root/query/glob/limit，键序稳定', () => {
+    const s = summarizeToolParams('search_files', { operation: 'grep', root: 'E:/NAS/AutoForge', query: '--timeout', glob: '*.sh', limit: 30, caseInsensitive: false });
+    expect(s).toContain('root:E:/NAS/AutoForge');
+    expect(s).toContain('query:--timeout');
+    expect(s).toContain('glob:*.sh');
+    expect(s).toContain('operation:grep');
+    expect(s).toContain('limit:30');
+    expect(s).not.toContain('caseInsensitive'); // false 不写
+  });
+
+  it('超长值截到 48 字符＋…；整体超 120 字符再截', () => {
+    const long = 'x'.repeat(300);
+    const s = summarizeToolParams('local_file_read', { path: long });
+    expect(s.startsWith('path:')).toBe(true);
+    expect(s.length).toBeLessThanOrEqual(120);
+    expect(s.endsWith('…')).toBe(true);
+  });
+
+  it('非对象 / 空对象 → 空串（不编造）', () => {
+    expect(summarizeToolParams('echo', undefined)).toBe('');
+    expect(summarizeToolParams('echo', null)).toBe('');
+    expect(summarizeToolParams('echo', 'raw-string')).toBe('');
+    expect(summarizeToolParams('echo', {})).toBe('');
+  });
+
+  it('mcp.call 带 tool 字段；普通工具不写 tool', () => {
+    expect(summarizeToolParams('mcp.call', { serverId: 'afs', tool: 'af_list_entities', args: { x: 1 } })).toContain('tool:af_list_entities');
+    expect(summarizeToolParams('file.read', { path: 'E:/a.txt', tool: 'should-not-appear' })).not.toContain('tool:should-not-appear');
+  });
+});
+
+describe('㊿-b③ 续跑 prompt 注入 <turn_tool_summary>（预算裁不掉）', () => {
+  it('buildContinuationPrompt：摘要块在 <tool_results> 之前，覆盖被窗口压缩的老条目', () => {
+    // 6 条：窗口化后前 2 条压缩（无 detail/output），但摘要里 6 枚全在
+    const execs: PendingResult[] = Array.from({ length: 6 }, (_, i) => ({
+      invocationName: `tool_${i + 1}`,
+      ok: true,
+      result: { stdout: `out ${i + 1}` },
+      paramsSummary: `path:E:/f${i + 1}.txt`,
+      durationMs: 100 + i,
+    }));
+    const p = buildContinuationPrompt('task', execs);
+    expect(p).toContain('<turn_tool_summary>');
+    expect(p).toContain('本轮共 6 枚工具调用：');
+    expect(p).toContain('#01 tool_1{path:E:/f1.txt} → ok (100ms)');
+    const idxSummary = p.indexOf('<turn_tool_summary>');
+    const idxResults = p.indexOf('<tool_results>');
+    expect(idxSummary).toBeGreaterThan(-1);
+    expect(idxSummary).toBeLessThan(idxResults);
+  });
+
+  it('预算超限被省略的老条目仍出现在摘要里（预算裁不掉摘要）', () => {
+    // 触发真预算路径：窗口化只压**老**条目，最近 4 条完整仍逐条记账（detail ≤4000、
+    // output ≤8000、error.message 无上限）。要越过 64KB 预算，就得让最近 4 条的
+    // 单条体积顶到上限之上 —— 失败条目的 error.message 是唯一不封顶的那一列。
+    const big = 'y'.repeat(40_000);
+    const execs: PendingResult[] = Array.from({ length: 8 }, (_, i) => ({
+      invocationName: 'local_file_read',
+      ok: false,
+      error: `boom-${i} ${big}`,
+      paramsSummary: `path:E:/f${i}.txt`,
+    }));
+    const view = renderBudgetedToolResults(execs);
+    // 前提自证：这一份夹具**真的**越过了预算（否则下面的断言是同义反复）
+    expect(view.notice, '夹具未能触发预算路径').toBeTruthy();
+    expect(view.omittedCount).toBeGreaterThan(0);
+    // 摘要里 8 枚全在，且早期被预算省略的那几条也在
+    expect(view.results.length).toBeLessThan(8);
+    const p = buildContinuationPrompt('task', execs);
+    expect(p).toContain('本轮共 8 枚工具调用：');
+    expect(p).toContain('#01 local_file_read{path:E:/f0.txt} → failed: boom-0');
+    expect(p).toContain('#08 local_file_read{path:E:/f7.txt} → failed: boom-7');
+  });
+
+  it('buildProtocolRepairPrompt：同样带摘要块', () => {
+    const p = buildProtocolRepairPrompt('task', [
+      { invocationName: 'shell_exec', ok: true, result: { stdout: 'out' }, paramsSummary: 'command:ls', durationMs: 12 },
+    ]);
+    expect(p).toContain('<turn_tool_summary>');
+    expect(p).toContain('#01 shell_exec{command:ls} → ok (12ms)');
+  });
+
+  it('无工具执行 → 不渲染空摘要块（逐字节回归：旧形态不含新标签）', () => {
+    const p = buildContinuationPrompt('task', []);
+    expect(p).not.toContain('<turn_tool_summary>');
   });
 });

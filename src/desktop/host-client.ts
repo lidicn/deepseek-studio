@@ -561,6 +561,10 @@ export function createHostClient(options: HostClientOptions): HostClient {
         }
         const timer = setTimeout(() => {
           pendingToolCalls.delete(req.callId);
+          // 卡 ㊿-b ②：**先通知宿主撤销，再放弃等待**。
+          // 顺序不能反：先 resolve 再发，模型侧已拿到 host-timeout，"取消"这条发出去也没人受益；
+          // 而若只本地放弃不发，宿主侧的 search_files 遍历会继续读盘（现场 75,002 ms 的孤儿遍历）。
+          send({ type: 'tool-cancel', callId: req.callId, reason: 'page-timeout' });
           resolve({ ok: false, error: 'host-timeout' });
         }, toolCallTimeoutMs);
         pendingToolCalls.set(req.callId, { resolve, timer });

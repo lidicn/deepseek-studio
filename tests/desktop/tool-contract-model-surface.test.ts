@@ -346,3 +346,33 @@ describe('0.14.19-F1: shell_exec 工具说明（两处一致＋可照抄 argv �
     expect(shellExecLine(capabilityPromptText())).toBe(shellExecLine(catalogText()));
   });
 });
+
+/**
+ * ㊿-b ⑦ (2026-11-20，Core 交接三条·要点 2)：search_files 工具描述补前置约束——
+ * 现场 ㊿-b 里 missing-argument（query/pattern 都没给）与 invalid-argument（root 传了
+ * 单文件）各出现一次，都是运行期才报。两处（能力 prompt＋续跑目录）同文带上：
+ * grep 必给 query 与 pattern 其一、root 必须是目录（并给可操作出口提示）。
+ * 关键词锁词面（照 shell_exec 先例：不锁整行脆锁），另加两处逐字一致锁。
+ */
+describe('㊿-b ⑦: search_files 工具描述（grep 参数＋root 目录约束，两处一致）', () => {
+  function searchFilesLine(text: string): string {
+    const line = text.split('\n').find((l) => l.startsWith('- search_files'));
+    expect(line, 'search_files 工具说明行缺失').toBeTruthy();
+    return line!;
+  }
+
+  it('两处说明都含：grep 时 query/pattern 二者必给其一 ＋ root 必须是目录（含可操作提示）', () => {
+    for (const text of [capabilityPromptText(), catalogText()]) {
+      const line = searchFilesLine(text);
+      expect(line).toContain('query');
+      expect(line).toContain('pattern');
+      expect(line).toContain('其一');
+      expect(line).toContain('必须是目录');
+      expect(line).toContain('local_file_read');
+    }
+  });
+
+  it('search_files 行两处逐字一致（防 TOOL_CAPABILITY_PROMPT 与 TOOL_CATALOG_TEXT 脱节漂移）', () => {
+    expect(searchFilesLine(capabilityPromptText())).toBe(searchFilesLine(catalogText()));
+  });
+});

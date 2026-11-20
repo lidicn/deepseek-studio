@@ -43,6 +43,15 @@ export interface CapabilityContext {
    * 避免出现「用户选了完全访问 / 点了允许一次，能力却仍拒绝」的割裂行为。
    */
   allowOutsideWorkspace?: boolean;
+  /**
+   * 卡 ㊿-b ②：本次执行的取消信号（宿主注入，**不能**从调用方 params 里读）。
+   *
+   * 现场：页端 75s 超时后只放弃等待，宿主侧那趟 `search_files` 遍历继续跑
+   * ⇒ 孤儿遍历（用户看到 `host-timeout`，机器还在读盘）。
+   * 宿主把页端 `tool-cancel`／宿主超时变成这里的 abort；能力层每个可中断点检查它，
+   * 尽快返回 `{ok:false, error:'cancelled'}`（且**结果不完整**要写明）。
+   */
+  signal?: AbortSignal;
 }
 
 export interface ExecutableCapability {

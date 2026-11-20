@@ -113,7 +113,19 @@ describe('page-runtime tool-call → executor', () => {
     expect(result.ok).toBe(true);
     // v0.24：executor 第三参为 botId（此假页未自报 → undefined，等价 'main'）；
     // 第四参为 conversationId（用于"一个对话审批一次"，此假页未带 → undefined）
-    expect(executor).toHaveBeenCalledWith('shell.exec', { command: 'ls' }, undefined, undefined);
+    // 卡 ㊿-b ②：第五参新增 AbortSignal（tool-cancel/宿主超时 → abort 能力层）。
+    // 只断言「传了」且「未 abort」：不上具体实例（每次调用新建 controller）。
+    expect(executor).toHaveBeenCalledTimes(1);
+    // mock.calls 的元组类型按注入的 executor 签名（两参）推断；第五参是 ㊿-b ② 新加的，
+    // 运行时确实在传 ⇒ 走 unknown 断言面，不改 executor 的注入签名（改了就不是原调用链）。
+    const call = executor.mock.calls[0] as unknown as [string, unknown, unknown, unknown, AbortSignal | undefined];
+    const [calledTool, calledParams, calledBotId, calledConvId, calledSignal] = call;
+    expect(calledTool).toBe('shell.exec');
+    expect(calledParams).toEqual({ command: 'ls' });
+    expect(calledBotId).toBeUndefined();
+    expect(calledConvId).toBeUndefined();
+    expect(calledSignal).toBeInstanceOf(AbortSignal);
+    expect(calledSignal?.aborted).toBe(false);
     client.close();
     hub.dispose();
   });

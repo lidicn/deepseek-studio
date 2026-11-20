@@ -188,15 +188,26 @@ describe('pre-commit CLAIM 校验（⑤）', () => {
 //   CLAIM  「## @HH:mm CLAIM commit+push 群PM｜…」／pmsafe「[时刻] CLAIM commit 群PM …」
 //   RELEASE「HH:mm:ss **群PM（…）｜RELEASE <sha> CI run <id> …**」等行级两条件形态
 const isRealClaimLine = (l: string, actor: string): boolean => {
-  const tokens = l.split(/\s+/);
-  for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i] === 'CLAIM') {
-      const act = tokens[i + 1] ?? '';
-      const who = tokens[i + 2] ?? '';
-      if (act.startsWith('commit') && who.startsWith(actor)) return true;
-    }
+  // GATE#102 红根因（2026-11-20 PM 处置）：收口行叙述里的「CLAIM commit+push 群PM」
+  // （22:32:03 RELEASE 行括注「销锁对象＝本席 CLAIM commit+push 群PM 纯文档批」实咬）
+  // 被朴素 token 扫描当成锁行采样。与钩 lock-pairing 同构两条：
+  //   ① 收口行（RELEASE+sha7 行级判据）不采样——收口行永远不是未销锁；
+  //   ② CLAIM 前文必须过结构式判据（锚段/加粗/分隔符/空白）——叙述借道不得采样。
+  if (/RELEASE(?:\([^)]*\)|（[^）]*）)?\s+[0-9a-fA-F]{7}/.test(l)) return false;
+  const m = /CLAIM\s+(?:commit|push|tag)(?:\+[a-z]+)?/.exec(l);
+  if (!m) return false;
+  const before = l.slice(0, m.index);
+  if (before.length > 0) {
+    const a =
+      /^(?:\[[0-9-]{10} [0-9:]{8}\]|#{2,3} @[^\n]{0,26}|### \[[0-9:]{4,8}\]|[0-9]{2}-[0-9]{2} [0-9:]{5,8}|[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)(?=\s|$)/.exec(
+        before,
+      );
+    const rest = a ? before.slice(a[0].length) : before;
+    if (!/^[\s｜：（）*]*$/.test(rest)) return false;
   }
-  return false;
+  const after = l.slice(m.index + m[0].length).trim();
+  const who = after.split(/\s+/)[0] ?? '';
+  return who.startsWith(actor);
 };
 
 // ── ⑤ 回炉（群PM 实弹裁定）＋ ⑤-补2：真实人口分两面 ────────────────────────────────

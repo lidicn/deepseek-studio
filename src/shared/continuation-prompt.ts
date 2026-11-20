@@ -43,6 +43,20 @@ export interface PendingResult {
   terminate?: boolean;
   /** W2：该结果产生时归属的 chat_session_id（captureChatRequest 捕获）。 */
   sessionId?: string;
+  /**
+   * 卡 ㊿-b ③（可选，缺省不渲染该列）：**关键参数单行摘要**。
+   *
+   * 依据（装版 storage.json turn 4922ceac）：该轮实发 18 次工具调用、8 次读文件成功，
+   * 下一轮模型自述「只发了两个标签」「审计一步都没做」——因为窗口化把老条目压成
+   * summary-only（无参数、无耗时），预算超限还会整条省略 ⇒ 模型对自己本轮做了什么
+   * 失去事实依据，生成的"自我检讨"本身就是失真结论。
+   *
+   * 由页端 forward 在结算时填（`summarizeToolParams(invocationName, params)`）；
+   * 注入层不改 prompt 语义，只多带一行事实。
+   */
+  paramsSummary?: string;
+  /** 卡 ㊿-b ③（可选）：该次调用耗时（ms，页端 startedAt→结算时刻）。 */
+  durationMs?: number;
 }
 
 interface NormalizedToolResult {
@@ -86,6 +100,25 @@ export const FULL_TOOL_RESULT_WINDOW = 4;
  * 超出后按「**保新弃旧 + 边界截断 + 一句可读提示**」处理，绝不静默丢弃。
  */
 export const TURN_TOOL_RESULT_BUDGET_BYTES = 64 * 1024;
+
+/**
+ * 卡 ㊿-b ③：**本轮全部工具调用的单行摘要**（在完整结果窗口之外，永不省略）。
+ *
+ * 机理（现场 turn 4922ceac）：`renderWindowedToolResults` 只保最近 4 条完整，
+ * 更早的压成 summary-only（无参数、无耗时）；`renderBudgetedToolResults` 超预算时
+ * 还会把最老的整条省掉。模型在下一轮自述「只发了两个标签」「审计一步都没做」，
+ * 而记录是 18 次调用、8 次读文件成功 ⇒ **模型对自己本轮做了什么失去事实依据**。
+ *
+ * 这块摘要是**每轮续跑 prompt 的固定事实底账**：
+ *   - 一行一枚，覆盖本轮**全部**调用（含被窗口压缩与被预算省略的）；
+ *   - 不参与 `TURN_TOOL_RESULT_BUDGET_BYTES` 记账（它就是为"预算已裁掉的部分"兜底的）；
+ *   - 单行自身有上限（`TURN_SUMMARY_LINE_MAX_CHARS`），最坏情况的膨胀有界。
+ */
+export const TURN_SUMMARY_ENABLED = true;
+/** 单行摘要上限（字符）。超限截断加 …；一行最坏 ~200 字符 × 25 步 × 每步多枚，仍有界。 */
+export const TURN_SUMMARY_LINE_MAX_CHARS = 200;
+/** 摘要块的防覆盖护栏行数上限：超出按轮次尾窗保留（现场 18 枚也远够）。 */
+export const TURN_SUMMARY_MAX_LINES = 120;
 
 const ORIGINAL_TASK_MAX_CHARS = 8000;
 const NUDGE_DECISION_TAIL_MAX_CHARS = 600;
@@ -689,6 +722,107 @@ export function renderWindowedToolResults(executions: readonly PendingResult[]):
 
 // ---------------------------------------------------------------- 单轮累计预算
 
+/**
+ * 卡 ㊿-b ③：单条「本轮已执行调用」摘要行。
+ *
+ * 形态（一行，`｜` 分列）：
+ *   `#01 search_files{operation:grep, root:…, query:--timeout} → ok (12503ms)`
+ *   `#02 search_files{root:…af_service.py} → invalid-argument (18ms)`
+ *
+ * 设计点：
+ *   - **序号**：与页面出现的顺序一致，模型可以引用「第 N 枚」；
+ *   - **参数**：优先用页端结算时填的 `paramsSummary`（关键参数单源摘要器）；
+ *     没有则只写工具名（不猜参数，绝不编造）；
+ *   - **状态**：ok ／ 失败取 error 首段（与 resultToSummary 同口径），绝不留空；
+ *   - **耗时**：`durationMs` 给了才写。
+ */
+export function renderTurnSummaryLine(p: PendingResult, seq: number): string {
+  const num = `#${String(seq).padStart(2, '0')}`;
+  const params = typeof p.paramsSummary === 'string' && p.paramsSummary.length > 0
+    ? `{${p.paramsSummary}}`
+    : '';
+  let status: string;
+  if (p.ok) {
+    status = 'ok';
+  } else {
+    const errText = typeof p.error === 'string' && p.error.trim() !== ''
+      ? p.error.trim().split('\n')[0]
+      : failureTextFor(p.invocationName);
+    status = `failed: ${errText}`;
+  }
+  const dur = typeof p.durationMs === 'number' && Number.isFinite(p.durationMs) && p.durationMs >= 0
+    ? ` (${Math.round(p.durationMs)}ms)`
+    : '';
+  const line = `${num} ${p.invocationName}${params} → ${status}${dur}`;
+  return line.length > TURN_SUMMARY_LINE_MAX_CHARS
+    ? `${line.slice(0, TURN_SUMMARY_LINE_MAX_CHARS - 1)}…`
+    : line;
+}
+
+/**
+ * 卡 ㊿-b ③：整块「本轮已执行工具摘要」。
+ *
+ * 覆盖 `executions` 的**全部**条目（含被窗口压缩、被预算省略的）；空执行集返回空串
+ * （不渲染空块）。超过 `TURN_SUMMARY_MAX_LINES` 时按**尾窗**保留并在头部注明省略数
+ * ——25 步上限 × 每步多枚的理论极端也只丢最老的，最新事实永远在。
+ *
+ * ⚠️ 本块**不参与** `TURN_TOOL_RESULT_BUDGET_BYTES`：它的职责就是兜住"预算已裁掉的部分"，
+ * 若也吃预算，重蹈的正是本卡要修的"模型不知道本轮做过什么"。
+ */
+export function renderTurnToolSummary(executions: readonly PendingResult[]): string {
+  if (executions.length === 0) return '';
+  const capped = executions.length > TURN_SUMMARY_MAX_LINES;
+  const shown = capped ? executions.slice(-TURN_SUMMARY_MAX_LINES) : executions;
+  const lines = shown.map((e, i) => renderTurnSummaryLine(e, (capped ? executions.length - shown.length : 0) + i + 1));
+  const head = capped
+    ? `本轮共 ${executions.length} 枚工具调用（最早 ${executions.length - shown.length} 枚已省略，全部结果见 <tool_results> 与上轮正文）：`
+    : `本轮共 ${executions.length} 枚工具调用：`;
+  return [head, ...lines].join('\n');
+}
+
+/**
+ * 卡 ㊿-b ③：**关键参数单源摘要器**（页端 forward 结算时调用）。
+ *
+ * 只挑「最能识别这次调用」的字段，单行 key:value 形态；白名单外不猜、不序列化大对象。
+ * 上限 120 字符——超长的是路径/命令，截到关键头部即可（完整值本就在 <tool_results> 的
+ * 完整条目里，摘要只负责"能对上号"）。
+ */
+export function summarizeToolParams(invocationName: string, params: unknown): string {
+  if (params === null || params === undefined || typeof params !== 'object') return '';
+  const rec = params as Record<string, unknown>;
+  const parts: string[] = [];
+  const push = (k: string, v: unknown): void => {
+    if (v === undefined || v === null) return;
+    const s = typeof v === 'string' ? v : JSON.stringify(v);
+    if (s.length === 0) return;
+    parts.push(`${k}:${s.length > 48 ? `${s.slice(0, 47)}…` : s}`);
+  };
+  // 通用关键字段（多工具同名共用）
+  push('path', rec.path);
+  push('root', rec.root);
+  push('url', rec.url);
+  push('query', rec.query);
+  push('pattern', rec.pattern);
+  push('glob', rec.glob);
+  push('operation', rec.operation);
+  push('regex', rec.regex === true ? 'true' : undefined);
+  push('recursive', rec.recursive === false ? 'false' : undefined);
+  push('limit', typeof rec.limit === 'number' ? String(rec.limit) : undefined);
+  push('command', rec.command);
+  push('code', rec.code);
+  push('serverId', rec.serverId);
+  push('tool', invocationName.startsWith('mcp.') ? rec.tool : undefined);
+  push('type', rec.type);
+  push('name', rec.name);
+  push('skill', rec.skill);
+  push('dir', rec.dir);
+  push('sessionKey', rec.sessionKey);
+  push('memoryId', rec.memoryId);
+  push('id', rec.id);
+  const joined = parts.join(', ');
+  return joined.length > 120 ? `${joined.slice(0, 119)}…` : joined;
+}
+
 /** 预算视图：预算内的结果 ＋ 超预算时的可读提示。 */
 export interface TurnToolResultsView {
   /** 保留的结果（时间正序，最新在末尾）。 */
@@ -850,6 +984,9 @@ export function buildContinuationPrompt(
   // 2026-11-13（B）：单轮累计预算在**渲染出口**统一生效——所有续跑 prompt 都走这里，
   // 不存在"某条路径绕过预算"的旁路。
   const view = renderBudgetedToolResults(executions);
+  // 卡 ㊿-b ③：本轮全部调用的单行摘要（含被窗口压缩与被预算省略的）——
+  // 模型下一轮"我做了什么"的事实底账，永不省略（现场 18 次调用被自述成 2 个标签）。
+  const turnSummary = renderTurnToolSummary(executions);
 
   return [
     CONTINUATION_INTRO,
@@ -872,6 +1009,7 @@ export function buildContinuationPrompt(
     ...(retryable.length > 0 ? ['', FAILURE_RECOVERY] : []),
     ...(repeatNotice ? ['', repeatNotice] : []),
     ...(view.notice ? ['', view.notice] : []),
+    ...(turnSummary ? ['', '<turn_tool_summary>', turnSummary, '</turn_tool_summary>'] : []),
     '',
     '<tool_results>',
     JSON.stringify(view.results, null, 2),
@@ -895,6 +1033,7 @@ export function buildProtocolRepairPrompt(
   // 2026-11-15 卡⑨-c：自愈码在修复轮同样不能只说"换个写法再试"——不变的是环境。
   const selfHealing = executions.filter((e) => isSelfHealingFailure(e));
   const repeatNotice = buildRepeatDenialNotice(executions);
+  const turnSummary = renderTurnToolSummary(executions);
   return [
     '上一轮回答未完整遵循工具调用协议。请基于原始任务和工具结果继续，并且只使用 XML 工具标签调用工具。',
     '如果任务已经完成，输出 <task_complete>{"summary":"简要结论"}</task_complete>。',
@@ -912,6 +1051,7 @@ export function buildProtocolRepairPrompt(
       : []),
     ...(repeatNotice ? ['', repeatNotice] : []),
     ...(view.notice ? ['', view.notice] : []),
+    ...(turnSummary ? ['', '<turn_tool_summary>', turnSummary, '</turn_tool_summary>'] : []),
     '',
     '<tool_results>',
     JSON.stringify(view.results, null, 2),

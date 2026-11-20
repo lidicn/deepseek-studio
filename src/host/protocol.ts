@@ -11,6 +11,7 @@
  */
 
 import type { ExecuteResult } from '../capabilities/types';
+import type { ToolResultContentPart } from '../shared/tool-result-format';
 import type { ConsentDecision as _CD, ConsentMeta as _CM } from '../shared/consent-contract';
 
 // A5：单一真源在 shared/consent-contract.ts；这里 re-export 保持旧 import 路径不破。
@@ -56,10 +57,8 @@ export type HostToPageMessage =
       data?: unknown;
       error?: string;
       // v1.2：Pi Agent 风格统一结果格式（全可选，缺省即回退旧格式）
-      content?: Array<
-        | { type: 'text'; text: string }
-        | { type: 'image_url'; image_url: { url: string } }
-      >;
+      // 卡 ㊿-b ②：引用单源类型，与 ToolResultExtras 同形状（不再内联重复）。
+      content?: ToolResultContentPart[];
       details?: Record<string, unknown>;
       isError?: boolean;
       terminate?: boolean;
@@ -88,6 +87,18 @@ export type PageToHostMessage =
   /** v0.6：页端 MAIN-world 拦截器解析出模型发起的工具调用，反向投递给宿主真实执行。
    *  v0.24：带 botId，让宿主路由到发起调用的那个 bot（executor/counter/白名单）。 */
   | { type: 'tool-call'; callId: string; invocationName: string; params: unknown; botId?: string; conversationId?: string }
+  /**
+   * 卡 ㊿-b ②：页端**撤销**一条在途 tool-call（典型＝页端 75s 超时后放弃等待）。
+   *
+   * 协议语义刻意区分「不再等」与「不再跑」：
+   *   - 页端超时只做前者（删本地 pending、resolve `host-timeout`）；
+   *   - 本消息让它补上后者，宿主 abort 掉执行侧 signal，能力层在可中断点收口。
+   *
+   * 现场（turn 4922ceac）：`search_files` 页端 75s 报 `host-timeout`，
+   * 宿主那趟从 `E:/NAS/AutoForge` 起头的遍历**继续跑**——结果是"用户看到超时、
+   * 机器还在读盘"。`reason` 只用于日志/审计（`page-timeout` / `user-cancel`）。
+   */
+  | { type: 'tool-cancel'; callId: string; reason?: string }
   /** 调试：页端把拦截/诊断日志发到宿主 stdout。 */
   | { type: 'log'; text: string }
   /** v0.7：页端 storage shim 的 KV 读写请求（落盘 backend 在宿主侧）。 */

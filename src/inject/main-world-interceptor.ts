@@ -59,6 +59,10 @@ import {
   evaluateStudioBudgetForMessages,
 } from '../shared/studio-context-budget';
 import { createToolCallDedupe } from '../shared/tool-call-dedupe';
+// ㊿-b ③（inject 侧两字段填充，Core 交接）：结算时关键参数摘要＋耗时，单源在 shared
+// 摘要器（不页端手写摘要形态）；不填也能跑（摘要退化成「工具名＋状态」），填了才有
+// 「关键参数＋耗时」两列。
+import { summarizeToolParams } from '../shared/continuation-prompt';
 import {
   collectNamedMemoryIds,
   formatUntrustedMemoriesBlock,
@@ -1395,7 +1399,7 @@ const TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
 - local_file_write — 写入文件，参数：path、content
 - local_file_stat — 查看文件/目录信息，参数：path
 - file_edit — 局部改写文件（优先于整文件覆写），参数：path、edits（[{oldString,newString}]）、expectedSha256（可选）、dryRun（可选）
-- search_files — 检索文件/内容，参数：operation（list/grep）、root、query、pattern、regex（可选）、glob（可选）、limit（可选）
+- search_files — 检索文件/内容，参数：operation（list/grep）、root、query、pattern、regex（可选）、glob（可选）、limit（可选）；operation=grep 时 query 与 pattern 二者必给其一（只给一个）；root 必须是目录（检索单个文件用 local_file_read，或 operation=grep 指向其父目录）
 - shell_exec — 执行命令行，参数：command（单条命令；双引号外不得含 $ ; | > < &）。需要多语句或变量时改用 params.argv 数组（等价于 powershell -NoProfile -Command "<整段脚本>"），例如 {"argv":["powershell","-NoProfile","-Command","<整段脚本>"]}，不要写 PowerShell 脚本串
 - memory_save — 保存长期记忆，参数：type（user/project）、name、content、tags（可选）、pinned（可选，布尔）
 - python_exec — 执行 Python 代码，参数：code（Python 源代码字符串）
@@ -1413,7 +1417,7 @@ const TOOL_CATALOG_TEXT = `## 可用工具
 - local_file_write — 写入文件，参数：path、content
 - local_file_stat — 查看文件/目录信息，参数：path
 - file_edit — 局部改写文件（优先于整文件覆写），参数：path、edits（[{oldString,newString}]）、expectedSha256（可选）、dryRun（可选）
-- search_files — 检索文件/内容，参数：operation（list/grep）、root、query、pattern、regex（可选）、glob（可选）、limit（可选）
+- search_files — 检索文件/内容，参数：operation（list/grep）、root、query、pattern、regex（可选）、glob（可选）、limit（可选）；operation=grep 时 query 与 pattern 二者必给其一（只给一个）；root 必须是目录（检索单个文件用 local_file_read，或 operation=grep 指向其父目录）
 - shell_exec — 执行命令行，参数：command（单条命令；双引号外不得含 $ ; | > < &）。需要多语句或变量时改用 params.argv 数组（等价于 powershell -NoProfile -Command "<整段脚本>"），例如 {"argv":["powershell","-NoProfile","-Command","<整段脚本>"]}，不要写 PowerShell 脚本串
 - memory_save — 保存长期记忆，参数：type（user/project）、name、content、tags（可选）、pinned（可选，布尔）
 - python_exec — 执行 Python 代码，参数：code（Python 源代码字符串）
@@ -2768,6 +2772,11 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   // 不跨流共享」——反向锁 tests/desktop/duplicate-tool-signature.test.ts 守着这条。
   const sigRedeliveries = new Map<string, number>();
   const cappedSigs = new Set<string>();
+  // ㊿-b ⑦ (2026-11-20 Core 交接)：按 turn 串行投递链——同一响应的多个工具标签按出现顺序
+  // 逐个投递（宿主 turn-serial-guard 按 conversationId|turnId 排队/拒绝并发，页端并发投递
+  // 会让第二枚写标签白吃一次 concurrent-mutation-blocked 拒绝、白费一轮）。链在
+  // onNewUserMessage 随 turn 重置；同 turn 内跨续跑流保持串行。
+  let senderChain: Promise<unknown> = Promise.resolve();
   loopState.onStreamBegin = () => {
     toolCallDedupe.resetSignatures();
     sigRedeliveries.clear();
@@ -3062,16 +3071,28 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     // R-W2：sender 异步 resolve 时 newChatSessionId 可能已切到别的会话，
     // 必须在调用 sender 那一刻捕获归属会话，否则迟到结果会错挂到当前会话。
     const sessionAtCall = loopState.newChatSessionId;
-    void sender({
-      callId,
-      invocationName: call.invocationName,
-      params: call.params,
-      // 捕获调用那一刻的会话标识；换对话后宿主不再沿用旧的对话级放行。
-      ...(sessionAtCall ? { conversationId: sessionAtCall } : {}),
-    })
-      .then((r: ExecuteResult) => {
+    // ㊿-b ⑦：串行投递——本枚投递在前序（同 turn）投递 settle 后才开始；被拒的那枚
+    // （如 concurrent-mutation-blocked）只在自身分支结算回执、不重发同一发、不阻塞后续标签。
+    senderChain = senderChain
+      .catch(() => undefined)
+      .then(() =>
+        sender({
+          callId,
+          invocationName: call.invocationName,
+          params: call.params,
+          // 捕获调用那一刻的会话标识；换对话后宿主不再沿用旧的对话级放行。
+          ...(sessionAtCall ? { conversationId: sessionAtCall } : {}),
+        }),
+      )
+      .then(
+        (r: ExecuteResult) => {
         d(`forward: done ok=${r.ok} err=${r.error ?? ''}`);
-        const pr: PendingResult = { invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error, sessionId: sessionAtCall };
+        // ㊿-b ③：两字段随同一次 append 结算（success 支）。
+        const pr: PendingResult = {
+          invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error, sessionId: sessionAtCall,
+          paramsSummary: summarizeToolParams(call.invocationName, call.params),
+          durationMs: Date.now() - startedAt,
+        };
         pending.push(pr);
         collectedExecutions.push(pr);
         // v1.3：更新步骤流工具条目
@@ -3099,10 +3120,15 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
         if (!loopState.streamActive && loopState.lastChatBody && loopDepth < MAX_LOOP) {
           scheduleAutoContinue();
         }
-      })
-      .catch((e: unknown) => {
+        },
+        (e: unknown) => {
         d(`forward: failed ${e instanceof Error ? e.message : String(e)}`);
-        const pr: PendingResult = { invocationName: call.invocationName, ok: false, error: e instanceof Error ? e.message : String(e), sessionId: loopState.newChatSessionId };
+        // ㊿-b ③：两字段随同一次 append 结算（reject 支：失败回执同样带参数与耗时）。
+        const pr: PendingResult = {
+          invocationName: call.invocationName, ok: false, error: e instanceof Error ? e.message : String(e), sessionId: loopState.newChatSessionId,
+          paramsSummary: summarizeToolParams(call.invocationName, call.params),
+          durationMs: Date.now() - startedAt,
+        };
         pending.push(pr);
         collectedExecutions.push(pr);
         // v1.3：更新步骤流工具条目
@@ -3378,6 +3404,9 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     idleContinueCount = 0;
     collectedExecutions.length = 0;
     toolCallDedupe.reset();
+    // ㊿-b ⑦：串行投递链随 turn 重置（与宿主 guard 键 conversationId|turnId 同口径）：
+    // 上一 turn 的在飞投递不阻塞新 turn 的首枚；旧链上未结算的回执在旧链自行收尾。
+    senderChain = Promise.resolve();
     loopDepth = 0;
     errorRetryCount = 0;
     // QD-R7-01（F9）：首轮重试预算随轮次作废，不再是一个全局数字。

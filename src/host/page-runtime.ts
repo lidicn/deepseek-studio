@@ -143,6 +143,14 @@ export interface PageRuntimeHubOptions {
     params: unknown,
     botId?: string,
     conversationId?: string,
+    /**
+     * 卡 ㊿-b ②：本次执行的取消信号。
+     *
+     * 页端 75s 超时后（或用户撤销）会发 `tool-cancel`；宿主在这里 abort，
+     * 由能力层每个可中断点检查（`search_files` 的遍历就是其中最贵的一处）。
+     * **不是**"不再等"：是让宿主侧真的停下，避免孤儿遍历读盘读到底。
+     */
+    signal?: AbortSignal,
   ) => Promise<ToolExecutionResult>;
   /** 调试：页端 debug-eval-result 回调。 */
   onDebugEvalResult?: (requestId: string, ok: boolean, result: string) => void;
@@ -349,7 +357,12 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
   //   ① 执行永不返回时，页端的 pending 永久悬挂；
   //   ② 页端断开时，宿主这边还在跑，结果发给一个已死的 socket（孤儿）。
   // 现在登记到 pendingToolCalls：加超时、并在 failAllPending（断连）时结算。
-  const pendingToolCalls = new Map<string, { ownerId: string; timer: ReturnType<typeof setTimeout> }>();
+  // 卡 ㊿-b ②：每条在途 tool-call 还带一个 AbortController —— 页端 `tool-cancel`
+  // 或宿主侧超时都必须能**真的停掉**执行（原实现只清表，宿主继续跑完那趟遍历）。
+  const pendingToolCalls = new Map<
+    string,
+    { ownerId: string; tool: string; timer: ReturnType<typeof setTimeout>; controller: AbortController }
+  >();
   // M1-C：每个 bot 最近一条「完成哨兵」结论（页端上报）。
   // WebEngine 在轮询结束那一刻读一次 → 判 `'interrupted'`。
   // 没有这张表，`interrupted` 终态永远不会被触发（死代码）。
@@ -378,6 +391,12 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
       if (ownerId !== undefined && p.ownerId !== ownerId) continue;
       clearTimeout(p.timer);
       pendingToolCalls.delete(id);
+      // 卡 ㊿-b ②：断连同样要 abort —— 否则"页没了但遍历还在跑"，比挂着的 Promise 更费机器。
+      try {
+        p.controller.abort();
+      } catch {
+        /* ignore */
+      }
     }
   }
 
@@ -624,6 +643,30 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         }
       } else if (msg.type === 'debug-eval-result') {
         options.onDebugEvalResult?.(msg.requestId, msg.ok, msg.result ?? '');
+      } else if (msg.type === 'tool-cancel') {
+        /**
+         * 卡 ㊿-b ②：页端撤销在途工具调用（典型＝75s 超时后放弃等待）。
+         *
+         * 现场：页端 `host-client` 超时后只在本地删 pending 并 resolve `host-timeout`，
+         * 宿主这边的 `search_files` 遍历**毫无感知**地继续读盘（孤儿遍历）。
+         * 现在页端先发这条，宿主把 controller abort 掉，能力层在下一个可中断点返回
+         * `cancelled` —— 「不再等」和「不再跑」是两件事，本分支补的是后者。
+         *
+         * 只接受**发起该调用的那条连接**的撤销（跨连接忽略，与 result/consent 同口径：
+         * 否则任意已连上的本机进程猜中 callId 就能掐掉别人的工具调用）。
+         */
+        const p = pendingToolCalls.get(msg.callId);
+        if (!p || p.ownerId !== id) return;
+        clearTimeout(p.timer);
+        pendingToolCalls.delete(msg.callId);
+        try {
+          p.controller.abort();
+        } catch {
+          /* ignore */
+        }
+        // run 事件必须收口（否则 UI 上那枚工具卡片永远停在 running）。
+        options.onToolResult?.({ callId: msg.callId, tool: p.tool, ok: false, error: 'cancelled', botId: rec.botId });
+        safeSend(ws, { type: 'tool-call-result', callId: msg.callId, ok: false, error: 'cancelled' });
       } else if (msg.type === 'tool-call') {
         // v0.6：页端拦截到模型发起的工具调用，反向投递给宿主真实执行。
         // v1.8：整个分支包 try/catch。invocationName 来自 WebSocket 报文属外部可控
@@ -654,8 +697,16 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
         // C1 墨鉴 R3-8：登记在途 tool-call —— 加超时、并在页端断开时被 failAllPending 结算。
         // 原实现没有登记也没有超时：执行永不返回时页端 pending 永久悬挂；
         // 页端断开时宿主这边还在跑，结果发给一个已死的 socket（孤儿）。
+        const toolController = new AbortController();
         const toolTimer = setTimeout(() => {
           if (!pendingToolCalls.delete(msg.callId)) return;
+          // 卡 ㊿-b ②：宿主侧超时同样必须**真的停掉**执行——
+          // 只清表不 abort 的话，这个分支自己就成了孤儿遍历的制造者。
+          try {
+            toolController.abort();
+          } catch {
+            /* ignore */
+          }
           options.onToolResult?.({ callId: msg.callId, tool: mapped.id, ok: false, error: 'tool-call-timeout', botId: callBotId });
           // 模型可见文本走 describeToolFailure（可行动 + 保留原始码）；onToolResult 留原始码给遥测/审计。
           safeSend(ws, {
@@ -665,7 +716,7 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
             error: describeToolFailure('tool-call-timeout', mapped.id, toolCallTimeoutMs),
           });
         }, toolCallTimeoutMs);
-        pendingToolCalls.set(msg.callId, { ownerId: id, timer: toolTimer });
+        pendingToolCalls.set(msg.callId, { ownerId: id, tool: mapped.id, timer: toolTimer, controller: toolController });
         const settleToolCall = (): boolean => {
           const p = pendingToolCalls.get(msg.callId);
           if (!p) return false;
@@ -673,7 +724,7 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           pendingToolCalls.delete(msg.callId);
           return true;
         };
-        void exec(mapped.id, mapped.params, callBotId, msg.conversationId)
+        void exec(mapped.id, mapped.params, callBotId, msg.conversationId, toolController.signal)
           .then((r) => {
             if (!settleToolCall()) return; // 已超时/已断连 → 不再回执（避免重复回执）
             options.onToolResult?.({ callId: msg.callId, tool: mapped.id, ok: r.ok, error: r.reason, botId: callBotId, ...(r.details !== undefined ? { details: r.details as Record<string, unknown> } : {}) });

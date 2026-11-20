@@ -18,6 +18,91 @@ import * as path from 'node:path';
 import type { ExecuteResult } from './types';
 import type { WorkspaceContext } from '../host/workspace';
 
+/**
+ * 卡 ㊿-b ②：**本文件专用的 text content 构造器**（不用 `shared/tool-result-format` 的
+ * `textContent`）。原因：`ExecuteResult.content` 与 `ToolResultExtras.content` 是**两份
+ * 独立内联声明的形状**（text 段必带 `text:string`），跨模块引用会把类型统一工作牵进
+ * `src/inject/**`（UI 席位写域）。这里的字面量构造 `type:'text'` 窄化后**同时满足**
+ * 两种声明，不需要任何接口改动。
+ */
+function textContentLocal(text: string): Array<{ type: 'text'; text: string }> {
+  return [{ type: 'text', text }];
+}
+
+/**
+ * 遍历预算（卡 ㊿-b ②）。
+ *
+ * 现场（装版 storage.json，turn 4922ceac）：`search_files{operation:grep,
+ * root:"E:/NAS/AutoForge", query:"--timeout", glob:"*.sh"}` 从发起算起跑了
+ * **75,002 ms** 才被页端 75s 超时截断（`err=host-timeout`），而**宿主侧那趟遍历
+ * 没有被取消**——页端放弃后它继续读文件，成为孤儿遍历。
+ *
+ * 根因有两条，彼此独立：
+ *   1. 遍历**没有任何预算**：`walk()` 只有调用方传的 `limit`（那是"命中条数上限"，
+ *      对 grep 而言命中为 0 时等于没有上限），深度、目录项数、读取文件数、耗时全无约束。
+ *   2. 没有取消通道：页端超时只是"不再等"，宿主仍在跑。
+ *
+ * 这里补的是 1（预算）；2 由 `signal` 承担（宿主把页端 tool-cancel 传下来）。
+ *
+ * 取值口径：预算要"能跑完一次正常检索"，又不能让一次错参数把宿主拖进分钟级。
+ * 15s 软预算 < 页端 75s 硬超时，留足余量让**宿主先自己收口**并给出可读的截断原因，
+ * 而不是让页端先超时、用户只看到一句 host-timeout。
+ */
+export interface SearchLimits {
+  /** 目录下钻深度上限（root 的直接子项为第 1 层）。默认 12。 */
+  maxDepth?: number;
+  /** 遍历产出的目录项上限（文件+目录，计入 scanned.entries）。默认 20,000。 */
+  maxEntries?: number;
+  /** grep 实际读取的文件数上限。默认 4,000。 */
+  maxFiles?: number;
+  /** 软耗时预算（ms）。默认 15,000。 */
+  timeBudgetMs?: number;
+}
+
+/** 截断原因（机器可读），同时决定给模型的下一步建议。 */
+export type SearchTruncationReason =
+  | 'limit'        // 调用方 limit 命中条数到顶
+  | 'max-depth'    // 深度到顶
+  | 'max-entries'  // 目录项数到顶
+  | 'max-files'    // 读取文件数到顶
+  | 'time-budget'; // 软耗时到顶
+
+const DEFAULT_MAX_DEPTH = 12;
+const DEFAULT_MAX_ENTRIES = 20_000;
+const DEFAULT_MAX_FILES = 4_000;
+const DEFAULT_TIME_BUDGET_MS = 15_000;
+
+/** 截断/越界时可执行的一句话（模型读得到，用户也能照做）。 */
+function truncationHint(reason: SearchTruncationReason): string {
+  switch (reason) {
+    case 'limit':
+      return '结果已按 limit 截断；需要更多请提高 limit 或缩小 root。';
+    case 'max-depth':
+      return '遍历已按最大深度截断；请把 root 指到更深一层的目录再检索。';
+    case 'max-entries':
+      return '遍历已按目录项上限截断（目录太大）；请缩小 root、或加 glob/pattern 只扫需要的文件。';
+    case 'max-files':
+      return '已按扫描文件数上限截断；请用 glob 限定文件类型或缩小 root。';
+    case 'time-budget':
+      return '已按耗时预算截断（本轮未扫完整个目录树）；请缩小 root 或用 glob 限定文件类型。';
+    default:
+      return '结果已截断。';
+  }
+}
+
+/** 预算归一化：显式传入且为正数才生效，否则用默认值。 */
+function resolveBudget(input: SearchLimits | undefined): Required<SearchLimits> {
+  const pick = (v: unknown, fallback: number): number => {
+    return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : fallback;
+  };
+  return {
+    maxDepth: pick(input?.maxDepth, DEFAULT_MAX_DEPTH),
+    maxEntries: pick(input?.maxEntries, DEFAULT_MAX_ENTRIES),
+    maxFiles: pick(input?.maxFiles, DEFAULT_MAX_FILES),
+    timeBudgetMs: pick(input?.timeBudgetMs, DEFAULT_TIME_BUDGET_MS),
+  };
+}
+
 export interface ListFilesInput {
   root: string; // 调用方注入的工作区根（绝对路径）
   /**
@@ -31,6 +116,10 @@ export interface ListFilesInput {
   pattern?: string; // 文件名通配：* = 任意串，? = 单字符；缺省 = 全部
   recursive?: boolean; // 默认 true
   limit?: number; // 默认 500，超出截断并标 truncated
+  /** 卡 ㊿-b ②：遍历预算（缺省见 DEFAULT_*）。 */
+  limits?: SearchLimits;
+  /** 卡 ㊿-b ②：取消信号。abort 后尽快返回 `cancelled`，不留孤儿遍历。 */
+  signal?: AbortSignal;
 }
 
 export interface GrepFilesInput {
@@ -42,6 +131,10 @@ export interface GrepFilesInput {
   caseInsensitive?: boolean;
   glob?: string; // 可选：只在匹配该文件名通配的文件内检索
   limit?: number; // 默认 200 条命中，超出截断
+  /** 卡 ㊿-b ②：遍历预算（缺省见 DEFAULT_*）。 */
+  limits?: SearchLimits;
+  /** 卡 ㊿-b ②：取消信号。 */
+  signal?: AbortSignal;
 }
 
 export interface ListedEntry {
@@ -116,7 +209,7 @@ function globToRegExp(glob: string): RegExp {
 async function resolveRoot(
   root: unknown,
   workspace?: WorkspaceContext | null,
-): Promise<{ absRoot: string } | { error: string }> {
+): Promise<{ absRoot: string } | { error: string; extras?: Partial<ExecuteResult> }> {
   if (!isNonEmptyString(root)) return { error: 'missing-argument' };
   if (!path.isAbsolute(root)) return { error: 'invalid-argument' };
   let absRoot: string;
@@ -138,7 +231,37 @@ async function resolveRoot(
   } catch {
     return { error: 'io-error' };
   }
-  if (!st.isDirectory()) return { error: 'invalid-argument' };
+  /**
+   * 卡 ㊿-b ②：`root` 指向文件时必须是**可操作错误**，不能只回一个 `invalid-argument`。
+   *
+   * 现场（turn 4922ceac，dt=31499→31535）：模型发了
+   * `search_files{root:"E:/NAS/AutoForge/src/autoforge/af_service.py"}`，
+   * 宿主回 `invalid-argument`（一个裸码），模型不知道"这个工具不能检索单文件"，
+   * 于是下一轮换个写法再撞（`missing-argument` 那枚同族：两者都是"靠试错学工具契约"）。
+   *
+   * 这里把下一步写进 content（模型可见）与 details.reason（机器可读）：
+   *   - 检索单个文件 → `local_file_read`
+   *   - 一定要在这个文件里搜内容 → `operation:"grep"` 且 `root` 指向**父目录**
+   *     （再用 glob 限定到该文件名）
+   */
+  if (!st.isDirectory()) {
+    const kind = st.isFile() ? 'file' : 'other';
+    const parent = path.dirname(absRoot);
+    const what = kind === 'file' ? '一个文件' : '一个非目录项';
+    return {
+      error: 'invalid-argument',
+      extras: {
+        content: textContentLocal(
+          `search_files 的 root 必须是目录，本次收到的是${what}：${absRoot}（invalid-argument）。`
+          + '要读取单个文件，请改用 local_file_read；'
+          + `要在该文件里检索内容，请把 operation 设为 grep 并把 root 指向其父目录 ${parent}`
+          + (kind === 'file' ? `，再用 glob:"${path.basename(absRoot)}" 限定到该文件。` : '。'),
+        ),
+        details: { reason: 'root-not-directory', kind, root: absRoot, parent },
+        isError: true,
+      },
+    };
+  }
   return { absRoot };
 }
 
@@ -158,6 +281,21 @@ interface WalkEntry {
   name: string; // basename
   isDir: boolean;
   isSymlink: boolean;
+  depth: number; // 相对 root 的层数：root 的直接子项 = 1
+}
+
+/** 遍历控制状态：walk 写、调用方读（用于向结果里披露"为什么停"）。 */
+interface WalkControl {
+  readonly maxDepth: number;
+  readonly maxEntries: number;
+  readonly signal?: AbortSignal;
+  entries: number; // 已产出条目数
+  dirs: number; // 已展开目录数
+  /** 终止性原因（到顶即不再继续）；深度只记标志位，不终止同层兄弟。 */
+  stop?: SearchTruncationReason;
+  /** 因深度上限而没下钻过（结果可能不完整，但遍历正常完成）。 */
+  depthLimited: boolean;
+  aborted: boolean;
 }
 
 /**
@@ -165,14 +303,28 @@ interface WalkEntry {
  * - 仅当 recursive 且条目是真实目录（非 symlink）时才下钻。
  * - visited 记录已展开目录的绝对路径，作为防循环纵深防御（环链主要靠不跟随 symlink 阻断）。
  * - 单个不可读目录跳过，不整体失败。
+ *
+ * 卡 ㊿-b ②：遍历必须有预算与取消，否则一次 `root:"E:/NAS/AutoForge"` 的 grep
+ * 会读完整棵树（现场 75,002 ms 才被页端截断）。三条闸都在**每个目录项**上判，
+ * 所以最坏情况是"多读一个 dirent"，不是"多读一棵子树"。
  */
-async function* walk(absRoot: string, recursive: boolean): AsyncGenerator<WalkEntry> {
+async function* walk(
+  absRoot: string,
+  recursive: boolean,
+  ctrl: WalkControl,
+): AsyncGenerator<WalkEntry> {
   const visited = new Set<string>();
-  const stack: string[] = [absRoot];
+  const stack: Array<{ dir: string; depth: number }> = [{ dir: absRoot, depth: 0 }];
   while (stack.length > 0) {
-    const dir = stack.pop() as string;
+    if (ctrl.signal?.aborted) {
+      ctrl.aborted = true;
+      return;
+    }
+    if (ctrl.stop) return;
+    const { dir, depth } = stack.pop() as { dir: string; depth: number };
     if (visited.has(dir)) continue;
     visited.add(dir);
+    ctrl.dirs += 1;
 
     let dirents;
     try {
@@ -182,13 +334,29 @@ async function* walk(absRoot: string, recursive: boolean): AsyncGenerator<WalkEn
     }
 
     for (const d of dirents) {
+      if (ctrl.signal?.aborted) {
+        ctrl.aborted = true;
+        return;
+      }
+      if (ctrl.stop) return;
+      // 先判预算再产出：上限命中时这一枚**不计入** entries（否则会多算一枚）。
+      if (ctrl.entries >= ctrl.maxEntries) {
+        ctrl.stop = 'max-entries';
+        return;
+      }
       const full = path.join(dir, d.name);
       const isSym = d.isSymbolicLink();
       const isDir = d.isDirectory();
-      yield { full, name: d.name, isDir, isSymlink: isSym };
+      const childDepth = depth + 1;
+      ctrl.entries += 1;
+      yield { full, name: d.name, isDir, isSymlink: isSym, depth: childDepth };
       // 不跟随符号链接：仅真实目录才入栈下钻
       if (recursive && isDir && !isSym) {
-        stack.push(full);
+        if (childDepth >= ctrl.maxDepth) {
+          ctrl.depthLimited = true;
+          continue;
+        }
+        stack.push({ dir: full, depth: childDepth });
       }
     }
   }
@@ -201,25 +369,65 @@ function resolveLimit(inputLimit: unknown, fallback: number): number {
   return fallback;
 }
 
+/** 取消出口：与宿主 onToolResult 的 `cancelled` 相位同词（/cancel|abort|stopped/ 命中）。 */
+function cancelled(): ExecuteResult {
+  return {
+    ok: false,
+    error: 'cancelled',
+    content: textContentLocal(
+      '本次检索已被取消（页端超时或调用方撤销），遍历未完成、结果不完整。'
+      + '需要结果请缩小 root 后重发；不要原样重试同一发。',
+    ),
+    details: { reason: 'cancelled' },
+    isError: true,
+  };
+}
+
+/** 截断披露：机器可读的 truncatedReason + 模型可执行的 hint。 */
+function withTruncation(
+  base: Record<string, unknown>,
+  reason: SearchTruncationReason | undefined,
+): Record<string, unknown> {
+  if (!reason) return { ...base, truncated: false };
+  return { ...base, truncated: true, truncatedReason: reason, hint: truncationHint(reason) };
+}
+
 export async function listFiles(input: ListFilesInput): Promise<ExecuteResult> {
   const rootCheck = await resolveRoot(input.root, input.workspace);
-  if ('error' in rootCheck) return fail(rootCheck.error);
+  if ('error' in rootCheck) return { ok: false, error: rootCheck.error, ...(rootCheck.extras ?? {}) };
   const absRoot = rootCheck.absRoot;
 
   const limit = resolveLimit(input.limit, DEFAULT_LIST_LIMIT);
   const recursive = input.recursive !== false; // 默认 true
   const nameRe = input.pattern ? globToRegExp(input.pattern) : null;
 
-  const entries: ListedEntry[] = [];
-  let truncated = false;
+  const budget = resolveBudget(input.limits);
+  const deadline = Date.now() + budget.timeBudgetMs;
+  const ctrl: WalkControl = {
+    maxDepth: budget.maxDepth,
+    maxEntries: budget.maxEntries,
+    signal: input.signal,
+    entries: 0,
+    dirs: 0,
+    depthLimited: false,
+    aborted: false,
+  };
 
-  for await (const e of walk(absRoot, recursive)) {
+  const entries: ListedEntry[] = [];
+  let truncReason: SearchTruncationReason | undefined;
+
+  for await (const e of walk(absRoot, recursive, ctrl)) {
     if (nameRe && !nameRe.test(e.name)) continue;
     const rel = toRel(absRoot, e.full);
     if (rel === null) continue; // 越界丢弃
 
     if (entries.length >= limit) {
-      truncated = true;
+      truncReason = 'limit';
+      break;
+    }
+    if (Date.now() > deadline) {
+      truncReason = 'time-budget';
+      ctrl.stop = 'time-budget';
       break;
     }
 
@@ -235,14 +443,26 @@ export async function listFiles(input: ListFilesInput): Promise<ExecuteResult> {
     entries.push(entry);
   }
 
+  if (ctrl.aborted) return cancelled();
+  if (!truncReason) truncReason = ctrl.stop ?? (ctrl.depthLimited ? 'max-depth' : undefined);
+
   entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
-  return ok({ root: absRoot, entries, total: entries.length, truncated });
+  return ok(withTruncation(
+    {
+      root: absRoot,
+      entries,
+      total: entries.length,
+      limits: budget,
+      scanned: { entries: ctrl.entries, dirs: ctrl.dirs },
+    },
+    truncReason,
+  ));
 }
 
 export async function grepFiles(input: GrepFilesInput): Promise<ExecuteResult> {
   const rootCheck = await resolveRoot(input.root, input.workspace);
-  if ('error' in rootCheck) return fail(rootCheck.error);
+  if ('error' in rootCheck) return { ok: false, error: rootCheck.error, ...(rootCheck.extras ?? {}) };
   const absRoot = rootCheck.absRoot;
 
   if (!isNonEmptyString(input.query)) return fail('missing-argument');
@@ -266,14 +486,38 @@ export async function grepFiles(input: GrepFilesInput): Promise<ExecuteResult> {
 
   const fileRe = input.glob ? globToRegExp(input.glob) : null;
 
-  const matches: Array<{ file: string; line: number; text: string }> = [];
-  let truncated = false;
+  const budget = resolveBudget(input.limits);
+  const deadline = Date.now() + budget.timeBudgetMs;
+  const ctrl: WalkControl = {
+    maxDepth: budget.maxDepth,
+    maxEntries: budget.maxEntries,
+    signal: input.signal,
+    entries: 0,
+    dirs: 0,
+    depthLimited: false,
+    aborted: false,
+  };
 
-  for await (const e of walk(absRoot, true)) {
+  const matches: Array<{ file: string; line: number; text: string }> = [];
+  let truncReason: SearchTruncationReason | undefined;
+  let filesScanned = 0;
+
+  for await (const e of walk(absRoot, true, ctrl)) {
     if (e.isDir || e.isSymlink) continue; // 只检索普通文件，不跟随链接
     if (fileRe && !fileRe.test(e.name)) continue;
     const rel = toRel(absRoot, e.full);
     if (rel === null) continue; // 越界丢弃
+
+    if (filesScanned >= budget.maxFiles) {
+      truncReason = 'max-files';
+      ctrl.stop = 'max-files';
+      break;
+    }
+    if (Date.now() > deadline) {
+      truncReason = 'time-budget';
+      ctrl.stop = 'time-budget';
+      break;
+    }
 
     let content: string;
     try {
@@ -281,20 +525,32 @@ export async function grepFiles(input: GrepFilesInput): Promise<ExecuteResult> {
     } catch {
       continue; // 单个文件读不了（权限/二进制等）就跳过，不整体失败
     }
+    filesScanned += 1;
 
     const lines = content.split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       if (matcher(line)) {
         if (matches.length >= limit) {
-          truncated = true;
+          truncReason = 'limit';
           break;
         }
         matches.push({ file: rel, line: i + 1, text: line.slice(0, MAX_LINE_LEN) });
       }
     }
-    if (truncated) break;
+    if (truncReason === 'limit') break;
   }
 
-  return ok({ root: absRoot, matches, truncated });
+  if (ctrl.aborted) return cancelled();
+  if (!truncReason) truncReason = ctrl.stop ?? (ctrl.depthLimited ? 'max-depth' : undefined);
+
+  return ok(withTruncation(
+    {
+      root: absRoot,
+      matches,
+      limits: budget,
+      scanned: { entries: ctrl.entries, dirs: ctrl.dirs, files: filesScanned },
+    },
+    truncReason,
+  ));
 }
