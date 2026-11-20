@@ -203,9 +203,49 @@ describe('㊿-b② 取消链（孤儿遍历治理）', () => {
     expect(elapsed).toBeLessThan(5000);
   });
 
-  it('宿主链路：页端 tool-cancel → 宿主 abort → 能力层返回 cancelled，回执 cancelled', async () => {
+  /**
+   * 卡 ㊿-b-补2（CI run 44679065554 竞态）：原用例时序假设「50ms 后 cancel 必在途」
+   * 在 CI 快机器上不成立（400 文件遍历秒级完成 ⇒ cancel 落在完成之后 ⇒ 收到 ok:true）。
+   * 拆成**两格可证伪**：
+   *   格① 执行确定在途（遍历中途）cancel ⇒ 回 `cancelled`（真取消）；
+   *   格② 执行已完成后 cancel ⇒ 先收到**正常回执（原样，未被改写）**、再**追加**一枚
+   *       `cancelled-late`（非静默吞、非追改）。
+   */
+  function openPageWs(port: number, sessionId: string): Promise<WebSocket> {
+    return new Promise<WebSocket>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/studio?token=t`);
+      ws.on('open', () => {
+        ws.send(JSON.stringify({ type: 'hello', origin: 'https://chat.deepseek.com', sessionId }));
+      });
+      ws.on('message', function onMsg(raw: unknown) {
+        const buf = Array.isArray(raw) ? (raw[0] as unknown) : raw;
+        const m = JSON.parse(String((buf as { data?: string }).data ?? buf)) as { type: string };
+        if (m.type === 'hello-ack') {
+          ws.off('message', onMsg);
+          resolve(ws);
+        }
+      });
+      ws.on('error', reject);
+    });
+  }
+
+  /** 收集该 callId 的所有回执（tool-call-result 可能不止一枚：正常回执＋late 告知）。 */
+  function collectReplies(ws: WebSocket, callId: string): Array<Record<string, unknown>> {
+    const replies: Array<Record<string, unknown>> = [];
+    ws.on('message', (raw: unknown) => {
+      const buf = Array.isArray(raw) ? (raw[0] as unknown) : raw;
+      const m = JSON.parse(String((buf as { data?: string }).data ?? buf)) as Record<string, unknown>;
+      if (m.type === 'tool-call-result' && m.callId === callId) replies.push(m);
+    });
+    return replies;
+  }
+
+  it('格① 在途 cancel ⇒ 回执 error=cancelled（真取消）', async () => {
     const tmp = mkRootSync();
-    for (let i = 0; i < 400; i++) fsSyncWrite(path.join(tmp, `f${i}.txt`), 'hello\n');
+    // 深树 + 大文件让遍历确定在途（中途 abort 收口）。
+    const deep = path.join(tmp, 'd0', 'd1', 'd2', 'd3');
+    fsSyncMkdir(deep);
+    for (let i = 0; i < 1500; i++) fsSyncWrite(path.join(deep, `f${i}.txt`), 'hello\n');
     const host = createDesktopHost({
       config: { host: '127.0.0.1', port: 0, token: 't' },
       secret: 's',
@@ -215,45 +255,74 @@ describe('㊿-b② 取消链（孤儿遍历治理）', () => {
     await host.start();
     running.push(host);
     const port = Number(new URL(host.url).port);
-
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/studio?token=t`);
-    await new Promise<void>((resolve) => ws.on('open', resolve));
-    ws.send(JSON.stringify({ type: 'hello', origin: 'https://chat.deepseek.com', sessionId: 'p-cancel' }));
-    await new Promise<void>((resolve) => {
-      const onMsg = (raw: unknown): void => {
-        const m = JSON.parse(String((raw as { data: string }).data ?? raw));
-        if ((m as { type: string }).type === 'hello-ack') {
-          ws.off('message', onMsg);
-          resolve();
-        }
-      };
-      ws.on('message', onMsg);
-    });
-
-    // 页端发 tool-call（长遍历），宿主开始执行；随后页端发 tool-cancel。
-    const callId = 'cancel-me-1';
-    const cancelledReply = new Promise<Record<string, unknown>>((resolve) => {
-      const onMsg = (raw: unknown): void => {
-        const buf = Array.isArray(raw) ? (raw[0] as unknown) : raw;
-        const m = JSON.parse(String((buf as { data?: string }).data ?? buf)) as Record<string, unknown>;
-        if (m.type === 'tool-call-result' && m.callId === callId) {
-          ws.off('message', onMsg);
-          resolve(m);
-        }
-      };
-      ws.on('message', onMsg);
-    });
-    ws.send(JSON.stringify({ type: 'tool-call', callId, invocationName: 'search_files', params: { operation: 'list' } }));
-    // 给宿主一点时间进入执行（walk 已在途）
-    await new Promise((r) => setTimeout(r, 50));
+    const ws = await openPageWs(port, 'p-cancel-live');
+    const callId = 'cancel-live-1';
+    const replies = collectReplies(ws, callId);
+    ws.send(JSON.stringify({ type: 'tool-call', callId, invocationName: 'search_files', params: { operation: 'list', root: path.join(tmp, 'd0') } }));
+    await new Promise((r) => setTimeout(r, 30));
     ws.send(JSON.stringify({ type: 'tool-cancel', callId, reason: 'page-timeout' }));
-    const reply = await Promise.race([
-      cancelledReply,
-      new Promise((r) => setTimeout(() => r({ timeout: true }), 8000)),
-    ]) as Record<string, unknown>;
-    expect(reply.timeout).toBeUndefined();
-    expect(reply.ok).toBe(false);
-    expect(reply.error).toBe('cancelled');
+    await new Promise((r) => setTimeout(r, 800));
+    expect(replies.length).toBeGreaterThanOrEqual(1);
+    expect(replies[0].ok).toBe(false);
+    expect(replies[0].error).toBe('cancelled');
+    ws.close();
+  });
+
+  it('格② 完成后 cancel ⇒ 原回执不被改写（ok:true 仍在）＋追加 cancelled-late', async () => {
+    const tmp = mkRootSync();
+    fsSyncWrite(path.join(tmp, 'a.txt'), 'hello\n');
+    const host = createDesktopHost({
+      config: { host: '127.0.0.1', port: 0, token: 't' },
+      secret: 's',
+      workspace: createWorkspace(tmp),
+      policyMode: 'auto',
+    });
+    await host.start();
+    running.push(host);
+    const port = Number(new URL(host.url).port);
+    const ws = await openPageWs(port, 'p-cancel-late');
+    const callId = 'cancel-late-1';
+    const replies = collectReplies(ws, callId);
+    ws.send(JSON.stringify({ type: 'tool-call', callId, invocationName: 'search_files', params: { operation: 'list' } }));
+    // 等正常回执落地（小目录秒回，无竞态歧义）。
+    await new Promise((r) => setTimeout(r, 1500));
+    ws.send(JSON.stringify({ type: 'tool-cancel', callId, reason: 'page-timeout' }));
+    await new Promise((r) => setTimeout(r, 600));
+    const normal = replies.filter((r) => r.error !== 'cancelled-late');
+    const late = replies.filter((r) => r.error === 'cancelled-late');
+    expect(normal.length, '原回执必须已发出且未被改写').toBe(1);
+    expect(normal[0].ok).toBe(true);
+    expect(late.length, '晚到的撤销必须得到追加告知，不许静默').toBe(1);
+    expect(late[0].ok).toBe(false);
+    // 可证伪边界：完成表命中的 late 必须带"已执行完成"正文——
+    // 这条把「登记生效」与「未知 callId 的裸 late」区分开（后者无正文）。
+    // 若把登记改成 if(false)，cancel 会落未知分支回裸 late ⇒ 此断言必红。
+    const lateText = Array.isArray(late[0].content)
+      ? (late[0].content as Array<{ type: string; text?: string }>).map((c) => c.text ?? '').join('')
+      : '';
+    expect(lateText).toContain('已执行完成');
+    ws.close();
+  });
+
+  it('格②-负态：未知 callId 的同连接 cancel ⇒ 裸 cancelled-late（非静默）', async () => {
+    const tmp = mkRootSync();
+    const host = createDesktopHost({
+      config: { host: '127.0.0.1', port: 0, token: 't' },
+      secret: 's',
+      workspace: createWorkspace(tmp),
+      policyMode: 'auto',
+    });
+    await host.start();
+    running.push(host);
+    const port = Number(new URL(host.url).port);
+    const ws = await openPageWs(port, 'p-cancel-unknown');
+    const callId = 'never-registered-1';
+    const replies = collectReplies(ws, callId);
+    ws.send(JSON.stringify({ type: 'tool-cancel', callId, reason: 'page-timeout' }));
+    await new Promise((r) => setTimeout(r, 400));
+    expect(replies.length).toBe(1);
+    expect(replies[0].ok).toBe(false);
+    expect(replies[0].error).toBe('cancelled-late');
     ws.close();
   });
 });

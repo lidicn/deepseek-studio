@@ -363,6 +363,17 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
     string,
     { ownerId: string; tool: string; timer: ReturnType<typeof setTimeout>; controller: AbortController }
   >();
+  // 卡 ㊿-b-补2（CI run 44679065554 竞态）：完成态短 TTL 表。
+  //
+  // 为什么需要它：执行完成时 `settleToolCall` 立即 delete pending 并回执；
+  // 快机器上（CI）cancel 常落在完成**之后**——没有这张表，tool-cancel 分支只能
+  // 静默 return，页端那枚「晚到的撤销」无人认领。
+  // 语义铁律：它**只服务**「撤销来晚了」这一格——late 回执是**追加**一条告知，
+  // 绝不改写任何已发出的正常回执（执行已完成就是已完成）。
+  // TTL 取 15s（页端 toolCallTimeoutMs 默认 90s 之外的小补偿窗口，秒级～十几秒档）；
+  // 过期条目由登记时顺带惰性清理（不挂独立定时器，不为竞态窗口养常驻 timer）。
+  const COMPLETED_TOOL_TTL_MS = 15_000;
+  const completedToolCalls = new Map<string, { ownerId: string; settledAt: number }>();
   // M1-C：每个 bot 最近一条「完成哨兵」结论（页端上报）。
   // WebEngine 在轮询结束那一刻读一次 → 判 `'interrupted'`。
   // 没有这张表，`interrupted` 终态永远不会被触发（死代码）。
@@ -654,19 +665,55 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
          *
          * 只接受**发起该调用的那条连接**的撤销（跨连接忽略，与 result/consent 同口径：
          * 否则任意已连上的本机进程猜中 callId 就能掐掉别人的工具调用）。
+         *
+         * 卡 ㊿-b-补2（CI run 44679065554 竞态）：**pending 已消失**有两态，不许混、
+         * 也不许静默吞——
+         *   ① callId 在 `completedToolCalls`（短 TTL 完成表）里 ⇒ **执行已跑完**，
+         *      正常回执早已发出（不得改写成 cancelled，那与"已完成的调用"自相矛盾）；
+         *      补回一枚 `cancelled-late` 回执，让页端知道"你撤的这枚已经跑完了"。
+         *   ② 两表都没有（TTL 过期 / 从未见过的 callId）⇒ 同样回 `cancelled-late`
+         *      （跨连接的撤销本来就被上面的 ownerId 检查忽略，这里到得了说明同连接；
+         *        静默 return 会让页端 pending 永久悬挂，违反 fail-closed）。
+         * 码表语义：`cancelled`＝执行被真取消；`cancelled-late`＝撤销来晚了/对不上号，
+         * 二者**可判**，消费方（interceptor 的七态归类）不会被误并。
          */
         const p = pendingToolCalls.get(msg.callId);
-        if (!p || p.ownerId !== id) return;
-        clearTimeout(p.timer);
-        pendingToolCalls.delete(msg.callId);
-        try {
-          p.controller.abort();
-        } catch {
-          /* ignore */
+        if (p && p.ownerId === id) {
+          clearTimeout(p.timer);
+          pendingToolCalls.delete(msg.callId);
+          try {
+            p.controller.abort();
+          } catch {
+            /* ignore */
+          }
+          // run 事件必须收口（否则 UI 上那枚工具卡片永远停在 running）。
+          options.onToolResult?.({ callId: msg.callId, tool: p.tool, ok: false, error: 'cancelled', botId: rec.botId });
+          safeSend(ws, { type: 'tool-call-result', callId: msg.callId, ok: false, error: 'cancelled' });
+          return;
         }
-        // run 事件必须收口（否则 UI 上那枚工具卡片永远停在 running）。
-        options.onToolResult?.({ callId: msg.callId, tool: p.tool, ok: false, error: 'cancelled', botId: rec.botId });
-        safeSend(ws, { type: 'tool-call-result', callId: msg.callId, ok: false, error: 'cancelled' });
+        // pending 里没有：查完成表（同连接才受理——跨连接撤销仍静默忽略，防猜 callId）。
+        const done = completedToolCalls.get(msg.callId);
+        if (done !== undefined && done.ownerId === id) {
+          completedToolCalls.delete(msg.callId);
+          safeSend(ws, {
+            type: 'tool-call-result',
+            callId: msg.callId,
+            ok: false,
+            error: 'cancelled-late',
+            isError: true,
+            content: [{
+              type: 'text',
+              text: 'cancelled-late: 撤销到达时该调用已执行完成，结果已按原回执送达（未被改写）。'
+                + '如需重做请另发新调用；不要把这条当成本次执行被取消。',
+            }],
+          });
+          return;
+        }
+        // 都对不上：同连接、未知 callId（TTL 过期 / 从未登记 / 执行失败或超时被砍）。
+        // 回**裸** cancelled-late（不带"已跑完"正文——无从断言那枚的真实终态）；
+        // 不静默吞：静默会让页端 pending 永久悬挂，违反 fail-closed。
+        // 跨连接的撤销不进来（上面 ownerId 双检已拦），不会借这条给别人的调用发回执。
+        safeSend(ws, { type: 'tool-call-result', callId: msg.callId, ok: false, error: 'cancelled-late' });
       } else if (msg.type === 'tool-call') {
         // v0.6：页端拦截到模型发起的工具调用，反向投递给宿主真实执行。
         // v1.8：整个分支包 try/catch。invocationName 来自 WebSocket 报文属外部可控
@@ -717,16 +764,29 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           });
         }, toolCallTimeoutMs);
         pendingToolCalls.set(msg.callId, { ownerId: id, tool: mapped.id, timer: toolTimer, controller: toolController });
-        const settleToolCall = (): boolean => {
+        // 卡 ㊿-b-补2：结算器统一摘 pending；**是否登记完成态由实参定**。
+        // PM 钉死的边：只登记**执行成功**（r.ok===true）——
+        //   · 能力层失败 / executor 抛异常 ⇒ 不登记：那一枚的真实语义是「已失败」，
+        //     晚到的 cancel 对它落「两表都没有」分支、回**裸** cancelled-late（无「已跑完」正文）；
+        //   · 宿主侧超时（timer 分支，不走本结算器）同样不登记：真实语义是「已超时被砍」。
+        const settleToolCall = (succeeded: boolean): boolean => {
           const p = pendingToolCalls.get(msg.callId);
           if (!p) return false;
           clearTimeout(p.timer);
           pendingToolCalls.delete(msg.callId);
+          if (succeeded) {
+            // 卡 ㊿-b-补2：登记完成态（短 TTL），供晚到的 tool-cancel 回
+            // `cancelled-late`——撤销对已完成调用的告知，不改写本次回执。
+            for (const [k, v] of completedToolCalls) {
+              if (Date.now() - v.settledAt > COMPLETED_TOOL_TTL_MS) completedToolCalls.delete(k);
+            }
+            completedToolCalls.set(msg.callId, { ownerId: id, settledAt: Date.now() });
+          }
           return true;
         };
         void exec(mapped.id, mapped.params, callBotId, msg.conversationId, toolController.signal)
           .then((r) => {
-            if (!settleToolCall()) return; // 已超时/已断连 → 不再回执（避免重复回执）
+            if (!settleToolCall(r.ok)) return; // 已超时/已断连 → 不再回执（避免重复回执）
             options.onToolResult?.({ callId: msg.callId, tool: mapped.id, ok: r.ok, error: r.reason, botId: callBotId, ...(r.details !== undefined ? { details: r.details as Record<string, unknown> } : {}) });
             safeSend(ws, {
               type: 'tool-call-result',
@@ -744,7 +804,7 @@ export function createPageRuntimeHub(options: PageRuntimeHubOptions): PageRuntim
           })
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e);
-            if (!settleToolCall()) return;
+            if (!settleToolCall(false)) return;
             options.onToolResult?.({ callId: msg.callId, tool: mapped.id, ok: false, error: message, botId: callBotId });
             safeSend(ws, {
               type: 'tool-call-result',
