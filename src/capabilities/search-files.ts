@@ -57,6 +57,15 @@ export interface SearchLimits {
   maxFiles?: number;
   /** 软耗时预算（ms）。默认 15,000。 */
   timeBudgetMs?: number;
+  /**
+   * 卡 ㊿-b-补3（CI 竞态）：**每目录项闸钩**（可选，生产路径不传＝零行为差）。
+   *
+   * 语义：walk 在**每个目录项产出前** `await` 一次它——测试用它把遍历"门住"，
+   * 先断言「闸已被触达（遍历确在途）」再发 cancel，最后放闸。
+   * 用途仅限测试注入受控暂停；生产调用方一律不传。
+   * 它落在 signal 检查**之后**、产出**之前**：闸打开后，下一个检查点（本项或下一项）才读 abort。
+   */
+  onEntryAwait?: () => Promise<void> | void;
 }
 
 /** 截断原因（机器可读），同时决定给模型的下一步建议。 */
@@ -91,7 +100,7 @@ function truncationHint(reason: SearchTruncationReason): string {
 }
 
 /** 预算归一化：显式传入且为正数才生效，否则用默认值。 */
-function resolveBudget(input: SearchLimits | undefined): Required<SearchLimits> {
+function resolveBudget(input: SearchLimits | undefined): Pick<Required<SearchLimits>, 'maxDepth' | 'maxEntries' | 'maxFiles' | 'timeBudgetMs'> {
   const pick = (v: unknown, fallback: number): number => {
     return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : fallback;
   };
@@ -296,6 +305,12 @@ interface WalkControl {
   /** 因深度上限而没下钻过（结果可能不完整，但遍历正常完成）。 */
   depthLimited: boolean;
   aborted: boolean;
+  /**
+   * 卡 ㊿-b-补3：每目录项闸钩（可选；生产构造点不传 ⇒ 零行为差、零额外 await）。
+   * 落点＝abort 检查**之后**、产出**之前**（PM 硬约束②）：cancel 到达后遍历真的停下，
+   * 测试放闸不会放行一整棵树。
+   */
+  readonly onEntryAwait?: () => Promise<void> | void;
 }
 
 /**
@@ -339,6 +354,9 @@ async function* walk(
         return;
       }
       if (ctrl.stop) return;
+      // 卡 ㊿-b-补3：测试闸钩（可选）——只在传了才 await（硬约束①：生产零额外开销）；
+      // 落点在 abort 检查之后（硬约束②）：放闸后下一检查点才读 abort，不会放行整棵树。
+      if (ctrl.onEntryAwait) await ctrl.onEntryAwait();
       // 先判预算再产出：上限命中时这一枚**不计入** entries（否则会多算一枚）。
       if (ctrl.entries >= ctrl.maxEntries) {
         ctrl.stop = 'max-entries';
@@ -407,6 +425,8 @@ export async function listFiles(input: ListFilesInput): Promise<ExecuteResult> {
     maxDepth: budget.maxDepth,
     maxEntries: budget.maxEntries,
     signal: input.signal,
+    // 卡 ㊿-b-补3：测试闸钩透传（可选；生产不传＝undefined＝零行为差）。
+    ...(input.limits?.onEntryAwait ? { onEntryAwait: input.limits.onEntryAwait } : {}),
     entries: 0,
     dirs: 0,
     depthLimited: false,
@@ -492,6 +512,8 @@ export async function grepFiles(input: GrepFilesInput): Promise<ExecuteResult> {
     maxDepth: budget.maxDepth,
     maxEntries: budget.maxEntries,
     signal: input.signal,
+    // 卡 ㊿-b-补3：测试闸钩透传（可选；生产不传＝undefined＝零行为差）。
+    ...(input.limits?.onEntryAwait ? { onEntryAwait: input.limits.onEntryAwait } : {}),
     entries: 0,
     dirs: 0,
     depthLimited: false,

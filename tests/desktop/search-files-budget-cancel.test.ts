@@ -240,17 +240,51 @@ describe('㊿-b② 取消链（孤儿遍历治理）', () => {
     return replies;
   }
 
-  it('格① 在途 cancel ⇒ 回执 error=cancelled（真取消）', async () => {
+  /**
+   * 格①（卡 ㊿-b-补3 重铸）：**机器速度无关**的在途取消。
+   *
+   * 旧构造「1500 个小文件＋30ms 后 cancel」是环境假设——CI 快机器上遍历先完成，
+   * cancel 落在完成态 ⇒ 收到 ok:true（CI run 44690083980 红点）。重铸为**受控闸**：
+   *   - 覆盖 hostTools 注入"真 search_files ＋ onEntryAwait 闸"（闸在测试手里）；
+   *   - 先断言「闸已被触达」（= 遍历确在途，机器速度无关的事实）；
+   *   - 再发 cancel ⇒ 放闸 ⇒ 遍历在下一个 abort 检查点停下 ⇒ 回 `cancelled`。
+   * 快慢机器行为同构：CI 上同样先停在闸上，不存在"跑完"的时间窗。
+   */
+  it('格① 在途 cancel ⇒ 回执 error=cancelled（受控闸，机器速度无关）', async () => {
     const tmp = mkRootSync();
-    // 深树 + 大文件让遍历确定在途（中途 abort 收口）。
-    const deep = path.join(tmp, 'd0', 'd1', 'd2', 'd3');
-    fsSyncMkdir(deep);
-    for (let i = 0; i < 1500; i++) fsSyncWrite(path.join(deep, `f${i}.txt`), 'hello\n');
+    fsSyncWrite(path.join(tmp, 'a.txt'), 'hello\n');
+    fsSyncWrite(path.join(tmp, 'b.txt'), 'hello\n');
+
+    // 闸：第一个条目触达后停住，测试放行。
+    let entriesSeen = 0;
+    let releaseGate!: () => void;
+    const gateReached = new Promise<void>((resolve) => { releaseGate = () => resolve(); });
+    const releaseRef = { current: (): void => releaseGate() };
+    const gate = async (): Promise<void> => {
+      entriesSeen += 1;
+      releaseRef.current();
+      await gateReached;
+    };
+
     const host = createDesktopHost({
       config: { host: '127.0.0.1', port: 0, token: 't' },
       secret: 's',
       workspace: createWorkspace(tmp),
       policyMode: 'auto',
+      hostTools: {
+        search_files: {
+          id: 'search_files',
+          async execute(params: Record<string, unknown>, ctx) {
+            return listFiles({
+              root: typeof params.root === 'string' ? params.root : tmp,
+              // 三态语义：不传 workspace（undefined）＝不施加工作区约束（测试注入路径）。
+              limit: typeof params.limit === 'number' ? params.limit : undefined,
+              ...(ctx?.signal ? { signal: ctx.signal } : {}),
+              limits: { onEntryAwait: gate },
+            });
+          },
+        },
+      },
     });
     await host.start();
     running.push(host);
@@ -258,10 +292,20 @@ describe('㊿-b② 取消链（孤儿遍历治理）', () => {
     const ws = await openPageWs(port, 'p-cancel-live');
     const callId = 'cancel-live-1';
     const replies = collectReplies(ws, callId);
-    ws.send(JSON.stringify({ type: 'tool-call', callId, invocationName: 'search_files', params: { operation: 'list', root: path.join(tmp, 'd0') } }));
-    await new Promise((r) => setTimeout(r, 30));
+
+    ws.send(JSON.stringify({ type: 'tool-call', callId, invocationName: 'search_files', params: { operation: 'list' } }));
+    // **在途确认**（判据本体，不是时间差）：闸被触达 ⇒ 遍历已在 walk 的产出循环里。
+    const arrived = await Promise.race([
+      gateReached.then(() => 'gate' as const),
+      new Promise((r) => setTimeout(() => r('never' as const), 3000)),
+    ]);
+    expect(arrived, '遍历必须触达闸（= 在途），未触达说明注入面没生效').toBe('gate');
+    expect(entriesSeen).toBeGreaterThanOrEqual(1);
+
+    // 在途事实坐实后再撤：abort 置位 ⇒ 放闸 ⇒ 下一检查点停下 ⇒ cancelled。
     ws.send(JSON.stringify({ type: 'tool-cancel', callId, reason: 'page-timeout' }));
-    await new Promise((r) => setTimeout(r, 800));
+    releaseGate();
+    await new Promise((r) => setTimeout(r, 600));
     expect(replies.length).toBeGreaterThanOrEqual(1);
     expect(replies[0].ok).toBe(false);
     expect(replies[0].error).toBe('cancelled');
