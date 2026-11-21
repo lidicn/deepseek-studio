@@ -83,6 +83,8 @@ const panelStyles = `
   .studio-mcp-server-cmd { font-size: 11px; color: #999; font-family: monospace; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* ㊿-c-补③：MCP 行内开关失败报错（独立类名，不占 studio-form-hint 的 sweep 用例）。 */
   .studio-mcp-toggle-hint { font-size: 11px; color: #c0392b; margin-top: 3px; }
+  /* ㊿-c-补④：技能 tab 行内开关失败报错（与 studio-skills-panel 浮层同名类，样式各自注入、互不依赖）。 */
+  .studio-skill-toggle-hint { font-size: 11px; color: #c0392b; margin-top: 3px; }
   .studio-mcp-server-actions { display: flex; gap: 4px; align-items: center; }
   .studio-mcp-add-btn { width: 100%; padding: 10px; border: 1px dashed #d0d0d0; border-radius: 8px; background: transparent; cursor: pointer; color: #888; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 6px; }
   .studio-mcp-add-btn:hover { border-color: #4D6BFE; color: #4D6BFE; }
@@ -434,7 +436,7 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
       return;
     }
     if (result.ok && result.data) {
-      const data = result.data as { dir?: string; skills: Array<{ id: string; name: string; description: string }> };
+      const data = result.data as { dir?: string; skills: Array<{ id: string; name: string; description: string; enabled?: boolean }> };
       // 回填解析后的真实目录，让用户看到扫描的是哪里。
       if (typeof data.dir === 'string' && data.dir) (skillsDirInput as HTMLInputElement).value = data.dir;
       globalState.skills = data.skills ?? [];
@@ -485,7 +487,34 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
           <div class="studio-mcp-server-name">${escapeHtml(skill.name)}</div>
           <div class="studio-mcp-server-cmd">${escapeHtml(skill.description)}</div>
         </div>
+        <div class="studio-mcp-server-actions"></div>
       `;
+      const info = item.querySelector('.studio-mcp-server-info')!;
+      const actions = item.querySelector('.studio-mcp-server-actions')!;
+      // ㊿-c-补④：技能 tab 开关（与 MCP tab 同构，出资人 0.14.28 实测补口）。
+      // 缺键＝启用（宿主 skill.enabled.set 同口径）；点击先调宿主，**成功才重拉
+      // skill.list 刷新**（真源在宿主，零乐观翻转），失败保持原态＋行内可见报错
+      // （独立类名 studio-skill-toggle-hint，不占 studio-form-hint 的 sweep 用例）。
+      const rowHint = el('div', { className: 'studio-skill-toggle-hint' });
+      rowHint.hidden = true;
+      let isOn = skill.enabled ?? true;
+      const toggle = el('div', { className: `studio-switch${isOn ? ' on' : ''}` });
+      toggle.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const next = !isOn;
+        const r = await callHostTool('skill.enabled.set', { id: skill.id, enabled: next });
+        if (r.ok) {
+          rowHint.hidden = true;
+          await fetchSkills(); // 回显源＝宿主 skill.list 重拉，不许拿本地变量翻
+        } else {
+          // fail-visible：不假亮，开关保持原态，报错挂在行内（刷新后仍是被拒后的真态）。
+          rowHint.textContent = `技能开关设置失败（${skill.name}）：${r.error ?? '未知错误'}`;
+          rowHint.hidden = false;
+        }
+      });
+      actions.appendChild(toggle);
+      // hint 挂 info 下方（item 是单行 flex space-between，挂 item 会顶行，同 MCP tab 做法）。
+      info.appendChild(rowHint);
       skillsList.appendChild(item);
     }
   }

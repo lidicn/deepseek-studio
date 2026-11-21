@@ -26,7 +26,7 @@ export interface UIState {
   workspaceRoot: string | null;
   policyMode: PolicyMode;
   localToolsEnabled: boolean;
-  skills: Array<{ id: string; name: string; description: string }>;
+  skills: Array<{ id: string; name: string; description: string; enabled?: boolean }>;
   mcpServers: string[];
   /** v1.9：每台 MCP 服务器的真实传输配置（列表展示与编辑回填用）。 */
   mcpConfigs: Array<{ id: string; transport: 'stdio' | 'http' | 'sse'; url?: string; command?: string; args?: string[]; enabled?: boolean }>;
