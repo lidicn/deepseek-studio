@@ -29,10 +29,36 @@ function mkCfgPath(): string {
   return path.join(d, 'mcp-servers.json');
 }
 
+/**
+ * 写配置并**保证 mtime 严格递增**。
+ *
+ * 为什么不按「推 2ms」写（原写法）：`Date.now()+2` 是**墙钟推算**，
+ * 两次写盘若落在同一毫秒桶里，`utimesSync` 落盘值可能与上一次**逐字相等**
+ * ⇒ `refreshConfigIfChanged()` 的 mtime 判重判定「没变」⇒ 不重载。
+ *
+ * 实测（CI run 44881343626 探针，node v24.22.3 / windows-2025）：**碰撞率 48.85%**
+ * （2000 次采样中 977 次 recorded===mtime，minDiff=0）；本机 node v24.14.0 上为 0%
+ * ⇒ 这是**CI 文件系统时间戳精度差异**触发的随机红，不是产品缺陷，但会持续红 CI。
+ *
+ * 现在改成：**以文件当前 mtime 为基准 +1ms**（`lastMtime` 缓存），保证每次写盘的
+ * mtime 严格大于上一次 ⇒ 判重必然失效 ⇒ 热重载必然生效 ⇒ 与机器速度、文件系统
+ * 时间戳精度**都无关**。
+ */
+const lastMtime = new Map<string, number>();
+
 function writeCfg(cfgPath: string, servers: Record<string, unknown>): void {
   fs.writeFileSync(cfgPath, JSON.stringify({ servers }, null, 2), 'utf8');
-  // mtime 精度可能同毫秒，显式推 1ms 保证热重载判定必失效
-  const t = new Date(Date.now() + 2);
+  // 基准 = 上一次写盘落下的 mtime（没有则取当前文件 mtime），再 +1ms ⇒ 严格递增。
+  const current = lastMtime.get(cfgPath);
+  let base: number;
+  try {
+    base = current ?? fs.statSync(cfgPath).mtimeMs;
+  } catch {
+    base = Date.now();
+  }
+  const next = base + 1;
+  lastMtime.set(cfgPath, next);
+  const t = new Date(next);
   fs.utimesSync(cfgPath, t, t);
 }
 
