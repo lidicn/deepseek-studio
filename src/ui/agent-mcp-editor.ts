@@ -37,6 +37,12 @@ export interface McpServerConfigView {
   url?: string;
   headers?: Record<string, string>;
   cwd?: string;
+  /**
+   * ㊿-c-补（2026-11-21）：启用开关状态。盘上**缺键＝启用**（缺省），只有 `false` 有区分度。
+   * 请求体同口径：勾选态**不带**该键（新台字节级等同旧行为；PUT 缺键 ⇒ 继承盘上值，
+   * 只改 url 不会静默把 enabled 写成 true／false），仅当用户取消勾选时带 `enabled: false`。
+   */
+  enabled?: boolean;
 }
 
 export interface McpEditorOptions {
@@ -212,6 +218,10 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
       const name = el('div', { className: 'mcp-editor-item-name' });
       name.appendChild(el('span', { text: id }));
       name.appendChild(el('span', { className: 'mcp-editor-item-transport', text: transportLabel(cfg.transport) }));
+      // ㊿-c-补：盘上缺键＝启用，只有显式 `enabled === false` 才挂「已禁用」标。
+      if (cfg.enabled === false) {
+        name.appendChild(el('span', { className: 'mcp-editor-item-disabled', text: '已禁用' }));
+      }
       info.appendChild(name);
       info.appendChild(el('div', { className: 'mcp-editor-item-target', text: targetOf(cfg) }));
       item.appendChild(info);
@@ -253,6 +263,8 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
     cwd: HTMLInputElement;
     env: HTMLTextAreaElement;
     url: HTMLInputElement;
+    /** ㊿-c-补：「启用」checkbox（默认勾选；未勾选时请求体才带 `enabled: false`）。 */
+    enabled: HTMLInputElement;
     /** Headers 的**行容器**（名称/值成对，参考豆包「自定义连接器」）。 */
     headers: HTMLElement;
     /** 按传输类型显示的字段组（stdio 独占 / 远程独占）。 */
@@ -347,6 +359,17 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
     }
     transportGroup.appendChild(transportSelect);
 
+    // ㊿-c-补（2026-11-21）：「启用」checkbox —— 本窗是明文唯一编辑窗，开关走 PUT 合规。
+    // 缺省勾选＝盘上缺键语义（启用）：勾选态请求体**不带** `enabled` 键——新台与旧行为字节
+    // 等同、既有台 PUT 缺键继承盘上值，「只改 url」不会静默写 enabled；仅取消勾选才带 false。
+    const enabledGroup = el('div', { className: 'mcp-editor-field' });
+    const enabledLabel = el('label', { className: 'mcp-editor-label mcp-editor-label-inline' });
+    const enabledInput = el('input', { attrs: { type: 'checkbox', id: 'mcp-editor-enabled' } });
+    enabledInput.checked = true;
+    enabledLabel.appendChild(enabledInput);
+    enabledLabel.appendChild(el('span', { text: '启用（取消勾选＝该服务器停用，其工具不进模型面）' }));
+    enabledGroup.appendChild(enabledLabel);
+
     const commandGroup = el('div', { className: 'mcp-editor-field' });
     commandGroup.appendChild(el('label', { className: 'mcp-editor-label', text: '启动命令 *（stdio）' }));
     const commandInput = el('input', { className: 'mcp-editor-input', attrs: { type: 'text', placeholder: '如 npx、python、uvx' } });
@@ -397,6 +420,7 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
 
     form.appendChild(idGroup);
     form.appendChild(transportGroup);
+    form.appendChild(enabledGroup);
     form.appendChild(commandGroup);
     form.appendChild(argsGroup);
     form.appendChild(cwdGroup);
@@ -413,6 +437,7 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
       cwd: cwdInput,
       env: envArea,
       url: urlInput,
+      enabled: enabledInput,
       headers: headersRowsEl,
       // stdio 独占：启动命令 / 参数 / 工作目录 / 环境变量
       // 远程独占：服务器 URL / 自定义 Headers
@@ -475,6 +500,9 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
       config.headers = readHeaderRows();
     }
     config.env = parseKeyValueLines(f.env.value);
+    // ㊿-c-补：勾选态不带 `enabled` 键（缺键＝启用／PUT 缺键继承盘上值，见 enabledGroup 注释）；
+    // 仅取消勾选才显式写 false。
+    if (!f.enabled.checked) config.enabled = false;
     return { id, config };
   }
 
@@ -568,6 +596,8 @@ export function mountMcpEditor(options: McpEditorOptions): McpEditorHandle {
     f.id.value = editingId ?? '';
     f.id.readOnly = editingId !== null;
     f.transport.value = cfg?.transport ?? 'stdio';
+    // ㊿-c-补：回显——盘上 `enabled:false` 未勾选；缺键（缺省＝启用）勾选。
+    f.enabled.checked = cfg?.enabled ?? true;
     f.command.value = cfg?.command ?? '';
     f.args.value = formatArgsLines(cfg?.args);
     f.cwd.value = cfg?.cwd ?? '';

@@ -527,3 +527,141 @@ describe('工作台 MCP 编辑器：Headers 行式编辑器', () => {
     expect(groupOf('服务器 URL').hidden).toBe(true);
   });
 });
+
+/**
+ * 启用开关（㊿-c-补 2026-11-21，PM 卡面：`McpServerConfigView` 加 `enabled?: boolean`、
+ * 表单加「启用」checkbox（默认勾选）、列表渲染回显、PUT/POST body 带上 `enabled`——
+ * 缺省勾选＝true 不覆盖）。
+ *
+ * 盘上口径（Core ㊿-c）：**缺键＝启用**。故本实现勾选态请求体**不带** `enabled` 键
+ * （新台字节级等同旧行为；PUT 缺键 ⇒ 继承盘上值，「只改 url」不静默写 enabled），
+ * 仅取消勾选才带 `enabled: false`。
+ */
+describe('工作台 MCP 编辑器：启用开关（㊿-c-补）', () => {
+  function mockServers(servers: Record<string, unknown>[]): void {
+    fetchMock.mockResolvedValue(okResponse({ servers }));
+  }
+
+  function openAddForm(): HTMLElement {
+    fetchMock.mockResolvedValue(okResponse({ servers: [] }));
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    mountMcpEditor({ root, token: 'tok-en', origin: 'http://127.0.0.1:8760' });
+    (root.querySelector('#btn-mcp-add') as HTMLButtonElement).click();
+    return root.querySelector('#mcp-editor-form') as HTMLElement;
+  }
+
+  function enabledCheckbox(form: HTMLElement): HTMLInputElement {
+    const cb = form.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+    expect(cb).toBeTruthy();
+    return cb!;
+  }
+
+  it('表单有「启用」checkbox，新建时默认勾选（缺省＝启用）', () => {
+    const form = openAddForm();
+    expect(enabledCheckbox(form).checked).toBe(true);
+  });
+
+  it('勾选态保存：POST body 不带 enabled 键（新台字节级等同旧行为，缺键＝启用）', async () => {
+    const form = openAddForm();
+    const inputs = Array.from(form.querySelectorAll('input[type="text"]')) as HTMLInputElement[];
+    inputs[0]!.value = 'fs';
+    inputs[1]!.value = 'npx';
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(okResponse({}));
+    const saveBtn = Array.from(form.querySelectorAll('button')).find((b) => (b.textContent ?? '').includes('保存')) as HTMLButtonElement;
+    saveBtn.click();
+    await new Promise((r) => setTimeout(r, 0));
+    const call = fetchMock.mock.calls.find((c) => (c[1] as RequestInit).method === 'POST');
+    expect(call).toBeTruthy();
+    const body = JSON.parse(String((call as [string, RequestInit])[1].body));
+    expect('enabled' in body.config).toBe(false);
+  });
+
+  it('取消勾选保存：POST body 带 enabled:false（新建即停用台）', async () => {
+    const form = openAddForm();
+    const inputs = Array.from(form.querySelectorAll('input[type="text"]')) as HTMLInputElement[];
+    inputs[0]!.value = 'fs';
+    inputs[1]!.value = 'npx';
+    enabledCheckbox(form).checked = false;
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(okResponse({}));
+    const saveBtn = Array.from(form.querySelectorAll('button')).find((b) => (b.textContent ?? '').includes('保存')) as HTMLButtonElement;
+    saveBtn.click();
+    await new Promise((r) => setTimeout(r, 0));
+    const call = fetchMock.mock.calls.find((c) => (c[1] as RequestInit).method === 'POST');
+    expect(call).toBeTruthy();
+    const body = JSON.parse(String((call as [string, RequestInit])[1].body));
+    expect(body.config.enabled).toBe(false);
+  });
+
+  it('编辑既有 `enabled:false` 台：checkbox 回显为未勾选；不碰勾选直接保存，PUT 仍带 false（不静默翻回启用）', async () => {
+    mockServers([{ id: 'fs', transport: 'stdio', command: 'npx', enabled: false }]);
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const handle = mountMcpEditor({ root, token: 'tok-ed', origin: 'http://127.0.0.1:8760' });
+    await handle.refresh();
+
+    const list = root.querySelector('#mcp-editor-list') as HTMLElement;
+    const editBtn = Array.from(list.querySelectorAll('button')).find((b) => (b.textContent ?? '').includes('编辑')) as HTMLButtonElement;
+    editBtn.click();
+
+    const form = root.querySelector('#mcp-editor-form') as HTMLElement;
+    expect(enabledCheckbox(form).checked).toBe(false);
+
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(okResponse({}));
+    const saveBtn = Array.from(form.querySelectorAll('button')).find((b) => (b.textContent ?? '').includes('保存')) as HTMLButtonElement;
+    saveBtn.click();
+    await new Promise((r) => setTimeout(r, 0));
+    const call = fetchMock.mock.calls.find((c) => (c[1] as RequestInit).method === 'PUT');
+    expect(call).toBeTruthy();
+    const body = JSON.parse(String((call as [string, RequestInit])[1].body));
+    expect(body.config.enabled).toBe(false);
+  });
+
+  it('编辑既有缺键台（缺省＝启用）：checkbox 默认勾选；不碰直接保存，PUT 不带 enabled 键（继承盘上值）', async () => {
+    mockServers([{ id: 'fs', transport: 'stdio', command: 'npx' }]);
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const handle = mountMcpEditor({ root, token: 'tok-nk', origin: 'http://127.0.0.1:8760' });
+    await handle.refresh();
+
+    const list = root.querySelector('#mcp-editor-list') as HTMLElement;
+    const editBtn = Array.from(list.querySelectorAll('button')).find((b) => (b.textContent ?? '').includes('编辑')) as HTMLButtonElement;
+    editBtn.click();
+
+    const form = root.querySelector('#mcp-editor-form') as HTMLElement;
+    expect(enabledCheckbox(form).checked).toBe(true);
+
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(okResponse({}));
+    const saveBtn = Array.from(form.querySelectorAll('button')).find((b) => (b.textContent ?? '').includes('保存')) as HTMLButtonElement;
+    saveBtn.click();
+    await new Promise((r) => setTimeout(r, 0));
+    const call = fetchMock.mock.calls.find((c) => (c[1] as RequestInit).method === 'PUT');
+    expect(call).toBeTruthy();
+    const body = JSON.parse(String((call as [string, RequestInit])[1].body));
+    expect('enabled' in body.config).toBe(false);
+  });
+
+  it('列表行：显式 `enabled:false` 台挂「已禁用」标；缺键台不挂', () => {
+    mockServers([
+      { id: 'off-srv', transport: 'stdio', command: 'npx', enabled: false },
+      { id: 'default-srv', transport: 'stdio', command: 'npx' },
+    ]);
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    mountMcpEditor({ root, token: 'tok-list', origin: 'http://127.0.0.1:8760' }).refresh();
+    // refresh 是异步的：这里用同步断言会抢在渲染前。改为等待微任务后查 DOM。
+    return new Promise<void>((done) => {
+      setTimeout(() => {
+        const items = Array.from(root.querySelectorAll('.mcp-editor-item'));
+        expect(items.length).toBe(2);
+        expect(items[0]!.querySelector('.mcp-editor-item-disabled')?.textContent).toBe('已禁用');
+        expect(items[1]!.querySelector('.mcp-editor-item-disabled')).toBeNull();
+        done();
+      }, 0);
+    });
+  });
+});

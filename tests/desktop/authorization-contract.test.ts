@@ -71,6 +71,11 @@ const BASELINE: Record<string, ApprovalClass> = {
   // ㊿-c ②（2026-11-20）：技能开关落盘。与 skill.dir.set 同口径——只对页端技能面板开放
   // （不入 SUPPORTED_INVOCATION_NAMES），用户点按即同意，写 config.json 的 disabledSkills。
   'skill.enabled.set': 'none',
+  // ㊿-c-补（2026-11-21）：MCP per-server 开关（只带 {id, enabled}，宿主只翻一枚键）。
+  // 与上一行同口径：只对页端 MCP 面板开放（不入 SUPPORTED_INVOCATION_NAMES）。
+  'mcp.enabled.set': 'none',
+  // ㊿-c-补（2026-11-21）：聊天页 MCP 面板的全量回显源（只读掩码摘要，仅页端 UI 可达）。
+  'mcp.listAll': 'none',
   web_fetch: 'none',
   web_search: 'none',
   // R2-07（2026-11-12 回归审计）：none → mode。

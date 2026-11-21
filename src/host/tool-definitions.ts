@@ -165,6 +165,35 @@ export const DEFAULT_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     allowedOrigins: [DEEPSEEK_ORIGIN],
     approvalClass: 'none',
   },
+  // ㊿-c-补（2026-11-21）：MCP per-server 开关的轻量落盘口（只带 `{id, enabled}`）。
+  //
+  // 口径与 `skill.enabled.set` 同：`risk:'privileged'`（宿主配置写）＋ `approvalClass:'none'`
+  // ——本工具**只对页端 UI 开放**（不在 `SUPPORTED_INVOCATION_NAMES` 里，模型直调会被拒），
+  // 唯一调用方是聊天页 MCP 面板那枚开关，**用户点按即同意**。若将来把它放进模型面，
+  // 这行必须同步改成 `always`（否则等于给模型一枚零审批的「关掉用户 MCP」的按钮）。
+  {
+    id: 'mcp.enabled.set',
+    title: '设置 MCP 服务器启用状态',
+    description: '启用或禁用一台已配置的 MCP 服务器（只翻 enabled 一枚键，仅页端 MCP 面板可调）。',
+    risk: 'privileged',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
+  },
+  // ㊿-c-补（2026-11-21，PM 卡面增补）：聊天页 MCP 面板的**全量回显**数据源。
+  //
+  // `risk:'read'`（只读摘要，掩码形态、结构上无 env/headers）＋ `approvalClass:'none'`
+  // ＋ 仅 DEEPSEEK_ORIGIN，且**只对页端 UI 开放**（不在 `SUPPORTED_INVOCATION_NAMES`）。
+  // 为什么需要它：模型面 `mcp.list` 只列 enabled，禁用台从它消失 ⇒ 面板没有那一行可点回开。
+  {
+    id: 'mcp.listAll',
+    title: '列出全部 MCP 服务器',
+    description: '列出全部已配置 MCP 服务器（含被禁用的那几台）的掩码摘要与启用状态，仅页端 MCP 面板可调。',
+    risk: 'read',
+    execution: 'host',
+    allowedOrigins: [DEEPSEEK_ORIGIN],
+    approvalClass: 'none',
+  },
   // ORD-001：本地文件检索（listFiles + grepFiles）。
   {
     id: 'search_files',

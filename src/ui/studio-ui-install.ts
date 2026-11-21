@@ -225,7 +225,9 @@ export function installStudioUI(options: StudioUIOptions): StudioUIHandle {
   // 异步加载已有 MCP 服务器列表和技能列表（UI 初始化时 globalState 为空，需从宿主拉取）
   (async () => {
     try {
-      const mcpResult = await callHostTool('mcp.list', {});
+      // ㊿-c-补③：UI 状态回显以管理面 `mcp.listAll`（全量＋enabled，掩码）为准；
+      // 模型面 `mcp.list`（enabled-only）不得当回显源——禁用台会在 UI 里凭空消失。
+      const mcpResult = await callHostTool('mcp.listAll', {});
       if (mcpResult.ok && mcpResult.data && Array.isArray((mcpResult.data as { servers?: string[] }).servers)) {
         globalState.mcpServers = [...(mcpResult.data as { servers: string[] }).servers];
         console.log('[StudioUI] loaded MCP servers:', globalState.mcpServers);

@@ -198,6 +198,23 @@ const UI_ONLY_TOOLS: Record<string, UpstreamToolMapping> = Object.assign(
       enabled: p.enabled === true,
     }),
   },
+  // ㊿-c-补（2026-11-21）：MCP per-server 开关的轻量落盘口（仅页端 MCP 面板可调；
+  // 不进 SUPPORTED_INVOCATION_NAMES，模型面权限不扩）。
+  //
+  // `enabled` **不做 `=== true` 强转**（与 `skill.enabled.set` 有意不同）：那会把
+  // 「缺参 / 形态不对」静默折成 `enabled:false` —— 一次畸形调用就把服务器关掉。
+  // 这里原样透传，由宿主按 `typeof !== 'boolean'` 回 `missing-argument`（fail-visible）。
+  'mcp.enabled.set': {
+    id: 'mcp.enabled.set',
+    adapt: (p) => ({
+      id: String(p.id ?? ''),
+      enabled: p.enabled,
+    }),
+  },
+  // ㊿-c-补（2026-11-21，PM 卡面增补）：聊天页 MCP 面板的**全量回显**数据源。
+  // 只对页端 UI 开放（不进 SUPPORTED_INVOCATION_NAMES）；返回体是 `toMcpServerSummary`
+  // 同一真源的掩码摘要，结构上不含 env/headers（管理面那份明文面不在这里）。
+  'mcp.listAll': { id: 'mcp.listAll', adapt: () => ({}) },
   } as Record<string, UpstreamToolMapping>,
 );
 

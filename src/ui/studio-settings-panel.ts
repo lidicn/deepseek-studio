@@ -81,7 +81,9 @@ const panelStyles = `
     background: #eef2ff; color: #4D6BFE; border: 1px solid #dbe3ff;
   }
   .studio-mcp-server-cmd { font-size: 11px; color: #999; font-family: monospace; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .studio-mcp-server-actions { display: flex; gap: 4px; }
+  /* ㊿-c-补③：MCP 行内开关失败报错（独立类名，不占 studio-form-hint 的 sweep 用例）。 */
+  .studio-mcp-toggle-hint { font-size: 11px; color: #c0392b; margin-top: 3px; }
+  .studio-mcp-server-actions { display: flex; gap: 4px; align-items: center; }
   .studio-mcp-add-btn { width: 100%; padding: 10px; border: 1px dashed #d0d0d0; border-radius: 8px; background: transparent; cursor: pointer; color: #888; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 6px; }
   .studio-mcp-add-btn:hover { border-color: #4D6BFE; color: #4D6BFE; }
   .studio-memory-item { display: flex; align-items: flex-start; gap: 10px; padding: 10px; border-bottom: 1px solid #f5f5f5; }
@@ -330,7 +332,7 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   // 添加 / 编辑 / 删除全部搬到工作台（独立 origin，模型读不到明文）。
   const mcpReadonlyHint = el('p', {
     className: 'studio-form-hint',
-    text: '出于安全考虑，MCP 配置的明文（命令、参数、环境变量、URL、Headers）不在聊天页面内显示或编辑。请到工作台中查看与修改。',
+    text: '出于安全考虑，MCP 配置的明文（命令、参数、环境变量、URL、Headers）不在聊天页面内显示或编辑。请到工作台中查看与修改。启用开关可直接操作（不落明文，走宿主掩码通道）。',
   });
   const mcpAddBtn = el('button', { className: 'studio-mcp-add-btn' }, [icon(Icons.settings, 16), el('span', { text: '去工作台编辑' })]);
   mcpAddBtn.addEventListener('click', () => { openMcpSettings(); });
@@ -367,8 +369,33 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
       viewBtn.addEventListener('click', () => globalEvents.emit('ui:mcp-view', serverId));
       const workbenchBtn = el('button', { className: 'studio-btn sm' }, [icon(Icons.settings, 12), el('span', { text: '去工作台编辑' })]);
       workbenchBtn.addEventListener('click', () => { openMcpSettings(); });
+      // ㊿-c-补③：启用开关——行内唯一写操作（走宿主 `mcp.enabled.set` 掩码通道，
+      // 明文凭据不流经聊天页 JS）。状态以 `mcp.listAll`（管理面全量＋`enabled`）回显为准，
+      // 缺键＝启用（`cfg?.enabled ?? true`）。点击先调宿主：**成功才刷新回显**（重拉
+      // `mcp.listAll`，真源在宿主），失败保持原态（不假亮）＋行级可见报错（同技能面板
+      // toggleHint 范式，独立类名不占 `.studio-form-hint` 的 sweep 用例）。
+      const rowHint = el('div', { className: 'studio-mcp-toggle-hint', style: { color: '#c0392b' } });
+      rowHint.hidden = true;
+      let isOn = cfg?.enabled ?? true;
+      const toggle = el('div', { className: `studio-switch${isOn ? ' on' : ''}` });
+      toggle.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const next = !isOn;
+        const r = await callHostTool('mcp.enabled.set', { id: serverId, enabled: next });
+        if (r.ok) {
+          rowHint.hidden = true;
+          await loadMcp(); // 成功才以宿主真源刷新（工具面热重载已在宿主侧完成）
+        } else {
+          // fail-visible：不假亮，开关保持原态，报错挂在行内。
+          rowHint.textContent = `MCP 开关设置失败（${serverId}）：${r.error ?? '未知错误'}`;
+          rowHint.hidden = false;
+        }
+      });
+      actions.appendChild(toggle);
       actions.appendChild(viewBtn);
       actions.appendChild(workbenchBtn);
+      // hint 挂进 info（cmd 行下方）：item 是单行 flex（space-between），挂 item 会顶行。
+      item.querySelector('.studio-mcp-server-info')!.appendChild(rowHint);
       mcpServerList.appendChild(item);
     }
   }
@@ -757,13 +784,14 @@ export function createSettingsPanel(options: StudioSettingsPanelOptions = {}): S
   void fillPathRows().catch(() => { /* unreachable：内部 try/catch 已兜底 */ });
 
   async function loadMcp(): Promise<void> {
-    // 单独再拉一次带 configs 的列表（settings.get 只给 id 列表）。
+    // ㊿-c-补③：吃 `mcp.listAll`（管理面全量＋每枚 `enabled`，掩码真源）——**不得**用模型面
+    // `mcp.list`（enabled-only）：禁用台从面板消失后就没有那一行可点回开（死锁）。
     try {
-      const mcp = await callHostTool('mcp.list', {});
+      const mcp = await callHostTool('mcp.listAll', {});
       if (mcp.ok && mcp.data) {
         const md = mcp.data as {
           servers?: string[];
-          configs?: Array<{ id: string; transport: 'stdio' | 'http' | 'sse'; url?: string; command?: string; args?: string[] }>;
+          configs?: Array<{ id: string; transport: 'stdio' | 'http' | 'sse'; url?: string; command?: string; args?: string[]; enabled?: boolean }>;
         };
         if (Array.isArray(md.servers)) globalState.mcpServers = [...md.servers];
         if (Array.isArray(md.configs)) globalState.mcpConfigs = md.configs;

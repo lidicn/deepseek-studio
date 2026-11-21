@@ -67,9 +67,16 @@ describe('① 策略层读 config.cwd（行为级）', () => {
   });
 });
 
-/** 取 `'tool.name': {` 到下一个同类 handler 键之间的实现片段（锁的射程＝所属处理段）。 */
+/**
+ * 取 `'tool.name': {` 到下一个同类 handler 键之间的实现片段（锁的射程＝所属处理段）。
+ *
+ * 2026-11-21（群PM 同族修）：键名正则放宽到**三段式**（`[a-zA-Z]+\.[a-zA-Z.]+`）。
+ * 同族根因见 `mcp-remove-config-path.test.ts` 的同名函数注释：两段式正则不认
+ * `mcp.enabled.set` 等三段式 tool id ⇒ 切片边界被吞、下一段实现被并入本段。
+ * 本文件当前切的 `mcp.call` 尚未被波及，但同族口径一并对齐（预防性）。
+ */
 function handlerSlice(src: string, tool: string): string {
-  const keyRe = /^[ \t]*'([a-zA-Z]+\.[a-zA-Z]+)':\s*\{/gm;
+  const keyRe = /^[ \t]*'([a-zA-Z]+\.[a-zA-Z.]+)':\s*\{/gm;
   const marks: { idx: number; name: string }[] = [];
   let mm: RegExpExecArray | null;
   while ((mm = keyRe.exec(src)) !== null) marks.push({ idx: mm.index, name: mm[1] });

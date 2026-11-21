@@ -412,6 +412,11 @@ html.is-mobile .workbench-layout.is-compact .inspector-drawer { width: min(320px
   font-size: 11px; padding: 1px 6px; border-radius: 999px;
   background: var(--studio-primary-soft); color: var(--studio-primary-fill);
 }
+/* ㊿-c-补（2026-11-21）：「已禁用」标——仅显式 `enabled === false` 挂标，缺键＝启用不挂 */
+.mcp-editor-item-disabled {
+  font-size: 11px; padding: 1px 6px; border-radius: 999px;
+  background: rgba(224, 94, 94, 0.14); color: var(--studio-danger);
+}
 .mcp-editor-item-target {
   font-size: 12px; color: var(--studio-text-secondary); margin-top: 2px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -429,6 +434,11 @@ html.is-mobile .workbench-layout.is-compact .inspector-drawer { width: min(320px
 }
 .mcp-editor-field { display: flex; flex-direction: column; gap: 4px; }
 .mcp-editor-label { font-size: 12px; color: var(--studio-text-secondary); }
+/* ㊿-c-补：「启用」checkbox 行（checkbox＋文案同一 label 内横排） */
+.mcp-editor-label-inline { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.mcp-editor-label-inline input[type="checkbox"] {
+  width: 15px; height: 15px; accent-color: var(--studio-primary-fill);
+}
 .mcp-editor-input, .mcp-editor-textarea {
   font-family: inherit; font-size: 13px; color: var(--studio-text-primary);
   background: var(--studio-bg-subtle); border: 1px solid var(--studio-border);

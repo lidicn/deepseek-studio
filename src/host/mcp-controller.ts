@@ -1665,6 +1665,45 @@ export class McpController {
     }
   }
 
+  /**
+   * ㊿-c-补（2026-11-21）：只翻一台服务器的 `enabled` 键（聊天页面板开关的落盘口）。
+   *
+   * ── 为什么必须走本方法、而不是让页端走管理面 PUT ──
+   * `mcp-servers.json` 里躺着 `env` / `headers` 的**明文凭据**，而聊天页面板与站点 JS
+   * 同 world：走 PUT 就得把整条配置（含凭据）送进页端、再原样送回来，多两次暴露面
+   * 且多一条「掩码值被写回」的毁配置路径。本方法在宿主进程内读盘值、只改一枚键。
+   *
+   * ── 写通道唯一（PM 2026-11-21 卡面裁定）──
+   * 落盘一律复用 `saveServer`（原子写 ＋ 断连旧连接 ＋ 统一嵌套式），**不另开裸写**：
+   * `mcp-servers.json` 是凭据文件，第二条写通道＝第二套失败语义。代价是该通道会把文件
+   * 按 `JSON.stringify(..., null, 2)` 重排——本仓所有写入方都产这个形态，所以**其余字段
+   * 的字节不变**；若用户用外部工具手写成别的缩进，重排会发生但**值一个不动**（与 PUT
+   * 管理面同口径、同一条通道，不新增风险面）。
+   *
+   * ── 两态口径（卡面增补）──
+   * - 缺 `enabled` 键的台 + `enabled:true`：**成功但无写动作**（缺键本来就＝启用，
+   *   写一枚 `true` 只是多一行噪音，与 `isServerEnabled` 的缺省语义完全等价）；
+   * - 缺键台 + `enabled:false`：正常落盘（写 `enabled:false`）；
+   * - 已是目标态：幂等返回 `ok`，不碰盘（避免无意义 mtime 漂移触发全表热重载）。
+   *
+   * 找不到该 id 时回 `mcp-server-not-found: <id>`（与 `mcp-server-disabled:` 同族前缀）。
+   */
+  setServerEnabled(serverId: string, enabled: boolean): { ok: boolean; error?: string } {
+    // 读盘用**可区分失败**的那一枚（不是 loadMcpServers 的「失败折成 {}」）：
+    // 配置损坏时必须回 `config-corrupt`，不能折成「这台不存在」——两者对用户是
+    // 完全不同的处置（一台没配 vs 配置文件坏了）。这条也顺带避开内存态陈旧：
+    // 直接取盘上现值（saveServer 的读取面同样以盘为准）。
+    const state = loadMcpServersState(this.configPath);
+    if (!state.ok) return { ok: false, error: state.error };
+    const current = state.servers[serverId];
+    if (!current) return { ok: false, error: `mcp-server-not-found: ${serverId}` };
+    if (isServerEnabled(current) === enabled) {
+      // 幂等：目标态已成立 ⇒ 不写盘。调用方（handler）仍会 reload，语义无害。
+      return { ok: true };
+    }
+    return this.saveServer(serverId, { ...current, enabled });
+  }
+
   /** 保存 MCP 服务器配置到磁盘 */
   saveServer(serverId: string, config: McpServerConfig): { ok: boolean; error?: string } {
     try {

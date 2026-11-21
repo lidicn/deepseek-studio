@@ -473,6 +473,9 @@ export interface StudioSkillDescriptor {
   readonly name: string;
   readonly description: string;
   readonly skillMdPath: string;
+  /** ㊿-c② 注入半：宿主 skill.list 回带的启用态（缺省＝启用）。selectExplicitSkills 据此过滤，
+   *  被禁用技能即便被点名也不注入（关⇒注入消失）。 */
+  readonly enabled?: boolean;
 }
 
 // v1.9：技能列表缓存（启动时从宿主 skill.list 拉取，注入提示词，让 agent 知道有哪些技能、SKILL.md 在哪）。
@@ -1556,6 +1559,9 @@ export function selectExplicitSkills(
   const text = taskText.trim();
   if (!text) return [];
   return skills.filter((skill) => {
+    // ㊿-c② 注入半：被禁用技能（enabled===false）即便被点名也不注入（关⇒注入消失）。
+    // enabled 缺省（旧数据无该字段）＝启用，不误伤既有夹具。
+    if (skill.enabled === false) return false;
     if (explicitSlashSkillRe(skill.id).test(text)) return true;
     const terms = [...new Set([skill.id, skill.name].filter((term) => term.trim().length > 0))];
     return terms.some((term) => explicitSkillTokenRe(term).test(text));

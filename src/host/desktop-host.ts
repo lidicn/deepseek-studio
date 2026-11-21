@@ -907,6 +907,43 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             };
           },
         },
+        // ㊿-c-补（2026-11-21，PM 卡面增补）：聊天页 MCP 面板的**全量回显**数据源（UI-only）。
+        //
+        // 为什么必须有它：模型面 `mcp.list` 已改走 `listEnabledServerIds()`——禁用台从它
+        // 消失，面板若吃 `mcp.list`，禁用后就再没有那一行可点回开（死锁）。
+        //
+        // 为什么不让聊天页直连管理面 `GET /v1/mcp/servers`：那条是 Bearer 闸后的**明文面**
+        // （`env`/`headers` 原值、给工作台编辑窗用），聊天页 JS 与站点同 world ⇒ 绝不能
+        // 让 Bearer 进它的可达面。本工具走 WS 这条**掩码面**：`toMcpServerSummary` 同一真源
+        // （`url` userinfo/查询参数与 `args` 凭据参数掩码），**结构上就不含 `env`/`headers`**。
+        //
+        // `tools` 仍来自 `getAllTools()`（enabled-only）⇒ 禁用台 toolCount 天然 0，
+        // 不会因为「列出来」就把禁用的工具名喂出去。
+        // ⚠️ 模型面 `mcp.list` 一字不动：不给它加 `includeDisabled` 之类开关（那等于给模型面开后门）。
+        'mcp.listAll': {
+          id: 'mcp.listAll',
+          async execute(): Promise<ExecuteResult> {
+            const controller = getMcpController();
+            // 全量（含禁用台）：管理面/设置面同源决策见 `listEnabledServerIds` 的注释。
+            const serverIds = controller.listServerIds();
+            const tools = await controller.getAllTools();
+            const toolCountByServer = new Map<string, number>();
+            for (const t of tools) {
+              toolCountByServer.set(t.serverId, (toolCountByServer.get(t.serverId) ?? 0) + 1);
+            }
+            const configs = serverIds.map((id) =>
+              toMcpServerSummary(id, controller.getServerConfig(id), toolCountByServer.get(id) ?? 0),
+            );
+            return {
+              ok: true,
+              data: {
+                servers: serverIds,
+                configs,
+                tools: tools.map((t) => ({ serverId: t.serverId, name: t.name, description: t.description })),
+              },
+            };
+          },
+        },
         // v1.9：读取单台 MCP 服务器完整配置（编辑弹窗回填）。
         // C1 P1 安全批 R2-02：**敏感值掩码** + 档位改 `always`。
         //
@@ -1017,6 +1054,34 @@ export function createDesktopHost(options: DesktopHostOptions): DesktopHost {
             const result = removeMcpServer(serverId, controller.configFilePath);
             if (result.ok) controller.reload();
             return result.ok ? { ok: true } : { ok: false, error: result.error };
+          },
+        },
+        // ㊿-c-补（2026-11-21）：MCP per-server 开关的**轻量落盘口**（仅页端 UI 可调）。
+        //
+        // 与 `mcp.save` / 管理面 `PUT /v1/mcp/servers/:id` 的分工：
+        //   - PUT / mcp.save 是**整条配置**写（编辑表单用），body 里带 env/headers；
+        //   - 本工具只带 `{id, enabled}`，宿主自己从盘上取原值、只翻那一枚键。
+        // 为什么不能复用 PUT：聊天页面板与站点 JS 同 world，走 PUT 就得把明文凭据
+        // 送进页端再送回来（`mcp-servers.json` 的 env/headers 是真凭据）⇒ 多两次暴露面，
+        // 还多一条「掩码占位被写回」的毁配置路径。
+        //
+        // 写通道唯一：落盘走 `McpController#setServerEnabled` → 内部复用 `saveServer`
+        // （原子写 ＋ 断连旧连接），不新开第二条裸写路径（PM 卡面裁定）。
+        // 成功后 reload ⇒ 模型面 `mcp.list` / `getAllTools` / `mcp.call` 立即生效。
+        'mcp.enabled.set': {
+          id: 'mcp.enabled.set',
+          async execute(params: Record<string, unknown>): Promise<ExecuteResult> {
+            const id = typeof params.id === 'string' ? params.id.trim() : '';
+            if (!id) return { ok: false, error: 'missing-argument: id is required' };
+            if (typeof params.enabled !== 'boolean') {
+              return { ok: false, error: 'missing-argument: enabled (boolean) is required' };
+            }
+            const controller = getMcpController();
+            const result = controller.setServerEnabled(id, params.enabled);
+            if (!result.ok) return { ok: false, error: result.error ?? 'mcp-enabled-persist-failed' };
+            // 与 PUT 管理面同款：写成功后重载（断连被改的那台 + 刷新内存态与 mtime）。
+            controller.reload();
+            return { ok: true, data: { id, enabled: params.enabled } };
           },
         },
         // v1.1：归档记忆（M10-5：由硬删改为软删 invalidate，可经「已归档」恢复）。

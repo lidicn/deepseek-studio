@@ -63,6 +63,7 @@ const panelStyles = `
   }
   .studio-skills-footer .studio-btn { flex: 1; justify-content: center; }
   .studio-empty-state { text-align: center; padding: 40px 20px; color: #aaa; font-size: 13px; }
+  .studio-skill-toggle-hint { font-size: 12px; color: #d9534f; margin: 0 0 8px; }
 `;
 
 export function createSkillsPanel(): { container: HTMLElement; open: () => void; close: () => void } {
@@ -100,6 +101,13 @@ export function createSkillsPanel(): { container: HTMLElement; open: () => void;
   searchBox.appendChild(searchIcon);
   searchBox.appendChild(searchInput);
   body.appendChild(searchBox);
+
+  // ㊿-c-补②：开关落盘失败的可见报错（fail-visible，不假亮）——置顶列表，任一行开关失败都看得见。
+  // 用独立类名（不占 `.studio-form-hint`）：该选择器被 ui-dead-event-sweep 的「打开目录失败」
+  // 用例独占（querySelector 取文档序第一枚），共用会把它抢走打错元素。
+  const toggleHint = el('p', { className: 'studio-skill-toggle-hint' });
+  toggleHint.hidden = true;
+  body.appendChild(toggleHint);
 
   // Skill list
   const skillList = el('div', { className: 'studio-skill-list' });
@@ -151,10 +159,12 @@ export function createSkillsPanel(): { container: HTMLElement; open: () => void;
     try {
       const result = await callHostTool('skill.list', {});
       if (result.ok && result.data) {
-        const data = result.data as { dir?: string; skills: Array<{ id: string; name: string; description: string; skillMdPath: string }> };
+        const data = result.data as { dir?: string; skills: Array<{ id: string; name: string; description: string; skillMdPath: string; enabled?: boolean }> };
         if (typeof data.dir === 'string' && data.dir) skillsDir = data.dir;
         const list = data.skills ?? [];
-        skills = list.map((s) => ({ ...s, enabled: true }));
+        // ㊿-c-补②：删硬编码 enabled:true（原 L157 把宿主返回的真 enabled 丢掉，开关恒假亮）。
+        // 用宿主真值；缺省（旧数据无 enabled 字段）回 true＝全开，与宿主「缺省全开」同口径。
+        skills = list.map((s) => ({ ...s, enabled: s.enabled ?? true }));
         globalState.skills = list;
       }
     } catch {
@@ -206,10 +216,21 @@ export function createSkillsPanel(): { container: HTMLElement; open: () => void;
       skillInfo.appendChild(nameEl);
       skillInfo.appendChild(descEl);
       const toggle = el('div', { className: `studio-switch${skill.enabled ? ' on' : ''}` });
-      toggle.addEventListener('click', (e) => {
+      toggle.addEventListener('click', async (e) => {
         e.stopPropagation();
-        skill.enabled = !skill.enabled;
-        toggle.classList.toggle('on', skill.enabled);
+        // ㊿-c-补②：点击必须落盘＋调宿主（原实现只翻内存＋改 class，是假开关：刷新即回弹、
+        // 注入面也看不到）。先调宿主，**成功才更新本地态＋亮灯**（落盘成功后才更新本地态）；
+        // 失败保持原态（不假亮）＋可见报错（fail-visible，同 879e7ac 范式）。
+        const next = !skill.enabled;
+        const r = await callHostTool('skill.enabled.set', { id: skill.id, enabled: next });
+        if (r.ok) {
+          skill.enabled = next;
+          toggle.classList.toggle('on', next);
+          toggleHint.hidden = true;
+        } else {
+          toggleHint.textContent = `技能开关设置失败（${skill.name}）：${r.error ?? '未知错误'}`;
+          toggleHint.hidden = false;
+        }
       });
       cardHeader.appendChild(skillIcon);
       cardHeader.appendChild(skillInfo);

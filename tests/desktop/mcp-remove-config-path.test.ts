@@ -73,9 +73,21 @@ afterAll(() => {
   }
 });
 
-/** 取 `'tool.name': {` 到**下一个**同类 handler 键之间的实现片段。 */
+/**
+ * 取 `'tool.name': {` 到**下一个**同类 handler 键之间的实现片段。
+ *
+ * 2026-11-21（群PM 修）：键名正则放宽到**三段式**（`[a-zA-Z]+\.[a-zA-Z.]+`）。
+ *
+ * 为什么必须改（㊿-c-补批次坐实）：原正则 `[a-zA-Z]+\.[a-zA-Z]+` **只认两段式**
+ * tool id ⇒ 仓内真实存在的三段式 tool id（`skill.enabled.set`／`skill.dir.set`／
+ * `mcp.enabled.set`／`consent.whitelist.list`／`consent.whitelist.revoke`）**不被识别为
+ * handler 边界** ⇒ 切 `mcp.remove` 时，下一个边界被跳过、`mcp.enabled.set` 整段被并进
+ * `mcp.remove` 的切片 ⇒ 「同一 handler 里只应取一次单例」误数成 2 次（假红）。
+ *
+ * 判据一字未动：放宽的是**切片边界**，不是断言强度；`take_calls` 仍必须＝1。
+ */
 function handlerSlice(src: string, tool: string): string {
-  const keyRe = /^[ \t]*'([a-zA-Z]+\.[a-zA-Z]+)':\s*\{/gm;
+  const keyRe = /^[ \t]*'([a-zA-Z]+\.[a-zA-Z.]+)':\s*\{/gm;
   const marks: { idx: number; name: string }[] = [];
   let mm: RegExpExecArray | null;
   while ((mm = keyRe.exec(src)) !== null) marks.push({ idx: mm.index, name: mm[1] });
