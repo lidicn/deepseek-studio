@@ -648,6 +648,144 @@ async function awaitSkillsRefreshBudget(limitMs = SKILLS_WAIT_BUDGET_MS): Promis
   await raceBudget(pending, limitMs);
 }
 
+// ── ㊿-c-补⑤（2026-11-23）：MCP 工具清单运行期新鲜度（技能侧机制同构搬运，PM 卡）──
+//
+// 根因：`mcp.list` 只在启动 IIFE（下方 `mcp-tools-init` 段）里拉一次，之后
+// `currentMcpTools` 永不刷新。出资人关掉全部 MCP 服务器后，注入提示词仍带着
+// 被关服务器的工具 ⇒ 模型答「有这些 MCP 工具」，与设置矛盾。技能侧已有同族机制
+// （TTL＋发送点 kick＋打字预热＋in-flight 复用），这里给 MCP 工具清单做同构一套：
+//   - TTL 内复用缓存，不额外发请求；
+//   - 过期后在 chat 发送点拉一次（≤150ms 预算），超时用旧清单继续发，不阻塞；
+//   - 并发发送复用同一 in-flight，同一时刻最多一个 mcp.list 在飞；
+//   - **成功才更新**（`r.ok && Array.isArray(tools)`，**含空清单**——全关后
+//     `tools: []` 必须落缓存，`formatMcpToolsBlock` 对空清单输出 '' ⇒ 注入块消失）；
+//     失败保留旧清单、不抛、不假清空，记一条诊断（对齐 skillsLastError 写法）；
+//   - 时钟用 performance.now() 单调时钟（对齐技能侧 skillsClock 的理由）。
+// 启动期首拉 IIFE 一字不动：它负责「宿主没就绪时重试到就绪」，运行期刷新接在
+// 同一枚 `currentMcpTools` 状态变量上，不留两套清单。
+const MCP_TOOLS_TTL_MS = 5_000;
+const MCP_WAIT_BUDGET_MS = 150;
+const MCP_PREWARM_IDLE_MS = 600;
+const MCP_PREWARM_COOLDOWN_MS = 2_000;
+const defaultMcpToolsClock = (): number => (
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()
+);
+let mcpToolsClock: () => number = defaultMcpToolsClock;
+/** 最近一次成功拉取的时间戳；-Infinity 表示从未成功。 */
+let mcpToolsFreshAt = Number.NEGATIVE_INFINITY;
+/** 在飞刷新；并发发送复用同一个，避免同一时刻发多条 mcp.list。 */
+let mcpToolsRefreshInFlight: Promise<boolean> | null = null;
+/** 在飞刷新是否值得让 chat 发送等待：启动期首拉不阻塞页面首个请求。 */
+let mcpToolsRefreshWaitable = false;
+/** 当前安装实例的 sender（运行期刷新用；启动 IIFE 直接闭包 sender，两者写同一状态变量）。 */
+let mcpToolsRefreshSender: ToolCallSender | null = null;
+/** 最近一次拉取失败的原因（只用于诊断日志，真机排查靠它）。 */
+let mcpToolsLastError: string | null = null;
+/** 打字预热的排队定时器（同一静默窗口只排一次）。 */
+let mcpPrewarmTimer: ReturnType<typeof setTimeout> | null = null;
+/** 最近一次预热真正发起的时间（冷却用，避免连续打字反复拉）。 */
+let mcpPrewarmLastAt = Number.NEGATIVE_INFINITY;
+
+/** 测试用：覆盖 MCP 工具新鲜度时钟（默认 performance.now 单调时钟）。传 null 恢复。 */
+export function __setMcpToolsFreshnessClockForTests(clock: (() => number) | null): void {
+  mcpToolsClock = clock ?? defaultMcpToolsClock;
+}
+
+/** 测试用：重置 MCP 工具新鲜度状态，避免同文件多个用例互相污染。 */
+export function __resetMcpToolsFreshnessForTests(): void {
+  mcpToolsClock = defaultMcpToolsClock;
+  mcpToolsFreshAt = Number.NEGATIVE_INFINITY;
+  mcpToolsRefreshInFlight = null;
+  mcpToolsRefreshWaitable = false;
+  mcpToolsRefreshSender = null;
+  mcpToolsLastError = null;
+  if (mcpPrewarmTimer !== null) {
+    clearTimeout(mcpPrewarmTimer);
+    mcpPrewarmTimer = null;
+  }
+  mcpPrewarmLastAt = Number.NEGATIVE_INFINITY;
+}
+
+function isMcpToolsFresh(): boolean {
+  // 从未成功拉过（-Infinity）判**新鲜**：启动期首拉归下方 IIFE（重试到宿主就绪），
+  // 首轮 chat 发送不 kick——首轮保持即时发送路径（响应钩子同步安装；若首轮被有界等待
+  // 拖进延迟发送，同步 respond 的测试/页面时序会丢响应，turn-serial-dispatch 族即此形）。
+  // 代价：宿主启动期不可达、IIFE 十次全败的世界，MCP 清单要等下一次 reload 才补拉
+  // （技能侧 -Infinity 判过期、会随后续发送补拉；此角落若真机咬到，翻回即可）。
+  if (mcpToolsFreshAt === Number.NEGATIVE_INFINITY) return true;
+  return mcpToolsClock() - mcpToolsFreshAt < MCP_TOOLS_TTL_MS;
+}
+
+/**
+ * 单次拉取 MCP 工具清单：成功更新缓存与时间戳（**含空清单**）；失败保留旧清单、不抛。
+ * 已有 in-flight 时直接复用（并发发送只发一次）。
+ */
+function refreshMcpToolsOnce(waitable: boolean): Promise<boolean> {
+  if (mcpToolsRefreshInFlight) return mcpToolsRefreshInFlight;
+  const sender = mcpToolsRefreshSender;
+  if (!sender) return Promise.resolve(false);
+  const task = (async (): Promise<boolean> => {
+    try {
+      const r = await sender({ callId: 'mcp-tools-refresh', invocationName: 'mcp.list', params: {} });
+      if (r.ok && r.data && Array.isArray((r.data as { tools?: unknown[] }).tools)) {
+        currentMcpTools = (r.data as { tools: Array<{ serverId: string; name: string; description: string }> }).tools;
+        mcpToolsFreshAt = mcpToolsClock();
+        mcpToolsLastError = null;
+        return true;
+      }
+      mcpToolsLastError = `ok=${r.ok} error=${r.error ?? 'none'}`;
+      // 对齐 skillsLastError 写法：失败原因留痕供真机排查（本模块 console 先例见 delayed xhr 段）。
+      // eslint-disable-next-line no-console
+      console.debug(`[interceptor] mcp tools refresh failed: ${mcpToolsLastError}`);
+      return false;
+    } catch (e) {
+      // 拉取失败不抛：保留旧清单，下一次发送再试。
+      mcpToolsLastError = e instanceof Error ? e.message : String(e);
+      // eslint-disable-next-line no-console
+      console.debug(`[interceptor] mcp tools refresh failed: ${mcpToolsLastError}`);
+      return false;
+    }
+  })();
+  mcpToolsRefreshWaitable = waitable;
+  mcpToolsRefreshInFlight = task;
+  void task.then(() => {
+    if (mcpToolsRefreshInFlight === task) {
+      mcpToolsRefreshInFlight = null;
+      mcpToolsRefreshWaitable = false;
+    }
+  });
+  return task;
+}
+
+/**
+ * 新鲜度不足时启动刷新；TTL 内直接跳过，已有 in-flight 直接复用。
+ * 返回「值得等待」的 promise；不值得等待（如启动期首拉标记）时返回 null。
+ */
+function kickMcpToolsRefresh(): Promise<boolean> | null {
+  if (isMcpToolsFresh()) return null;
+  if (mcpToolsRefreshInFlight) return mcpToolsRefreshWaitable ? mcpToolsRefreshInFlight : null;
+  return refreshMcpToolsOnce(true);
+}
+
+/**
+ * 打字预热排队：输入停顿 MCP_PREWARM_IDLE_MS 后异步拉一次工具清单。
+ * 约束与技能侧同款：不阻塞输入、同一静默窗口只排一次、冷却内不重复拉、
+ * 到期已新鲜就不拉、失败静默（发送点的 150ms 兜底照旧）。
+ */
+function scheduleMcpToolsPrewarm(): void {
+  if (mcpPrewarmTimer !== null) return;
+  if (mcpToolsClock() - mcpPrewarmLastAt < MCP_PREWARM_COOLDOWN_MS) return;
+  mcpPrewarmTimer = setTimeout(() => {
+    mcpPrewarmTimer = null;
+    if (!mcpToolsRefreshSender) return;
+    if (isMcpToolsFresh()) return;
+    mcpPrewarmLastAt = mcpToolsClock();
+    void kickMcpToolsRefresh();
+  }, MCP_PREWARM_IDLE_MS);
+}
+
 // v1.3：步骤流 UI 句柄（分布思考状态栏 + 工具分组）
 let stepFlow: StepFlowHandle | null = null;
 let stepFlowStep = 0;
@@ -2362,7 +2500,9 @@ function installXhrHooks(
     const memoryNeedsWait = pendingSel !== null && !pendingSel.settled && !pendingSel.timedOut;
     // 首轮原样重发不刷新：重发必须逐字节幂等，刷新只会引入新的注入窗口。
     const skillsWait = isChat && !loopState?.inFirstAttemptResend ? kickSkillsRefresh() : null;
-    if (memoryNeedsWait || skillsWait) {
+    // ㊿-c-补⑤：MCP 工具清单同款发送点 kick（与技能 kick 同一处；首轮重发同样跳过）。
+    const mcpWait = isChat && !loopState?.inFirstAttemptResend ? kickMcpToolsRefresh() : null;
+    if (memoryNeedsWait || skillsWait || mcpWait) {
       let settled = false;
       /**
        * 记忆消费**只做一次**，结果由两条路径共享：
@@ -2441,7 +2581,11 @@ function installXhrHooks(
       const skillsPromise = skillsWait
         ? raceBudget(skillsWait, SKILLS_WAIT_BUDGET_MS).then(() => undefined)
         : Promise.resolve();
-      void Promise.all([consumePromise, skillsPromise]).then(() => doDelayedSend());
+      // ㊿-c-补⑤：MCP 工具刷新同款有界（150ms，与技能预算一致）；超时用旧清单继续发。
+      const mcpPromise = mcpWait
+        ? raceBudget(mcpWait, MCP_WAIT_BUDGET_MS).then(() => undefined)
+        : Promise.resolve();
+      void Promise.all([consumePromise, skillsPromise, mcpPromise]).then(() => doDelayedSend());
       // proto.send 同步返回 void；origSend 将在预算到期后或依赖就绪后执行。
       return void 0;
     }
@@ -2762,6 +2906,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   }
   // P0：启动加载与运行期刷新共用同一个 sender，避免两套 skill.list 拉取逻辑。
   skillsRefreshSender = sender;
+  // ㊿-c-补⑤：MCP 工具清单运行期刷新同接这一个 sender（启动 IIFE 另走闭包，写同一状态变量）。
+  mcpToolsRefreshSender = sender;
   const pending: PendingResult[] = [];
   const d: InterceptorDiag = diag ?? (() => {});
   // v1.0：从全局变量读取初始记忆（entry.ts 在连接建立时设置）
@@ -4008,10 +4154,22 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
         const r = await sender({ callId: 'mcp-tools-init', invocationName: 'mcp.list', params: {} });
         if (r.ok && r.data && Array.isArray((r.data as { tools?: unknown[] }).tools) && (r.data as { tools: unknown[] }).tools.length > 0) {
           currentMcpTools = (r.data as { tools: Array<{ serverId: string; name: string; description: string }> }).tools;
+          // ㊿-c-补⑤：首拉成功接上共享新鲜度时间戳（TTL 内复用判据的起点；
+          // 运行期刷新与启动首拉写同一组状态变量，不留两套清单）。重试结构一字未动。
+          mcpToolsFreshAt = mcpToolsClock();
+          mcpToolsLastError = null;
           d(`loaded ${currentMcpTools.length} MCP tools for prompt injection (attempt ${attempt + 1})`);
           return;
         }
         d(`mcp tools load attempt ${attempt + 1} failed: ok=${r.ok} error=${r.error ?? 'none'} tools=${r.data ? (r.data as { tools?: unknown[] }).tools?.length ?? 0 : 0}`);
+        if (r.ok && r.data && Array.isArray((r.data as { tools?: unknown[] }).tools)) {
+          // ㊿-c-补⑤：宿主可达且清单形态正常（**哪怕空清单**）⇒ 清单是「已知态」，
+          // 戳上共享新鲜度时间戳（TTL 从此起算）：首轮 chat 发送不会多 kick 一次
+          // mcp.list（turn-serial-dispatch 族的同步 respond 时序依赖首轮即时发送）。
+          // 重试循环结构一字未动（仍按旧语义试到非空为止）。
+          mcpToolsFreshAt = mcpToolsClock();
+          mcpToolsLastError = null;
+        }
       } catch (e) {
         d(`mcp tools load attempt ${attempt + 1} error: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -4054,6 +4212,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       // 凭据守卫：密码框不参与预热（不触发 skill.list 刷新）。
       if (isCredentialInput(target)) return;
       scheduleSkillsPrewarm();
+      // ㊿-c-补⑤：MCP 工具清单同监听预热（各自独立的静默窗口＋冷却，不互相挡）。
+      scheduleMcpToolsPrewarm();
     };
     document.addEventListener('input', onInput, true);
     return () => {
@@ -4065,6 +4225,11 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       if (skillsPrewarmTimer !== null) {
         clearTimeout(skillsPrewarmTimer);
         skillsPrewarmTimer = null;
+      }
+      // ㊿-c-补⑤：MCP 预热定时器同清（卸载卫生，与技能侧同款）。
+      if (mcpPrewarmTimer !== null) {
+        clearTimeout(mcpPrewarmTimer);
+        mcpPrewarmTimer = null;
       }
     };
   })();
@@ -4167,6 +4332,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       loopState.abortedByUser = true;
       // P0：卸载后不再用本实例的 sender 发运行期刷新（避免 stop 之后还在拉清单）。
       if (skillsRefreshSender === sender) skillsRefreshSender = null;
+      // ㊿-c-补⑤：MCP 工具清单刷新同理，卸载后不得再发 mcp.list。
+      if (mcpToolsRefreshSender === sender) mcpToolsRefreshSender = null;
     },
   };
 }
