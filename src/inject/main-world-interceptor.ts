@@ -1732,6 +1732,40 @@ function formatSkillsBlock(taskText: string): string {
   return formatExplicitSkillsBlock(taskText, currentSkills);
 }
 
+/**
+ * ㊿-c-补⑦（2026-11-24 出资人实测卡）：「可用技能」提示块。
+ *
+ * 现场：用户问「当前可用的技能有哪些」时模型没有权威来源（显式块只注入
+ * 点名技能、工具目录里有 mcp_list 没有 skill.list）⇒ 用 python_exec 扫盘，
+ * 把 `~/.claude/skills`／`~/.codex/skills`（Studio 从不扫描的约定目录）里的
+ * 10 枚技能当成可用技能报出来，与设置矛盾。
+ *
+ * 本块规则（卡面）：
+ *   - 只列 `enabled !== false` 的技能（与 selectExplicitSkills 同口径：缺键＝启用）；
+ *   - **目录范围声明必须常带**（本卡核心）：技能只认 Studio 管理的
+ *     `~/.agents/skills` 与 `<configDir>/skills`，点名排除 `~/.claude/skills`、
+ *     `~/.codex/skills`——不得扫盘找技能；
+ *   - **无启用技能时不得省略**：显式写「当前没有已启用的技能」
+ *     （省略＝模型又去扫盘，正是本缺陷的形状）；
+ *   - 本块只回答「有哪些可用」；**读取 SKILL.md 仍只在用户明确点名时**
+ *     （selectExplicitSkills 闸门一字不动，两个块各管各的）。
+ */
+export function formatAvailableSkillsBlock(): string {
+  const enabled = currentSkills.filter((s) => s.enabled !== false);
+  const lines = [
+    '## 可用技能（Studio 技能唯一权威清单）',
+    '范围声明：Studio 技能只扫描两个受管目录 `~/.agents/skills` 与 `<configDir>/skills`（Windows 下 `~` 即用户主目录）。其他目录里的 skill（如 `~/.claude/skills`、`~/.codex/skills`——分别是 Claude Code／Codex 的约定目录）不属于 Studio 技能，**不得当作可用技能报告**。回答「有哪些技能可用」以本块为唯一依据，不要用 shell_exec／python_exec 扫盘找技能。',
+  ];
+  if (enabled.length === 0) {
+    lines.push('', '当前没有已启用的技能。');
+  } else {
+    for (const s of enabled) {
+      lines.push(`- ${s.id}（${s.name}）— ${s.description}｜SKILL.md: ${s.skillMdPath}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 /** 导出静态提示模板，供回归测试逐条验证示例标签里的 JSON 可解析。 */
 export function capabilityPromptText(): string {
   return TOOL_CAPABILITY_PROMPT;
@@ -1741,6 +1775,9 @@ export function buildCapabilityPrompt(taskText = ''): string {
   const blocks = [capabilityPromptOverride ?? TOOL_CAPABILITY_PROMPT];
   const mcpBlock = formatMcpToolsBlock(taskText);
   if (mcpBlock) blocks.push(mcpBlock);
+  // ㊿-c-补⑦：「可用技能」块每发送轮都注入（currentSkills 已有 TTL＋预热保鲜），
+  // 且**空清单也注入**（显式「没有已启用的技能」，不得省略——省略＝模型扫盘找技能）。
+  blocks.push(formatAvailableSkillsBlock());
   const skillsBlock = formatSkillsBlock(taskText);
   if (skillsBlock) blocks.push(skillsBlock);
   blocks.push(TOOL_CAPABILITY_END_MARKER);
@@ -1763,6 +1800,15 @@ export function setMcpToolsForTesting(
 /** 当前注入的 MCP 工具清单（只读副本）。 */
 export function mcpToolsForTesting(): ReadonlyArray<{ serverId: string; name: string; description: string }> {
   return currentMcpTools.map((t) => ({ ...t }));
+}
+
+/**
+ * 注入技能清单（测试 / 调试用，同 setMcpToolsForTesting 形态）：
+ * `currentSkills` 是模块级私有缓存，「可用技能」块用例需要直接塞数据，
+ * 不 mock 整个拦截器。传 null 清空。
+ */
+export function setSkillsForTesting(skills: ReadonlyArray<StudioSkillDescriptor> | null): void {
+  currentSkills = skills ? skills.map((s) => ({ ...s })) : [];
 }
 
 /**
