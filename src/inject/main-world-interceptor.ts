@@ -3145,6 +3145,9 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
             ? `duplicate-tool-signature: 同一轮内该签名已重复投递 ${MAX_SIG_REDELIVERIES} 次、全部被折叠；停止重发本调用，首次执行结果见上。`
             : `duplicate-tool-signature: 同一轮（同流）内已执行过同名同参的 ${call.invocationName}，本枚投递被折叠，结果见前一次。`,
           sessionId: loopState.newChatSessionId,
+          // ㊿-c-补⑥：duplicate-tool-signature 是终局码（TERMINAL_FAILURE_CODES），
+          // 重试同一签名不会改变结果 ⇒ 带 terminate，让续跑闸门能吃到 stop 信号。
+          terminate: true,
         };
         pending.push(receipt);
         collectedExecutions.push(receipt);
@@ -3279,6 +3282,11 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
           invocationName: call.invocationName, ok: r.ok, result: r.data, error: r.error, sessionId: sessionAtCall,
           paramsSummary: summarizeToolParams(call.invocationName, call.params),
           durationMs: Date.now() - startedAt,
+          // ㊿-c-补⑥（2026-11-24 出资人实测卡）：terminate 必须随 pr 落进 pending——
+          // 此前只有 UI 卡片（L3301）与 storage 记录拿到，续跑闸门（shouldSkipAutoContinue，
+          // every 语义）读的是 p.terminate，全 undefined ⇒ 恒 false ⇒ 终局拒绝照续跑，
+          // 出资人现场 10 连 memory_save 空转的根因。
+          terminate: r.terminate,
         };
         pending.push(pr);
         collectedExecutions.push(pr);
@@ -3345,7 +3353,19 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     //   - non-terminal ⇒ 不得宣称「已停止／不再重试」（那是循环保护，不是宿主拒绝，问题可能自愈）。
     // 同一 turn 只许发一次可见交代（scheduleAutoContinue 会被同轮多次调用）；
     // 发过之后该轮熔断维持：后续调用静默 return，不再续跑、不再重复挂提示。
-    const fuse = evaluateTerminalFuse(pending);
+    // ㊿-c-补⑥（2026-11-24 出资人实测卡）：判定面从 `pending` 切到**当前轮累积的
+    // collectedExecutions**（过滤口径与续跑 prompt L3693-3697 完全一致）。
+    // 根因：`pending` 在每轮续跑请求发出时被 `pending.length = 0` 清零（L1957），
+    // 而模型一轮常只发一枚 memory_save ⇒ `pending` 桶计数恒为 1，
+    // TERMINAL_FUSE_THRESHOLD=3 永不达，熔断形同虚设。
+    // `collectedExecutions` 跨循环累积、仅在新用户消息时清，才是文档（L356-374）
+    // 写明的「一个 user turn」熔断寿命。
+    const rawCurrentForExec = extractChatSessionIdFromBody(loopState.lastChatBody ?? '');
+    const currentSessionForExec = rawCurrentForExec ? normalizeChatSessionKey(rawCurrentForExec) : undefined;
+    const execForFuse = currentSessionForExec
+      ? collectedExecutions.filter((e) => !e.sessionId || e.sessionId === currentSessionForExec)
+      : collectedExecutions;
+    const fuse = evaluateTerminalFuse(execForFuse);
     if (fuse.fuse) {
       if (!fuseStoppedTurns.has(traceTurnId)) {
         fuseStoppedTurns.add(traceTurnId);
@@ -3386,7 +3406,9 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     }
     // v1.2：terminate 闸门 —— 只有批次内所有工具结果都 terminate===true 才跳过续跑
     // 语义对齐 Pi Agent：terminate 是提示不是强制，混合批次照常续跑，空批次 fail-open
-    const pendingResults = pending.map((p) => p.result as { terminate?: boolean } | undefined);
+    // ㊿-c-补⑥：闸门读 `p.terminate`（pr 构造时从 r.terminate 透传，见 success 支），
+    // 而非 `p.result`（宿主原始 payload）——terminate 是 ExecuteResult 同级字段，不在 data 里。
+    const pendingResults = pending.map((p) => ({ terminate: p.terminate }));
     if (shouldSkipAutoContinue(pendingResults)) {
       console.log('[autoContinue] skipped by terminate');
       // QD-R8-01：terminate 是「循环正常结束」的第三条退出路径。此前直接 return，

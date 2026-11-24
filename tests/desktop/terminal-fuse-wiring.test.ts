@@ -280,3 +280,116 @@ describe('⑨ 熔断接线：低于阈值不得过熔', () => {
     }
   });
 });
+
+/**
+ * ㊿-c-补⑥（2026-11-24 出资人实测卡）：terminate 透传断链＋熔断判定面用错桶。
+ *
+ * 现场（装版 storage.json 会话 739dd0c0491d39c2）：memory_save ×10 每枚
+ * `ok=false err="memory-save-needs-explicit-instruction"` 且宿主已带 `terminate:true`，
+ * 但续跑闸门（shouldSkipAutoContinue，every 语义）拿到的全是 undefined ⇒ 恒 false ⇒
+ * 空转 10 轮，出资人要的 mcp_list 一次没调。两处接线缺陷：
+ *   1. `pr` 构造（success 支）没把 `r.terminate` 落进 `PendingResult`；
+ *   2. 熔断判定面吃 `pending`（每轮 L1957 清零），文档口径是跨轮累积的
+ *      `collectedExecutions`（一个 user turn 的熔断寿命）。
+ *
+ * 三格判据（卡面）：
+ *   ① terminate 透传后单轮全 terminate ⇒ 闸门（shouldSkipAutoContinue）收掉续跑；
+ *   ② 跨轮累积到 3 枚终局拒绝 ⇒ 熔断（判定面吃 collectedExecutions 才能看到跨轮）；
+ *   ③ 跨轮未达 3 且无 terminate ⇒ 不熔断、照常续跑（防误杀）。
+ */
+describe('㊿-c-补⑥ terminate 透传与熔断判定面', () => {
+  it('① 单轮一枚终局拒绝带 terminate ⇒ 闸门收掉续跑（缺陷一直接验证）', async () => {
+    vi.useFakeTimers();
+    // 宿主回 memory_save 终局拒绝且带 terminate:true（withTerminalSignal 已加）——
+    // 注入层必须把它透传到 PendingResult.terminate，闸门（every 语义）才收得掉。
+    const { FakeXHR, handle, chatUI } = installHarness(async () => ({
+      ok: false,
+      error: 'memory-save-needs-explicit-instruction',
+      terminate: true,
+    }));
+    try {
+      // 单轮一枚 memory_save（带 terminate）。
+      fireRound(FakeXHR, 'term-one', sseToolFrame('memory_save', { key: 'k', value: 'v' }) + sseDone());
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      // 闸门（shouldSkipAutoContinue，every）看到整批 terminate ⇒ 跳过续跑：
+      // 没有自动续跑请求（chatRequests 只有用户那一枚），且 trace 记 terminate 决策。
+      expect(chatRequests(FakeXHR)).toHaveLength(1);
+      const evs = lastTurnEvents();
+      expect(evs.some((e) => e.t === 'continuation.decision' && e.reason === 'terminate')).toBe(true);
+      // 可见交代不是 fuse（没到 3 枚终局），而是正常 terminate 收场。
+      expect(appendErrorCalls(chatUI).some((c) => c[0].startsWith('fuse-'))).toBe(false);
+    } finally {
+      handle.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('② 跨续跑轮累积 3 枚同工具终局拒绝 ⇒ 熔断（判定面吃 collectedExecutions）', async () => {
+    vi.useFakeTimers();
+    // 每轮一枚 memory_save 终局拒绝（不带 terminate——靠熔断轴累计，不靠 terminate 闸门），
+    // 跨 3 个续跑轮累积到 TERMINAL_FUSE_THRESHOLD=3。
+    // 关键：`pending` 每轮 L1957 清零，若判定面仍吃 pending，桶计数恒 1、永不熔断；
+    // 切到 collectedExecutions 后跨轮可见 ⇒ 第 3 枚触发 fuse-terminal。
+    const { FakeXHR, handle, chatUI } = installHarness(async () => ({
+      ok: false,
+      error: 'memory-save-needs-explicit-instruction',
+    }));
+    try {
+      // 轮 1：一枚 memory_save。
+      fireRound(FakeXHR, 'fuse-xturn', sseToolFrame('memory_save', { key: 'a', value: '1' }) + sseDone());
+      await vi.advanceTimersByTimeAsync(3_000);
+      // 续跑轮 2、轮 3 各再一枚（同工具同终局码，不同参 ⇒ 不被 duplicate 折叠）。
+      for (let round = 2; round <= 4; round++) {
+        const open = chatRequests(FakeXHR);
+        const last = open[open.length - 1];
+        if (!last || last.readyState === 4) break;
+        // 续跑请求已被自动发出（未熔断、无 terminate ⇒ 闸门放行）；
+        // 回一帧含 memory_save 终局拒绝的响应，累积到第 3 枚。
+        last.respond(200, sseToolFrame('memory_save', { key: `k${round}`, value: 'x' }) + sseDone());
+        await vi.advanceTimersByTimeAsync(3_000);
+      }
+      // 第 3 枚终局拒绝后：fuse-terminal 可见交代挂出（跨轮累积 3 枚达成阈值）。
+      const calls = appendErrorCalls(chatUI);
+      const fuseTerm = calls.find((c) => c[0] === 'fuse-terminal');
+      expect(fuseTerm).toBeDefined();
+      expect(fuseTerm![1]).toContain('memory_save');
+      expect(fuseTerm![1]).toContain('这条不会再重试');
+      // 熔断后不再发续跑：chat 请求数封顶（用户 1 + 续跑 2 = 3，第 3 枚拒绝后熔断停）。
+      expect(chatRequests(FakeXHR).length).toBeLessThanOrEqual(4);
+      const evs = lastTurnEvents();
+      expect(evs.some((e) => e.t === 'turn.end' && e.stopReason === 'fuse-terminal')).toBe(true);
+    } finally {
+      handle.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('③ 跨轮累积未达 3 且无 terminate ⇒ 不熔断、照常续跑（防误杀）', async () => {
+    vi.useFakeTimers();
+    // 2 枚同工具终局拒绝（< 3）且不带 terminate ⇒ 既不到熔断阈值、也不走 terminate 闸门。
+    const { FakeXHR, handle, chatUI } = installHarness(async () => ({
+      ok: false,
+      error: 'memory-save-needs-explicit-instruction',
+    }));
+    try {
+      fireRound(FakeXHR, 'fuse-below-x', sseToolFrame('memory_save', { key: 'a', value: '1' }) + sseDone());
+      await vi.advanceTimersByTimeAsync(3_000);
+      // 续跑轮 2：再一枚（累计 2 < 3）。
+      const open = chatRequests(FakeXHR);
+      const last = open[open.length - 1];
+      if (last && last.readyState !== 4) {
+        last.respond(200, sseToolFrame('memory_save', { key: 'b', value: '2' }) + sseDone());
+        await vi.advanceTimersByTimeAsync(3_000);
+      }
+      // 未达阈值 ⇒ 不挂 fuse 交代；且无 terminate ⇒ 闸门放行，续跑照常。
+      expect(appendErrorCalls(chatUI).some((c) => c[0].startsWith('fuse-'))).toBe(false);
+      // 续跑请求已发出（第 2 枚）⇒ 没被误杀。
+      expect(chatRequests(FakeXHR).length).toBeGreaterThanOrEqual(2);
+      expect(lastTurnEvents().some((e) => e.t === 'turn.end' && e.stopReason === 'fuse-terminal')).toBe(false);
+    } finally {
+      handle.stop();
+      vi.useRealTimers();
+    }
+  });
+});
