@@ -77,7 +77,7 @@ function renderCatalogBlock(
   }
   const index = renderCatalogNameIndex(selection.indexOnly);
   if (index) lines.push(index);
-  lines.push('调用方式：<mcp_call>{"serverId":"服务器名","tool":"工具名","args":{...}}</mcp_call>');
+  lines.push('调用方式：<mcp_call>{"serverId":"example","tool":"example","args":{...}}</mcp_call>');
   const text = lines.join('\n');
   // 名字出现性：full 行是 "- name — desc"，名字索引行是 "- name"
   const names = new Set<string>();
@@ -250,7 +250,7 @@ describe('注入瘦身第 1 条：端到端（冷门工具仍可按名字调用�
       // ③ 按名字仍能构造出合法调用：名字 + serverId 都在 prompt 里
       const callTag = /<mcp_call>\{[^}]*"serverId":"([^"]+)"\s*,\s*"tool":"([^"]+)"/.exec(prompt);
       // 调用方式模板本身在 prompt 里（模型照它拼）
-      expect(prompt).toContain('<mcp_call>{"serverId":"服务器名","tool":"工具名","args":{...}}</mcp_call>');
+      expect(prompt).toContain('<mcp_call>{"serverId":"example","tool":"example","args":{...}}</mcp_call>');
       // 冷门工具的 serverId 在 prompt 里（分组标题或索引旁）→ 可定位
       expect(prompt).toContain(cold.serverId);
 

@@ -1551,7 +1551,7 @@ const TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
 - memory_save — 保存长期记忆（仅限用户明确要求时调用），参数：type（user/project）、name、content、tags（可选）、pinned（可选，布尔）
 - python_exec — 执行 Python 代码，参数：code（Python 源代码字符串）
 - mcp_list — 列出已配置的 MCP 服务器及其工具（无参数）
-- mcp_call — 调用 MCP 工具，参数：serverId、tool、args（参数对象）
+- mcp_call — 调用已启用 MCP 服务器上的工具。参数：serverId（设置里已启用的服务器 id，如 tvpilot）、tool（mcp_list 返回的该服务器工具名）、args（该工具入参 JSON 对象）；最小示例 {"serverId":"example","tool":"example","args":{}}
 
 系统会真实执行并把结果返回给你，据此继续。不要臆造路径，不要编造工具结果。`;
 
@@ -1569,7 +1569,7 @@ const TOOL_CATALOG_TEXT = `## 可用工具
 - memory_save — 保存长期记忆（仅限用户明确要求时调用），参数：type（user/project）、name、content、tags（可选）、pinned（可选，布尔）
 - python_exec — 执行 Python 代码，参数：code（Python 源代码字符串）
 - mcp_list — 列出已配置的 MCP 服务器及其工具（无参数）
-- mcp_call — 调用 MCP 工具，参数：serverId、tool、args（参数对象）
+- mcp_call — 调用已启用 MCP 服务器上的工具。参数：serverId（设置里已启用的服务器 id，如 tvpilot）、tool（mcp_list 返回的该服务器工具名）、args（该工具入参 JSON 对象）；最小示例 {"serverId":"example","tool":"example","args":{}}
 
 调用方式：直接输出 XML 标签，标签体内为合法 JSON，如 <shell_exec>{"command":"..."}</shell_exec>`;
 
@@ -1639,7 +1639,7 @@ function formatMcpToolsBlock(taskText = ''): string {
   if (index) {
     lines.push(index);
   }
-  lines.push('调用方式：<mcp_call>{"serverId":"服务器名","tool":"工具名","args":{...}}</mcp_call>');
+  lines.push('调用方式：<mcp_call>{"serverId":"example","tool":"example","args":{...}}</mcp_call>');
   return lines.join('\n');
 }
 
