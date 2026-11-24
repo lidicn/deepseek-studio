@@ -1502,7 +1502,7 @@ const TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
 <local_file_write>{"path":"E:/Users/name/file.txt","content":"要写入的文本"}</local_file_write>
 <local_file_stat>{"path":"E:/Users/name"}</local_file_stat>
 <shell_exec>{"command":"Get-ChildItem -LiteralPath 'E:/Users/name' -File | Sort-Object LastWriteTime -Descending | Select-Object -First 10"}</shell_exec>
-<memory_save>{"type":"user","name":"用户角色","content":"前端开发者，主要使用 React 和 TypeScript","tags":["frontend","React"]}</memory_save>
+<search_files>{"operation":"list","root":"E:/Users/name","limit":10}</search_files>
 <python_exec>{"code":"print('hello')"}</python_exec>
 
 ## 规则
@@ -1529,9 +1529,10 @@ const TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
 以下能力已启用，你可以主动使用来完成用户任务，无需先询问：
 - 本地命令执行（运行 CLI 工具、脚本、文件操作）
 - 本地文件读写（读取、写入、查看文件信息）
-- 长期记忆（保存用户身份、偏好、技术栈、项目决策等跨会话信息）
+- 长期记忆（仅当用户明确说“记住 / 记一下 / 别忘了”时才调用 memory_save；其余情况一律不调用，不要用占位或测试内容试探）
 
 ## 记忆保存规则
+**硬规则：禁止轮首主动调用 memory_save 试探或保存占位/测试内容；没有明确记忆指令时，本轮任何位置都不得调用 memory_save。**
 只有用户明确要求"记住"、"记一下"、"别忘了"，或明确要求保存某条长期偏好/项目决策时，才调用 memory_save。
 不要因为用户只是自我介绍、讨论技术方案或纠正本轮回答就自动保存记忆。
 以下情况可作为候选，但除非用户明确要求，否则只在本轮使用：
@@ -1547,7 +1548,7 @@ const TOOL_CAPABILITY_PROMPT = `${TOOL_CAPABILITY_MARKER}
 - file_edit — 局部改写文件（优先于整文件覆写），参数：path、edits（[{oldString,newString}]）、expectedSha256（可选）、dryRun（可选）
 - search_files — 检索文件/内容，参数：operation（list/grep）、root、query、pattern、regex（可选）、glob（可选）、limit（可选）；operation=grep 时 query 与 pattern 二者必给其一（只给一个）；root 必须是目录（检索单个文件用 local_file_read，或 operation=grep 指向其父目录）
 - shell_exec — 执行命令行，参数：command（单条命令；双引号外不得含 $ ; | > < &）。需要多语句或变量时改用 params.argv 数组（等价于 powershell -NoProfile -Command "<整段脚本>"），例如 {"argv":["powershell","-NoProfile","-Command","<整段脚本>"]}，不要写 PowerShell 脚本串
-- memory_save — 保存长期记忆，参数：type（user/project）、name、content、tags（可选）、pinned（可选，布尔）
+- memory_save — 保存长期记忆（仅限用户明确要求时调用），参数：type（user/project）、name、content、tags（可选）、pinned（可选，布尔）
 - python_exec — 执行 Python 代码，参数：code（Python 源代码字符串）
 - mcp_list — 列出已配置的 MCP 服务器及其工具（无参数）
 - mcp_call — 调用 MCP 工具，参数：serverId、tool、args（参数对象）
@@ -1565,7 +1566,7 @@ const TOOL_CATALOG_TEXT = `## 可用工具
 - file_edit — 局部改写文件（优先于整文件覆写），参数：path、edits（[{oldString,newString}]）、expectedSha256（可选）、dryRun（可选）
 - search_files — 检索文件/内容，参数：operation（list/grep）、root、query、pattern、regex（可选）、glob（可选）、limit（可选）；operation=grep 时 query 与 pattern 二者必给其一（只给一个）；root 必须是目录（检索单个文件用 local_file_read，或 operation=grep 指向其父目录）
 - shell_exec — 执行命令行，参数：command（单条命令；双引号外不得含 $ ; | > < &）。需要多语句或变量时改用 params.argv 数组（等价于 powershell -NoProfile -Command "<整段脚本>"），例如 {"argv":["powershell","-NoProfile","-Command","<整段脚本>"]}，不要写 PowerShell 脚本串
-- memory_save — 保存长期记忆，参数：type（user/project）、name、content、tags（可选）、pinned（可选，布尔）
+- memory_save — 保存长期记忆（仅限用户明确要求时调用），参数：type（user/project）、name、content、tags（可选）、pinned（可选，布尔）
 - python_exec — 执行 Python 代码，参数：code（Python 源代码字符串）
 - mcp_list — 列出已配置的 MCP 服务器及其工具（无参数）
 - mcp_call — 调用 MCP 工具，参数：serverId、tool、args（参数对象）
