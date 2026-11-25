@@ -7,7 +7,9 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   classifyResponse,
   classifySseFrame,
+  composeChallengeMessage,
   composeQuotaWallMessage,
+  detectChallengeRequired,
   detectQuotaWall,
   errorBackoffMs,
   filterReplayableHeaders,
@@ -257,5 +259,71 @@ describe('composeQuotaWallMessage — 额度墙文案三段回退（㊿-c①）'
   it('④ 全无 ⇒ 泛化文案', () => {
     expect(composeQuotaWallMessage(undefined)).toBe('使用额度已用完，请稍后再试。');
     expect(composeQuotaWallMessage({})).toBe('使用额度已用完，请稍后再试。');
+  });
+});
+
+describe('challenge — ㊿-c-补⑩ 40303 CHALLENGE_REQUIRED（200 外壳套确定性人机验证）', () => {
+  // 现场装版 sidecar 原文钉死的挑战形态：外层 code:40303 + msg:CHALLENGE_REQUIRED，
+  // 真信号在 data 层 provider / challenge_id / extras.expected_mode。
+  const challengeBody = JSON.stringify({
+    code: 40303,
+    msg: 'CHALLENGE_REQUIRED',
+    data: {
+      provider: 'shumei',
+      challenge_id: 'bd11a494-0000-4000-8000-000000000000',
+      extras: { expected_mode: 'spatial_select' },
+    },
+  });
+
+  it('① 200 ＋ 40303 挑战体 ⇒ challenge-required（非 ok/retryable），data 层三字段读出', () => {
+    const v = classifyResponse(200, challengeBody);
+    expect(v.verdict).toBe('challenge-required');
+    expect(v.reason).toBe('challenge-required');
+    expect(v.challenge?.provider).toBe('shumei');
+    expect(v.challenge?.challengeId).toBe('bd11a494-0000-4000-8000-000000000000');
+    expect(v.challenge?.expectedMode).toBe('spatial_select');
+  });
+
+  it('② 既有额度墙体 ⇒ 仍 quota-exhausted（挑战判定不抢额度墙的优先级）', () => {
+    const wall = JSON.stringify({
+      code: 0,
+      msg: '',
+      data: { biz_code: 29, quotas: [{ is_exhausted: true, reset_at: 1795107600.0 }] },
+    });
+    expect(classifyResponse(200, wall).verdict).toBe('quota-exhausted');
+  });
+
+  it('③ 正常成功包（code:0 无错误）仍 ok；401/402/403/429/500 语义不变', () => {
+    expect(classifyResponse(200, JSON.stringify({ code: 0 })).verdict).toBe('ok');
+    expect(classifyResponse(200, JSON.stringify({ code: 0, data: {} })).verdict).toBe('ok');
+    expect(classifyResponse(401, null).verdict).toBe('fatal');
+    expect(classifyResponse(402, null).verdict).toBe('fatal');
+    expect(classifyResponse(403, null).verdict).toBe('fatal');
+    expect(classifyResponse(429, null).verdict).toBe('retryable');
+    expect(classifyResponse(500, null).verdict).toBe('retryable');
+  });
+
+  it('detectChallengeRequired 纯函数：命中三条件任一（外层 code/msg/任一层 challenge_id）＋无命中⇒null', () => {
+    // 仅外层 code:40303（无 data）⇒ 命中，读不到三字段 ⇒ 空对象。
+    expect(detectChallengeRequired({ code: 40303 })).toEqual({});
+    // msg:CHALLENGE_REQUIRED ⇒ 命中，data 层 provider 读出。
+    expect(detectChallengeRequired({ code: 0, msg: 'CHALLENGE_REQUIRED', data: { provider: 'shumei' } })).toEqual({ provider: 'shumei' });
+    // 仅任一层有 challenge_id ⇒ 命中。
+    expect(detectChallengeRequired({ code: 0, data: { challenge_id: 'abc' } })).toEqual({ challengeId: 'abc' });
+    // 无命中 ⇒ null。
+    expect(detectChallengeRequired({ code: 0 })).toBeNull();
+    expect(detectChallengeRequired({ code: 0, msg: 'OK' })).toBeNull();
+    expect(detectChallengeRequired(null)).toBeNull();
+  });
+
+  it('composeChallengeMessage：expectedMode 在/缺 两形态＋不冒充服务器故障', () => {
+    const withMode = composeChallengeMessage({ provider: 'shumei', expectedMode: 'spatial_select' });
+    expect(withMode).toContain('人机验证');
+    expect(withMode).toContain('spatial_select');
+    expect(withMode).not.toContain('服务器暂时无法访问');
+    const noMode = composeChallengeMessage({ provider: 'shumei' });
+    expect(noMode).toContain('人机验证');
+    expect(noMode).not.toContain('当前要求'); // expectedMode 缺省 ⇒ 省略括号段
+    expect(composeChallengeMessage(undefined)).toContain('人机验证');
   });
 });

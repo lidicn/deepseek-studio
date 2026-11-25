@@ -13,7 +13,7 @@
  * 另含：错误重试指数退避、重放请求头白名单（R0-R3）、错误遥测环形缓冲（R0-R5）。
  */
 
-export type ResponseVerdict = 'ok' | 'retryable' | 'fatal' | 'quota-exhausted';
+export type ResponseVerdict = 'ok' | 'retryable' | 'fatal' | 'quota-exhausted' | 'challenge-required';
 
 /**
  * 额度墙（quota-exhausted）元数据。上游配额用尽时回 HTTP 200 外壳套 data 层：
@@ -33,6 +33,21 @@ export interface QuotaWallInfo {
   alertText?: string;
 }
 
+/**
+ * 人机验证挑战（40303 CHALLENGE_REQUIRED，㊿-c-补⑩）元数据。上游（数美 shumei 等）
+ * 在 200 外壳里回 code:40303 + data{provider, challenge_id, extras.expected_mode}，
+ * 要求完成一次人机验证（spatial_select 点选式等）。**确定性、不可重试**——重发同一
+ * 请求必再撞同一挑战（与额度墙同性质）。本结构是挑战识别与文案组合的唯一真源。
+ */
+export interface ChallengeInfo {
+  /** 挑战提供方（data.provider，如 'shumei'），若有。 */
+  provider?: string;
+  /** 挑战 id（data.challenge_id），若有。 */
+  challengeId?: string;
+  /** 期望的验证方式（data.extras.expected_mode，如 'spatial_select'），若有。 */
+  expectedMode?: string;
+}
+
 export interface ClassifiedResponse {
   verdict: ResponseVerdict;
   status: number;
@@ -41,6 +56,8 @@ export interface ClassifiedResponse {
   retryAfterMs?: number;
   /** 额度墙元数据（verdict === 'quota-exhausted' 时携带）。 */
   quota?: QuotaWallInfo;
+  /** 人机验证挑战元数据（verdict === 'challenge-required' 时携带）。 */
+  challenge?: ChallengeInfo;
 }
 
 /**
@@ -262,6 +279,85 @@ export function composeQuotaWallMessage(quota?: QuotaWallInfo): string {
   return '使用额度已用完，请稍后再试。';
 }
 
+// ---------------------------------------------------------------- 人机验证挑战（㊿-c-补⑩）
+
+/**
+ * 人机验证挑战识别（纯函数，唯一真源）。40303 CHALLENGE_REQUIRED：上游（数美 shumei 等）
+ * 在 200 外壳里回 `code:40303`（外层）＋ `data{provider, challenge_id, extras.expected_mode}`。
+ * **确定性、不可重试**——重发同一份请求必然再撞同一挑战（与额度墙同性质），正确处置＝
+ * 判终局、不烧重试、明示用户需完成人机验证（旧路径把 code:40303 兜底判成「可重试」，
+ * 烧掉首轮重试预算后误报「服务器暂时无法访问」，把「需要过验证」伪装成「服务器故障」）。
+ *
+ * 命中条件（任一）：外层 `code === 40303`；或 `msg === 'CHALLENGE_REQUIRED'`；或任一层有
+ * `challenge_id`。读取层逐层下探（data → data.biz_data → 顶层，与 detectQuotaWall 的
+ * layers 写法同款），从第一个带 challenge_id 的层读 provider / challenge_id / extras.expected_mode。
+ *
+ * ⚠️ 挑战识别只走本通道（detectChallengeRequired），**不要**让 extractErrorText 顺手去认
+ * `msg` 字段——`msg` 是挑战响应的业务字段，认了会把其他 code:* 响应的 msg 当错误文本，
+ * 扩散误判面（卡面裁定）。
+ * @param parsed 响应体整枚 JSON.parse 结果（外层 `{code:40303, msg, data:{...}}`）
+ */
+export function detectChallengeRequired(parsed: unknown): ChallengeInfo | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const o = parsed as Record<string, unknown>;
+  // data 层（外层把业务藏住）；无 data 层时兜顶层。
+  const data = (o.data && typeof o.data === 'object' ? o.data : o) as Record<string, unknown>;
+  // 逐层下探（data → data.biz_data → 顶层，与 detectQuotaWall 同款）。
+  const layers: Record<string, unknown>[] = [data];
+  if (data.biz_data && typeof data.biz_data === 'object') layers.push(data.biz_data as Record<string, unknown>);
+  if (o !== data) layers.push(o);
+  const outerCode = typeof o.code === 'number' ? o.code : undefined;
+  const msg = typeof o.msg === 'string' ? o.msg : undefined;
+  const hit =
+    outerCode === 40303 ||
+    msg === 'CHALLENGE_REQUIRED' ||
+    layers.some((l) => typeof l.challenge_id === 'string' && (l.challenge_id as string).length > 0);
+  if (!hit) return null;
+  // 逐层取第一个带 challenge_id 的层读 provider / challenge_id / extras.expected_mode。
+  let source: Record<string, unknown> | undefined;
+  for (const layer of layers) {
+    if (typeof layer.challenge_id === 'string') {
+      source = layer;
+      break;
+    }
+  }
+  source = source ?? data;
+  const info: ChallengeInfo = {};
+  if (typeof source.provider === 'string') info.provider = source.provider;
+  if (typeof source.challenge_id === 'string') info.challengeId = source.challenge_id;
+  const extras = source.extras;
+  if (extras && typeof extras === 'object' && typeof (extras as Record<string, unknown>).expected_mode === 'string') {
+    info.expectedMode = (extras as Record<string, unknown>).expected_mode as string;
+  }
+  return info;
+}
+
+/**
+ * 从文本响应体解析人机验证挑战。**仅支持纯 JSON 响应体**（与 parseQuotaWallFromText 同边界：
+ * XHR 路径 `xhr.responseText` 是纯 JSON，现场撞挑战的 40303 体走这条）。SSE 前缀 / 非 JSON 体
+ * JSON.parse 抛错 ⇒ 返 null ⇒ 不误伤正常流。
+ */
+function parseChallengeFromText(bodyText: string | null): ChallengeInfo | null {
+  if (!bodyText) return null;
+  let obj: unknown;
+  try {
+    obj = JSON.parse(bodyText);
+  } catch {
+    return null;
+  }
+  return detectChallengeRequired(obj);
+}
+
+/**
+ * 组合人机验证挑战对用户看的文案（纯函数，唯一真源）。明确「需要过验证」、给可行动路径，
+ * 不冒充「服务器故障」。expectedMode 缺省时省略括号段（卡面裁定）。
+ */
+export function composeChallengeMessage(challenge?: ChallengeInfo): string {
+  const mode = challenge?.expectedMode;
+  const modeClause = mode ? `（当前要求：${mode}）` : '';
+  return `需要完成人机验证才能继续。请在浏览器打开 chat.deepseek.com 手动完成一次验证${modeClause}，之后回到 Studio 重新发送本轮消息。`;
+}
+
 /**
  * 按 HTTP 状态码 + 响应体分类上游响应。
  * @param status  xhr.status（0 = 断连/网络错误/代理失败）
@@ -283,6 +379,14 @@ export function classifyResponse(status: number, bodyText: string | null): Class
     const quota = parseQuotaWallFromText(bodyText);
     if (quota) {
       return { verdict: 'quota-exhausted', status, reason: 'quota-exhausted', quota };
+    }
+    // ㊿-c-补⑩：40303 CHALLENGE_REQUIRED＝200 外壳套确定性人机验证挑战，不可重试（与额度墙
+    // 同性质：重发同一请求必再撞同一挑战）。须在 parseBodyError 之前判——后者只看
+    // code/error/message，会把 code:40303 兜底判成「可重试」，烧掉首轮重试预算后误报
+    // 「服务器暂时无法访问」。
+    const challenge = parseChallengeFromText(bodyText);
+    if (challenge) {
+      return { verdict: 'challenge-required', status, reason: 'challenge-required', challenge };
     }
     const bodyErr = parseBodyError(bodyText);
     if (bodyErr) {

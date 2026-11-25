@@ -31,6 +31,7 @@ import {
 import {
   classifyResponse,
   classifySseFrame,
+  composeChallengeMessage,
   composeQuotaWallMessage,
   errorBackoffMs,
   filterReplayableHeaders,
@@ -2814,6 +2815,13 @@ function installXhrHooks(
               loopState.chatUI?.setBusy(false);
               return;
             }
+            if (firstVerdict.verdict === 'challenge-required') {
+              // ㊿-c-补⑩：40303 人机验证挑战不可重试（确定性终局）⇒ 明示需完成验证，不报「服务器暂时无法访问」。
+              try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+              loopState.chatUI?.appendError('challenge-required', composeChallengeMessage(firstVerdict.challenge));
+              loopState.chatUI?.setBusy(false);
+              return;
+            }
             try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
             loopState.chatUI?.appendError(
               firstVerdict.reason,
@@ -3118,6 +3126,17 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
         interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'quota-exhausted' });
         try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
         loopState.chatUI?.appendError('quota-exhausted', composeQuotaWallMessage(httpVerdict.quota));
+        loopState.chatUI?.setBusy(false);
+        return true;
+      }
+      if (httpVerdict?.verdict === 'challenge-required') {
+        // ㊿-c-补⑩：40303 人机验证挑战＝200 外壳、无完成哨兵、确定性终局 ⇒ 旧路径把 code:40303 兜底判成
+        // 可重试（body-error-40303），烧掉首轮预算后误报「服务器暂时无法访问」。不可重试：明示需完成验证，
+        // 不烧首轮预算、不 escalate。
+        d(`stream end: challenge-required (provider=${httpVerdict.challenge?.provider ?? 'unknown'}), stop without retry`);
+        interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'challenge-required' });
+        try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+        loopState.chatUI?.appendError('challenge-required', composeChallengeMessage(httpVerdict.challenge));
         loopState.chatUI?.setBusy(false);
         return true;
       }
@@ -3895,6 +3914,11 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                 interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'quota-exhausted' });
                 finishStepFlow({ code: 'quota-exhausted', message: composeQuotaWallMessage(verdict.quota) });
                 loopDepth = 0;
+              } else if (verdict.verdict === 'challenge-required') {
+                // ㊿-c-补⑩：重发后撞 40303 人机验证挑战 ⇒ 确定性终局，停手＋明示需完成验证，不再重发。
+                interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'challenge-required' });
+                finishStepFlow({ code: 'challenge-required', message: composeChallengeMessage(verdict.challenge) });
+                loopDepth = 0;
               } else if (verdict.verdict === 'fatal') {
                 // 重发后撞上 401/403/402：再重发必然同样失败，直接停。
                 // 终局 ⇒ 半截正文留给用户看（finish 固化），不 discard。
@@ -3922,6 +3946,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
             const budgetExhausted =
               verdict.verdict === 'fatal' ||
               verdict.verdict === 'quota-exhausted' ||
+              verdict.verdict === 'challenge-required' ||
               (verdict.verdict === 'retryable' && errorRetryCount >= MAX_ERROR_RETRIES) ||
               (isTruncated && errorRetryCount >= MAX_ERROR_RETRIES);
             if (budgetExhausted) {
@@ -3933,6 +3958,15 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                 interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'quota-exhausted', triggered: false });
                 interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'quota-exhausted' });
                 finishStepFlow({ code: 'quota-exhausted', message: composeQuotaWallMessage(verdict.quota) });
+                loopDepth = 0;
+              } else if (verdict.verdict === 'challenge-required') {
+                // ㊿-c-补⑩：40303 人机验证挑战＝确定性终局（重发同一请求必再撞同一挑战）⇒ 停手＋
+                // 明示需完成验证，不烧续跑预算、不报「截断」。
+                d(`auto-continue challenge-required (provider=${verdict.challenge?.provider ?? 'unknown'}), stop without retry`);
+                loopState.streamActive = false;
+                interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'challenge-required', triggered: false });
+                interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'challenge-required' });
+                finishStepFlow({ code: 'challenge-required', message: composeChallengeMessage(verdict.challenge) });
                 loopDepth = 0;
               } else {
                 // 不可重试（401/403/402/400）或错误预算耗尽（含持续截断）→ 停手上报。
