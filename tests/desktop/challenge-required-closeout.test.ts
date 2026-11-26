@@ -44,6 +44,7 @@ function makeFakeXhrClass() {
     onreadystatechange: ((...a: unknown[]) => void) | null = null;
     url = '';
     body: string | null = null;
+    private listeners: Record<string, Array<(...a: unknown[]) => void>> = {};
     constructor() {
       FakeXHR.instances.push(this);
     }
@@ -57,6 +58,13 @@ function makeFakeXhrClass() {
     send(body?: string | null) {
       this.body = typeof body === 'string' ? body : null;
     }
+    /** auth 端点走 addEventListener('loadend') 观测；FakeXHR 同步派发，让 40003 识别可达。 */
+    addEventListener(type: string, fn: (...a: unknown[]) => void): void {
+      (this.listeners[type] ??= []).push(fn);
+    }
+    private fire(type: string): void {
+      for (const fn of this.listeners[type] ?? []) fn();
+    }
     respond(status: number, text: string) {
       this.status = status;
       this.responseText = text;
@@ -64,6 +72,7 @@ function makeFakeXhrClass() {
       this.onreadystatechange?.();
       this.readyState = 4;
       this.onreadystatechange?.();
+      this.fire('loadend');
     }
     abort() {
       this.status = 0;
@@ -115,6 +124,15 @@ function chatRequests(FakeXHR: ReturnType<typeof makeFakeXhrClass>) {
   return FakeXHR.instances.filter((x) => x.url.endsWith('/api/v0/chat/completion'));
 }
 
+/** 发一枚 auth 端点（users/current）XHR，返回该 XHR（现场 40003 失效体走这条非 chat 路径）。 */
+function authSend(FakeXHR: ReturnType<typeof makeFakeXhrClass>) {
+  const xhr = new FakeXHR();
+  xhr.open('GET', 'https://chat.deepseek.com/api/v0/users/current');
+  xhr.onreadystatechange = () => {};
+  xhr.send(null);
+  return xhr;
+}
+
 function appendErrorCalls(chatUI: { appendError: ReturnType<typeof vi.fn> }): Array<[string, string]> {
   return (chatUI.appendError.mock.calls as unknown[]).map((c) => {
     const pair = c as unknown[];
@@ -164,4 +182,63 @@ describe('㊿-c-补⑩ 40303 挑战·流收口终局出口', () => {
       vi.useRealTimers();
     }
   });
+
+  it('① users/current 返 40003（body）⇒ 识别鉴权失效：diag token-invalid 带码＋appendError auth-invalid 含 MFA 提示', async () => {
+    vi.useFakeTimers();
+    const { FakeXHR, handle, chatUI, diagLines } = installHarness();
+    try {
+      const auth = authSend(FakeXHR);
+      auth.respond(200, JSON.stringify({ code: 40003, msg: 'Authorization Failed (invalid token)', data: null }));
+      await vi.advanceTimersByTimeAsync(500);
+      // 失效信号显式纠正：diag 落 token-invalid 且带 40003 码（供诊断，不再被 boot-check 的「存在」掩盖）。
+      expect(diagLines.some((l) => l.includes('token-invalid') && l.includes('40003'))).toBe(true);
+      // 界面明确提示（含重新登录＋MFA），不是静默跳登录页。
+      const calls = appendErrorCalls(chatUI);
+      const authInvalid = calls.find((c) => c[0] === 'auth-invalid');
+      expect(authInvalid, '应挂 auth-invalid 提示').toBeTruthy();
+      expect(authInvalid![1]).toContain('重新登录');
+      expect(authInvalid![1]).toContain('MFA');
+      expect(authInvalid![1]).not.toContain('服务器暂时无法访问');
+    } finally {
+      handle.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('② users/current 正常（body code:0）⇒ 不识别失效（boot-check 行为不变，不误报 auth-invalid）', async () => {
+    vi.useFakeTimers();
+    const { FakeXHR, handle, chatUI, diagLines } = installHarness();
+    try {
+      const auth = authSend(FakeXHR);
+      auth.respond(200, JSON.stringify({ code: 0, data: { user: { id: 1 } } }));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(diagLines.some((l) => l.includes('token-invalid'))).toBe(false);
+      expect(appendErrorCalls(chatUI).some((c) => c[0] === 'auth-invalid')).toBe(false);
+    } finally {
+      handle.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('③ 失效提示幂等：同安装期内两枚 40003 ⇒ 只出一次 auth-invalid 提示（防刷屏）', async () => {
+    vi.useFakeTimers();
+    const { FakeXHR, handle, chatUI, diagLines } = installHarness();
+    try {
+      const a1 = authSend(FakeXHR);
+      a1.respond(200, JSON.stringify({ code: 40003, msg: 'Authorization Failed (invalid token)', data: null }));
+      await vi.advanceTimersByTimeAsync(500);
+      const a2 = authSend(FakeXHR);
+      a2.respond(200, JSON.stringify({ code: 40003, msg: 'Authorization Failed (invalid token)', data: null }));
+      await vi.advanceTimersByTimeAsync(500);
+      // 两枚 40003 ⇒ 提示只出一条（幂等标记挡住第二次）。
+      const authInvalids = appendErrorCalls(chatUI).filter((c) => c[0] === 'auth-invalid');
+      expect(authInvalids).toHaveLength(1);
+      // 但 diag 的 token-invalid 行两枚都在（识别每次发生、码透传供诊断）。
+      expect(diagLines.filter((l) => l.includes('token-invalid'))).toHaveLength(2);
+    } finally {
+      handle.stop();
+      vi.useRealTimers();
+    }
+  });
 });
+

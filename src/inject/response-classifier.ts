@@ -13,7 +13,7 @@
  * 另含：错误重试指数退避、重放请求头白名单（R0-R3）、错误遥测环形缓冲（R0-R5）。
  */
 
-export type ResponseVerdict = 'ok' | 'retryable' | 'fatal' | 'quota-exhausted' | 'challenge-required';
+export type ResponseVerdict = 'ok' | 'retryable' | 'fatal' | 'quota-exhausted' | 'challenge-required' | 'auth-invalid';
 
 /**
  * 额度墙（quota-exhausted）元数据。上游配额用尽时回 HTTP 200 外壳套 data 层：
@@ -358,6 +358,43 @@ export function composeChallengeMessage(challenge?: ChallengeInfo): string {
   return `需要完成人机验证才能继续。请在浏览器打开 chat.deepseek.com 手动完成一次验证${modeClause}，之后回到 Studio 重新发送本轮消息。`;
 }
 
+// ---------------------------------------------------------------- 鉴权失效（㊿-c-补⑪）
+
+/**
+ * 鉴权失效（40003 invalid token）识别（纯函数，唯一真源）。上游把本地 token 判无效（同账号多端
+ * 互踢／风控）时，回 200 外壳套 `code:40003`＋`msg:"Authorization Failed (invalid token)"`。
+ * **确定性、不可重试**——重发同一份请求（带同一枚失效 token）必然再撞同一 40003，与额度墙／
+ * 挑战同性质；正确处置＝判终局、不烧重试、明示用户需重新登录（旧路径把它兜底判成「可重试」，
+ * 烧掉首轮预算后误报「服务器暂时无法访问」，把「登录态失效」伪装成「服务器故障」）。
+ *
+ * 命中条件（任一）：外层 `code === 40003`；或 `msg` 含 `invalid token`／`Authorization Failed`
+ * 失效语义（大小写不敏感）。与 challenge（40303）不同码、不同处置（重登 vs 过验证），判定排在
+ * challenge 之后、parseBodyError 之前（40303 优先级不变）。
+ * @param bodyText 200 响应体原文（纯 JSON）
+ */
+export function parseAuthInvalidFromText(bodyText: string | null): boolean {
+  if (!bodyText) return false;
+  let obj: unknown;
+  try {
+    obj = JSON.parse(bodyText);
+  } catch {
+    return false;
+  }
+  if (!obj || typeof obj !== 'object') return false;
+  const o = obj as Record<string, unknown>;
+  if (o.code === 40003) return true;
+  const msg = typeof o.msg === 'string' ? o.msg.toLowerCase() : '';
+  return msg.includes('invalid token') || msg.includes('authorization failed');
+}
+
+/**
+ * 组合鉴权失效对用户看的文案（纯函数，唯一真源）。明确「登录态已失效、需重新登录＋MFA 路径」，
+ * 不冒充「服务器故障」。
+ */
+export function composeAuthInvalidMessage(): string {
+  return '登录态已失效（服务端返回 invalid token），请重新登录；若重登要求验证码，请按页面提示完成 MFA 验证。';
+}
+
 /**
  * 按 HTTP 状态码 + 响应体分类上游响应。
  * @param status  xhr.status（0 = 断连/网络错误/代理失败）
@@ -387,6 +424,12 @@ export function classifyResponse(status: number, bodyText: string | null): Class
     const challenge = parseChallengeFromText(bodyText);
     if (challenge) {
       return { verdict: 'challenge-required', status, reason: 'challenge-required', challenge };
+    }
+    // ㊿-c-补⑪：40003 鉴权失效＝200 外壳套 invalid token，不可重试（重发同一失效 token 必再撞）。
+    // 判定排在 challenge 之后（40303 优先级不变）、parseBodyError 之前——后者会把 code:40003
+    // 兜底判成「可重试」，烧掉首轮预算后误报「服务器暂时无法访问」。
+    if (parseAuthInvalidFromText(bodyText)) {
+      return { verdict: 'auth-invalid', status, reason: 'auth-invalid' };
     }
     const bodyErr = parseBodyError(bodyText);
     if (bodyErr) {

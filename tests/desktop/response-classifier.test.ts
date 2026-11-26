@@ -7,12 +7,14 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   classifyResponse,
   classifySseFrame,
+  composeAuthInvalidMessage,
   composeChallengeMessage,
   composeQuotaWallMessage,
   detectChallengeRequired,
   detectQuotaWall,
   errorBackoffMs,
   filterReplayableHeaders,
+  parseAuthInvalidFromText,
   recordVerdict,
   getErrorTraces,
   clearErrorTraces,
@@ -327,3 +329,50 @@ describe('challenge — ㊿-c-补⑩ 40303 CHALLENGE_REQUIRED（200 外壳套确
     expect(composeChallengeMessage(undefined)).toContain('人机验证');
   });
 });
+
+describe('auth-invalid — ㊿-c-补⑪ 40003 鉴权失效（200 外壳 invalid token）', () => {
+  // 现场装版 sidecar 原文钉死的失效形态：外层 code:40003 + msg:"Authorization Failed (invalid token)"。
+  const authInvalidBody = JSON.stringify({
+    code: 40003,
+    msg: 'Authorization Failed (invalid token)',
+    data: null,
+  });
+
+  it('200 ＋ 40003 失效体 ⇒ auth-invalid（非 ok/retryable/fatal），不可重试', () => {
+    const v = classifyResponse(200, authInvalidBody);
+    expect(v.verdict).toBe('auth-invalid');
+    expect(v.reason).toBe('auth-invalid');
+  });
+
+  it('正常成功包（code:0）行为不变 ⇒ 仍 ok（不误判失效）', () => {
+    expect(classifyResponse(200, JSON.stringify({ code: 0, data: {} })).verdict).toBe('ok');
+    expect(classifyResponse(200, 'data: {"v":[]}').verdict).toBe('ok');
+  });
+
+  it('优先级：challenge（40303）先于 auth-invalid（40003）；额度墙先于两者', () => {
+    // 40303 挑战体仍是 challenge-required（不被 40003 判定抢走）。
+    const chal = JSON.stringify({ code: 40303, msg: 'CHALLENGE_REQUIRED', data: { provider: 'shumei' } });
+    expect(classifyResponse(200, chal).verdict).toBe('challenge-required');
+    // 额度墙先判（biz_code:29 时不落到 40003/40303）。
+    const wall = JSON.stringify({ code: 0, data: { biz_code: 29, quotas: [{ is_exhausted: true }] } });
+    expect(classifyResponse(200, wall).verdict).toBe('quota-exhausted');
+  });
+
+  it('parseAuthInvalidFromText 纯函数：命中两形态＋非失效⇒false', () => {
+    expect(parseAuthInvalidFromText(authInvalidBody)).toBe(true);
+    // msg 语义（code 非 40003 但 msg 含 invalid token）也命中。
+    expect(parseAuthInvalidFromText(JSON.stringify({ code: 1, msg: 'Authorization Failed (invalid token)' }))).toBe(true);
+    // 正常包 / 非 JSON ⇒ false。
+    expect(parseAuthInvalidFromText(JSON.stringify({ code: 0, msg: 'ok' }))).toBe(false);
+    expect(parseAuthInvalidFromText('data: {"v":[]}')).toBe(false);
+    expect(parseAuthInvalidFromText(null)).toBe(false);
+  });
+
+  it('composeAuthInvalidMessage：明确需重新登录＋MFA 路径，不冒充服务器故障', () => {
+    const msg = composeAuthInvalidMessage();
+    expect(msg).toContain('重新登录');
+    expect(msg).toContain('MFA');
+    expect(msg).not.toContain('服务器暂时无法访问');
+  });
+});
+

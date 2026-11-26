@@ -31,6 +31,7 @@ import {
 import {
   classifyResponse,
   classifySseFrame,
+  composeAuthInvalidMessage,
   composeChallengeMessage,
   composeQuotaWallMessage,
   errorBackoffMs,
@@ -2382,6 +2383,10 @@ function installXhrHooks(
 ): () => void {
   if (typeof XMLHttpRequest === 'undefined') return () => {};
   const proto = XMLHttpRequest.prototype;
+  // ㊿-c-补⑪：登录态失效（users/current 返 40003 invalid token）只提示一次（同安装期幂等，防刷屏；
+  // 对齐 fuseStoppedTurns 的幂等写法）。boot-check 是页面载入时的一次性自检，看不到运行期 token 失效，
+  // 真正的失效信号由 auth 面 users/current 的 40003 响应体触发。
+  let authInvalidAnnounced = false;
   const origOpen = proto.open;
   const origSend = proto.send;
   const origSetRequestHeader = proto.setRequestHeader;
@@ -2477,6 +2482,29 @@ function installXhrHooks(
               // ㉒ 格1：敏感值掩码后再落盘（与 fetch 侧同口径；mask-fail ⇒ 可省略行、不写原值）
               const rbm = maskAuthResponseBody(rb);
               if (rb) diag(`[auth] resp-body ${pathOfUrl(url)} ${rbm ? rbm.slice(0, 200).replace(/\s+/g, ' ') : '<omitted: mask-failed, body not written>'}`);
+              // ㊿-c-补⑪：users/current 的 body code:40003（invalid token）⇒ 登录态已失效。
+              // boot-check 的「user=存在」只看 cookie 数量，没校验 token 有效性——服务端已不认本地
+              // token 时它仍报「存在」。此处把失效信号显式纠正出来（token-invalid 码透传供诊断），
+              // 并给一条明确的界面提示（幂等：一次安装期只出一次，防刷屏）。
+              let authCode: number | undefined;
+              if (rb) {
+                try {
+                  const parsed = JSON.parse(rb) as Record<string, unknown>;
+                  if (typeof parsed.code === 'number') authCode = parsed.code;
+                } catch {
+                  /* 非 JSON 体：不动 */
+                }
+              }
+              if (authCode === 40003) {
+                diag(`[auth] token-invalid code=40003 on ${pathOfUrl(url)}（登录态失效，boot-check 的「user=存在」不适用）`);
+                if (!authInvalidAnnounced) {
+                  authInvalidAnnounced = true;
+                  loopState?.chatUI?.appendError(
+                    'auth-invalid',
+                    '登录态已失效（服务端返回 invalid token），请重新登录；若重登要求验证码，请按页面提示完成 MFA 验证。',
+                  );
+                }
+              }
             }
             // set-cookie：XHR getResponseHeader('set-cookie') 多数 WebView 场景被浏览器隐藏——
             // 拿不到就记 unavailable（auth 端点）、不假装拿到；chat 端点拿不到则静默（避免刷屏）。
@@ -2822,6 +2850,13 @@ function installXhrHooks(
               loopState.chatUI?.setBusy(false);
               return;
             }
+            if (firstVerdict.verdict === 'auth-invalid') {
+              // ㊿-c-补⑪：40003 鉴权失效（invalid token）不可重试 ⇒ 明示需重新登录，不报「服务器暂时无法访问」。
+              try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+              loopState.chatUI?.appendError('auth-invalid', composeAuthInvalidMessage());
+              loopState.chatUI?.setBusy(false);
+              return;
+            }
             try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
             loopState.chatUI?.appendError(
               firstVerdict.reason,
@@ -3137,6 +3172,16 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
         interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'challenge-required' });
         try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
         loopState.chatUI?.appendError('challenge-required', composeChallengeMessage(httpVerdict.challenge));
+        loopState.chatUI?.setBusy(false);
+        return true;
+      }
+      if (httpVerdict?.verdict === 'auth-invalid') {
+        // ㊿-c-补⑪：40003 鉴权失效＝200 外壳 invalid token、无完成哨兵、确定性终局 ⇒ 旧路径把 code:40003
+        // 兜底判成可重试，烧掉首轮预算后误报「服务器暂时无法访问」。不可重试：明示需重新登录，不 escalate。
+        d(`stream end: auth-invalid (code=40003), stop without retry`);
+        interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'auth-invalid' });
+        try { loopState.chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
+        loopState.chatUI?.appendError('auth-invalid', composeAuthInvalidMessage());
         loopState.chatUI?.setBusy(false);
         return true;
       }
@@ -3919,6 +3964,11 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                 interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'challenge-required' });
                 finishStepFlow({ code: 'challenge-required', message: composeChallengeMessage(verdict.challenge) });
                 loopDepth = 0;
+              } else if (verdict.verdict === 'auth-invalid') {
+                // ㊿-c-补⑪：重发后撞 40003 鉴权失效 ⇒ 确定性终局，停手＋明示需重新登录，不再重发。
+                interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'auth-invalid' });
+                finishStepFlow({ code: 'auth-invalid', message: composeAuthInvalidMessage() });
+                loopDepth = 0;
               } else if (verdict.verdict === 'fatal') {
                 // 重发后撞上 401/403/402：再重发必然同样失败，直接停。
                 // 终局 ⇒ 半截正文留给用户看（finish 固化），不 discard。
@@ -3947,6 +3997,7 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               verdict.verdict === 'fatal' ||
               verdict.verdict === 'quota-exhausted' ||
               verdict.verdict === 'challenge-required' ||
+              verdict.verdict === 'auth-invalid' ||
               (verdict.verdict === 'retryable' && errorRetryCount >= MAX_ERROR_RETRIES) ||
               (isTruncated && errorRetryCount >= MAX_ERROR_RETRIES);
             if (budgetExhausted) {
@@ -3967,6 +4018,15 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                 interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'challenge-required', triggered: false });
                 interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'challenge-required' });
                 finishStepFlow({ code: 'challenge-required', message: composeChallengeMessage(verdict.challenge) });
+                loopDepth = 0;
+              } else if (verdict.verdict === 'auth-invalid') {
+                // ㊿-c-补⑪：40003 鉴权失效＝确定性终局（重发同一失效 token 必再撞）⇒ 停手＋
+                // 明示需重新登录，不烧续跑预算、不报「截断」。
+                d(`auto-continue auth-invalid (code=40003), stop without retry`);
+                loopState.streamActive = false;
+                interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'auth-invalid', triggered: false });
+                interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'auth-invalid' });
+                finishStepFlow({ code: 'auth-invalid', message: composeAuthInvalidMessage() });
                 loopDepth = 0;
               } else {
                 // 不可重试（401/403/402/400）或错误预算耗尽（含持续截断）→ 停手上报。
