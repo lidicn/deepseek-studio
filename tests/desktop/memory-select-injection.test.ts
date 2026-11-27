@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { beforeAll, describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// ㊿-c-补⑫ 件④：jsdom 的 window.confirm 未实现，注入层同文护栏会调它落 stderr。
+// 全局 stub 为返回 true（确认放行）：不弹真框、不拦截。
+beforeAll(() => {
+  (window as unknown as Record<string, unknown>).confirm = () => true;
+});
 import {
   installMainWorldInterceptor,
   configureMemorySelect,

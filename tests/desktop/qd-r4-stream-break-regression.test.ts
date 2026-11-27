@@ -1,4 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+
+// ㊿-c-补⑫ 件④：jsdom 的 window.confirm 未实现，注入层同文护栏会调它落 stderr。
+// 全局 stub 为返回 true（确认放行）：不弹真框、不拦截。
+beforeAll(() => {
+  (window as unknown as Record<string, unknown>).confirm = () => true;
+});
 
 /**
  * QD-R4 回归用例（对话 / 工具调用断流专项审计，2026-10-23）。
@@ -148,14 +154,15 @@ describe('QD-R4-01 自动续跑的重试不再被自己的 pending 守卫挡死'
     try {
       const first = pageSend(FakeXHR, { prompt: 'run twice', chat_session_id: 's-control' });
       first.respond(200, sseText('<shell_exec>{"command":"echo one"}</shell_exec>') + sseDone());
-      await vi.advanceTimersByTimeAsync(1500);
+      // ㊿-c-补⑫：轮间间隔 800–2200ms，须等过最坏 2200ms
+      await vi.advanceTimersByTimeAsync(2_500);
       expect(chatRequests(FakeXHR)).toHaveLength(2);
 
       chatRequests(FakeXHR)[1].respond(
         200,
         sseText('<shell_exec>{"command":"echo two"}</shell_exec>') + sseDone(),
       );
-      await vi.advanceTimersByTimeAsync(1500);
+      await vi.advanceTimersByTimeAsync(2_500);
       expect(chatRequests(FakeXHR)).toHaveLength(3);
     } finally {
       handle.stop();
@@ -169,13 +176,15 @@ describe('QD-R4-01 自动续跑的重试不再被自己的 pending 守卫挡死'
     try {
       const first = pageSend(FakeXHR, { prompt: 'run once', chat_session_id: 's-repro' });
       first.respond(200, sseText('<shell_exec>{"command":"echo one"}</shell_exec>') + sseDone());
-      await vi.advanceTimersByTimeAsync(1500);
+      // ㊿-c-补⑫：轮间间隔 800–2200ms，须等过最坏 2200ms
+      await vi.advanceTimersByTimeAsync(2_500);
       expect(chatRequests(FakeXHR)).toHaveLength(2);
 
       chatRequests(FakeXHR)[1].respond(429, '');
       // 必须真的进入重试分支，否则本用例证明不了任何事。
       expect(diagLines.some((l) => l.includes('auto-continue retryable') && l.includes('retry 1/3'))).toBe(true);
 
+      // ㊿-c-补⑫：退避已拉长（4s+抖动 1500），30s 够跑完最坏一轮
       await vi.advanceTimersByTimeAsync(30_000);
       // 页面 + 续跑#1 + 重试#1。修复前这里是 2（定时器回调被 pending 守卫 return）。
       expect(chatRequests(FakeXHR)).toHaveLength(3);
@@ -204,7 +213,8 @@ describe('QD-R4-02 被截断的工具标签不再静默消失', () => {
       const first = pageSend(FakeXHR, { prompt: 'write a file', chat_session_id: 's-truncated' });
       // 无闭合 </shell_exec>，也没有完成哨兵。
       first.respond(200, sseText('我先执行。') + sseText('<shell_exec>{"command":"echo one"'));
-      await vi.advanceTimersByTimeAsync(5000);
+      // ㊿-c-补⑫：退避已拉长到 4s+抖动 1500，须等过最坏 5500ms 才看得到重发
+      await vi.advanceTimersByTimeAsync(6_000);
 
       expect(sender.mock.calls.filter((c) => c[0].invocationName === 'shell_exec')).toHaveLength(0);
       // 修复前：appendError 0 次、finishAssistantMessage 把它当最终答案收尾。

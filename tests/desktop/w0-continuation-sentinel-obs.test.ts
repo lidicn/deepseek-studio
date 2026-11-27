@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeAll } from 'vitest';
+
+// ㊿-c-补⑫ 件④：jsdom 的 window.confirm 未实现，注入层同文护栏会调它落 stderr。
+// 全局 stub 为返回 true（确认放行）：不弹真框、不拦截。
+beforeAll(() => {
+  (window as unknown as Record<string, unknown>).confirm = () => true;
+});
 
 /**
  * W0+W1：续跑轮哨兵观测 + 截断判定。
@@ -95,7 +101,8 @@ describe('W0：续跑轮哨兵观测', () => {
     const { FakeXHR, handle } = installHarness();
     try {
       fireFirstRound(FakeXHR, 'w0-ok');
-      await vi.advanceTimersByTimeAsync(2_000);
+      // ㊿-c-补⑫：轮间间隔 800–2200ms，须等过最坏 2200ms 让续跑发出去
+      await vi.advanceTimersByTimeAsync(2_500);
       const requests = chatRequests(FakeXHR);
       expect(requests.length).toBeGreaterThanOrEqual(2);
       requests[1].respond(200, sseText('继续回答') + sseDone());
@@ -110,11 +117,13 @@ describe('W0：续跑轮哨兵观测', () => {
     const { FakeXHR, handle } = installHarness();
     try {
       fireFirstRound(FakeXHR, 'w0-trunc');
-      await vi.advanceTimersByTimeAsync(2_000);
+      // ㊿-c-补⑫：轮间间隔 800–2200ms，须等过最坏 2200ms
+      await vi.advanceTimersByTimeAsync(2_500);
       const requests = chatRequests(FakeXHR);
       expect(requests.length).toBeGreaterThanOrEqual(2);
       requests[1].respond(200, sseText('只说了半句'));
-      await vi.advanceTimersByTimeAsync(5_000);
+      // 截断走退避重发（4s+抖动 1500），须等过最坏 5500ms
+      await vi.advanceTimersByTimeAsync(6_000);
       const events = interceptorTraceSnapshot().filter((e) => e.t === 'continuation.stream');
       expect(events.at(-1)).toMatchObject({ sawSentinel: false, status: 200 });
     } finally { handle.stop(); vi.useRealTimers(); }
@@ -127,14 +136,15 @@ describe('W1：续跑截断走退避重发，不记 completed', () => {
     const { FakeXHR, handle, onAssistantReply } = installHarness();
     try {
       fireFirstRound(FakeXHR, 'w1-trunc');
-      await vi.advanceTimersByTimeAsync(2_000);
+      // ㊿-c-补⑫：轮间间隔 800–2200ms，须等过最坏 2200ms
+      await vi.advanceTimersByTimeAsync(2_500);
       // 此时已有 2 条请求（首轮 + 第 1 次续跑）
       expect(chatRequests(FakeXHR).length).toBe(2);
       // 记录基线 turn.end 数（trace 是模块级单例，跨用例累积）
       const baselineEnds = interceptorTraceSnapshot().filter((e) => e.t === 'turn.end').length;
-      // 第 2 条续跑响应截半
+      // 第 2 条续跑响应截半 ⇒ 退避重发（4s+抖动 1500），须等过最坏 5500ms
       chatRequests(FakeXHR)[1].respond(200, sseText('<shell_exec>半截'));
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(6_000);
 
       // 断言①：发生重发（≥3 条对话请求）
       expect(chatRequests(FakeXHR).length).toBeGreaterThanOrEqual(3);
@@ -152,7 +162,8 @@ describe('W1：续跑截断走退避重发，不记 completed', () => {
     const { FakeXHR, handle, onAssistantReply } = installHarness();
     try {
       fireFirstRound(FakeXHR, 'rw1-budget');
-      await vi.advanceTimersByTimeAsync(2_000);
+      // ㊿-c-补⑫：轮间间隔 800–2200ms，须等过最坏 2200ms
+      await vi.advanceTimersByTimeAsync(2_500);
       const baselineEnds = interceptorTraceSnapshot().filter((e) => e.t === 'turn.end').length;
       const baselineTruncated = interceptorTraceSnapshot().filter((e) => e.t === 'continuation.decision' && e.reason === 'continuation-truncated').length;
 
@@ -163,6 +174,7 @@ describe('W1：续跑截断走退避重发，不记 completed', () => {
         const last = reqs[reqs.length - 1];
         if (!last || last.readyState === 4) break;
         last.respond(200, sseText('半句未完'));
+        // ㊿-c-补⑫：退避已拉长（4s/8s/16s+抖动 1500），30s 够跑完最坏一轮
         await vi.advanceTimersByTimeAsync(30_000);
       }
 

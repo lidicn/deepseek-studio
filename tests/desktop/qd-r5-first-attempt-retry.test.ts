@@ -1,10 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeAll } from 'vitest';
 
 vi.mock('../../src/inject/pow', () => ({
   createPowHeaders: vi.fn(async () => ({ 'X-DS-PoW-Response': 'r5-stub' })),
 }));
 
 import { installMainWorldInterceptor } from '../../src/inject/main-world-interceptor';
+
+// ㊿-c-补⑫ 件④：jsdom 的 window.confirm 未实现，注入层同文护栏会调它落 stderr。
+// 全局 stub 为返回 true（确认放行）：不弹真框、不拦截。
+beforeAll(() => {
+  (window as unknown as Record<string, unknown>).confirm = () => true;
+});
 
 /**
  * QD-R5-01：首轮断流自动重试回归。
@@ -116,20 +122,20 @@ describe('QD-R5-01 首轮断流自动重试', () => {
       const first = pageSend(FakeXHR, { prompt: 'hello', chat_session_id: 's-net' });
       first.respond(0, '');
       // 触发 XHR 的 readyState=4 结算路径。
-      // 退避是 errorBackoffMs(0)=2s+抖动，0ms 只够跑完结算、不够触发重发。
-      await vi.advanceTimersByTimeAsync(5_000);
+      // ㊿-c-补⑫：退避已拉长到 4s+抖动 1500（最坏 5500ms），须等过最坏才看得到重发。
+      await vi.advanceTimersByTimeAsync(6_000);
 
       // 修复前：这里只有 1 个请求，用户看到「本轮不会自动重发」。
       expect(chatRequests(FakeXHR)).toHaveLength(2);
       expect(diagLines.some((l) => l.includes('first-attempt retryable'))).toBe(true);
       expect(diagLines.some((l) => l.includes('first-attempt retry: resend'))).toBe(true);
 
-      // 第 2 次（重试#1）也失败 → 重试#2
+      // 第 2 次（重试#1）也失败 → 重试#2（退避 8s+抖动 1500）
       chatRequests(FakeXHR)[1].respond(0, '');
       await vi.advanceTimersByTimeAsync(30_000);
       expect(chatRequests(FakeXHR)).toHaveLength(3);
 
-      // 第 3 次（重试#2）也失败 → 预算耗尽，停止
+      // 第 3 次（重试#2）也失败 → 预算耗尽，停止（退避 16s+抖动 1500）
       chatRequests(FakeXHR)[2].respond(0, '');
       await vi.advanceTimersByTimeAsync(30_000);
       // 不再有第 4 个请求。
@@ -157,8 +163,8 @@ describe('QD-R5-01 首轮断流自动重试', () => {
     try {
       const first = pageSend(FakeXHR, { prompt: 'tell me a story', chat_session_id: 's-cut' });
       first.respond(200, sseText('很久很久以前'));
-      // 同上：要等过 2s 退避才看得到重发请求。
-      await vi.advanceTimersByTimeAsync(5_000);
+      // ㊿-c-补⑫：退避已拉长到 4s+抖动 1500，须等过最坏 5500ms 才看得到重发。
+      await vi.advanceTimersByTimeAsync(6_000);
 
       // 修复前：直接 appendError('stream-incomplete') 且只有 1 个请求。
       expect(chatRequests(FakeXHR)).toHaveLength(2);
@@ -233,7 +239,8 @@ describe('QD-R5-01 首轮断流自动重试', () => {
     try {
       const first = pageSend(FakeXHR, { prompt: 'hello', chat_session_id: 's-u102' });
       first.respond(0, '');
-      await vi.advanceTimersByTimeAsync(5_000);
+      // ㊿-c-补⑫：退避已拉长到 4s+抖动 1500，须等过最坏 5500ms
+      await vi.advanceTimersByTimeAsync(6_000);
 
       // 第一次失败 → 排上重发：必须 discard，且此时**一次**都不能固化。
       expect(chatUI.discardOpenAssistantBubble).toHaveBeenCalledTimes(1);

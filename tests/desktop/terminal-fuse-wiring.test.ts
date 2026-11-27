@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+
+// ㊿-c-补⑫ 件④：jsdom 的 window.confirm 未实现，注入层同文护栏会调它落 stderr。
+// 全局 stub 为返回 true（确认放行）：不弹真框、不拦截。
+beforeAll(() => {
+  (window as unknown as Record<string, unknown>).confirm = () => true;
+});
 
 /**
  * ⑨ 熔断接线回归锁（2026-11-15 PM 卡：shared evaluateTerminalFuse 判定面 → 注入层守卫＋

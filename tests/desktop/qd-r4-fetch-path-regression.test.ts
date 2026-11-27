@@ -131,9 +131,9 @@ describe('QD-R4-02 fetch 路径：截断的工具标签不再静默消失', () =
       expect(toolExecs(sender)).toHaveLength(0);
       expect(chatUI.appendError.mock.calls[0]?.[0]).toBe('tool-call-truncated');
       // R6-03（2026-11-12 TD 审计）：正向断言重发真的发生——此前只断「没调 setBusy(false)」，
-      // 一个「什么都不做」的实现同样能绿（假绿）。errorBackoffMs(0)=2s+抖动，
-      // 等退避窗口过去后应看到第 2 次 fetch（受 FIRST_ATTEMPT_MAX_RETRIES 封顶）。
-      await new Promise((r) => setTimeout(r, 2600));
+      // 一个「什么都不做」的实现同样能绿（假绿）。㊿-c-补⑫ 后 errorBackoffMs(0)=4s+抖动 1500，
+      // 等最坏退避窗口（5500ms）过去后应看到第 2 次 fetch（受 FIRST_ATTEMPT_MAX_RETRIES 封顶）。
+      await new Promise((r) => setTimeout(r, 5600));
       expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
     } finally {
       handle.stop();

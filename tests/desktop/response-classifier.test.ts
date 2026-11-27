@@ -101,12 +101,20 @@ describe('classifySseFrame — 流内错误帧（R0-R5）', () => {
   });
 });
 
-describe('errorBackoffMs — 指数退避（R0-R2）', () => {
-  it('0/1/2 次分别约 2s/4s/8s，封顶 8s', () => {
-    expect(errorBackoffMs(0, 0)).toBe(2000);
-    expect(errorBackoffMs(1, 0)).toBe(4000);
-    expect(errorBackoffMs(2, 0)).toBe(8000);
-    expect(errorBackoffMs(5, 0)).toBe(8000);
+describe('errorBackoffMs — 指数退避（R0-R2，㊿-c-补⑫ 拉长至 4s/8s/16s 封顶 30s）', () => {
+  it('0/1/2/3 次分别 4s/8s/16s/30s，封顶 30s', () => {
+    expect(errorBackoffMs(0, 0)).toBe(4000);
+    expect(errorBackoffMs(1, 0)).toBe(8000);
+    expect(errorBackoffMs(2, 0)).toBe(16000);
+    expect(errorBackoffMs(3, 0)).toBe(30000);
+    expect(errorBackoffMs(5, 0)).toBe(30000);
+  });
+  it('默认抖动 1500ms：多次采样落在 [base, base+1500] 窗内（非机器节拍 0–300ms）', () => {
+    for (let i = 0; i < 200; i++) {
+      const v = errorBackoffMs(0);
+      expect(v).toBeGreaterThanOrEqual(4000);
+      expect(v).toBeLessThanOrEqual(5500);
+    }
   });
 });
 

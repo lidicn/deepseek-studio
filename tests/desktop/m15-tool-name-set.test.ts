@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { beforeAll, describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+
+// ㊿-c-补⑫ 件④：jsdom 的 window.confirm 未实现，注入层同文护栏会调它落 stderr。
+// 全局 stub 为返回 true（确认放行）：不弹真框、不拦截。
+beforeAll(() => {
+  (window as unknown as Record<string, unknown>).confirm = () => true;
+});
 
 vi.mock('../../src/inject/pow', () => ({
   createPowHeaders: vi.fn(async () => ({ 'X-DS-PoW-Response': 'm15-stub' })),
@@ -102,7 +108,8 @@ async function runContinuationRound(h: Harness, sessionId: string): Promise<stri
   first.onreadystatechange = () => {};
   first.send(JSON.stringify({ prompt: '帮我跑个命令', chat_session_id: sessionId }));
   first.respond(200, sseTool() + sseDone());
-  await vi.advanceTimersByTimeAsync(2_000);
+  // ㊿-c-补⑫：轮间间隔 800–2200ms，须等过最坏 2200ms
+  await vi.advanceTimersByTimeAsync(2_500);
   const requests = h.chatRequests();
   expect(requests.length).toBeGreaterThanOrEqual(2);
   return String(requests[1].body ?? '');

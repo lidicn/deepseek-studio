@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeAll } from 'vitest';
+
+// ㊿-c-补⑫ 件④：jsdom 下 window.confirm 未实现，注入层同文护栏会调它落 stderr。
+// 全局 stub 为返回 true（确认放行）：不弹真框、不拦截；测试件里需「取消拦截」的格再局部 mockReturnValue(false)。
+beforeAll(() => {
+  (window as unknown as Record<string, unknown>).confirm = () => true;
+});
 
 /**
  * #55 / T-2a 验收断言（现状锁已随批翻成此版；red-first 留证见卡面）：
@@ -26,6 +32,7 @@ import {
   NEUTRAL_TOOL_ONLY_REPLY_NOTE,
 } from '../../src/inject/main-world-interceptor';
 import { createStudioChatUI } from '../../src/ui/studio-chat-ui';
+
 
 type Handler = ((...args: unknown[]) => void) | null;
 const CHAT_URL = 'https://chat.deepseek.com/api/v0/chat/completion';
@@ -110,18 +117,20 @@ describe('#55 验收断言：L3062/L3104 收尾带原因（现状锁已随批翻
     const { FakeXHR, handle, chatUI } = installHarness();
     try {
       fireFirstRound(FakeXHR, 't2a-maxloop');
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(2_500);
       // 喂工具结果直到触顶（max-loop）；触顶后循环停、不再发新请求
+      // ㊿-c-补⑫：轮间间隔已拉长到 800–2200ms（1500±700），每步须等过最坏 2200ms
       for (let i = 0; i < 30; i++) {
         const reqs = chatRequests(FakeXHR);
         const last = reqs[reqs.length - 1];
         if (!last || last.readyState === 4) break;
         last.respond(200, sseTool() + sseDone());
-        await vi.advanceTimersByTimeAsync(1_500);
+        await vi.advanceTimersByTimeAsync(2_500);
         if (interceptorTraceSnapshot().some((e) => e.t === 'turn.end' && e.stopReason === 'max-loop')) break;
       }
       // 触顶收尾确实发生
-      const maxLoopEnds = interceptorTraceSnapshot().filter((e) => e.t === 'turn.end' && e.stopReason === 'max-loop');
+      const snap = interceptorTraceSnapshot();
+      const maxLoopEnds = snap.filter((e) => e.t === 'turn.end' && e.stopReason === 'max-loop');
       expect(maxLoopEnds.length).toBeGreaterThan(0);
       expect(maxLoopEnds.at(-1)).toMatchObject({ finished: false });
       // 验收：appendError 触达 'max-loop'
@@ -144,15 +153,13 @@ describe('#55 验收断言：L3062/L3104 收尾带原因（现状锁已随批翻
     const { FakeXHR, handle, chatUI } = installHarness();
     try {
       fireFirstRound(FakeXHR, 't2a-procrepair');
-      await vi.advanceTimersByTimeAsync(2_000);
-      // 第 1 次续跑：空回复（无工具、无 task_complete）⇒ 触发协议修复（protocolRepairUsed→true）
+      await vi.advanceTimersByTimeAsync(2_500);
       let reqs = chatRequests(FakeXHR);
       reqs[reqs.length - 1].respond(200, sseText('') + sseDone());
-      await vi.advanceTimersByTimeAsync(2_000);
-      // 修复轮仍空回复 ⇒ L3104 protocol-repair-failed
+      await vi.advanceTimersByTimeAsync(2_500);
       reqs = chatRequests(FakeXHR);
       reqs[reqs.length - 1].respond(200, sseText('') + sseDone());
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(2_500);
       const pfEnds = interceptorTraceSnapshot().filter((e) => e.t === 'turn.end' && e.stopReason === 'protocol-repair-failed');
       expect(pfEnds.length).toBeGreaterThan(0);
       expect(pfEnds.at(-1)).toMatchObject({ finished: false });
@@ -205,11 +212,12 @@ describe('T-2b 验收断言：全工具原文收尾的中性说明（L3146 支�
     const { FakeXHR, handle, chatUI } = installHarness();
     try {
       fireFirstRound(FakeXHR, 't2b-neutral');
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(2_500);
       // 第 2 续跑轮：带属性工具标签＋代码围栏 ⇒ L3126「循环真正结束」⇒ L3146 支
+      // ㊿-c-补⑫：轮间间隔 800–2200ms，须等过最坏 2200ms
       const reqs = chatRequests(FakeXHR);
       reqs[reqs.length - 1].respond(200, sseAttrTool() + sseDone());
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(2_500);
       // 循环以 completed 收尾（trace 面不动：本支不新增任何 trace 事件）
       const ends = interceptorTraceSnapshot().filter((e) => e.t === 'turn.end' && e.stopReason === 'completed');
       expect(ends.length).toBeGreaterThan(0);
@@ -231,10 +239,10 @@ describe('T-2b 验收断言：全工具原文收尾的中性说明（L3146 支�
     const { FakeXHR, handle, chatUI, onAssistantReply } = installHarness();
     try {
       fireFirstRound(FakeXHR, 't2b-normal');
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(2_500);
       const reqs = chatRequests(FakeXHR);
       reqs[reqs.length - 1].respond(200, sseText('全部完成。') + sseDone());
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(2_500);
       // L3143 原路径：正文走 fallbackText、recordFinal:true、推送 onAssistantReply
       const call = chatUI.finishAssistantMessage.mock.calls.find((c) => (c[0] as { fallbackText?: string })?.fallbackText === '全部完成。');
       expect(call).toBeDefined();
@@ -256,10 +264,10 @@ describe('T-2b 验收断言：全工具原文收尾的中性说明（L3146 支�
     const handle = installMainWorldInterceptor({ sender, chatUI: ui as never, diag: () => {} });
     try {
       fireFirstRoundAttr(FakeXHR, 't2b-render', sseTool());
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(2_500);
       const reqs = chatRequests(FakeXHR);
       reqs[reqs.length - 1].respond(200, sseAttrTool() + sseDone());
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(2_500);
       // 真 chatUI：中性说明落进 DOM 消息列表（L868 早退守卫靠 startAssistantMessage 先开气泡绕开）
       expect(ui.container.textContent).toContain(NEUTRAL_TOOL_ONLY_REPLY_NOTE);
     } finally {
@@ -287,11 +295,11 @@ describe('R4-N6 奇数围栏（未闭合代码块）⇒ 协议修复轮，不落
     const { FakeXHR, handle, chatUI } = installHarness();
     try {
       fireFirstRound(FakeXHR, 't2b-unclosed');
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(2_500);
       // 续跑轮：带属性工具标签 + **单枚** ```（未闭合）
       const reqs = chatRequests(FakeXHR);
       reqs[reqs.length - 1].respond(200, sseAttrToolUnclosed() + sseDone());
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(2_500);
 
       // ① 决策 trace：走协议修复（不是「循环真正结束」）
       const repairDecision = interceptorTraceSnapshot().filter(
@@ -341,18 +349,18 @@ describe('C-1 / #61 在飞边缘：协议修复轮全工具原文 ⇒ 本场景�
     try {
       // 第 1 轮：真工具执行（B0 带工具卡，属上一场景）
       fireFirstRoundAttr(FakeXHR, 't61-c1', sseTool());
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(2_500);
       // 第 2 轮（续跑）：空回复 ⇒ L3104 关 B0 ＋ 修复轮起
       let reqs = chatRequests(FakeXHR);
       reqs[reqs.length - 1].respond(200, sseText('') + sseDone());
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(2_500);
       // 前提锚：进修复轮时刻，B0（已收尾、带工具卡）是唯一在 DOM 的助手气泡
       const before = ui.container.querySelectorAll('.ds-sc-msg-assistant').length;
       expect(before).toBe(1);
       // 第 3 轮（修复轮）：L2150 append 把工具原文喂进在飞气泡 B1（自动开泡）⇒ L3155 支入口，条件 start 不再多开
       reqs = chatRequests(FakeXHR);
       reqs[reqs.length - 1].respond(200, sseAttrTool() + sseDone());
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(2_500);
       // 格①（气泡枚数）：本场景 delta 恰好 1（B1 复用携中性说明；旧无条件 start 形态会是 2，负控红态在案）
       const after = ui.container.querySelectorAll('.ds-sc-msg-assistant').length;
       expect(after - before).toBe(1);

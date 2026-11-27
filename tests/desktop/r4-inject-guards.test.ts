@@ -17,8 +17,15 @@ vi.mock('../../src/inject/pow', () => ({
 
 import { installMainWorldInterceptor } from '../../src/inject/main-world-interceptor';
 import { classifySseFrame, classifyResponse } from '../../src/inject/response-classifier';
+import { beforeAll } from 'vitest';
 
 // @vitest-environment jsdom
+
+// ㊿-c-补⑫ 件④：jsdom 的 window.confirm 未实现，注入层同文护栏会调它落 stderr。
+// 全局 stub 为返回 true（确认放行）：不弹真框、不拦截。
+beforeAll(() => {
+  (window as unknown as Record<string, unknown>).confirm = () => true;
+});
 
 type Handler = ((...args: unknown[]) => void) | null;
 
@@ -143,17 +150,18 @@ describe('墨鉴 R4-H1：loopDepth 每轮只 +1', () => {
       // 每一轮都回一个工具调用 → 触发下一轮续跑。
       const first = pageSend(FakeXHR, { prompt: 'run many', chat_session_id: 'r4-h1' });
       first.respond(200, sseText('<shell_exec>{"command":"echo 1"}</shell_exec>') + sseDone());
-      await vi.advanceTimersByTimeAsync(1500);
+      // ㊿-c-补⑫：轮间间隔 800–2200ms，须等过最坏 2200ms
+      await vi.advanceTimersByTimeAsync(2_500);
 
       // 第 2 轮也回工具调用 → 第 3 轮
       const second = chatRequests(FakeXHR)[1];
       second.respond(200, sseText('<shell_exec>{"command":"echo 2"}</shell_exec>') + sseDone());
-      await vi.advanceTimersByTimeAsync(1500);
+      await vi.advanceTimersByTimeAsync(2_500);
 
       // 第 3 轮正常收尾
       const third = chatRequests(FakeXHR)[2];
       third.respond(200, sseText('done') + sseDone());
-      await vi.advanceTimersByTimeAsync(1500);
+      await vi.advanceTimersByTimeAsync(2_500);
 
       const loops = distinctLoops(diagLines);
       expect(loops.length).toBeGreaterThanOrEqual(2);
@@ -175,12 +183,14 @@ describe('墨鉴 R4-H1：loopDepth 每轮只 +1', () => {
     try {
       const first = pageSend(FakeXHR, { prompt: 'retry once', chat_session_id: 'r4-h1-retry' });
       first.respond(200, sseText('<shell_exec>{"command":"echo one"}</shell_exec>') + sseDone());
-      await vi.advanceTimersByTimeAsync(1500);
+      // ㊿-c-补⑫：轮间间隔 800–2200ms，须等过最坏 2200ms
+      await vi.advanceTimersByTimeAsync(2_500);
 
       const second = chatRequests(FakeXHR)[1];
       second.respond(429, '');
       expect(diagLines.some((l) => l.includes('auto-continue retryable'))).toBe(true);
 
+      // ㊿-c-补⑫：退避已拉长（4s+抖动 1500），30s 够跑完最坏一轮
       await vi.advanceTimersByTimeAsync(30_000);
       const loops = loopNumbers(diagLines);
       // 重试那一轮的编号必须与上一次相同（不消耗预算）。
@@ -243,12 +253,13 @@ describe('墨鉴 R4-H3：重试标志按会话维度隔离', () => {
       // 会话 A：先回一个工具调用，制造「有工具要续跑」的状态。
       const a = pageSend(FakeXHR, { prompt: 'session A', chat_session_id: 'r4-h3-A' });
       a.respond(200, sseText('<shell_exec>{"command":"echo a"}</shell_exec>') + sseDone());
-      await vi.advanceTimersByTimeAsync(1500);
+      // ㊿-c-补⑫：轮间间隔 800–2200ms，须等过最坏 2200ms
+      await vi.advanceTimersByTimeAsync(2_500);
 
       // 会话 B：紧接着发（不同 chat_session_id）。
       const b = pageSend(FakeXHR, { prompt: 'session B', chat_session_id: 'r4-h3-B' });
       b.respond(200, sseText('<shell_exec>{"command":"echo b"}</shell_exec>') + sseDone());
-      await vi.advanceTimersByTimeAsync(1500);
+      await vi.advanceTimersByTimeAsync(2_500);
 
       // 两个会话各自都发出了续跑（说明 A 的状态没有卡住 B，反之亦然）。
       const reqs = chatRequests(FakeXHR);

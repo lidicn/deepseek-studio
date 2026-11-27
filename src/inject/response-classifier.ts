@@ -505,10 +505,15 @@ export function classifySseFrame(eventType: string | null, parsed: unknown): Cla
 
 /**
  * R0-R2：错误重试指数退避（2s → 4s → 8s，封顶 8s + 抖动），取代固定 1.2s 连发。
+ * ㊿-c-补⑫（风控触发面硬加固）：常量机器节拍（2s/4s/8s＋抖动 0–300ms）是封号取证
+ * 的四条节奏特征之一（retry 行 2011/4042/8032ms 三枚同节拍）。拉长加大：
+ * 4s/8s/16s 封顶 30s＋抖动 0–1500ms，把「退避曲线」本身也打散成不规则间隔。
  * @param attempt 本次是第几次错误重试（从 0 起）
+ * @param jitterMs 抖动半径，默认 1500（㊿-c-补⑫；旧默认 300 属机器节拍）
  */
-export function errorBackoffMs(attempt: number, jitterMs = 300): number {
-  const base = Math.min(2000 * 2 ** Math.max(0, Math.min(attempt, 2)), 8000);
+export function errorBackoffMs(attempt: number, jitterMs = 1500): number {
+  // ㊿-c-补⑫ 负控靶心（卡面②）：摘掉本式 ⇒ 退避序列回到 2s/4s/8s 机器节拍。
+  const base = Math.min(4000 * 2 ** Math.max(0, Math.min(attempt, 3)), 30000);
   return base + Math.round(Math.random() * jitterMs);
 }
 

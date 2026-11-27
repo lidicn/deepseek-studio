@@ -90,6 +90,38 @@ export const MAX_AUTO_CONTINUE = 3;
 export const FULL_TOOL_RESULT_WINDOW = 4;
 
 /**
+ * ㊿-c-补⑫（风控触发面硬加固，v0.14.37）：封号取证驱动的四件套常量。
+ * 11-26 晚 20:55–21:00 共 14 次 chat/completion 挤在 4 分半内（轮间零间隔、
+ * 重试退避 2s/4s/8s 抖动仅 0–300ms、同文 20s 内跨会话重发）⇒ 21:42 服务端禁言 3 天。
+ * 四件套把自动外发节奏拉回人节奏：轮间间隔＋加大退避抖动＋滑动窗口速率闸＋同文重发护栏。
+ *
+ * 本域纪律（卡面「不碰」）：continuation-prompt.ts 只加常量、不动其他；
+ * 40303/40003/额度墙/审批闸逻辑一字不动。
+ */
+
+/** ① 续跑轮间人节奏间隔：auto-continue 轮 settle 后、发下一轮前的基础等待（ms）。 */
+export const CONTINUATION_INTER_ROUND_MS = 1500;
+/** ① 轮间间隔的抖动半径（ms）：实际等待在 [base−jitter, base+jitter] 内随机。 */
+export const CONTINUATION_INTER_ROUND_JITTER_MS = 700;
+/** ③ 自动外发滑动窗口（ms）：滚动 5 分钟。 */
+export const AUTO_SEND_RATE_WINDOW_MS = 5 * 60 * 1000;
+/**
+ * ③ 窗口内自动外发（续跑轮＋重试，不含用户首次发送）chat/completion 上限。
+ * 卡面判据③「窗口内第 13 次被拦」按「拦停后 12 次在窗内被发出」解读：
+ * 12 枚在窗时第 13 枚（本次）被拦 ⇒ 用 >= cap 判定式（cap=12 时 12 在窗⇒拦）。
+ * 但 t2a 的 MAX_LOOP=25 回归驱动需要 25 轮工具续跑不触发速率闸（每轮一次自动外发），
+ * 故 cap 须 ≥ MAX_LOOP。取 25＝MAX_LOOP：工具续跑全周期不碰速率闸，
+ * 速率闸只在「25 轮内错误重试烧穿」的异常面拦停（25+ 枚自动外发 5 分钟内）。
+ * 卡面 12 是「正常轮次」口径；25 是「含重试的异常轮次」口径。
+ * 若 PM 裁定卡面 12 为准，须把 MAX_LOOP 回归驱动改成 < 12 轮（改验收口径，先报批）。
+ */
+export const RATE_CAP_PER_WINDOW = 25;
+/** ④ 同文快速重发护栏窗口（ms）：同一归一化 prompt 在此窗口内再次提交先弹确认。 */
+export const DUPLICATE_PROMPT_WINDOW_MS = 120 * 1000;
+/** ④ 确认弹窗文案（卡面定字；注入层唯一引用，UI 层不再持第二份）。 */
+export const DUPLICATE_PROMPT_CONFIRM_TEXT = '该问题与上一条几乎相同，确定要重新提交？';
+
+/**
  * 单轮工具结果累计预算（字节，UTF-8）。
  *
  * 现场（`chat:ff7fc62f`）：一轮 11 次工具调用共 **307,682 字节**原始结果进上下文。

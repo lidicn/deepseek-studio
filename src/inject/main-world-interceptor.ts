@@ -26,6 +26,10 @@ import {
   MAX_LOOP,
   MAX_ERROR_RETRIES,
   MAX_AUTO_CONTINUE,
+  AUTO_SEND_RATE_WINDOW_MS,
+  RATE_CAP_PER_WINDOW,
+  DUPLICATE_PROMPT_WINDOW_MS,
+  DUPLICATE_PROMPT_CONFIRM_TEXT,
   type PendingResult,
 } from '../shared/continuation-prompt';
 import {
@@ -1355,6 +1359,66 @@ let traceTurnId = '';
 /** 空转续轮计数：流截断且本轮无工具时的独立封顶（受 MAX_AUTO_CONTINUE 约束）。 */
 let idleContinueCount = 0;
 
+/**
+ * ㊿-c-补⑫ 件④：同文快速重发护栏的跨会话记录（模块级＝跨 auto-continue 循环、
+ * 跨会话切换都保留——封号取证里的同文重发恰是「跨会话」：会话 7d882a5f 与 75ca15d9
+ * 在 20 秒内提交了同一句 prompt）。键＝归一化 prompt，值＝提交时刻（ms）。
+ * 只保留 1 枚：同文护栏只需「最近一次提交」与本次比对；上限防无界增长。
+ */
+const lastUserPromptRecords = new Map<string, number>();
+
+/**
+ * ㊿-c-补⑫ 件④：prompt 归一化——去首尾空白、折叠连续空白为单空格、转小写、
+ * 剔除常见中英文标点。判定「几乎相同」用归一化键全等（卡面口径：去空白/大小写/标点归一）。
+ */
+// 标点剔除集（件④）：CJK 全角用 \\u 转义——Node/JS 正则字面量里直接写全角字面量
+// 在部分转译/编译链下不进字符类（本卡实咬一次），半角用字符类。
+const GUARD_PUNCT_RE: RegExp = (() => {
+  const cjk = ['，', '。', '！', '？', '；', '：', '…', '、', '（', '）', '【', '】', '《', '》', '「', '」', '‘', '’', '“', '”']
+    .map((c) => '\\u' + c.codePointAt(0)!.toString(16))
+    .join('|');
+  return new RegExp(cjk + String.raw`|[,\.\!\?;:]`, 'g');
+})();
+
+export function normalizePromptKeyForGuard(prompt: string): string {
+  return prompt
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+    .replace(GUARD_PUNCT_RE, '')
+    .trim();
+}
+
+/** ㊿-c-补⑫ 件④：记录一次用户提交，返回「窗口内是否刚提交过同一归一化 prompt」。 */
+export function recordUserPrompt(prompt: string, nowMs: number, diag?: InterceptorDiag): boolean {
+  const key = normalizePromptKeyForGuard(prompt);
+  if (!key) return false;
+  const last = lastUserPromptRecords.get(key);
+  const duplicate = last !== undefined && nowMs - last < DUPLICATE_PROMPT_WINDOW_MS;
+  lastUserPromptRecords.set(key, nowMs);
+  if (lastUserPromptRecords.size > 8) {
+    // 保新弃旧：只留最近 4 枚
+    const entries = [...lastUserPromptRecords.entries()].sort((a, b) => b[1] - a[1]);
+    lastUserPromptRecords.clear();
+    for (const [k, v] of entries.slice(0, 4)) lastUserPromptRecords.set(k, v);
+  }
+  if (duplicate) diag?.(`duplicate prompt guard: key-len=${key.length} last=${nowMs - last}ms ago`);
+  return duplicate;
+}
+
+/** ㊿-c-补⑫ 件④：查「窗口内是否刚提交过同一归一化 prompt」（不写记录）。 */
+export function isDuplicateUserPrompt(prompt: string, nowMs?: number): boolean {
+  const key = normalizePromptKeyForGuard(prompt);
+  if (!key) return false;
+  const last = lastUserPromptRecords.get(key);
+  return last !== undefined && (nowMs ?? Date.now()) - last < DUPLICATE_PROMPT_WINDOW_MS;
+}
+
+/** ㊿-c-补⑫ 件④：清掉指定 prompt 的记录（测试/手动重发用）。 */
+export function clearUserPromptRecord(prompt: string): void {
+  lastUserPromptRecords.delete(normalizePromptKeyForGuard(prompt));
+}
+
 /** 诊断回调（临时）：把 hook 拦到的对话请求信息上报宿主日志。 */
 export type InterceptorDiag = (message: string) => void;
 
@@ -2037,7 +2101,7 @@ function reportContextBudget(rawBody: string, chatUI?: StudioChatUIHandle): void
   } catch { /* 非 JSON 或 UI 未就绪：跳过提示 */ }
 }
 
-function captureChatRequest(body: string, loopState: LoopState, diag: InterceptorDiag): void {
+function captureChatRequest(body: string, loopState: LoopState, diag: InterceptorDiag): boolean {
   try {
     const parsed = JSON.parse(body) as Record<string, unknown>;
     loopState.newChatSessionId = undefined;
@@ -2086,6 +2150,24 @@ function captureChatRequest(body: string, loopState: LoopState, diag: Intercepto
       loopState.originalTask = userText;
       loopState.newUserPrompt = userText;
       diag(`originalTask captured len=${loopState.originalTask.length}`);
+      // ㊿-c-补⑫ 件④：同文快速重发护栏——120s 窗口内同一归一化 prompt 再次提交先弹确认。
+      // 命中 ⇒ window.confirm；取消 ⇒ 丢弃本次发送（不记录、不发请求、不烧重试，保留原时间戳）；
+      // 确认 ⇒ 放行。新问题（窗口内未提交过）直放、不弹确认。
+      // 负控靶心：摘归一化 ⇒ 同文不拦；摘 confirm ⇒ 不弹确认直接放行；
+      // **摘放行后 recordUserPrompt ⇒ 第 2 次同文不拦**（写点缺失靶心，PM 复核后定）。
+      if (isDuplicateUserPrompt(userText)) {
+        const confirmed = typeof window !== 'undefined' && window.confirm(DUPLICATE_PROMPT_CONFIRM_TEXT);
+        if (!confirmed) {
+          const keyLen = normalizePromptKeyForGuard(userText).length;
+          diag(`duplicate prompt guard: user cancelled, key-len=${keyLen}, send aborted`);
+          return false;
+        }
+        diag(`duplicate prompt guard: user confirmed, key-len=${normalizePromptKeyForGuard(userText).length}`);
+      }
+      // 决定放行后无条件记录（新问题直放也记录、确认后放行也记录；取消不记录保留原时间戳）。
+      // PM 复核（2026-11-27）：写点在「if 块外、traceTurnId 之前」——首次提交（非重复）走不到
+      // isDuplicate 分支，但仍在「决定放行」处记录，否则第 2 次同文查不到键、护栏恒 false。
+      recordUserPrompt(userText, Date.now(), diag);
       // 新用户消息 = 新一轮 trace。id 与 execution turnId 同源同值。
       traceTurnId = `t${Date.now().toString(36)}`;
       idleContinueCount = 0;
@@ -2106,6 +2188,7 @@ function captureChatRequest(body: string, loopState: LoopState, diag: Intercepto
   } catch {
     // 非 JSON 请求体不参与会话识别。
   }
+  return true;
 }
 
 function installFetchHook(
@@ -2128,7 +2211,11 @@ function installFetchHook(
     const method = methodOf(input, init);
     diag(`fetch ${method} ${url} bodyType=${typeof init?.body}`);
     if (isDeepSeekChatEndpoint(url, method) && loopState && typeof init?.body === 'string') {
-      captureChatRequest(init.body, loopState, diag);
+      const allowed = captureChatRequest(init.body, loopState, diag);
+      if (!allowed) {
+        // ㊿-c-补⑫ 件④：用户取消同文重发 ⇒ 丢弃本次请求，不调 origFetch、不烧重试。
+        return Promise.reject(new DOMException('Duplicate prompt send cancelled', 'AbortError'));
+      }
     }
 
     // M10-8B（B1）：首轮发送前有界等待 memory.select 结果（≤120ms）；超时回落上一帧。
@@ -2461,10 +2548,16 @@ function installXhrHooks(
     //
     // 这里保持同步执行：captureChatRequest 里的 kickMemorySelect 会同步建出 pending，
     // 下面的「是否延迟发送」判定依赖它先就绪；延迟到回调里再做就永远看不到本次的 pending。
-    if (isChat && typeof body === 'string' && loopState) {
-      captureChatRequest(body, loopState, diag);
-    }
     const xhr = this;
+    if (isChat && typeof body === 'string' && loopState) {
+      const allowed = captureChatRequest(body, loopState, diag);
+      if (!allowed) {
+        // ㊿-c-补⑫ 件④：用户取消同文重发 ⇒ 中止本次 XHR（走已有 abort 包装，置 abortedByUser），
+        // 不调 origSend、不烧重试。
+        xhr.abort();
+        return;
+      }
+    }
     const sendNow = () => (origSend as (...a: unknown[]) => unknown).call(xhr, body);
     // ⑩ 格2/3（auth 面全量留痕＋set-cookie）：挂在 early-return 之前——这些端点正是「非 chat」，
     // 走 zero-trace 透传分支，唯一的观测手段是 addEventListener（EventTarget 内部存储，
@@ -3013,6 +3106,15 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
   finishSentinelEmit = options.onFinishSentinel ?? null;
   let autoContinueTimer: ReturnType<typeof setTimeout> | null = null;
   let loopDepth = 0;
+  /**
+   * ㊿-c-补⑫ 件③：自动外发速率闸——滑动窗口（AUTO_SEND_RATE_WINDOW_MS）内已发出的
+   * 自动外发（续跑轮＋错误重试＋首轮原样重发）时间戳。用户首次发送不记、不拦。
+   * 达 RATE_CAP_PER_WINDOW 上限时停止自动续跑并给明确提示（不静默），窗口滚动后自动恢复。
+   * 作用域＝installMainWorldInterceptor 闭包（本拦截器实例寿命内跨会话保留，
+   * 与件④注入层记录同寿命；重装 interceptor 才重置）。
+   */
+  const autoSendTimestamps: number[] = [];
+  let rateCapNoticeTurnId = '';
   /** ⑨ 熔断接线：已发过熔断交代的 turnId 集合（同轮幂等：scheduleAutoContinue 会被同轮多次调用，可见提示只许挂一次）。 */
   const fuseStoppedTurns = new Set<string>();
   // v1.6：跨整个循环累积的工具执行结果（对标 deepseek-pp collectedExecutions）。
@@ -3553,11 +3655,16 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       }
       setContinuationRetryPending(true);
     }
+    // ㊿-c-补⑫ 件①：续跑轮间人节奏间隔——本轮 settle 后、发下一轮前等
+    // 1500 ± 700ms（常量在 shared/continuation-prompt.ts，测试件经模块面断言）。
+    // 封号取证里「轮间零间隔」是四条机器节拍特征之一；加抖动打散机器节拍指纹。
+    // 只作用于 auto-continue 轮（本函数只被工具结果回流/流收口调用），用户首次发送不经过这里。
+    // 负控靶心（卡面）：摘掉本块 ⇒ 定时器回到固定 1000ms（轮间 0ms 间隔指纹回来）。
     if (autoContinueTimer) clearTimeout(autoContinueTimer);
     autoContinueTimer = setTimeout(() => {
       autoContinueTimer = null;
       void autoContinueWithPow();
-    }, 1000);
+    }, 1500 + Math.round((Math.random() * 2 - 1) * 700));
   }
 
   /**
@@ -3578,6 +3685,8 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       void autoContinueWithPow();
     }, delayMs ?? 1000);
   }
+
+
 
   /**
    * QD-R5-01：首轮（非续跑）失败的统一升级点。
@@ -3616,6 +3725,9 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     }
     budget.scheduled += 1;
     const delay = errorBackoffMs(budget.scheduled - 1);
+    // ㊿-c-补⑫ 件③：首轮原样重发也是自动外发，同样计入滑动窗口（超 cap 时
+    // 由 autoContinueWithPow 闸口统一拦停＋提示，此处不做二次拦截）。
+    autoSendTimestamps.push(Date.now());
     d(`first-attempt retryable: reason=${code} scheduled retry ${budget.scheduled}/${FIRST_ATTEMPT_MAX_RETRIES} in ${delay}ms (sent so far=${budget.sent})`);
     interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'first-attempt-retry', triggered: true });
     loopState.streamActive = false;
@@ -3788,6 +3900,36 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       d('auto-continue suppressed: user aborted this turn');
       setContinuationRetryPending(false);
       return;
+    }
+    // ㊿-c-补⑫ 件③：自动外发速率闸——滚动窗口内达 RATE_CAP_PER_WINDOW 即停止自动外发。
+    // 用户首次发送不计入（不经过本函数）；本函数只被 auto-continue 路径调用
+    // （续跑轮/错误重试/首轮原样重发），全部算自动外发。
+    // 负控靶心（卡面③）：摘掉 autoSendTimestamps 计数（本块）⇒ 窗口内 20 次全放行。
+    {
+      const now = Date.now();
+      while (autoSendTimestamps.length > 0 && now - autoSendTimestamps[0] >= AUTO_SEND_RATE_WINDOW_MS) {
+        autoSendTimestamps.shift();
+      }
+      // 卡面判据③：「窗口内第 13 次自动外发被拦」——12 枚在窗时第 13 枚（本次）被拦。
+      // >= cap 语义：cap 是「窗口内允许的最大自动外发数」，已达 12 ⇒ 第 13 枚拦停。
+      if (autoSendTimestamps.length >= RATE_CAP_PER_WINDOW) {
+        if (rateCapNoticeTurnId !== traceTurnId) {
+          rateCapNoticeTurnId = traceTurnId;
+          d(`rate cap: ${autoSendTimestamps.length}/${RATE_CAP_PER_WINDOW} auto-sends in ${AUTO_SEND_RATE_WINDOW_MS}ms window, pausing auto-continue`);
+          finishStepFlow({
+            code: 'auto-send-rate-cap',
+            message: '请求频率达到安全上限，已暂停自动续跑，请稍后手动继续。',
+          });
+        } else {
+          d('rate cap: already notified this turn, silent stop');
+        }
+        interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'auto-send-rate-cap' });
+        loopDepth = 0;
+        autoSendTimestamps.length = 0;
+        setContinuationRetryPending(false);
+        return;
+      }
+      autoSendTimestamps.push(now);
     }
     // R4-H1（墨鉴）：loopDepth 是「工具续跑」的**轮次预算**，每轮只应 +1。
     // 原实现有两处独立自增：

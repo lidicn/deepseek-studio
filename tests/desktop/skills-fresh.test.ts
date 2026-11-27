@@ -1,4 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, beforeAll } from 'vitest';
+
+// ㊿-c-补⑫ 件④：jsdom 的 window.confirm 未实现，注入层同文护栏会调它落 stderr。
+// 全局 stub 为返回 true（确认放行）：不弹真框、不拦截。
+beforeAll(() => {
+  (window as unknown as Record<string, unknown>).confirm = () => true;
+});
 
 // auto-continue（首轮原样重发）会算 PoW；这里只需要它立即返回，不关心真实凭证。
 vi.mock('../../src/inject/pow', () => ({
@@ -374,10 +380,10 @@ describe('P0 技能清单运行期刷新', () => {
       expect(countOccurrences(firstBody, CAP_MARKER)).toBe(1);
       expect(countOccurrences(firstBody, CAP_END_MARKER)).toBe(1);
 
-      // 首轮网络失败 → 2s 退避后原样重发；期间 TTL 过期，但重发不得刷新。
+      // 首轮网络失败 → ㊿-c-补⑫ 后 4s+抖动 1500 退避后原样重发；期间 TTL 过期，但重发不得刷新。
       first.respond(0, '');
       advanceClock(5_001);
-      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(6_000);
 
       const requests = chatRequests(h.FakeXHR);
       expect(requests.length).toBeGreaterThanOrEqual(2);
