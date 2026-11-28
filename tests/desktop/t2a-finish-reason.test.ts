@@ -94,7 +94,8 @@ function installHarness() {
     startToolCard: vi.fn(() => true),
     finishToolCard: vi.fn(),
   };
-  const handle = installMainWorldInterceptor({ sender, chatUI: chatUI as never, diag: () => {}, onAssistantReply });
+  // ㊿-c-补⑬：本件验自动续跑行为 ⇒ riskSafeMode:false 覆盖 shared 常量
+  const handle = installMainWorldInterceptor({ sender, chatUI: chatUI as never, diag: () => {}, onAssistantReply, riskSafeMode: false });
   return { FakeXHR, handle, sender, chatUI, onAssistantReply };
 }
 
@@ -261,7 +262,7 @@ describe('T-2b 验收断言：全工具原文收尾的中性说明（L3146 支�
     const sender = vi.fn(async () => ({ ok: true, data: { stdout: 'hi', exitCode: 0 } }));
     const ui = createStudioChatUI();
     document.body.appendChild(ui.container);
-    const handle = installMainWorldInterceptor({ sender, chatUI: ui as never, diag: () => {} });
+    const handle = installMainWorldInterceptor({ sender, chatUI: ui as never, diag: () => {}, riskSafeMode: false });
     try {
       fireFirstRoundAttr(FakeXHR, 't2b-render', sseTool());
       await vi.advanceTimersByTimeAsync(2_500);
@@ -345,7 +346,7 @@ describe('C-1 / #61 在飞边缘：协议修复轮全工具原文 ⇒ 本场景�
     const sender = vi.fn(async () => ({ ok: true, data: { stdout: 'hi', exitCode: 0 } }));
     const ui = createStudioChatUI();
     document.body.appendChild(ui.container);
-    const handle = installMainWorldInterceptor({ sender, chatUI: ui as never, diag: () => {} });
+    const handle = installMainWorldInterceptor({ sender, chatUI: ui as never, diag: () => {}, riskSafeMode: false });
     try {
       // 第 1 轮：真工具执行（B0 带工具卡，属上一场景）
       fireFirstRoundAttr(FakeXHR, 't61-c1', sseTool());

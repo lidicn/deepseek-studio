@@ -165,7 +165,7 @@ function installHarness(opts: { tools?: McpToolStub[] } = {}): Harness {
   vi.stubGlobal('location', { href: 'https://chat.deepseek.com/' });
 
   const diagLines: string[] = [];
-  const handle = installMainWorldInterceptor({
+  const handle = installMainWorldInterceptor({ riskSafeMode: false, 
     sender,
     chatUI: makeChatUI() as never,
     diag: (line) => diagLines.push(line),

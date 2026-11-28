@@ -93,7 +93,7 @@ function installHarness(): Harness {
     startToolCard: vi.fn(() => true),
     finishToolCard: vi.fn(),
   };
-  const handle = installMainWorldInterceptor({ sender, chatUI: chatUI as never, diag: () => {} });
+  const handle = installMainWorldInterceptor({ riskSafeMode: false, sender, chatUI: chatUI as never, diag: () => {} });
   return {
     FakeXHR,
     handle,

@@ -131,6 +131,7 @@ function installFillHarness(opts: FillHarnessOpts = {}) {
     finishToolCard: vi.fn(),
   };
   const handle = installMainWorldInterceptor({
+    riskSafeMode: false,
     sender,
     chatUI: chatUI as never,
     diag: () => {},

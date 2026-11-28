@@ -114,7 +114,7 @@ function installHarness() {
   const sender = vi.fn(async () => ({ ok: true, data: { stdout: 'ok', exitCode: 0 } }));
   const chatUI = makeChatUI();
   const diagLines: string[] = [];
-  const handle = installMainWorldInterceptor({
+  const handle = installMainWorldInterceptor({ riskSafeMode: false, 
     sender,
     chatUI: chatUI as never,
     diag: (line) => diagLines.push(line),

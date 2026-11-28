@@ -120,7 +120,7 @@ function installHarness(senderImpl: SenderImpl) {
     startToolCard: vi.fn(() => true),
     finishToolCard: vi.fn(),
   };
-  const handle = installMainWorldInterceptor({
+  const handle = installMainWorldInterceptor({ riskSafeMode: false, 
     sender,
     chatUI: chatUI as never,
     diag: () => {},

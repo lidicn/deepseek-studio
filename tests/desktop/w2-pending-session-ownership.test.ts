@@ -78,7 +78,7 @@ describe('R-W2：跨会话迟到结果在续跑注入路径被丢弃', () => {
       appendReasoning: vi.fn(), finishAssistantMessage: vi.fn(), appendError: vi.fn(),
       setBusy: vi.fn(), setContextNotice: vi.fn(), startToolCard: vi.fn(() => true), finishToolCard: vi.fn(),
     };
-    const handle = installMainWorldInterceptor({ sender, chatUI: chatUI as never, diag: () => {} });
+    const handle = installMainWorldInterceptor({ riskSafeMode: false,  sender, chatUI: chatUI as never, diag: () => {} });
 
     try {
       // 1) A 会话发请求，SSE 带工具调用
@@ -133,7 +133,7 @@ describe('R-W2：跨会话迟到结果在续跑注入路径被丢弃', () => {
       appendReasoning: vi.fn(), finishAssistantMessage: vi.fn(), appendError: vi.fn(),
       setBusy: vi.fn(), setContextNotice: vi.fn(), startToolCard: vi.fn(() => true), finishToolCard: vi.fn(),
     };
-    const handle = installMainWorldInterceptor({ sender, chatUI: chatUI as never, diag: () => {} });
+    const handle = installMainWorldInterceptor({ riskSafeMode: false,  sender, chatUI: chatUI as never, diag: () => {} });
 
     try {
       const baselineCross = interceptorTraceSnapshot().filter((e) => e.t === 'pending.cross-session').length;

@@ -94,7 +94,7 @@ function installHarness() {
     return { ok: true, data: { stdout: 'ok', exitCode: 0 } };
   });
   const chatUI = makeChatUI();
-  const handle = installMainWorldInterceptor({
+  const handle = installMainWorldInterceptor({ riskSafeMode: false, 
     sender,
     chatUI: chatUI as never,
     diag: () => {},

@@ -124,7 +124,7 @@ function installHarness() {
     startToolCard: vi.fn(() => true),
     finishToolCard: vi.fn(),
   };
-  const handle = installMainWorldInterceptor({
+  const handle = installMainWorldInterceptor({ riskSafeMode: false, 
     sender,
     chatUI: chatUI as never,
     diag: () => {},
@@ -275,7 +275,7 @@ describe('PM 裁补强（2026-11-14）：封顶前最后一枚回执（n=3）终
       startToolCard: vi.fn(() => true),
       finishToolCard: vi.fn(),
     };
-    const handle = installMainWorldInterceptor({
+    const handle = installMainWorldInterceptor({ riskSafeMode: false, 
       sender,
       chatUI: chatUI as never,
       diag: () => {},

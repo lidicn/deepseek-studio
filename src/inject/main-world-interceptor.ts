@@ -30,8 +30,12 @@ import {
   RATE_CAP_PER_WINDOW,
   DUPLICATE_PROMPT_WINDOW_MS,
   DUPLICATE_PROMPT_CONFIRM_TEXT,
+  RISK_SAFE_MODE as RISK_SAFE_MODE_DEFAULT,
   type PendingResult,
 } from '../shared/continuation-prompt';
+
+/** ㊿-c-补⑬：模块级缺省（installMainWorldInterceptor 未传 options.riskSafeMode 时用）。 */
+const safeModeDefault = RISK_SAFE_MODE_DEFAULT;
 import {
   classifyResponse,
   classifySseFrame,
@@ -122,6 +126,11 @@ export interface MainWorldInterceptorOptions {
    * 宿主侧接收分支早已就绪，页端此前缺发送端导致 `interrupted` 是死代码。
    */
   onFinishSentinel?: (info: { round: number; sawFinishSentinel: boolean }) => void;
+  /**
+   * ㊿-c-补⑬：风控安全模式开关。缺省＝shared 常量 RISK_SAFE_MODE（本版 true）。
+   * 测试件要验「节流行为在位」时传 false 覆盖（不改 shared 常量、不动源行为）。
+   */
+  riskSafeMode?: boolean;
 }
 
 /** 断流取证入口：把当前缓冲的轨迹渲染成纯文本报告（空缓冲返回空串）。 */
@@ -2994,6 +3003,8 @@ function installXhrHooks(
 export function installMainWorldInterceptor(options: MainWorldInterceptorOptions): MainWorldInterceptorHandle {
   console.log('[interceptor] installed, fetch hook + XHR hook ready');
   const { sender, diag, onAssistantReply, onMemoriesUpdate, chatUI, onStreamDelta } = options;
+  // ㊿-c-补⑬：风控安全模式——options.riskSafeMode 可覆盖 shared 常量（测试件传 false 验节流行为在位）。
+  const riskSafeMode = options.riskSafeMode ?? safeModeDefault;
 
   // ── ⑩ 格4：页面载入登录态自检（每次安装恰好一行）——把「起手就没登录」与「用到一半掉」区分开。
   const dbg = diag ?? (() => {});
@@ -3655,6 +3666,23 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       }
       setContinuationRetryPending(true);
     }
+    // ㊿-c-补⑬：安全模式下不排定时器（避免空转）——入口早退闸是主闸，这里是防御纵深。
+    // 收尾＋用户可见提示与入口闸同款（幂等：safe-mode 已收尾过的 turn 再触发不重复挂）。
+    if (riskSafeMode) {
+      d('safe-mode: scheduleAutoContinue timer suppressed');
+      if (!fuseStoppedTurns.has(traceTurnId)) {
+        interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'safe-mode', triggered: false });
+        interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'safe-mode' });
+        pending.length = 0;
+        setContinuationRetryPending(false);
+        finishStepFlow({
+          code: 'safe-mode',
+          message: '安全模式：自动续跑已关闭。工具结果已执行，需要继续请手动发送「继续」。',
+        });
+      }
+      if (autoContinueTimer) { clearTimeout(autoContinueTimer); autoContinueTimer = null; }
+      return;
+    }
     // ㊿-c-补⑫ 件①：续跑轮间人节奏间隔——本轮 settle 后、发下一轮前等
     // 1500 ± 700ms（常量在 shared/continuation-prompt.ts，测试件经模块面断言）。
     // 封号取证里「轮间零间隔」是四条机器节拍特征之一；加抖动打散机器节拍指纹。
@@ -3675,6 +3703,21 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
    * 「重发同一个问题」变成「拿着空 <tool_results> 的续跑」。
    */
   function scheduleFirstAttemptResend(delayMs?: number): void {
+    // ㊿-c-补⑬：安全模式下首轮原样重发也不排（入口早退闸兜底，这里是排点闸）。
+    if (riskSafeMode) {
+      d('safe-mode: first-attempt resend timer suppressed');
+      firstAttemptResendActive = false;
+      firstAttemptResendPending = false;
+      setContinuationRetryPending(false);
+      if (autoContinueTimer) { clearTimeout(autoContinueTimer); autoContinueTimer = null; }
+      interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'safe-mode', triggered: false });
+      interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'safe-mode' });
+      finishStepFlow({
+        code: 'safe-mode',
+        message: '安全模式：自动续跑已关闭。工具结果已执行，需要继续请手动发送「继续」。',
+      });
+      return;
+    }
     firstAttemptResendActive = true;
     firstAttemptResendPending = true;
     // 豁免 autoContinueWithPow 的 pending 守卫（重发不依赖 pending）。
@@ -3706,6 +3749,20 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
       d('first-attempt failure suppressed: user aborted this turn');
       firstAttemptResendActive = false;
       firstAttemptResendPending = false;
+      return;
+    }
+    // ㊿-c-补⑬：安全模式下首轮失败也不原样重发——统一走 safe-mode 收尾（不烧重试预算）。
+    if (riskSafeMode) {
+      d(`safe-mode: first-attempt resend suppressed (reason=${code})`);
+      firstAttemptResendActive = false;
+      firstAttemptResendPending = false;
+      setContinuationRetryPending(false);
+      loopState.streamActive = false;
+      interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'safe-mode' });
+      finishStepFlow({
+        code: 'safe-mode',
+        message: '安全模式：自动续跑已关闭。工具结果已执行，需要继续请手动发送「继续」。',
+      });
       return;
     }
     const budget = firstAttemptBudget(traceTurnId);
@@ -3899,6 +3956,35 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
     if (loopState.abortedByUser) {
       d('auto-continue suppressed: user aborted this turn');
       setContinuationRetryPending(false);
+      return;
+    }
+    // ㊿-c-补⑬：风控安全模式——零自动外发（全部四条路：工具续跑／错误重试／协议修复／首轮原样重发）。
+    // 出资人拿另一个号做「纯净 Studio」存活验证：全关仍被风控才讨论项目去留。
+    // 负控靶心（卡面⑬）：摘掉本闸 ⇒ 自动续跑请求出现；常量改 false ⇒ ⑫ 节流行为在位。
+    if (riskSafeMode) {
+      d(`safe-mode: auto-continue suppressed (pending=${pending.length}, retryPending=${isContinuationRetryPending()}, protocolRepair=${loopState.protocolRepairPending})`);
+      interceptorTrace.record({
+        t: 'continuation.decision',
+        turnId: traceTurnId,
+        reason: 'safe-mode',
+        triggered: false,
+      });
+      // 清「本轮进行中」标志＋本轮结束事件，避免 Studio UI 卡「进行中…」。
+      pending.length = 0;
+      setContinuationRetryPending(false);
+      loopState.protocolRepairPending = false;
+      loopState.protocolRepairUsed = false;
+      firstAttemptResendActive = false;
+      firstAttemptResendPending = false;
+      loopState.inFirstAttemptResend = false;
+      loopState.streamActive = false;
+      loopDepth = 0;
+      errorRetryCount = 0;
+      interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'safe-mode' });
+      finishStepFlow({
+        code: 'safe-mode',
+        message: '安全模式：自动续跑已关闭。工具结果已执行，需要继续请手动发送「继续」。',
+      });
       return;
     }
     // ㊿-c-补⑫ 件③：自动外发速率闸——滚动窗口内达 RATE_CAP_PER_WINDOW 即停止自动外发。
@@ -4193,6 +4279,20 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                 loopDepth = 0;
               }
             } else if (verdict.verdict === 'retryable') {
+              // ㊿-c-补⑬：安全模式下错误不自动重试——统一 safe-mode 收尾。
+              if (riskSafeMode) {
+                d(`safe-mode: error retry suppressed (reason=${verdict.reason})`);
+                loopState.streamActive = false;
+                interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'safe-mode', triggered: false });
+                interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'safe-mode' });
+                finishStepFlow({
+                  code: 'safe-mode',
+                  message: '安全模式：自动续跑已关闭。工具结果已执行，需要继续请手动发送「继续」。',
+                });
+                loopDepth = 0;
+                resolve();
+                return;
+              }
               // 429/断连/5xx/200错误体：独立错误预算 + 指数退避，不占用工具续跑/nudge 预算。
               errorRetryCount += 1;
               loopState.streamActive = false;
@@ -4208,6 +4308,20 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
               autoContinueTimer = setTimeout(() => { autoContinueTimer = null; void autoContinueWithPow(); }, delay);
               interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: `error-retry-${verdict.reason}`, triggered: true });
             } else if (isTruncated) {
+              // ㊿-c-补⑬：安全模式下截断也不自动重发——统一 safe-mode 收尾。
+              if (riskSafeMode) {
+                d(`safe-mode: truncated continuation resend suppressed`);
+                loopState.streamActive = false;
+                interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'safe-mode', triggered: false });
+                interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'safe-mode' });
+                finishStepFlow({
+                  code: 'safe-mode',
+                  message: '安全模式：自动续跑已关闭。工具结果已执行，需要继续请手动发送「继续」。',
+                });
+                loopDepth = 0;
+                resolve();
+                return;
+              }
               // W1/R-W1：续跑轮 2xx 但无完成哨兵 = 流被截断。预算已在上方封顶判断里校验。
               // 走与 retryable 同构的退避重发（continuationRetryPending=true），不记 completed。
               errorRetryCount += 1;
@@ -4269,6 +4383,21 @@ export function installMainWorldInterceptor(options: MainWorldInterceptorOptions
                   && shouldAttemptProtocolRepair(replyForNudge, execForThisTurn, false);
                 const canRepair = incompleteReply && !loopState.protocolRepairUsed;
                 if (canRepair) {
+                  // ㊿-c-补⑬：安全模式下协议修复也不排——统一 safe-mode 收尾。
+                  if (riskSafeMode) {
+                    d(`safe-mode: protocol repair suppressed`);
+                    loopState.protocolRepairPending = false;
+                    loopState.streamActive = false;
+                    interceptorTrace.record({ t: 'continuation.decision', turnId: traceTurnId, reason: 'safe-mode', triggered: false });
+                    interceptorTrace.record({ t: 'turn.end', turnId: traceTurnId, finished: false, stopReason: 'safe-mode' });
+                    finishStepFlow({
+                      code: 'safe-mode',
+                      message: '安全模式：自动续跑已关闭。工具结果已执行，需要继续请手动发送「继续」。',
+                    });
+                    loopDepth = 0;
+                    resolve();
+                    return;
+                  }
                   // 半截 XML 不推给宿主，先收掉当前 UI，再用专用 prompt 修复一次协议。
                   try { chatUI?.finishAssistantMessage({ recordFinal: false }); } catch { /* ignore */ }
                   loopState.protocolRepairUsed = true;

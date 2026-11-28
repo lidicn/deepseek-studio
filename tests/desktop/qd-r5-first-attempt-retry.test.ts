@@ -94,7 +94,7 @@ function installHarness() {
   });
   const chatUI = makeChatUI();
   const diagLines: string[] = [];
-  const handle = installMainWorldInterceptor({
+  const handle = installMainWorldInterceptor({ riskSafeMode: false, 
     sender,
     chatUI: chatUI as never,
     diag: (line) => diagLines.push(line),

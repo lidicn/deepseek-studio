@@ -122,6 +122,19 @@ export const DUPLICATE_PROMPT_WINDOW_MS = 120 * 1000;
 export const DUPLICATE_PROMPT_CONFIRM_TEXT = '该问题与上一条几乎相同，确定要重新提交？';
 
 /**
+ * ㊿-c-补⑬（v0.14.38 主线，2026-11-28 出资人拍板）：风控安全模式——零自动外发。
+ * 出资人要拿另一个号做「纯净 Studio」存活测试：若连自动续跑全关仍被风控，才讨论项目去留。
+ *
+ * true＝本版强制开：autoContinueWithPow 入口早退（工具续跑／错误重试／协议修复／首轮原样重发
+ * 四条路全不发请求、不算 PoW），定时器排点不排，Studio UI 收尾不卡「进行中」。
+ * 保留 ⑫④ 同文重发护栏（安全模式只关「自动」，不关「手动防重复指纹」）。
+ *
+ * ⑫ 的轮间抖动／退避拉长／速率闸代码留，但全部挂 RISK_SAFE_MODE===false 分支，本版不得触发。
+ * **新号存活验证通过后改 false 并启用 ⑫ 节流**（PM 卡 ⑬ 定字）。
+ */
+export const RISK_SAFE_MODE = true;
+
+/**
  * 单轮工具结果累计预算（字节，UTF-8）。
  *
  * 现场（`chat:ff7fc62f`）：一轮 11 次工具调用共 **307,682 字节**原始结果进上下文。
